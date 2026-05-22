@@ -78,6 +78,12 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
         <Field label="Priority µLamp" testid="prio-input"
                value={local.priority_fee_microlamports}
                onChange={(v) => setLocal({ ...local, priority_fee_microlamports: parseInt(v, 10) || 0 })} step="100000" />
+        <Field label="Trailing Stop (%)" testid="trailing-input"
+               value={local.trailing_stop_pct}
+               onChange={(v) => setLocal({ ...local, trailing_stop_pct: parseFloat(v) || 0 })} step="1" />
+        <Field label="Exit Slip (bps)" testid="exit-slip-input"
+               value={local.exit_slippage_bps}
+               onChange={(v) => setLocal({ ...local, exit_slippage_bps: parseInt(v, 10) || 0 })} step="50" />
       </div>
 
       {/* Entry filters */}

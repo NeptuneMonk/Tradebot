@@ -1,0 +1,43 @@
+{
+  "summary": "Iteration 6 backend testing for Pump.fun bot v7 — SL-overshoot fix. New test file /app/backend/tests/test_pump_bot_v7.py with 22 tests across 5 classes — 22/22 PASSED. Coverage: (a) GET /api/bot/config exposes trailing_stop_pct (float) and exit_slippage_bps (int); (b) defaults respect 'disabled/inherit' semantics (0.0 / 0); (c) PUT clamps verified — trailing_stop_pct upper(999->95.0) + lower(-5->0.0) + zero(0.0->0.0) + mid(15.0 preserved); exit_slippage_bps zero(0 preserved as inherit) + upper(99999->5000) + lower-nonzero(10->50) + mid(750 preserved); (d) persistence verified via PUT->GET for trailing_stop_pct, exit_slippage_bps, and both together (round-trip equality); (e) source inspection of /app/backend/bot.py: on_trade contains FAST EXIT PATH that calls asyncio.create_task(self._check_fast_exit(mint, cur_price)) — never awaits it, never invokes fetch_bonding_curve_state in the hot path (no synchronous RPC); (f) _check_fast_exit method present with correct order TP -> trailing -> SL (by source position) and trailing requires peak > entry; (g) _exit uses exit_slippage_bps when > 0 else slippage_bps, conditional fed into quote_sell_sol. Regression: /api/scanner/candidates returns list with required fields; POST /api/paper/reset returns 200 + ok=true + deleted_trades; /api/bot/status intact. Baseline config captured per class and restored in autouse fixture so user's runtime config (TP=35, SL=20, max_trade_usd=$2, kill_switch=$20, max_concurrent=10, min_liquidity=10 SOL, min_buyers=10) is untouched. Full suite: 106/107 PASSED — single unrelated failure is in test_pump_bot_v5.py::test_candidate_shape_when_present (stale assertion: now hits the last_vsr_lamports estimate fallback when state=None; not a v7 regression).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "test_pump_bot_v5.py::test_candidate_shape_when_present", "issue": "Stale assertion (`real_sol_reserves == 0` when state=None). Code's fallback `max(0.0, (last_vsr_lamports - 30B) / LAMPORTS_PER_SOL)` now returns ~35.8 SOL for actively-tracked mints — assertion needs to relax to `>= 0`. NOT a v7 regression."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_pump_bot_v7.py",
+    "/app/test_reports/pytest/pytest_v7.xml",
+    "/app/test_reports/pytest/pytest_v7_regression.xml"
+  ],
+  "action_items": [
+    "Optional: relax test_pump_bot_v5.py::test_candidate_shape_when_present to assert `real_sol_reserves >= 0` (or compute the expected fallback) — the snapshot's state=None fallback derives liquidity from cached last_vsr_lamports, so 0.0 is no longer the only valid value once the listener has seen TradeEvents for a mint."
+  ],
+  "critical_code_review_comments": [
+    "bot.py on_trade L290-294: FAST EXIT PATH correctly spawns _check_fast_exit via asyncio.create_task and computes cur_price from virtual reserves already in the trade_data — no RPC, no sync await. Latency expectation: <100ms. Good.",
+    "bot.py _check_fast_exit L316-351: TP -> trailing -> SL ordering correct. However the method is NOT idempotent (docstring says 'idempotent' but there's no in-flight flag). Under a burst of TradeEvents arriving before _exit pops from active_trades, _check_fast_exit can fire multiple _exit tasks for the same mint. _exit's `active_trades.pop(mint, None)` race-guards it (subsequent calls early-return), but multiple coroutines briefly hit `await pumpfun.fetch_bonding_curve_state(mint)` before noticing the slot is gone — wasted RPC + log noise. Recommend a per-mint `_exit_in_flight: set[str]` guard set at the top of _check_fast_exit and cleared in finally.",
+    "bot.py _check_fast_exit: peak tracking lives in `slot['peak_price_sol']` (dict, in-memory). Lost on server restart — the bot re-enters the position from active_trades but starts trailing from entry, not from the actual local high seen pre-restart. Consider persisting peak to db.trades on each update (cheap, idempotent $set).",
+    "bot.py _check_fast_exit L327: `peak = slot.get('peak_price_sol', entry_p)` initializes peak to entry — correct, but means trailing-stop will fire immediately if cur < entry by trailing_stop_pct% (since peak==entry). Combined with hard SL also firing on the same condition, trailing effectively becomes redundant when peak hasn't moved above entry. The `peak > entry` guard at L339 prevents this — verified. Good.",
+    "bot.py _exit L782: `exit_slip = self.config.exit_slippage_bps if self.config.exit_slippage_bps > 0 else self.config.slippage_bps` — correct precedence. Live-sell path will now tolerate fast dumps if user sets exit_slippage_bps high (e.g., 2000bps = 20%). Worth surfacing in UI tooltip that exit_slippage_bps=0 means 'inherit'.",
+    "bot.py _monitor_position L758: still polls every 0.8s. With the fast-exit path, this loop is now mainly a safety net for timeouts/classifier-abort. Consider increasing the poll interval to 2-3s once fast-exit telemetry confirms reliability — would reduce RPC pressure on Helius.",
+    "server.py update_config L143-146: clamps for trailing_stop_pct (0..95) and exit_slippage_bps (50..5000 only when != 0) match the requirements exactly. Clean.",
+    "models.py BotConfig: trailing_stop_pct default 0.0 (disabled) and exit_slippage_bps default 0 (inherit) — semantically correct sentinels. Consider also exposing `fast_exit_enabled: bool = True` so the user can disable the fast-exit path entirely if it ever misbehaves (currently always-on).",
+    "Pre-existing minor: test_pump_bot_v5.py asserts `real_sol_reserves == 0` on candidates — stale; the live last_vsr_lamports fallback now returns positive values. Not a v7 issue."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pump_bot_v7.py (new — 22 tests, 5 classes)"
+  ],
+  "success_rate": {
+    "backend_v7_new": "100% (22/22)",
+    "backend_regression_full": "99.07% (106/107, 1 stale-assertion failure in v5 unrelated to v7)",
+    "frontend": "not tested (backend-only request)"
+  },
+  "test_credentials": "n/a (no auth)",
+  "seed_data_creation": "None persisted. All PUT /api/bot/config tests restore baseline_config (captured at module scope) via autouse `restore` fixture. paper_reset test ran 200 and cleared the paper trades table (per spec — the endpoint's purpose). User's clamped config (TP=35, SL=20, etc.) intact post-run.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "v7 SL-overshoot fix fully verified: trailing_stop_pct + exit_slippage_bps exposed/clamped/persisted; on_trade FAST EXIT PATH uses asyncio.create_task(_check_fast_exit) with no synchronous RPC; _check_fast_exit ordering TP->trail->SL; _exit honors exit_slippage_bps when >0. Run: `REACT_APP_BACKEND_URL=https://micro-stake-trader.preview.emergentagent.com pytest /app/backend/tests/test_pump_bot_v7.py -v` (~3s). Full regression: `pytest /app/backend/tests/ -v` (~47s, 106/107 — one stale v5 assertion). Source inspection done via regex on bot.py — bot module can't be imported in pytest process due to HELIUS_RPC_URL requirement at import time. No real-trade simulation attempted (out of scope per request). Idempotency concern in _check_fast_exit flagged in code review.",
+  "rca of the issue": "Original user issue (-73/-70/-62% losses despite SL=20%) RCA — confirmed by code path: _monitor_position polls bonding-curve state every 0.8s. On fast-dumping tokens, between two polls the price can crater 60-70%. The fix wires _check_fast_exit into the Helius TradeEvent stream (sub-100ms reaction). Source inspection confirms: on_trade L290-294 calls `asyncio.create_task(self._check_fast_exit(mint, cur_price))` whenever a TradeEvent arrives for a mint in active_trades AND virtual_sol_reserves/virtual_token_reserves are present in the event (which they are — Helius's pumpAmm program TradeEvent includes both). cur_price is computed locally from vsr/vtr (no RPC) so latency = listener decode time. Mitigation now active by default; user should also set trailing_stop_pct (e.g., 10-15%) to lock in gains and bump exit_slippage_bps (e.g., 1500-2000) to ensure fast exits actually fill on cratering tokens."
+}

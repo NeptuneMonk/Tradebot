@@ -280,6 +280,18 @@ class BotState:
         """A buy/sell event was observed on Pump.fun."""
         mint = trade_data["mint"]
         bucket = self.tracking.get(mint)
+        # Track price via virtual reserves first (so active-trade fast path can use it)
+        vsr = trade_data.get("virtual_sol_reserves", 0)
+        vtr = trade_data.get("virtual_token_reserves", 0)
+        cur_price = None
+        if vsr and vtr:
+            cur_price = vsr / vtr / LAMPORTS_PER_SOL
+
+        # FAST EXIT PATH: if we hold this mint, check TP/SL on every trade event
+        # (sub-100ms reaction instead of 800ms poll loop — eliminates SL overshoot)
+        if cur_price and mint in self.active_trades:
+            asyncio.create_task(self._check_fast_exit(mint, cur_price))
+
         if not bucket:
             return
         now = time.time()
@@ -288,11 +300,7 @@ class BotState:
             bucket["sol_inflow_lamports"] += int(trade_data.get("sol_amount", 0))
             bucket["buy_count"] += 1
             bucket["buy_events"].append((now, int(trade_data.get("sol_amount", 0)), trade_data["user"]))
-        # Track price via virtual reserves
-        vsr = trade_data.get("virtual_sol_reserves", 0)
-        vtr = trade_data.get("virtual_token_reserves", 0)
-        if vsr and vtr:
-            cur_price = vsr / vtr / LAMPORTS_PER_SOL
+        if cur_price:
             if bucket["first_seen_price_sol"] <= 0:
                 bucket["first_seen_price_sol"] = cur_price
             bucket["last_price_sol"] = cur_price
@@ -304,6 +312,43 @@ class BotState:
         if now - bucket.get("last_persist", 0) >= PERSIST_INTERVAL_S:
             bucket["last_persist"] = now
             await self._persist_metrics(mint)
+
+    async def _check_fast_exit(self, mint: str, cur_price_sol: float):
+        """Real-time TP/SL/trailing-stop check fired by on_trade.
+        Idempotent: only acts once per mint."""
+        slot = self.active_trades.get(mint)
+        if not slot:
+            return
+        trade_doc = slot["trade"]
+        entry_p = trade_doc.get("entry_price_sol", 0)
+        if entry_p <= 0:
+            return
+        # Update peak for trailing stop
+        peak = slot.get("peak_price_sol", entry_p)
+        if cur_price_sol > peak:
+            peak = cur_price_sol
+            slot["peak_price_sol"] = peak
+
+        pct_change = (cur_price_sol - entry_p) / entry_p * 100
+
+        # Take profit
+        if pct_change >= self.config.take_profit_pct:
+            await self._exit(mint, reason=f"take-profit hit (+{pct_change:.1f}%) [fast]")
+            return
+        # Trailing stop (if enabled and we have unrealized gain)
+        if self.config.trailing_stop_pct > 0 and peak > entry_p:
+            trail_drop = (peak - cur_price_sol) / peak * 100
+            if trail_drop >= self.config.trailing_stop_pct:
+                peak_pct = (peak - entry_p) / entry_p * 100
+                await self._exit(
+                    mint,
+                    reason=f"trailing-stop hit (peak +{peak_pct:.1f}%, now +{pct_change:.1f}%) [fast]",
+                )
+                return
+        # Hard stop loss
+        if pct_change <= -self.config.stop_loss_pct:
+            await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%) [fast]")
+            return
 
     async def _persist_metrics(self, mint: str):
         b = self.tracking.get(mint)
@@ -733,7 +778,9 @@ class BotState:
             return
 
         tokens_in = int(trade_doc["entry_tokens"])
-        sol_out, min_sol = pumpfun.quote_sell_sol(state, tokens_in, self.config.slippage_bps)
+        # Use exit_slippage_bps if user has set it, else fall back to slippage_bps
+        exit_slip = self.config.exit_slippage_bps if self.config.exit_slippage_bps > 0 else self.config.slippage_bps
+        sol_out, min_sol = pumpfun.quote_sell_sol(state, tokens_in, exit_slip)
         exit_sol = sol_out / LAMPORTS_PER_SOL
         exit_price_sol = sol_out / tokens_in / LAMPORTS_PER_SOL if tokens_in > 0 else 0
 

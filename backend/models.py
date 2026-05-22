@@ -27,6 +27,8 @@ class BotConfig(BaseModel):
     hold_max_seconds: int = 30  # max time we'll hold a position
     take_profit_pct: float = 35.0  # exit if up X% (raised from 25 — winners often run to ~40%)
     stop_loss_pct: float = 20.0  # exit if down X% (tightened from 30 — cut losers earlier)
+    trailing_stop_pct: float = 0.0   # if >0: trail stop X% below peak (0 = disabled)
+    exit_slippage_bps: int = 0       # if >0: use this slippage for exits (else use slippage_bps)
     # Entry filters (added v5 — reduce bad fills on dead launches)
     min_curve_liquidity_sol: float = 2.0   # skip if real_sol_reserves < X SOL
     min_buyers_for_entry: int = 0          # require >= N unique buyers in assess window (0 = disabled)
