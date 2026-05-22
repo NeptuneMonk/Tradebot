@@ -27,6 +27,12 @@ class BotConfig(BaseModel):
     hold_max_seconds: int = 30  # max time we'll hold a position
     take_profit_pct: float = 25.0  # exit if up X%
     stop_loss_pct: float = 30.0  # exit if down X%
+    # Re-entry on winners
+    reentry_enabled: bool = True
+    reentry_max_attempts: int = 2
+    reentry_pullback_pct: float = 25.0  # pullback from exit price required
+    reentry_window_seconds: int = 300
+    reentry_size_multiplier: float = 0.5  # half size on re-entry
 
 
 class ClassifierRules(BaseModel):

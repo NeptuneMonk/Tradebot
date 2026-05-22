@@ -10,6 +10,7 @@ import ActiveTradesTable from "@/components/ActiveTradesTable";
 import RecentLaunchesFeed from "@/components/RecentLaunchesFeed";
 import TradeHistoryTable from "@/components/TradeHistoryTable";
 import ClassifierRulesEditor from "@/components/ClassifierRulesEditor";
+import ReentryWatchCard from "@/components/ReentryWatchCard";
 import { Activity } from "lucide-react";
 
 export default function Dashboard() {
@@ -21,11 +22,12 @@ export default function Dashboard() {
   const [activeTrades, setActiveTrades] = useState([]);
   const [history, setHistory] = useState([]);
   const [pl, setPl] = useState({ series: [], daily_pnl_usd: 0, cumulative_usd: 0 });
+  const [reentry, setReentry] = useState([]);
 
   // Initial full pull + slow polling fallback (every 20s)
   const refreshAll = useCallback(async () => {
     try {
-      const [w, s, c, r, l, a, h, p] = await Promise.all([
+      const [w, s, c, r, l, a, h, p, re] = await Promise.all([
         api.wallet().catch(() => null),
         api.status().catch(() => null),
         api.config().catch(() => null),
@@ -34,6 +36,7 @@ export default function Dashboard() {
         api.activeTrades().catch(() => []),
         api.tradeHistory(50).catch(() => []),
         api.plSummary(7).catch(() => ({ series: [], daily_pnl_usd: 0, cumulative_usd: 0 })),
+        api.reentryWatchlist().catch(() => []),
       ]);
       if (w) setWallet(w);
       if (s) setStatus(s);
@@ -43,6 +46,7 @@ export default function Dashboard() {
       setActiveTrades(a || []);
       setHistory(h || []);
       setPl(p);
+      setReentry(re || []);
     } catch (e) { /* swallow */ }
   }, []);
 
@@ -78,8 +82,18 @@ export default function Dashboard() {
       case "trade_exit":
         setActiveTrades((prev) => prev.filter((t) => t.id !== data.id));
         setHistory((prev) => [data, ...prev]);
-        // Lazy refresh P/L summary
         api.plSummary(7).then(setPl).catch(() => {});
+        // Refresh reentry watchlist (may have a new entry)
+        api.reentryWatchlist().then(setReentry).catch(() => {});
+        break;
+      case "reentry_watch_add":
+        setReentry((prev) => [...prev.filter((w) => w.mint !== data.mint), data]);
+        break;
+      case "reentry_watch_remove":
+        setReentry((prev) => prev.filter((w) => w.mint !== data.mint));
+        break;
+      case "reentry_attempted":
+        api.reentryWatchlist().then(setReentry).catch(() => {});
         break;
       default:
         break;
@@ -130,6 +144,8 @@ export default function Dashboard() {
           <ActiveTradesTable trades={activeTrades} onExit={async (id) => { await api.exitTrade(id); refreshAll(); }} />
           <RecentLaunchesFeed launches={launches} />
         </div>
+
+        <ReentryWatchCard watchlist={reentry} onRefresh={() => api.reentryWatchlist().then(setReentry).catch(() => {})} />
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
           <TradeHistoryTable history={history} />

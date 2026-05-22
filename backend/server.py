@@ -2,7 +2,9 @@
 FastAPI server for the Pump.fun Micro-Stake Trading Bot (preview-only).
 """
 import os
+import time
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -11,6 +13,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, WebSocket, WebSocketDisco
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
+from pydantic import BaseModel
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -22,6 +25,7 @@ from listener import PumpFunListener
 from solana_client import get_sol_balance, get_sol_usd_price
 from ws_hub import hub
 from creator_history import get_creator
+from wallet_send import send_sol
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,8 +46,7 @@ async def lifespan(app: FastAPI):
     await bot_state.load()
     listener.start()
     logger.info(f"Wallet address: {wallet.get_pubkey_str()}")
-    import asyncio as _aio
-    broadcaster = _aio.create_task(_status_broadcaster())
+    broadcaster = asyncio.create_task(_status_broadcaster())
     yield
     broadcaster.cancel()
     listener.stop()
@@ -57,54 +60,6 @@ api = APIRouter(prefix="/api")
 @api.get("/")
 async def root():
     return {"name": "pump-bot", "ok": True}
-
-
-# ---------- Creator history ----------
-@api.get("/creators/{creator}")
-async def creator_info(creator: str):
-    doc = await get_creator(db, creator)
-    if not doc:
-        return {"creator": creator, "tokens_created": 0, "tokens_failed": 0, "tokens_graduated": 0, "tokens_active": 0, "recent_mints": []}
-    doc["creator"] = creator
-    return doc
-
-
-# ---------- WebSocket push ----------
-@app.websocket("/api/ws")
-async def ws_endpoint(websocket: WebSocket):
-    await hub.connect(websocket)
-    # Send initial status snapshot on connect
-    try:
-        status = await bot_status()
-        await websocket.send_json({"type": "status", "data": status.model_dump()})
-    except Exception:
-        pass
-    try:
-        while True:
-            # Keep-alive: receive ignored messages (or pings)
-            msg = await websocket.receive_text()
-            if msg == "ping":
-                await websocket.send_text("pong")
-    except WebSocketDisconnect:
-        pass
-    except Exception:
-        pass
-    finally:
-        await hub.disconnect(websocket)
-
-
-# Periodic status broadcaster
-async def _status_broadcaster():
-    import asyncio as _aio
-    while True:
-        try:
-            status = await bot_status()
-            await hub.broadcast("status", status.model_dump())
-            wallet_info_obj = await wallet_info()
-            await hub.broadcast("wallet", wallet_info_obj.model_dump())
-        except Exception as e:
-            logger.debug(f"status broadcaster: {e}")
-        await _aio.sleep(3)
 
 
 # ---------- Wallet ----------
@@ -121,6 +76,31 @@ async def wallet_info():
     )
 
 
+class WithdrawRequest(BaseModel):
+    to: str
+    amount_sol: float
+
+
+@api.post("/wallet/send")
+async def wallet_send(req: WithdrawRequest):
+    """Withdraw SOL from bot wallet to an external address (real on-chain transfer)."""
+    try:
+        result = await send_sol(
+            req.to, req.amount_sol, bot_state.config.priority_fee_microlamports
+        )
+        try:
+            updated = await wallet_info()
+            await hub.broadcast("wallet", updated.model_dump())
+        except Exception:
+            pass
+        return {"ok": True, **result}
+    except ValueError as ve:
+        raise HTTPException(400, str(ve))
+    except Exception as e:
+        logger.exception("wallet send failed")
+        raise HTTPException(500, f"send failed: {e}")
+
+
 # ---------- Bot config / status ----------
 @api.get("/bot/config", response_model=BotConfig)
 async def get_config():
@@ -129,7 +109,6 @@ async def get_config():
 
 @api.put("/bot/config", response_model=BotConfig)
 async def update_config(cfg: BotConfig):
-    # Hard caps for safety
     if cfg.max_trade_usd > 5.0:
         cfg.max_trade_usd = 5.0
     if cfg.min_trade_usd < 0.10:
@@ -142,6 +121,10 @@ async def update_config(cfg: BotConfig):
         cfg.slippage_bps = 5000
     if cfg.daily_kill_switch_usd > 100:
         cfg.daily_kill_switch_usd = 100
+    if cfg.reentry_max_attempts < 0:
+        cfg.reentry_max_attempts = 0
+    if cfg.reentry_max_attempts > 5:
+        cfg.reentry_max_attempts = 5
     bot_state.config = cfg
     await bot_state.save_config()
     return cfg
@@ -150,7 +133,6 @@ async def update_config(cfg: BotConfig):
 @api.post("/bot/start")
 async def bot_start():
     if bot_state.kill_switch_tripped:
-        # Allow restart only if user manually reset (reset endpoint)
         raise HTTPException(400, "Kill switch tripped. Reset before starting.")
     bot_state.config.enabled = True
     await bot_state.save_config()
@@ -211,14 +193,12 @@ async def update_rules(rules: ClassifierRules):
 # ---------- Launches & Trades ----------
 @api.get("/launches/recent")
 async def launches_recent(limit: int = 30):
-    docs = await db.launches.find({}, {"_id": 0}).sort("detected_at", -1).to_list(limit)
-    return docs
+    return await db.launches.find({}, {"_id": 0}).sort("detected_at", -1).to_list(limit)
 
 
 @api.get("/trades/active")
 async def trades_active():
     docs = await db.trades.find({"status": "active"}, {"_id": 0}).sort("entry_time", -1).to_list(100)
-    # Attach runtime risk score from in-memory state
     for d in docs:
         slot = bot_state.active_trades.get(d["mint"])
         if slot:
@@ -228,8 +208,7 @@ async def trades_active():
 
 @api.get("/trades/history")
 async def trades_history(limit: int = 100):
-    docs = await db.trades.find({"status": {"$ne": "active"}}, {"_id": 0}).sort("entry_time", -1).to_list(limit)
-    return docs
+    return await db.trades.find({"status": {"$ne": "active"}}, {"_id": 0}).sort("entry_time", -1).to_list(limit)
 
 
 @api.post("/trades/{trade_id}/exit")
@@ -265,6 +244,76 @@ async def pl_summary(days: int = 7):
         )
     today = await bot_state.daily_pnl_usd()
     return {"series": rows, "daily_pnl_usd": today, "cumulative_usd": cum}
+
+
+# ---------- Creator history ----------
+@api.get("/creators/{creator}")
+async def creator_info(creator: str):
+    doc = await get_creator(db, creator)
+    if not doc:
+        return {
+            "creator": creator,
+            "tokens_created": 0,
+            "tokens_failed": 0,
+            "tokens_graduated": 0,
+            "tokens_active": 0,
+            "recent_mints": [],
+        }
+    doc["creator"] = creator
+    return doc
+
+
+# ---------- Re-entry watchlist ----------
+@api.get("/reentry/watchlist")
+async def reentry_watchlist():
+    out = []
+    now = time.time()
+    for w in bot_state.reentry_watch.values():
+        out.append({**w, "remaining_window_s": max(0.0, w["window_s"] - (now - w["exit_time"]))})
+    return out
+
+
+@api.delete("/reentry/watchlist/{mint}")
+async def reentry_remove(mint: str):
+    w = bot_state.reentry_watch.pop(mint, None)
+    if not w:
+        raise HTTPException(404, "not on watchlist")
+    await hub.broadcast("reentry_watch_remove", {"mint": mint})
+    return {"ok": True}
+
+
+# ---------- WebSocket push ----------
+@app.websocket("/api/ws")
+async def ws_endpoint(websocket: WebSocket):
+    await hub.connect(websocket)
+    try:
+        status = await bot_status()
+        await websocket.send_json({"type": "status", "data": status.model_dump()})
+    except Exception:
+        pass
+    try:
+        while True:
+            msg = await websocket.receive_text()
+            if msg == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        await hub.disconnect(websocket)
+
+
+async def _status_broadcaster():
+    while True:
+        try:
+            status = await bot_status()
+            await hub.broadcast("status", status.model_dump())
+            w = await wallet_info()
+            await hub.broadcast("wallet", w.model_dump())
+        except Exception as e:
+            logger.debug(f"status broadcaster: {e}")
+        await asyncio.sleep(3)
 
 
 app.include_router(api)

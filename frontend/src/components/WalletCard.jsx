@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { Copy, Wallet as WalletIcon, Check } from "lucide-react";
+import { Copy, Wallet as WalletIcon, Check, Send } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { toast } from "sonner";
+import WithdrawDialog from "@/components/WithdrawDialog";
 
 export default function WalletCard({ wallet }) {
   const [copied, setCopied] = useState(false);
   const [showQR, setShowQR] = useState(false);
+  const [showWithdraw, setShowWithdraw] = useState(false);
 
   const copy = async () => {
     if (!wallet?.public_key) return;
@@ -22,13 +24,23 @@ export default function WalletCard({ wallet }) {
           <WalletIcon className="w-3 h-3" />
           Wallet
         </div>
-        <button
-          onClick={() => setShowQR(s => !s)}
-          className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 hover:text-neutral-200 transition-colors duration-100"
-          data-testid="toggle-qr-btn"
-        >
-          {showQR ? "Hide QR" : "Show QR"}
-        </button>
+        <div className="flex items-center gap-3 text-[10px] uppercase tracking-[0.15em]">
+          <button
+            onClick={() => setShowQR(s => !s)}
+            className="text-neutral-500 hover:text-neutral-200 transition-colors duration-100"
+            data-testid="toggle-qr-btn"
+          >
+            {showQR ? "Hide QR" : "Show QR"}
+          </button>
+          <button
+            onClick={() => setShowWithdraw(true)}
+            data-testid="open-withdraw-btn"
+            disabled={!wallet || (wallet?.sol_balance ?? 0) <= 0}
+            className="inline-flex items-center gap-1 text-blue-400 hover:text-blue-300 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Send className="w-3 h-3" /> Send
+          </button>
+        </div>
       </div>
 
       <div className="space-y-1">
@@ -60,6 +72,12 @@ export default function WalletCard({ wallet }) {
           </div>
         )}
       </div>
+
+      <WithdrawDialog
+        open={showWithdraw}
+        onClose={() => setShowWithdraw(false)}
+        balance={wallet?.sol_balance ?? 0}
+      />
     </div>
   );
 }

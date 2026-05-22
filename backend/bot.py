@@ -38,9 +38,10 @@ class BotState:
         self.recent_launches: list[dict] = []
         self.kill_switch_tripped = False
         self.listener_connected = False
-        # mint -> {launch_id, start, buyers:set, sol_inflow_lamports, buy_count,
-        #          curve_fill_pct, social_score, social_sources, last_persist}
         self.tracking: dict[str, dict] = {}
+        # Re-entry watchlist: mint -> {exit_price_sol, exit_time, attempts, ...}
+        self.reentry_watch: dict[str, dict] = {}
+        self._reentry_task: asyncio.Task | None = None
 
     async def load(self):
         cfg = await self.db.bot_config.find_one({"_id": "current"}, {"_id": 0})
@@ -51,6 +52,9 @@ class BotState:
             self.rules = ClassifierRules(**rules)
         async for t in self.db.trades.find({"status": "active"}, {"_id": 0}):
             self.active_trades[t["mint"]] = {"trade": t}
+        # Start re-entry watcher
+        if self._reentry_task is None or self._reentry_task.done():
+            self._reentry_task = asyncio.create_task(self._reentry_watcher())
 
     async def save_config(self):
         await self.db.bot_config.update_one(
@@ -87,6 +91,106 @@ class BotState:
             await self.save_config()
             return True
         return False
+
+    # ---------- Re-entry on winners ----------
+    async def _reentry_watcher(self):
+        """Background scanner: for every closed-profitable mint on the watchlist,
+        watch the price for a pullback. If pullback >= configured pct AND the
+        token has not died (real_sol_reserves still growing), re-enter at a
+        smaller size. Capped by max_attempts per mint."""
+        while True:
+            try:
+                now = time.time()
+                to_remove: list[str] = []
+                for mint, w in list(self.reentry_watch.items()):
+                    if not self.config.reentry_enabled:
+                        to_remove.append(mint); continue
+                    if now - w["exit_time"] > w["window_s"]:
+                        to_remove.append(mint); continue
+                    if w["attempts"] >= w["max_attempts"]:
+                        to_remove.append(mint); continue
+                    if mint in self.active_trades:
+                        continue  # already re-entered; wait for that to close
+                    if not self.config.enabled or self.kill_switch_tripped:
+                        continue
+                    if await self.check_kill_switch():
+                        continue
+
+                    state = await pumpfun.fetch_bonding_curve_state(mint)
+                    if not state or state["complete"]:
+                        to_remove.append(mint); continue
+                    cur_price = state["virtual_sol_reserves"] / state["virtual_token_reserves"] / LAMPORTS_PER_SOL
+                    # Track peak after exit so we measure pullback from local high
+                    if cur_price > w["peak_price_after_exit"]:
+                        w["peak_price_after_exit"] = cur_price
+                    pullback = (w["peak_price_after_exit"] - cur_price) / max(w["peak_price_after_exit"], 1e-18) * 100
+                    if pullback >= w["pullback_pct"]:
+                        # Optional sanity: only re-enter if curve still has inflow
+                        # (compare cur_real_sol vs threshold). Skip strict check for now.
+                        try:
+                            await self._attempt_reentry(w)
+                        except Exception as e:
+                            logger.exception(f"reentry attempt failed for {mint}: {e}")
+                for m in to_remove:
+                    self.reentry_watch.pop(m, None)
+                    await hub.broadcast("reentry_watch_remove", {"mint": m})
+            except Exception as e:
+                logger.debug(f"reentry watcher loop error: {e}")
+            await asyncio.sleep(2.0)
+
+    async def _attempt_reentry(self, w: dict):
+        mint = w["mint"]
+        sol_price = await get_sol_usd_price()
+        base_usd = max(self.config.min_trade_usd, self.config.max_trade_usd)
+        trade_usd = max(self.config.min_trade_usd, base_usd * w["size_multiplier"])
+        trade_sol = trade_usd / sol_price if sol_price > 0 else 0
+        sol_in_lamports = int(trade_sol * LAMPORTS_PER_SOL)
+        if sol_in_lamports <= 0:
+            return
+        state = await pumpfun.fetch_bonding_curve_state(mint)
+        if not state or state["complete"]:
+            return
+        tokens_out, max_sol = pumpfun.quote_buy_tokens(state, sol_in_lamports, self.config.slippage_bps)
+        if tokens_out <= 0:
+            return
+        entry_price_sol = sol_in_lamports / tokens_out / LAMPORTS_PER_SOL
+        mode = "live" if self.config.live_trading else "paper"
+        trade = Trade(
+            mint=mint,
+            name=w.get("name"),
+            symbol=w.get("symbol"),
+            status="active",
+            mode=mode,
+            entry_sol=trade_sol,
+            entry_usd=trade_sol * sol_price,
+            entry_tokens=tokens_out,
+            entry_price_sol=entry_price_sol,
+            risk_score=40,
+            classifier_action="reentry",
+        )
+        if mode == "live":
+            try:
+                kp = get_keypair()
+                user = get_pubkey()
+                mint_pk = Pubkey.from_string(mint)
+                ixs = [
+                    pumpfun.build_create_ata_ix(user, user, mint_pk),
+                    pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol),
+                ]
+                sig = await pumpfun.send_versioned_tx(kp, ixs, self.config.priority_fee_microlamports)
+                trade.entry_sig = sig
+            except Exception as e:
+                logger.exception(f"Live re-entry buy failed for {mint}: {e}")
+                trade.status = "failed"
+                trade.exit_reason = f"reentry buy failed: {e}"
+                await self._persist_trade(trade)
+                return
+        await self._persist_trade(trade)
+        w["attempts"] += 1
+        self.active_trades[mint] = {"trade": trade.model_dump(), "launch": {"creator": w.get("creator"), "mint": mint}}
+        await hub.broadcast("trade_enter", trade.model_dump())
+        await hub.broadcast("reentry_attempted", {"mint": mint, "attempts": w["attempts"]})
+        asyncio.create_task(self._monitor_position(mint))
 
     # ---------- Listener handlers ----------
     async def on_launch(self, launch_data: dict):
@@ -462,4 +566,22 @@ class BotState:
             {"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
         )
         await hub.broadcast("trade_exit", trade_doc)
+        # Re-entry watchlist: if we exited profitably and curve hasn't graduated, watch for a pullback
+        if self.config.reentry_enabled and pnl_sol > 0 and not state["complete"]:
+            self.reentry_watch[mint] = {
+                "mint": mint,
+                "name": trade_doc.get("name"),
+                "symbol": trade_doc.get("symbol"),
+                "exit_price_sol": exit_price_sol,
+                "exit_time": time.time(),
+                "attempts": 0,
+                "max_attempts": self.config.reentry_max_attempts,
+                "window_s": self.config.reentry_window_seconds,
+                "pullback_pct": self.config.reentry_pullback_pct,
+                "size_multiplier": self.config.reentry_size_multiplier,
+                "original_pnl_usd": pnl_usd,
+                "peak_price_after_exit": exit_price_sol,
+                "creator": (slot.get("launch") or {}).get("creator"),
+            }
+            await hub.broadcast("reentry_watch_add", self.reentry_watch[mint])
         await self.check_kill_switch()

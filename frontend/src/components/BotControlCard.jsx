@@ -80,6 +80,36 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                onChange={(v) => setLocal({ ...local, priority_fee_microlamports: parseInt(v, 10) || 0 })} step="100000" />
       </div>
 
+      {/* Re-entry config */}
+      <div className="border-t border-neutral-800 pt-3 mt-1">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[10px] uppercase tracking-[0.15em] text-neutral-500">Re-entry on winners</span>
+          <label className="flex items-center gap-1.5 text-[10px] font-mono uppercase text-neutral-400">
+            <input
+              type="checkbox"
+              data-testid="reentry-enabled-checkbox"
+              checked={local.reentry_enabled}
+              onChange={(e) => setLocal({ ...local, reentry_enabled: e.target.checked })}
+            />
+            enabled
+          </label>
+        </div>
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Field label="Max attempts" testid="reentry-max-input"
+                 value={local.reentry_max_attempts}
+                 onChange={(v) => setLocal({ ...local, reentry_max_attempts: parseInt(v, 10) || 0 })} step="1" />
+          <Field label="Pullback (%)" testid="reentry-pullback-input"
+                 value={local.reentry_pullback_pct}
+                 onChange={(v) => setLocal({ ...local, reentry_pullback_pct: parseFloat(v) || 0 })} step="1" />
+          <Field label="Window (s)" testid="reentry-window-input"
+                 value={local.reentry_window_seconds}
+                 onChange={(v) => setLocal({ ...local, reentry_window_seconds: parseInt(v, 10) || 0 })} step="30" />
+          <Field label="Size ×" testid="reentry-size-input"
+                 value={local.reentry_size_multiplier}
+                 onChange={(v) => setLocal({ ...local, reentry_size_multiplier: parseFloat(v) || 0 })} step="0.1" />
+        </div>
+      </div>
+
       <button
         onClick={save}
         disabled={!dirty}
