@@ -1,0 +1,66 @@
+{
+  "theme": "dark",
+  "archetype": "2 (The Performance Pro) / Control Room",
+  "design_philosophy": "Simple and functional. Built for speed. Dense data, no frills, pure utility.",
+  "typography": {
+    "primary_font": "IBM Plex Sans",
+    "heading_font": "IBM Plex Mono",
+    "mono_font": "IBM Plex Mono",
+    "hierarchy": {
+      "h1": "text-2xl sm:text-3xl font-bold tracking-tight",
+      "h2": "text-lg sm:text-xl font-semibold tracking-tight",
+      "h3": "text-base sm:text-lg font-medium",
+      "body": "text-sm leading-relaxed",
+      "mono_data": "text-sm font-mono tracking-tight",
+      "label": "text-xs font-bold uppercase tracking-[0.15em]"
+    }
+  },
+  "colors": {
+    "background": "bg-neutral-950",
+    "surface": "bg-neutral-900",
+    "surface_hover": "hover:bg-neutral-800",
+    "border": "border-neutral-800",
+    "text": {
+      "primary": "text-neutral-50",
+      "secondary": "text-neutral-400",
+      "muted": "text-neutral-500"
+    },
+    "semantic": {
+      "profit": "text-emerald-500 bg-emerald-500/10 border border-emerald-500/20",
+      "loss": "text-red-500 bg-red-500/10 border border-red-500/20",
+      "warning": "text-amber-500 bg-amber-500/10 border border-amber-500/20",
+      "info": "text-blue-500 bg-blue-500/10 border border-blue-500/20",
+      "brand": "bg-blue-600 hover:bg-blue-500 text-white"
+    }
+  },
+  "layout": {
+    "container": "max-w-[1600px] mx-auto p-4 md:p-6",
+    "grid": "grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6",
+    "surface_strategy": "The 'Control Room' Grid. High density, 1px solid borders (`border-neutral-800`), flat backgrounds, absolutely no shadows or glassmorphism. Sharp corners (`rounded-none` or max `rounded-sm`)."
+  },
+  "components": {
+    "buttons": "Square edges, crisp 1px borders, high contrast. Use semantic colors for actions (e.g. Red for Stop/Kill).",
+    "cards": "border border-neutral-800 bg-neutral-900/50 p-4 flex flex-col gap-3 rounded-sm",
+    "tables": "Dense. Use `text-sm`. Headers should be uppercase, tracking wide, text-neutral-500. Rows must have `border-b border-neutral-800`. Numbers MUST use `font-mono`.",
+    "inputs": "bg-neutral-950 border border-neutral-800 text-neutral-100 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 rounded-sm",
+    "badges": "px-2 py-0.5 text-xs font-mono uppercase border rounded-sm"
+  },
+  "motion": {
+    "philosophy": "Instantaneous. Snappy. No slow fades. Transitions should be 100ms max to feel 'built for speed'.",
+    "hover": "transition-colors duration-100 ease-in"
+  },
+  "testing": {
+    "required_attributes": "All interactive elements, forms, and data display rows MUST use `data-testid` (e.g., `data-testid=\"start-bot-btn\"`, `data-testid=\"wallet-balance\"`)."
+  },
+  "instructions_to_main_agent": [
+    "Use Phosphor Icons (yarn add @phosphor-icons/react) for a technical, crisp look.",
+    "Use Recharts (yarn add recharts) for the P/L sparkline. Keep the chart minimal (no grid lines, no axes), just the trend line.",
+    "Construct the dashboard strictly using Tailwind CSS and customize Shadcn components to remove large border-radii and shadows.",
+    "The layout must have a prominent top status banner (Green for RUNNING, Amber for PAUSED, Red for KILLED).",
+    "Implement the 'Daily loss meter' as a linear progress bar that fills with red as it approaches the $20 limit.",
+    "Active trades and Recent launches should be auto-updating lists, visually distinct. Recent launches can have a pulsing green dot to indicate 'live' status.",
+    "For all numerical data (prices, P/L, addresses), explicitly apply the mono font classes to ensure tabular alignment.",
+    "Do NOT use arbitrary padding/margin, stick to the Tailwind spacing scale (e.g., p-2, p-4, p-6)."
+  ],
+  "image_urls": {}
+}
