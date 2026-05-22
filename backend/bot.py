@@ -23,6 +23,7 @@ from social import score_term
 from ws_hub import hub
 from creator_history import record_new_launch, mark_outcome, get_creator, derive_rug_count
 from scanner import MomentumScanner
+from discovery import PumpfunDiscovery
 
 logger = logging.getLogger("bot")
 
@@ -50,6 +51,7 @@ class BotState:
         self.entered_mints: set[str] = set()
         self._scanner_task: asyncio.Task | None = None
         self.scanner = MomentumScanner(self)
+        self.discovery = PumpfunDiscovery(self)
 
     async def load(self):
         cfg = await self.db.bot_config.find_one({"_id": "current"}, {"_id": 0})
@@ -66,6 +68,8 @@ class BotState:
         # Start momentum scanner
         if self._scanner_task is None or self._scanner_task.done():
             self._scanner_task = asyncio.create_task(self.scanner.loop())
+        # Start Pump.fun discovery (aged tokens)
+        self.discovery.start()
 
     async def save_config(self):
         await self.db.bot_config.update_one(

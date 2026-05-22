@@ -157,7 +157,7 @@ export default function Dashboard() {
 
         <PLBySourceCard refreshSignal={plSourceRefresh} />
 
-        <ScannerCandidatesCard candidates={scanner} />
+        <ScannerCandidatesCard candidates={scanner} config={config} />
 
         <SuggestionsCard onApplied={() => api.config().then(setConfig).catch(() => {})} />
 

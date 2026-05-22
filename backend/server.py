@@ -136,6 +136,7 @@ async def update_config(cfg: BotConfig):
     cfg.max_concurrent_positions = max(1, min(50, cfg.max_concurrent_positions))
     # Scanner clamps
     cfg.scanner_window_hours = max(1, min(24, cfg.scanner_window_hours))
+    cfg.scanner_min_age_minutes = max(0, min(24 * 60, cfg.scanner_min_age_minutes))
     cfg.scanner_interval_s = max(5, min(600, cfg.scanner_interval_s))
     cfg.scanner_min_growth_pct = max(0.0, min(10000.0, cfg.scanner_min_growth_pct))
     cfg.scanner_recent_inflow_window_s = max(30, min(3600, cfg.scanner_recent_inflow_window_s))

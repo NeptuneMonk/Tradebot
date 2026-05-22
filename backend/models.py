@@ -38,6 +38,9 @@ class BotConfig(BaseModel):
     # Momentum scanner — 81% of recent profitable trades came from here
     scanner_enabled: bool = True
     scanner_window_hours: int = 4
+    # Seasoning floor: only consider tokens older than this many minutes.
+    # Filters out fresh-launch volatility the sniper already handles.
+    scanner_min_age_minutes: int = 180
     scanner_interval_s: int = 15
     scanner_min_growth_pct: float = 20.0
     scanner_recent_inflow_window_s: int = 300

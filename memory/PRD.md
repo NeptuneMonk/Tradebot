@@ -206,3 +206,31 @@ For learning and experimentation only — no deployment outside preview.
 - P2: Telegram alerts
 - P2: Creator watchlist UI
 - P3: Jito bundle support
+
+## 2026-02-22 — Scanner seasoning gate
+
+### Adjustable seasoning window (P1)
+User insight: fresh launches (<3h) are sniper turf and add noise to the scanner. Implemented an adjustable seasoning floor.
+- ✅ New config field `scanner_min_age_minutes` (default **180** = 3h), clamped 0–1440
+- ✅ Scanner now filters candidates: `min_age <= age <= max_age` (effectively a `[3h, 4h]` band by default; user can dial both ends)
+- ✅ `candidates_snapshot()` exposes `seasoned: bool` per row so the UI can show non-seasoned tokens as "watching · raw"
+- ✅ Frontend: new "Min Age (min)" input in BotControlCard scanner section
+- ✅ ScannerCandidatesCard now reads `config.scanner_min_age_minutes` and renders the dynamic window (e.g. `3h–4h window`), with an amber `· raw` badge for under-aged tokens
+- **Verified live**: 12 candidates all <1min old → all flagged `seasoned=False, passes=False` → scanner correctly stays out of fresh-launch noise
+
+
+
+## 2026-02-22 — Pump.fun token discovery
+
+### Discover existing 3h+ tokens (P1)
+User clarification: scanner should consider tokens that *already exist* on Pump.fun and are 3+ hours old — not just wait for the bot to organically observe new launches up to that age.
+- ✅ New module `backend/discovery.py` (`PumpfunDiscovery` class)
+- ✅ Background loop polls Pump.fun's coins API every **120s**, paginates 5 pages × 240 = up to 1200 actively-traded tokens
+- ✅ Uses `sort=last_trade_timestamp&order=DESC` — naturally surfaces actively-traded mature tokens (creation-sorted endpoint caps at ~1000 offset and can only reach ~40min back, which is why this sort is critical)
+- ✅ Filters returned tokens to the `[scanner_min_age_minutes, scanner_window_hours]` band (default 3h–4h)
+- ✅ Seeds them into `state.tracking` with the **real `created_timestamp`** as `start` so seasoning math is correct
+- ✅ Live trades flow in automatically via the existing Helius listener (it subscribes to the whole Pump program, no per-mint subscription needed)
+- ✅ `discovered: true` flag propagates through scanner snapshot to UI
+- ✅ Frontend: cyan **DISCOVERED** badge next to discovered candidates in ScannerCandidatesCard
+- ✅ Pump.fun's per-token `/trades/all/{mint}` endpoint returns 404 on the public v3 API — historical trade backfill removed; live trades from Helius are sufficient
+- **Verified live**: Discovery found **WIVES** (World Cup Wives, 3.8h old, +34.5% growth, 14.67 SOL inflow/5m, 10 new buyers/1m) and the scanner correctly listed it as **PASSING** with the DISCOVERED badge

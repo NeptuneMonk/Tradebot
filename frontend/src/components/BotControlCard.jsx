@@ -120,6 +120,9 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
           <Field label="Window (h)" testid="scanner-window-input"
                  value={local.scanner_window_hours}
                  onChange={(v) => setLocal({ ...local, scanner_window_hours: parseInt(v, 10) || 0 })} step="1" />
+          <Field label="Min Age (min)" testid="scanner-min-age-input"
+                 value={local.scanner_min_age_minutes}
+                 onChange={(v) => setLocal({ ...local, scanner_min_age_minutes: parseInt(v, 10) || 0 })} step="15" />
           <Field label="Scan every (s)" testid="scanner-interval-input"
                  value={local.scanner_interval_s}
                  onChange={(v) => setLocal({ ...local, scanner_interval_s: parseInt(v, 10) || 0 })} step="5" />

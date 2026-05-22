@@ -84,8 +84,10 @@ class MomentumScanner:
         now = time.time()
         out: list[dict] = []
         max_age = cfg.scanner_window_hours * 3600
+        min_age = cfg.scanner_min_age_minutes * 60
         for mint, b in st.tracking.items():
-            if (now - b["start"]) > max_age:
+            age = now - b["start"]
+            if age > max_age:
                 continue
             if mint in st.entered_mints or mint in st.active_trades:
                 continue
@@ -94,8 +96,11 @@ class MomentumScanner:
             m["symbol"] = b.get("symbol")
             m["name"] = b.get("name")
             m["launch_id"] = b.get("launch_id")
+            m["seasoned"] = age >= min_age
+            m["discovered"] = bool(b.get("discovered"))
             m["passes"] = (
-                m["growth_pct"] >= cfg.scanner_min_growth_pct
+                m["seasoned"]
+                and m["growth_pct"] >= cfg.scanner_min_growth_pct
                 and m["recent_inflow_sol"] >= cfg.scanner_min_recent_inflow_sol
                 and m["new_buyers_recent"] >= cfg.scanner_min_new_buyers
             )
@@ -126,12 +131,17 @@ class MomentumScanner:
 
                 now = time.time()
                 max_age = cfg.scanner_window_hours * 3600
+                min_age = cfg.scanner_min_age_minutes * 60
                 cooldown = 60.0  # don't re-attempt the same mint within 60s
 
                 # Pre-rank candidates using CACHED metrics (no RPC).
                 scored = []
                 for mint, b in st.tracking.items():
-                    if (now - b["start"]) > max_age:
+                    age = now - b["start"]
+                    if age > max_age:
+                        continue
+                    if age < min_age:
+                        # Seasoning gate: too fresh — sniper's turf, scanner stays out
                         continue
                     if mint in st.entered_mints or mint in st.active_trades:
                         continue
