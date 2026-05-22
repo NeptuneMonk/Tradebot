@@ -138,8 +138,8 @@ class BotState:
 
     async def _enter(self, launch: Launch):
         sol_price = await get_sol_usd_price()
-        # Choose trade size (clamped to max)
-        trade_usd = min(self.config.max_trade_usd, max(self.config.min_trade_usd, self.config.min_trade_usd))
+        # Trade size: use the configured max (capped server-side at $5)
+        trade_usd = max(self.config.min_trade_usd, self.config.max_trade_usd)
         trade_sol = trade_usd / sol_price if sol_price > 0 else 0
         sol_in_lamports = int(trade_sol * LAMPORTS_PER_SOL)
         if sol_in_lamports <= 0:
