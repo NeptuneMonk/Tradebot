@@ -125,6 +125,9 @@ async def update_config(cfg: BotConfig):
         cfg.reentry_max_attempts = 0
     if cfg.reentry_max_attempts > 5:
         cfg.reentry_max_attempts = 5
+    cfg.reentry_pullback_pct = max(0.0, min(95.0, cfg.reentry_pullback_pct))
+    cfg.reentry_window_seconds = max(10, min(3600, cfg.reentry_window_seconds))
+    cfg.reentry_size_multiplier = max(0.0, min(1.0, cfg.reentry_size_multiplier))
     bot_state.config = cfg
     await bot_state.save_config()
     return cfg

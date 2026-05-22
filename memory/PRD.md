@@ -102,3 +102,36 @@ For learning and experimentation only — no deployment outside preview.
 - P2: Trending leaderboard
 - P3: Jito bundle support
 - P3: DDG retry with backoff + add additional social sources that survive cloud-IP throttling
+
+## Update — 2026-02-22 (v4: Withdraw + Re-entry on winners)
+
+### Withdraw (Send-to)
+- ✅ `POST /api/wallet/send {to, amount_sol}` — real on-chain SOL transfer signed by bot wallet
+- ✅ Validates: pubkey format, positive amount, sufficient balance (with ~0.005 SOL fee buffer), self-send rejection
+- ✅ Maps validation errors to HTTP 400 (not 500)
+- ✅ Frontend: `Send` button on Wallet card opens `WithdrawDialog` modal with address input, amount, MAX button, explicit "I verified destination" confirmation checkbox
+- ✅ Broadcasts updated wallet balance via WS after successful submission
+
+### Re-entry on winners
+- ✅ After every profitable exit (where curve hasn't graduated), the mint is added to `bot_state.reentry_watch`
+- ✅ Background `_reentry_watcher` task scans every 2s — tracks peak price post-exit, fires re-entry when current price has pulled back ≥ `reentry_pullback_pct` (default 25%) from the peak
+- ✅ Re-entry size = `max(min_trade_usd, max_trade_usd * reentry_size_multiplier)` (default 50% of normal size — smaller bet for the second swing)
+- ✅ Capped by `reentry_max_attempts` per mint (default 2); expires after `reentry_window_seconds` (default 300s)
+- ✅ Reuses existing buy/sell IX builders and monitor loop — same TP/SL/timeout rules apply to the re-entry trade
+- ✅ Respects kill switch and `bot.enabled` flag
+- ✅ Server-side clamps: `reentry_max_attempts ∈ [0,5]`, `pullback_pct ∈ [0,95]`, `window_s ∈ [10,3600]`, `size_multiplier ∈ [0,1]`
+- ✅ UI: new "Re-entry Watch" card showing each entry with countdown, attempts/max, original P/L; manual remove button
+- ✅ WS events: `reentry_watch_add`, `reentry_watch_remove`, `reentry_attempted`
+- ✅ Re-entry config inputs in BotControlCard
+
+### Testing
+- v4: 16/16 pass (`test_pump_bot_v4.py`)
+- Overall: 62/63 (98.4%) — single failure is pre-existing DDG-202 flakiness from v2
+
+### Remaining backlog
+- P2: Telegram alerts on launches/trades
+- P2: "What-if" P/L on skipped launches
+- P2: Creator watchlist UI (blacklist top-rugging creators)
+- P3: Jito bundle support
+- P3: DDG retry/backoff + add resilient social sources
+- P3: Per-trade idempotency lock on /api/wallet/send (prevent double-submit)
