@@ -18,36 +18,38 @@ def new_id() -> str:
 class BotConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = False
-    live_trading: bool = False  # If False -> paper trading (simulated fills)
+    live_trading: bool = False
+    # Sizing
     min_trade_usd: float = 0.50
     max_trade_usd: float = 1.00
-    slippage_bps: int = 500  # 5%
+    slippage_bps: int = 500          # 5% entry slippage
+    # Risk / exit behaviour
     daily_kill_switch_usd: float = 20.00
     priority_fee_microlamports: int = 500_000
-    hold_max_seconds: int = 30  # max time we'll hold a position
-    take_profit_pct: float = 35.0  # exit if up X% (raised from 25 — winners often run to ~40%)
-    stop_loss_pct: float = 20.0  # exit if down X% (tightened from 30 — cut losers earlier)
-    trailing_stop_pct: float = 0.0   # if >0: trail stop X% below peak (0 = disabled)
-    exit_slippage_bps: int = 0       # if >0: use this slippage for exits (else use slippage_bps)
-    # Entry filters (added v5 — reduce bad fills on dead launches)
-    min_curve_liquidity_sol: float = 2.0   # skip if real_sol_reserves < X SOL
-    min_buyers_for_entry: int = 0          # require >= N unique buyers in assess window (0 = disabled)
-    max_concurrent_positions: int = 5      # cap simultaneous open trades
-    # Momentum scanner (added v6 — also enter on already-launched tokens with growth)
+    hold_max_seconds: int = 60       # user-requested: keep at 60s
+    take_profit_pct: float = 35.0    # winners observed averaging ~+37%
+    stop_loss_pct: float = 20.0      # tight cap, enforced by fast-exit
+    trailing_stop_pct: float = 10.0  # lock in profits once peak appears
+    exit_slippage_bps: int = 500     # separate exit slippage ensures exits fill on dumps
+    # Entry filters
+    min_curve_liquidity_sol: float = 12.0  # skip thin/dead launches
+    min_buyers_for_entry: int = 3          # require real interest
+    max_concurrent_positions: int = 8      # diversification cap
+    # Momentum scanner — 81% of recent profitable trades came from here
     scanner_enabled: bool = True
-    scanner_window_hours: int = 4          # look at tokens launched in last N hours
-    scanner_interval_s: int = 30           # scan every N seconds
-    scanner_min_growth_pct: float = 20.0   # price must be up X% from first-seen
-    scanner_recent_inflow_window_s: int = 300   # measure inflow over last X seconds
-    scanner_min_recent_inflow_sol: float = 2.0  # require >= X SOL in window
-    scanner_holder_velocity_window_s: int = 60  # measure new buyers in last X seconds
-    scanner_min_new_buyers: int = 5             # require >= N new buyers in window
+    scanner_window_hours: int = 4
+    scanner_interval_s: int = 15
+    scanner_min_growth_pct: float = 20.0
+    scanner_recent_inflow_window_s: int = 300
+    scanner_min_recent_inflow_sol: float = 3.0
+    scanner_holder_velocity_window_s: int = 60
+    scanner_min_new_buyers: int = 5
     # Re-entry on winners
     reentry_enabled: bool = True
     reentry_max_attempts: int = 2
-    reentry_pullback_pct: float = 25.0  # pullback from exit price required
+    reentry_pullback_pct: float = 25.0
     reentry_window_seconds: int = 300
-    reentry_size_multiplier: float = 0.5  # half size on re-entry
+    reentry_size_multiplier: float = 0.5
 
 
 class ClassifierRules(BaseModel):

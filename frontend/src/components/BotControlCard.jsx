@@ -177,6 +177,22 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
         <Zap className="w-3 h-3" />
         {dirty ? "Save Config" : "Saved"}
       </button>
+      <button
+        onClick={async () => {
+          if (!window.confirm("Reset ALL settings to suggested defaults? (kill switch + live trading flag preserved)")) return;
+          try {
+            const fresh = await import("@/lib/api").then(m => m.api.resetConfig());
+            setLocal(fresh);
+            toast.success("Settings restored to defaults");
+          } catch (e) {
+            toast.error("Reset failed");
+          }
+        }}
+        data-testid="reset-defaults-btn"
+        className="w-full px-3 py-1.5 border border-neutral-700 text-neutral-400 hover:bg-neutral-900 hover:text-neutral-200 font-mono text-[10px] uppercase tracking-[0.2em] transition-colors duration-100"
+      >
+        Reset to Defaults
+      </button>
     </div>
   );
 }

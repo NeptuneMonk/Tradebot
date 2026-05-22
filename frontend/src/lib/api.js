@@ -25,4 +25,5 @@ export const api = {
   removeReentry: (mint) => client.delete(`/reentry/watchlist/${mint}`).then(r => r.data),
   scannerCandidates: () => client.get("/scanner/candidates").then(r => r.data),
   paperReset: () => client.post("/paper/reset").then(r => r.data),
+  resetConfig: () => client.post("/bot/reset-config").then(r => r.data),
 };

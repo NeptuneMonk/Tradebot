@@ -171,6 +171,23 @@ async def reset_kill_switch():
     return {"ok": True, "kill_switch_tripped": False}
 
 
+@api.post("/bot/reset-config")
+async def reset_config_to_defaults():
+    """Reset all bot config fields to coded defaults (preserves enabled + live_trading)."""
+    keep_enabled = bot_state.config.enabled
+    keep_live = bot_state.config.live_trading
+    new_cfg = BotConfig()
+    new_cfg.enabled = keep_enabled
+    new_cfg.live_trading = keep_live
+    bot_state.config = new_cfg
+    await bot_state.save_config()
+    try:
+        await hub.broadcast("status", (await bot_status()).model_dump())
+    except Exception:
+        pass
+    return new_cfg
+
+
 @api.post("/paper/reset")
 async def paper_reset():
     """Clear paper-mode trade history + reset daily P&L / kill-switch tracking.
