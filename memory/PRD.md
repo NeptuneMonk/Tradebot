@@ -72,3 +72,33 @@ For learning and experimentation only — no deployment outside preview.
 - P2: Track tokens we DIDN'T enter — historical "what-if" P/L
 - P2: Optional Telegram alerts
 - P3: Jito bundle support
+
+## Update — 2026-02-22 (v3: P1 backlog complete)
+
+### WebSocket push (replaces 3s polling)
+- ✅ `/app/backend/ws_hub.py` — singleton `WSHub` with connect/disconnect/broadcast
+- ✅ `app.websocket("/api/ws")` accepts connections, sends initial status snapshot, periodic 3s status+wallet ticks via background broadcaster
+- ✅ Backend emits typed events: `status`, `wallet`, `launch`, `launch_update`, `trade_enter`, `trade_update`, `trade_exit`
+- ✅ Frontend `useWebSocket` hook with exponential reconnect (max 10s); polling drops to 20s as fallback only
+- ✅ Header shows live "WS LIVE" indicator
+- Verified end-to-end: launch_update events flowing in real-time from live mainnet
+
+### Creator-wallet rug history
+- ✅ `/app/backend/creator_history.py` — Mongo `creators` collection grows from observed Create events
+- ✅ Helius enhanced-transactions backfill (`/v0/addresses/{addr}/transactions`) — confirmed working: a sample creator returned `backfill_ok=true, prior_pump_txs=11, prior_distinct_mints=2`
+- ✅ Outcome marking: when a tracking window ends (60s), check bonding curve state → `graduated` (state.complete) / `failed` (real_sol_reserves<0.5 and inflow<1 SOL) / leave as `active`
+- ✅ `tokens_failed` count feeds into classifier as `creator_rugs` → existing rug threshold rule triggers `abort_trade`
+- ✅ UI: launch rows now show creator badge `Nc·Ng·Nf` (created/graduated/failed) with color tier (red if failed, amber if 3+ created, etc.)
+- ✅ `GET /api/creators/{addr}` returns full creator stats including backfill
+
+### Testing
+- v3: 19/19 pass (`test_pump_bot_v3.py`)
+- Regression: 27/28 pass (1 flaky pre-existing DDG-202 test, not v3-related)
+- Overall: 46/47 (97.9%)
+
+### Remaining backlog
+- P2: Track skipped launches' "what-if" P/L
+- P2: Telegram alerts
+- P2: Trending leaderboard
+- P3: Jito bundle support
+- P3: DDG retry with backoff + add additional social sources that survive cloud-IP throttling
