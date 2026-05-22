@@ -58,7 +58,6 @@ export default function ScannerCandidatesCard({ candidates, config }) {
 function CandidateRow({ c, passing }) {
   const growth = c.growth_pct ?? 0;
   const growthCls = growth >= 0 ? "text-emerald-400" : "text-red-400";
-  const seasoned = c.seasoned !== false; // default true for legacy responses
   const discovered = c.discovered === true;
   return (
     <li
@@ -71,11 +70,10 @@ function CandidateRow({ c, passing }) {
             <span className="font-mono font-semibold text-sm truncate">{c.symbol || "?"}</span>
             <span className="text-[10px] font-mono text-neutral-500 truncate">{c.name || ""}</span>
             <span
-              className={`text-[10px] font-mono ${seasoned ? "text-neutral-600" : "text-amber-500"}`}
+              className="text-[10px] font-mono text-neutral-600"
               data-testid={`scanner-row-age-${c.mint}`}
-              title={seasoned ? "Past min age" : "Below min age — scanner won't enter yet"}
             >
-              {fmtAge(c.age_s)} old{seasoned ? "" : " · raw"}
+              {fmtAge(c.age_s)} old
             </span>
             {discovered && (
               <span

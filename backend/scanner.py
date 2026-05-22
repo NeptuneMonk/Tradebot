@@ -98,9 +98,12 @@ class MomentumScanner:
             m["launch_id"] = b.get("launch_id")
             m["seasoned"] = age >= min_age
             m["discovered"] = bool(b.get("discovered"))
+            # Pre-seasoning tokens belong to the sniper (Recent Launches feed),
+            # not the momentum scanner — skip them from this view entirely.
+            if not m["seasoned"]:
+                continue
             m["passes"] = (
-                m["seasoned"]
-                and m["growth_pct"] >= cfg.scanner_min_growth_pct
+                m["growth_pct"] >= cfg.scanner_min_growth_pct
                 and m["recent_inflow_sol"] >= cfg.scanner_min_recent_inflow_sol
                 and m["new_buyers_recent"] >= cfg.scanner_min_new_buyers
             )
