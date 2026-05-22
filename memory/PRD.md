@@ -135,3 +135,47 @@ For learning and experimentation only — no deployment outside preview.
 - P3: Jito bundle support
 - P3: DDG retry/backoff + add resilient social sources
 - P3: Per-trade idempotency lock on /api/wallet/send (prevent double-submit)
+
+## Update — 2026-02-22 (v5/v6: Entry filters + Momentum Scanner)
+
+### Paper-trading review (50 closed trades observed)
+- Bot auto-exits very actively: 19x stop-loss, 14x classifier abort, 10x take-profit, 3x timeout (+39 manual)
+- Win rate 24%, winners avg +40%, losers avg -36% → roughly symmetric, net negative
+- Bot was accumulating up to 35 simultaneous positions (no portfolio cap)
+
+### Entry Filters (v5)
+- ✅ `min_curve_liquidity_sol` (default 2.0) — skips entry if curve's real_sol_reserves < X SOL
+- ✅ `min_buyers_for_entry` (default 0 = disabled) — require N unique buyers in 3s window
+- ✅ `max_concurrent_positions` (default 5) — portfolio cap, prevents pile-up
+- ✅ Applied to both fresh-launch entries and re-entries
+- ✅ Server-side clamps + new UI section "Entry Filters" in BotControlCard
+- ✅ Tightened defaults for new installs: TP 35% / SL 20% (was 25/30)
+
+### Momentum Scanner (v6)
+- ✅ Background `_scanner_loop` runs every `scanner_interval_s` (default 30s)
+- ✅ Looks at tokens launched within `scanner_window_hours` (default 4) that bot hasn't entered yet
+- ✅ Three gates must all pass: `growth_pct >= scanner_min_growth_pct` (price up from first-seen), `recent_inflow_sol >= scanner_min_recent_inflow_sol` over `scanner_recent_inflow_window_s` (default 2 SOL/5min), `new_buyers_recent >= scanner_min_new_buyers` over `scanner_holder_velocity_window_s` (default 5 buyers/1min)
+- ✅ Honors all existing safety: kill switch, max_concurrent_positions, min_curve_liquidity_sol
+- ✅ Ranks candidates and enters the highest-scoring one each pass
+- ✅ Per-mint cooldown (60s) prevents thrashing
+- ✅ Tracking dict extended from 60s → 4h with `buy_events` deque(maxlen=500) for windowed metrics
+- ✅ Memory cap `MAX_TRACKED_MINTS=500`
+- ✅ `GET /api/scanner/candidates` returns ranked list w/ live metrics (growth %, inflow, new buyers, real_sol estimate from cached vsr — no RPC in snapshot)
+- ✅ WS event `scanner_attempt` fires on entry
+- ✅ New UI card "Momentum Scanner" shows passing + watching candidates with live tickers
+- ✅ Config inputs in BotControlCard
+
+### Live evidence
+- Scanner produced "PEN +284% / 82 SOL liquidity" and "LORI +72% / 58 new buyers/1m / 12 SOL liquidity" as PASSING candidates within 50s of restart
+
+### Testing
+- v5: 22/22 pass (`test_pump_bot_v5.py`)
+- Regression: 63/63 prior tests pass (DDG was responsive this run too)
+- Overall: **85/85 (100%)** — first 100% run
+
+### Remaining backlog
+- P2: Real RPC-backed curve state cache (currently real_sol estimated from cached vsr) for the snapshot
+- P2: Telegram alerts (launches/trades/scanner attempts)
+- P2: Creator watchlist UI (one-click blacklist top ruggers)
+- P3: Jito bundle support
+- P3: Per-trade idempotency lock on /api/wallet/send

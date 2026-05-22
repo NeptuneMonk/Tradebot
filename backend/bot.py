@@ -296,6 +296,7 @@ class BotState:
             if bucket["first_seen_price_sol"] <= 0:
                 bucket["first_seen_price_sol"] = cur_price
             bucket["last_price_sol"] = cur_price
+            bucket["last_vsr_lamports"] = vsr  # for real-SOL estimate in scanner snapshot
             bucket["curve_fill_pct"] = min(
                 100.0, max(0.0, (vsr - 30_000_000_000) / (85_000_000_000) * 100)
             )
@@ -353,9 +354,14 @@ class BotState:
                         await mark_outcome(self.db, b["creator"], "failed")
             except Exception as e:
                 logger.debug(f"outcome check failed for {mint}: {e}")
-        # Schedule final removal at SCANNER_TRACK_HOURS so the scanner can still see this mint
+        # Schedule final removal at cfg.scanner_window_hours (honors live config)
         async def _final_drop():
-            await asyncio.sleep(SCANNER_TRACK_HOURS * 3600 - TRACK_DURATION_S)
+            try:
+                window_h = max(1, int(self.config.scanner_window_hours))
+            except Exception:
+                window_h = SCANNER_TRACK_HOURS
+            remaining = max(0, window_h * 3600 - TRACK_DURATION_S)
+            await asyncio.sleep(remaining)
             self.tracking.pop(mint, None)
         asyncio.create_task(_final_drop())
 
@@ -390,7 +396,10 @@ class BotState:
             "recent_inflow_sol": recent_inflow_lamports / LAMPORTS_PER_SOL,
             "new_buyers_recent": len(recent_buyers_set),
             "unique_buyers_total": len(b.get("buyers", set())),
-            "real_sol_reserves": (state["real_sol_reserves"] / LAMPORTS_PER_SOL) if state else 0.0,
+            "real_sol_reserves": (
+                (state["real_sol_reserves"] / LAMPORTS_PER_SOL) if state
+                else max(0.0, (b.get("last_vsr_lamports", 0) - 30_000_000_000) / LAMPORTS_PER_SOL)
+            ),
             "curve_complete": bool(state["complete"]) if state else False,
         }
 
@@ -508,7 +517,7 @@ class BotState:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.debug(f"scanner loop error: {e}")
+                logger.warning(f"scanner loop error: {e}")
 
     # ---------- Entry decision ----------
     async def _assess_and_enter(self, launch: Launch, creator_rugs: int = 0):
