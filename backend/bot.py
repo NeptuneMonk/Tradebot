@@ -1,10 +1,10 @@
 """
 Bot orchestrator:
 - Holds BotConfig & ClassifierRules state (persisted in Mongo)
-- Receives new launches from the listener
-- Decides to enter (paper or live)
-- Tracks active positions & exits based on classifier + take-profit/stop-loss/timeout
-- Enforces daily kill-switch
+- Receives new launches + trade events from the listener
+- Tracks per-mint mempool metrics (unique buyers, SOL inflow) for first ~60s
+- Computes a "social trending" score for the token name (no X API)
+- Decides entry after a small assessment delay; monitors held positions for exit
 """
 import asyncio
 import logging
@@ -13,13 +13,18 @@ from datetime import datetime, timezone, timedelta
 
 from solders.pubkey import Pubkey
 
-from models import BotConfig, ClassifierRules, Launch, Trade, now_utc, new_id
+from models import BotConfig, ClassifierRules, Launch, Trade, now_utc
 from classifier import classify
 import pumpfun
 from solana_client import get_sol_usd_price, LAMPORTS_PER_SOL
 from wallet import get_keypair, get_pubkey
+from social import score_term
 
 logger = logging.getLogger("bot")
+
+ASSESS_DELAY_S = 3.0          # wait this long after launch before deciding entry
+TRACK_DURATION_S = 60.0       # how long to keep collecting metrics after launch
+PERSIST_INTERVAL_S = 2.0      # how often to flush tracker metrics to DB
 
 
 class BotState:
@@ -27,12 +32,13 @@ class BotState:
         self.db = db
         self.config = BotConfig()
         self.rules = ClassifierRules()
-        self.active_trades: dict[str, dict] = {}  # mint -> trade dict + runtime
-        self.recent_launches: list[dict] = []  # capped in memory
+        self.active_trades: dict[str, dict] = {}
+        self.recent_launches: list[dict] = []
         self.kill_switch_tripped = False
         self.listener_connected = False
-        self._daily_pnl_cache_date = None
-        self._monitor_task: asyncio.Task | None = None
+        # mint -> {launch_id, start, buyers:set, sol_inflow_lamports, buy_count,
+        #          curve_fill_pct, social_score, social_sources, last_persist}
+        self.tracking: dict[str, dict] = {}
 
     async def load(self):
         cfg = await self.db.bot_config.find_one({"_id": "current"}, {"_id": 0})
@@ -41,9 +47,8 @@ class BotState:
         rules = await self.db.classifier_rules.find_one({"_id": "current"}, {"_id": 0})
         if rules:
             self.rules = ClassifierRules(**rules)
-        # Reload active trades from DB
         async for t in self.db.trades.find({"status": "active"}, {"_id": 0}):
-            self.active_trades[t["mint"]] = {"trade": t, "metrics": _new_metrics()}
+            self.active_trades[t["mint"]] = {"trade": t}
 
     async def save_config(self):
         await self.db.bot_config.update_one(
@@ -81,8 +86,9 @@ class BotState:
             return True
         return False
 
+    # ---------- Listener handlers ----------
     async def on_launch(self, launch_data: dict):
-        """Called by listener for every new Pump.fun launch."""
+        """New Pump.fun token created."""
         launch = Launch(
             mint=launch_data["mint"],
             creator=launch_data["creator"],
@@ -91,67 +97,158 @@ class BotState:
             symbol=launch_data.get("symbol"),
             signature=launch_data.get("signature"),
         )
-
-        # Initial classification with no metrics yet (we'll re-check after window)
+        # Initial baseline classification (no metrics yet)
         verdict = classify(
-            {
-                "curve_fill_pct": 0,
-                "elapsed_s": 0,
-                "unique_buyers": 0,
-                "sol_inflow": 0,
-                "creator_rugs": 0,
-            },
+            {"curve_fill_pct": 0, "elapsed_s": 0, "unique_buyers": 0,
+             "sol_inflow": 0, "creator_rugs": 0, "social_score": 0},
             self.rules.model_dump(),
         )
         launch.classifier_action = verdict["action"]
         launch.classifier_risk = verdict["risk"]
         launch.classifier_reasons = verdict["reasons"]
 
-        # Persist launch
         doc = launch.model_dump()
         doc["detected_at"] = doc["detected_at"].isoformat()
         await self.db.launches.insert_one({**doc, "_id": launch.id})
-        # Cache in memory (capped)
         self.recent_launches.insert(0, doc)
         self.recent_launches = self.recent_launches[:50]
 
-        # Should we attempt entry?
-        if not self.config.enabled:
-            return
-        if self.kill_switch_tripped:
-            return
-        if await self.check_kill_switch():
-            return
-        if launch.mint in self.active_trades:
-            return
-        if verdict["action"] == "abort_trade":
-            return
+        # Start in-memory metric tracker for this mint
+        self.tracking[launch.mint] = {
+            "launch_id": launch.id,
+            "start": time.time(),
+            "buyers": set(),
+            "sol_inflow_lamports": 0,
+            "buy_count": 0,
+            "curve_fill_pct": 0.0,
+            "social_score": 0,
+            "social_sources": {},
+            "last_persist": 0.0,
+            "name": launch.name,
+            "symbol": launch.symbol,
+        }
 
-        # Spawn entry+monitor coroutine
-        asyncio.create_task(self._enter_and_monitor(launch))
+        # Async tasks: social score + assess-then-enter + tracker cleanup
+        asyncio.create_task(self._compute_social(launch.mint))
+        asyncio.create_task(self._assess_and_enter(launch))
+        asyncio.create_task(self._tracker_cleanup(launch.mint))
 
-    async def _enter_and_monitor(self, launch: Launch):
+    async def on_trade(self, trade_data: dict):
+        """A buy/sell event was observed on Pump.fun."""
+        mint = trade_data["mint"]
+        bucket = self.tracking.get(mint)
+        if not bucket:
+            return  # not tracking this mint
+        if trade_data.get("is_buy"):
+            bucket["buyers"].add(trade_data["user"])
+            bucket["sol_inflow_lamports"] += int(trade_data.get("sol_amount", 0))
+            bucket["buy_count"] += 1
+        # Update virtual-reserve-derived fill % if event includes it
+        vsr = trade_data.get("virtual_sol_reserves", 0)
+        if vsr:
+            # Pump.fun graduates around 85 SOL total raise (~30 real SOL in real_sol_reserves;
+            # using vsr - initial_vsr as a proxy)
+            bucket["curve_fill_pct"] = min(
+                100.0, max(0.0, (vsr - 30_000_000_000) / (85_000_000_000) * 100)
+            )
+
+        # Throttled persistence
+        now = time.time()
+        if now - bucket.get("last_persist", 0) >= PERSIST_INTERVAL_S:
+            bucket["last_persist"] = now
+            await self._persist_metrics(mint)
+
+    async def _persist_metrics(self, mint: str):
+        b = self.tracking.get(mint)
+        if not b:
+            return
+        update = {
+            "unique_buyers": len(b["buyers"]),
+            "sol_inflow": b["sol_inflow_lamports"] / LAMPORTS_PER_SOL,
+            "buy_count": b["buy_count"],
+            "curve_fill_pct": b["curve_fill_pct"],
+            "social_score": b["social_score"],
+            "social_sources": b["social_sources"],
+        }
+        await self.db.launches.update_one({"_id": b["launch_id"]}, {"$set": update})
+        # Also reflect in memory
+        for r in self.recent_launches:
+            if r.get("id") == b["launch_id"]:
+                r.update(update)
+                break
+
+    async def _compute_social(self, mint: str):
+        b = self.tracking.get(mint)
+        if not b:
+            return
         try:
-            await self._enter(launch)
+            res = await score_term(b.get("name"), b.get("symbol"))
+            b["social_score"] = int(res.get("score", 0))
+            b["social_sources"] = res.get("sources", {})
+            await self._persist_metrics(mint)
         except Exception as e:
-            logger.exception(f"entry failed for {launch.mint}: {e}")
+            logger.debug(f"social score failed for {mint}: {e}")
 
-    async def _enter(self, launch: Launch):
+    async def _tracker_cleanup(self, mint: str):
+        await asyncio.sleep(TRACK_DURATION_S)
+        await self._persist_metrics(mint)
+        self.tracking.pop(mint, None)
+
+    # ---------- Entry decision ----------
+    async def _assess_and_enter(self, launch: Launch):
+        try:
+            await asyncio.sleep(ASSESS_DELAY_S)
+            b = self.tracking.get(launch.mint, {})
+            metrics = {
+                "elapsed_s": time.time() - b.get("start", time.time()),
+                "curve_fill_pct": b.get("curve_fill_pct", 0.0),
+                "unique_buyers": len(b.get("buyers", set())),
+                "sol_inflow": b.get("sol_inflow_lamports", 0) / LAMPORTS_PER_SOL,
+                "creator_rugs": 0,
+                "social_score": b.get("social_score", 0),
+            }
+            verdict = classify(metrics, self.rules.model_dump())
+            # Update launch verdict in DB
+            await self.db.launches.update_one(
+                {"_id": launch.id},
+                {"$set": {
+                    "classifier_action": verdict["action"],
+                    "classifier_risk": verdict["risk"],
+                    "classifier_reasons": verdict["reasons"],
+                }},
+            )
+            for r in self.recent_launches:
+                if r.get("id") == launch.id:
+                    r["classifier_action"] = verdict["action"]
+                    r["classifier_risk"] = verdict["risk"]
+                    r["classifier_reasons"] = verdict["reasons"]
+                    break
+
+            if not self.config.enabled or self.kill_switch_tripped:
+                return
+            if await self.check_kill_switch():
+                return
+            if launch.mint in self.active_trades:
+                return
+            if verdict["action"] == "abort_trade":
+                return
+
+            await self._enter(launch, verdict["risk"], verdict["action"])
+        except Exception as e:
+            logger.exception(f"assess_and_enter failed for {launch.mint}: {e}")
+
+    # ---------- Entry / exit (live + paper) ----------
+    async def _enter(self, launch: Launch, risk_score: int, action: str):
         sol_price = await get_sol_usd_price()
-        # Trade size: use the configured max (capped server-side at $5)
         trade_usd = max(self.config.min_trade_usd, self.config.max_trade_usd)
         trade_sol = trade_usd / sol_price if sol_price > 0 else 0
         sol_in_lamports = int(trade_sol * LAMPORTS_PER_SOL)
         if sol_in_lamports <= 0:
             return
 
-        # Fetch bonding curve state
         state = await pumpfun.fetch_bonding_curve_state(launch.mint)
-        if not state:
-            logger.warning(f"No curve state for {launch.mint}, skipping")
+        if not state or state["complete"]:
             return
-        if state["complete"]:
-            return  # already graduated
 
         tokens_out, max_sol = pumpfun.quote_buy_tokens(
             state, sol_in_lamports, self.config.slippage_bps
@@ -159,7 +256,7 @@ class BotState:
         if tokens_out <= 0:
             return
 
-        entry_price_sol = sol_in_lamports / tokens_out / LAMPORTS_PER_SOL  # SOL per token
+        entry_price_sol = sol_in_lamports / tokens_out / LAMPORTS_PER_SOL
         mode = "live" if self.config.live_trading else "paper"
 
         trade = Trade(
@@ -172,8 +269,8 @@ class BotState:
             entry_usd=trade_sol * sol_price,
             entry_tokens=tokens_out,
             entry_price_sol=entry_price_sol,
-            risk_score=launch.classifier_risk or 50,
-            classifier_action=launch.classifier_action,
+            risk_score=risk_score,
+            classifier_action=action,
         )
 
         if mode == "live":
@@ -197,11 +294,14 @@ class BotState:
                 return
 
         await self._persist_trade(trade)
-        self.active_trades[launch.mint] = {
-            "trade": trade.model_dump(),
-            "metrics": _new_metrics(),
-            "launch": launch.model_dump(),
-        }
+        # Mark launch as entered
+        await self.db.launches.update_one({"_id": launch.id}, {"$set": {"entered": True}})
+        for r in self.recent_launches:
+            if r.get("id") == launch.id:
+                r["entered"] = True
+                break
+
+        self.active_trades[launch.mint] = {"trade": trade.model_dump(), "launch": launch.model_dump()}
         asyncio.create_task(self._monitor_position(launch.mint))
 
     async def _persist_trade(self, trade: Trade):
@@ -214,12 +314,10 @@ class BotState:
         )
 
     async def _monitor_position(self, mint: str):
-        """Poll bonding curve, re-classify periodically, exit when conditions met."""
         slot = self.active_trades.get(mint)
         if not slot:
             return
         trade_doc = slot["trade"]
-        metrics = slot["metrics"]
         start = time.time()
         max_hold = self.config.hold_max_seconds
         last_classify = 0.0
@@ -239,7 +337,6 @@ class BotState:
                     await self._exit(mint, reason="bonding curve completed (LP about to deploy)")
                     return
 
-                # Estimate current price = vSOL/vTOK (lamports per token base unit)
                 cur_price_sol = state["virtual_sol_reserves"] / state["virtual_token_reserves"] / LAMPORTS_PER_SOL
                 pct_change = (cur_price_sol - trade_doc["entry_price_sol"]) / max(trade_doc["entry_price_sol"], 1e-18) * 100
 
@@ -250,14 +347,17 @@ class BotState:
                     await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%)")
                     return
 
-                # Update metrics window
-                metrics["elapsed_s"] = elapsed
-                # Curve fill % = real_sol_reserves / 85 SOL (Pump.fun graduates at ~85 SOL)
-                metrics["curve_fill_pct"] = (state["real_sol_reserves"] / LAMPORTS_PER_SOL) / 85.0 * 100
-
-                # Re-classify every 2s
                 if time.time() - last_classify > 2.0:
                     last_classify = time.time()
+                    b = self.tracking.get(mint, {})
+                    metrics = {
+                        "elapsed_s": elapsed + ASSESS_DELAY_S,
+                        "curve_fill_pct": b.get("curve_fill_pct", 0.0),
+                        "unique_buyers": len(b.get("buyers", set())),
+                        "sol_inflow": b.get("sol_inflow_lamports", 0) / LAMPORTS_PER_SOL,
+                        "creator_rugs": 0,
+                        "social_score": b.get("social_score", 0),
+                    }
                     verdict = classify(metrics, self.rules.model_dump())
                     trade_doc["risk_score"] = verdict["risk"]
                     if verdict["action"] == "abort_trade":
@@ -281,7 +381,6 @@ class BotState:
         sol_price = await get_sol_usd_price()
         state = await pumpfun.fetch_bonding_curve_state(mint)
         if not state:
-            # Can't quote; mark as failed exit
             trade_doc["status"] = "closed"
             trade_doc["exit_reason"] = f"{reason} | curve state unavailable"
             trade_doc["exit_time"] = now_utc().isoformat()
@@ -330,15 +429,4 @@ class BotState:
         await self.db.trades.update_one(
             {"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
         )
-        # Trigger kill switch check
         await self.check_kill_switch()
-
-
-def _new_metrics() -> dict:
-    return {
-        "curve_fill_pct": 0.0,
-        "elapsed_s": 0.0,
-        "unique_buyers": 0,
-        "sol_inflow": 0.0,
-        "creator_rugs": 0,
-    }

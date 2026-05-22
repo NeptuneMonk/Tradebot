@@ -38,6 +38,8 @@ class ClassifierRules(BaseModel):
     low_inflow_sol: float = 0.5
     low_inflow_window_s: int = 8
     creator_rug_threshold: int = 1
+    # Social trending threshold: abort entry if name's social_score < this value
+    social_score_min: int = 0  # 0 = disabled
 
 
 class Launch(BaseModel):
@@ -53,6 +55,15 @@ class Launch(BaseModel):
     classifier_risk: Optional[int] = None
     classifier_reasons: list[str] = []
     signature: Optional[str] = None  # tx that created it
+    # Live mempool metrics (updated for ~30s after detection)
+    unique_buyers: int = 0
+    sol_inflow: float = 0.0
+    buy_count: int = 0
+    curve_fill_pct: float = 0.0
+    # Social trending score (0..100)
+    social_score: int = 0
+    social_sources: dict = {}
+    entered: bool = False  # did the bot enter this trade?
 
 
 class Trade(BaseModel):

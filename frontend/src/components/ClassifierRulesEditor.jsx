@@ -44,6 +44,9 @@ export default function ClassifierRulesEditor({ rules, onSave }) {
         <Row label="Creator rug threshold" tooltip="If creator has ≥ X prior rugs → ABORT">
           <NumField testid="rule-rug-threshold" value={local.creator_rug_threshold} step="1" onChange={set("creator_rug_threshold")} />
         </Row>
+        <Row label="Min social score" tooltip="If token name's social trending score < this → ABORT entry. Set 0 to disable.">
+          <NumField testid="rule-social-min" value={local.social_score_min ?? 0} step="5" onChange={set("social_score_min")} />
+        </Row>
       </div>
       <button
         onClick={save}

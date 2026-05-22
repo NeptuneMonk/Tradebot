@@ -32,7 +32,7 @@ mongo_client = AsyncIOMotorClient(mongo_url)
 db = mongo_client[os.environ["DB_NAME"]]
 
 bot_state = BotState(db)
-listener = PumpFunListener(on_launch=bot_state.on_launch)
+listener = PumpFunListener(on_launch=bot_state.on_launch, on_trade=bot_state.on_trade)
 
 
 @asynccontextmanager

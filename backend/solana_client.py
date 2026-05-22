@@ -38,19 +38,26 @@ _sol_price_cache = {"price": 0.0, "ts": 0.0}
 
 
 async def get_sol_usd_price() -> float:
-    """Cached for 60s."""
+    """Cached for 60s. Tries Binance first (cloud-IP friendly), falls back to Coinbase, then CoinGecko."""
     now = asyncio.get_event_loop().time()
     if _sol_price_cache["price"] > 0 and now - _sol_price_cache["ts"] < 60:
         return _sol_price_cache["price"]
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            r = await client.get(
-                "https://api.coingecko.com/api/v3/simple/price",
-                params={"ids": "solana", "vs_currencies": "usd"},
-            )
-            price = float(r.json()["solana"]["usd"])
-            _sol_price_cache["price"] = price
-            _sol_price_cache["ts"] = now
-            return price
-    except Exception:
-        return _sol_price_cache["price"] or 150.0  # rough fallback
+    sources = [
+        ("binance", "https://api.binance.com/api/v3/ticker/price", {"symbol": "SOLUSDT"}, lambda d: float(d["price"])),
+        ("coinbase", "https://api.coinbase.com/v2/exchange-rates", {"currency": "SOL"}, lambda d: 1.0 / float(d["data"]["rates"]["USD"]) if False else float(d["data"]["rates"]["USD"])),
+        ("coingecko", "https://api.coingecko.com/api/v3/simple/price", {"ids": "solana", "vs_currencies": "usd"}, lambda d: float(d["solana"]["usd"])),
+    ]
+    for name, url, params, parser in sources:
+        try:
+            async with httpx.AsyncClient(timeout=6.0) as client:
+                r = await client.get(url, params=params)
+                if r.status_code != 200:
+                    continue
+                price = parser(r.json())
+                if price > 0:
+                    _sol_price_cache["price"] = price
+                    _sol_price_cache["ts"] = now
+                    return price
+        except Exception:
+            continue
+    return _sol_price_cache["price"] or 150.0

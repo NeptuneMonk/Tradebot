@@ -32,12 +32,14 @@ def classify(metrics: dict, rules: dict) -> dict:
       - unique_buyers: int
       - sol_inflow: float
       - creator_rugs: int (defaults 0 if unknown)
+      - social_score: int (0..100; optional)
     """
     elapsed = metrics.get("elapsed_s", 0)
     curve_pct = metrics.get("curve_fill_pct", 0)
     buyers = metrics.get("unique_buyers", 0)
     inflow = metrics.get("sol_inflow", 0)
     rugs = metrics.get("creator_rugs", 0)
+    social = metrics.get("social_score", 0)
 
     reasons: list[str] = []
     action: Action = "hold_briefly"
@@ -48,6 +50,14 @@ def classify(metrics: dict, rules: dict) -> dict:
         action = "abort_trade"
         risk = 95
         reasons.append(f"creator has {rugs} prior rugs")
+        return {"action": action, "risk": risk, "reasons": reasons}
+
+    # Social trending gate (only if rule enabled, i.e. > 0)
+    social_min = rules.get("social_score_min", 0)
+    if social_min and social < social_min:
+        action = "abort_trade"
+        risk = 85
+        reasons.append(f"social score {social} < min {social_min} (not trending)")
         return {"action": action, "risk": risk, "reasons": reasons}
 
     if elapsed >= rules["low_inflow_window_s"] and inflow < rules["low_inflow_sol"]:
@@ -78,9 +88,11 @@ def classify(metrics: dict, rules: dict) -> dict:
 
     # Default = hold briefly with neutral risk
     reasons.append("baseline rules — no strong signal")
-    # Adjust risk by inflow
+    # Adjust risk by inflow + social
     if inflow > 1.0:
         risk = max(20, risk - 15)
     elif inflow < 0.2:
         risk = min(85, risk + 15)
+    if social >= 50:
+        risk = max(15, risk - 10)
     return {"action": action, "risk": risk, "reasons": reasons}

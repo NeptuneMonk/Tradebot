@@ -1,4 +1,4 @@
-import { Radio } from "lucide-react";
+import { Radio, Users, Droplets, Flame } from "lucide-react";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const timeAgo = (iso) => {
@@ -20,7 +20,7 @@ export default function RecentLaunchesFeed({ launches }) {
           <span className="pulse-dot"></span> LIVE
         </div>
       </div>
-      <div className="overflow-y-auto max-h-[420px]" data-testid="launches-list">
+      <div className="overflow-y-auto max-h-[480px]" data-testid="launches-list">
         {launches.length === 0 && (
           <div className="text-center py-6 text-[10px] uppercase tracking-[0.2em] text-neutral-600">
             listening for launches…
@@ -36,11 +36,20 @@ export default function RecentLaunchesFeed({ launches }) {
                       {l.symbol || "?"}
                     </span>
                     <span className="text-[10px] font-mono text-neutral-500 truncate">{l.name || "Unknown"}</span>
+                    {l.entered && (
+                      <span className="text-[10px] font-mono px-1 py-0 border border-blue-700 text-blue-300 uppercase">ENT</span>
+                    )}
                   </div>
-                  <div className="text-[10px] font-mono text-neutral-500 mt-0.5">
-                    mint <span className="text-neutral-300">{short(l.mint)}</span>
-                    <span className="mx-1.5">·</span>
-                    creator <span className="text-neutral-300">{short(l.creator)}</span>
+                  <div className="text-[10px] font-mono text-neutral-500 mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                    <span>mint <span className="text-neutral-300">{short(l.mint)}</span></span>
+                    <span>·</span>
+                    <span>creator <span className="text-neutral-300">{short(l.creator)}</span></span>
+                  </div>
+                  <div className="mt-1.5 flex items-center gap-2 text-[10px] font-mono">
+                    <Stat icon={<Users className="w-3 h-3" />} value={l.unique_buyers ?? 0} label="buyers" data-testid={`launch-buyers-${l.mint}`} />
+                    <Stat icon={<Droplets className="w-3 h-3" />} value={(l.sol_inflow ?? 0).toFixed(2)} suffix="SOL" label="inflow" data-testid={`launch-inflow-${l.mint}`} />
+                    <Stat icon={<Flame className="w-3 h-3" />} value={(l.curve_fill_pct ?? 0).toFixed(0)} suffix="%" label="curve" data-testid={`launch-curve-${l.mint}`} />
+                    <SocialBadge score={l.social_score} sources={l.social_sources} mint={l.mint} />
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1 shrink-0">
@@ -53,6 +62,36 @@ export default function RecentLaunchesFeed({ launches }) {
         </ul>
       </div>
     </div>
+  );
+}
+
+function Stat({ icon, value, suffix, label, "data-testid": testid }) {
+  return (
+    <span data-testid={testid} className="inline-flex items-center gap-1 text-neutral-400" title={label}>
+      <span className="text-neutral-600">{icon}</span>
+      <span className="text-neutral-200">{value}</span>
+      {suffix && <span className="text-neutral-600">{suffix}</span>}
+    </span>
+  );
+}
+
+function SocialBadge({ score, sources, mint }) {
+  const s = score ?? 0;
+  let cls = "border-neutral-800 text-neutral-500";
+  if (s >= 60) cls = "border-emerald-700 text-emerald-300 bg-emerald-950/40";
+  else if (s >= 30) cls = "border-amber-700 text-amber-300 bg-amber-950/40";
+  const tooltip = sources
+    ? `Reddit hits (1h): ${sources.reddit_hour_hits ?? 0} · CoinGecko: ${sources.coingecko_match ? "yes" : "no"} · Wikipedia: ${sources.wikipedia_exists ? "yes" : "no"}`
+    : "Social trending score (Reddit + CoinGecko + Wikipedia)";
+  return (
+    <span
+      data-testid={`launch-social-${mint}`}
+      title={tooltip}
+      className={`inline-flex items-center gap-1 px-1.5 py-0.5 border text-[10px] uppercase ${cls}`}
+    >
+      <span className="font-bold">SOC</span>
+      <span>{s}</span>
+    </span>
   );
 }
 

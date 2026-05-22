@@ -1,12 +1,13 @@
 """
 Pump.fun mempool listener via Helius WSS logsSubscribe.
-Detects new token Create instructions and emits launch events.
+Detects Create + Trade events for Pump.fun and emits them.
 """
 import os
 import json
 import asyncio
 import base64
 import struct
+import hashlib
 import logging
 import websockets
 
@@ -17,23 +18,18 @@ logger = logging.getLogger("listener")
 WSS_URL = os.environ["HELIUS_WSS_URL"]
 
 
-def parse_create_event(data_b64: str) -> dict | None:
-    """
-    Parse the Anchor 'Program data:' payload emitted by Pump.fun create.
-    Anchor event layout for CreateEvent (best-effort, varies by version):
-      8  discriminator
-      ?  name (string: u32 len + bytes)
-      ?  symbol (string)
-      ?  uri (string)
-      32 mint
-      32 bonding_curve
-      32 user (creator)
-    We parse defensively; on any failure return None.
-    """
+def _anchor_event_disc(name: str) -> bytes:
+    return hashlib.sha256(f"event:{name}".encode()).digest()[:8]
+
+
+TRADE_EVENT_DISC = _anchor_event_disc("TradeEvent")
+CREATE_EVENT_DISC = _anchor_event_disc("CreateEvent")
+
+
+def parse_create_event(raw: bytes) -> dict | None:
+    """Anchor CreateEvent layout (best-effort)."""
     try:
-        raw = base64.b64decode(data_b64)
-        # Skip the 8-byte event discriminator
-        offset = 8
+        offset = 8  # event discriminator
 
         def read_str(buf, off):
             length = struct.unpack_from("<I", buf, off)[0]
@@ -48,7 +44,6 @@ def parse_create_event(data_b64: str) -> dict | None:
         offset += 32
         bonding_curve = raw[offset : offset + 32]
         offset += 32
-        # Optional fields — some versions have additional fields
         user = raw[offset : offset + 32] if len(raw) >= offset + 32 else b"\x00" * 32
 
         import base58
@@ -65,9 +60,41 @@ def parse_create_event(data_b64: str) -> dict | None:
         return None
 
 
+def parse_trade_event(raw: bytes) -> dict | None:
+    """Anchor TradeEvent layout (after 8-byte disc): mint(32) sol(u64) tok(u64) isBuy(1) user(32) ts(i64) vsr(u64) vtr(u64)."""
+    try:
+        if len(raw) < 8 + 105:
+            return None
+        offset = 8
+        mint = raw[offset : offset + 32]
+        offset += 32
+        sol_amount, tok_amount = struct.unpack_from("<QQ", raw, offset)
+        offset += 16
+        is_buy = bool(raw[offset])
+        offset += 1
+        user = raw[offset : offset + 32]
+        offset += 32
+        ts, vsr, vtr = struct.unpack_from("<qQQ", raw, offset)
+        import base58
+        return {
+            "mint": base58.b58encode(mint).decode("utf-8"),
+            "sol_amount": sol_amount,
+            "token_amount": tok_amount,
+            "is_buy": is_buy,
+            "user": base58.b58encode(user).decode("utf-8"),
+            "timestamp": ts,
+            "virtual_sol_reserves": vsr,
+            "virtual_token_reserves": vtr,
+        }
+    except Exception as e:
+        logger.debug(f"parse_trade_event failed: {e}")
+        return None
+
+
 class PumpFunListener:
-    def __init__(self, on_launch):
+    def __init__(self, on_launch, on_trade=None):
         self.on_launch = on_launch  # async callable(launch_dict)
+        self.on_trade = on_trade  # async callable(trade_dict) — optional
         self._task: asyncio.Task | None = None
         self._stop = False
         self.connected = False
@@ -126,34 +153,45 @@ class PumpFunListener:
         params = msg.get("params")
         if not params:
             return
-        result = params.get("result", {})
-        value = result.get("value", {})
+        value = params.get("result", {}).get("value", {})
         logs = value.get("logs", []) or []
         signature = value.get("signature")
-        err = value.get("err")
-        if err is not None:
+        if value.get("err") is not None:
             return
 
-        # Look for create instruction signature
         has_create = any("Instruction: Create" in l for l in logs)
-        if not has_create:
-            return
 
-        # Find Program data payload (next line after the Create)
-        launch_data = None
-        for i, line in enumerate(logs):
-            if line.startswith("Program data: "):
-                payload = line[len("Program data: ") :]
-                parsed = parse_create_event(payload)
+        # Walk all Program data payloads; classify by discriminator
+        for line in logs:
+            if not line.startswith("Program data: "):
+                continue
+            payload_b64 = line[len("Program data: ") :]
+            try:
+                raw_bytes = base64.b64decode(payload_b64)
+            except Exception:
+                continue
+            if len(raw_bytes) < 8:
+                continue
+            disc = raw_bytes[:8]
+
+            if disc == CREATE_EVENT_DISC or has_create:
+                parsed = parse_create_event(raw_bytes)
                 if parsed:
-                    launch_data = parsed
-                    break
+                    parsed["signature"] = signature
+                    try:
+                        await self.on_launch(parsed)
+                    except Exception as e:
+                        logger.exception(f"on_launch failed: {e}")
+                    # only one create per tx
+                    has_create = False
+                    continue
 
-        if not launch_data:
-            return
+            if disc == TRADE_EVENT_DISC and self.on_trade:
+                parsed = parse_trade_event(raw_bytes)
+                if parsed:
+                    parsed["signature"] = signature
+                    try:
+                        await self.on_trade(parsed)
+                    except Exception as e:
+                        logger.exception(f"on_trade failed: {e}")
 
-        launch_data["signature"] = signature
-        try:
-            await self.on_launch(launch_data)
-        except Exception as e:
-            logger.exception(f"on_launch handler failed: {e}")
