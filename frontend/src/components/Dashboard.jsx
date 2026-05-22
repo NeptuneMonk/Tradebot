@@ -140,7 +140,7 @@ export default function Dashboard() {
             onStart={async () => { await api.start(); refreshAll(); }}
             onStop={async () => { await api.stop(); refreshAll(); }}
           />
-          <PLSummaryCard pl={pl} />
+          <PLSummaryCard pl={pl} status={status} onReset={refreshAll} />
           <DailyLossMeter status={status} />
         </div>
 

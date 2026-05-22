@@ -1,7 +1,13 @@
+import { useState } from "react";
 import { LineChart, Line, ResponsiveContainer, Tooltip } from "recharts";
-import { TrendingUp, TrendingDown } from "lucide-react";
+import { TrendingUp, TrendingDown, RotateCcw } from "lucide-react";
+import { toast } from "sonner";
+import { api } from "@/lib/api";
 
-export default function PLSummaryCard({ pl }) {
+export default function PLSummaryCard({ pl, status, onReset }) {
+  const [confirming, setConfirming] = useState(false);
+  const [resetting, setResetting] = useState(false);
+
   const daily = pl?.daily_pnl_usd ?? 0;
   const cum = pl?.cumulative_usd ?? 0;
   const series = (pl?.series || []).map((d, i) => ({
@@ -10,12 +16,39 @@ export default function PLSummaryCard({ pl }) {
     pnl: d.pnl_usd,
   }));
   const positive = daily >= 0;
+  const liveMode = status?.live_trading;
+
+  const doReset = async () => {
+    setResetting(true);
+    try {
+      const res = await api.paperReset();
+      toast.success(`Cleared ${res.deleted_trades} paper trades · kill-switch reset`);
+      setConfirming(false);
+      onReset && onReset();
+    } catch (e) {
+      const msg = e?.response?.data?.detail || e.message || "reset failed";
+      toast.error(msg);
+    } finally {
+      setResetting(false);
+    }
+  };
 
   return (
     <div className="control-card flex flex-col gap-3" data-testid="pl-summary-card">
       <div className="flex items-center justify-between">
         <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">P/L Today</span>
-        {positive ? <TrendingUp className="w-3 h-3 text-emerald-500" /> : <TrendingDown className="w-3 h-3 text-red-500" />}
+        <div className="flex items-center gap-2">
+          {positive ? <TrendingUp className="w-3 h-3 text-emerald-500" /> : <TrendingDown className="w-3 h-3 text-red-500" />}
+          <button
+            onClick={() => setConfirming(true)}
+            disabled={liveMode}
+            title={liveMode ? "Disable LIVE mode first" : "Clear paper P&L and reset kill switch"}
+            data-testid="reset-paper-btn"
+            className="text-[10px] font-mono uppercase tracking-[0.15em] text-neutral-500 hover:text-amber-400 disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center gap-1"
+          >
+            <RotateCcw className="w-3 h-3" /> Reset
+          </button>
+        </div>
       </div>
       <div className={`text-3xl font-mono font-semibold ${positive ? "text-emerald-400" : "text-red-400"}`} data-testid="daily-pnl">
         {positive ? "+" : ""}${daily.toFixed(2)}
@@ -50,6 +83,46 @@ export default function PLSummaryCard({ pl }) {
           </div>
         )}
       </div>
+
+      {confirming && (
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" data-testid="reset-confirm-dialog">
+          <div className="w-full max-w-sm control-card">
+            <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-amber-400 mb-3">
+              <RotateCcw className="w-3 h-3" /> Reset Paper Mode
+            </div>
+            <p className="text-sm text-neutral-300 mb-2">
+              This will <span className="text-amber-400">delete all paper trade history</span> and reset:
+            </p>
+            <ul className="text-xs font-mono text-neutral-400 list-disc list-inside space-y-1 mb-4">
+              <li>Daily P/L → $0.00</li>
+              <li>Kill-switch percentage → 0%</li>
+              <li>Active paper positions → cleared</li>
+              <li>Re-entry watchlist → cleared</li>
+            </ul>
+            <p className="text-[11px] text-neutral-500 mb-4">
+              Launches & creator history are preserved (the scanner still works).
+              Live trades are <span className="text-emerald-400">never</span> touched.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setConfirming(false)}
+                data-testid="reset-cancel-btn"
+                className="flex-1 px-3 py-2 border border-neutral-700 text-neutral-300 hover:bg-neutral-900 font-mono text-xs uppercase tracking-[0.15em]"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={doReset}
+                disabled={resetting}
+                data-testid="reset-confirm-btn"
+                className="flex-1 px-3 py-2 border border-amber-700 text-amber-200 bg-amber-950 hover:bg-amber-900 font-mono text-xs uppercase tracking-[0.15em] disabled:opacity-40"
+              >
+                {resetting ? "Resetting…" : "Reset Now"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

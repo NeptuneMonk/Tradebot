@@ -167,6 +167,40 @@ async def reset_kill_switch():
     return {"ok": True, "kill_switch_tripped": False}
 
 
+@api.post("/paper/reset")
+async def paper_reset():
+    """Clear paper-mode trade history + reset daily P&L / kill-switch tracking.
+    Refuses while live trading is enabled (safety)."""
+    if bot_state.config.live_trading:
+        raise HTTPException(
+            400,
+            "Cannot reset while live trading is enabled. Disable LIVE first.",
+        )
+    # Drop in-memory active paper trades
+    paper_actives = [m for m, slot in list(bot_state.active_trades.items())
+                     if slot.get("trade", {}).get("mode") == "paper"]
+    for mint in paper_actives:
+        bot_state.active_trades.pop(mint, None)
+    # Drop paper re-entry watchlist entries (they reference cleared trades)
+    bot_state.reentry_watch.clear()
+    # Delete paper trades from DB (keep launches — they feed the scanner)
+    res = await db.trades.delete_many({"mode": "paper"})
+    # Reset kill switch
+    bot_state.kill_switch_tripped = False
+    # Push fresh state
+    try:
+        status = await bot_status()
+        await hub.broadcast("status", status.model_dump())
+        await hub.broadcast("paper_reset", {"deleted": res.deleted_count})
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "deleted_trades": res.deleted_count,
+        "closed_active_paper_trades": len(paper_actives),
+    }
+
+
 @api.get("/bot/status", response_model=BotStatus)
 async def bot_status():
     pnl = await bot_state.daily_pnl_usd()
