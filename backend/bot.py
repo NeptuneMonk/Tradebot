@@ -493,34 +493,59 @@ class BotState:
                 max_age = self.config.scanner_window_hours * 3600
                 cooldown = 60.0  # don't re-attempt the same mint within 60s
 
-                # Build candidate list (skip ineligible)
-                candidates = []
-                for mint, b in list(self.tracking.items()):
+                # Pre-rank candidates using CACHED metrics (no RPC).
+                # Only the top-N by momentum score get a real state fetch — this
+                # prevents wasting RPC budget on 0-liquidity fresh launches and
+                # avoids Helius 429s when many launches arrive at once.
+                scored = []
+                for mint, b in self.tracking.items():
                     if (now - b["start"]) > max_age:
                         continue
                     if mint in self.entered_mints or mint in self.active_trades:
                         continue
                     if (now - b.get("scanner_last_attempt", 0)) < cooldown:
                         continue
-                    # Only consider mints with at least some signal
                     if not b.get("buy_events"):
                         continue
-                    candidates.append((mint, b))
+                    m = self._scanner_score(b, None, now)
+                    # Apply all gates against cached data first (cheap)
+                    if m["growth_pct"] < self.config.scanner_min_growth_pct:
+                        continue
+                    if m["recent_inflow_sol"] < self.config.scanner_min_recent_inflow_sol:
+                        continue
+                    if m["new_buyers_recent"] < self.config.scanner_min_new_buyers:
+                        continue
+                    # Estimated liquidity from cached vsr (also no RPC)
+                    if m["real_sol_reserves"] < self.config.min_curve_liquidity_sol:
+                        continue
+                    score = (
+                        m["growth_pct"]
+                        + m["recent_inflow_sol"] * 5
+                        + m["new_buyers_recent"] * 2
+                    )
+                    scored.append((mint, b, m, score))
 
-                if not candidates:
+                if not scored:
                     continue
 
-                # Fetch curve state for top N candidates (sorted by recent activity)
-                candidates.sort(key=lambda mb: len(mb[1].get("buy_events", [])), reverse=True)
-                top = candidates[:20]
+                scored.sort(key=lambda x: x[3], reverse=True)
+                top = scored[:5]  # only fetch real state for the top-5 momentum candidates
 
-                best = None
-                for mint, b in top:
+                # Enter up to N candidates this pass (N = remaining portfolio capacity, max 3 per pass)
+                remaining = max(0, self.config.max_concurrent_positions - len(self.active_trades))
+                max_entries_this_pass = min(3, remaining)
+                entries_made = 0
+
+                for mint, b, cached_m, cached_score in top:
+                    if entries_made >= max_entries_this_pass:
+                        break
+                    if mint in self.active_trades or mint in self.entered_mints:
+                        continue
                     state = await pumpfun.fetch_bonding_curve_state(mint)
                     if not state or state["complete"]:
                         continue
                     m = self._scanner_score(b, state, now)
-                    # Apply gates
+                    # Re-verify gates against authoritative state
                     if m["real_sol_reserves"] < self.config.min_curve_liquidity_sol:
                         continue
                     if m["growth_pct"] < self.config.scanner_min_growth_pct:
@@ -529,36 +554,27 @@ class BotState:
                         continue
                     if m["new_buyers_recent"] < self.config.scanner_min_new_buyers:
                         continue
+
+                    synthetic = Launch(
+                        mint=mint,
+                        creator=b.get("creator") or "",
+                        bonding_curve="",
+                        name=b.get("name"),
+                        symbol=b.get("symbol"),
+                    )
+                    synthetic.id = b.get("launch_id") or synthetic.id
+                    synthetic.classifier_action = "scanner_momentum"
+                    b["scanner_last_attempt"] = now
                     score = m["growth_pct"] + m["recent_inflow_sol"] * 5 + m["new_buyers_recent"] * 2
-                    cand = {"mint": mint, "bucket": b, "metrics": m, "score": score}
-                    if best is None or score > best["score"]:
-                        best = cand
-
-                if not best:
-                    continue
-
-                # Build a Launch-like object to reuse _enter
-                b = best["bucket"]
-                synthetic = Launch(
-                    mint=best["mint"],
-                    creator=b.get("creator") or "",
-                    bonding_curve="",
-                    name=b.get("name"),
-                    symbol=b.get("symbol"),
-                )
-                synthetic.id = b.get("launch_id") or synthetic.id
-                synthetic.classifier_action = "scanner_momentum"
-                b["scanner_last_attempt"] = now
-                await hub.broadcast("scanner_attempt", {
-                    "mint": best["mint"],
-                    "symbol": b.get("symbol"),
-                    "metrics": best["metrics"],
-                    "score": best["score"],
-                })
-                try:
-                    await self._enter(synthetic, risk_score=40, action="scanner_momentum")
-                except Exception as e:
-                    logger.exception(f"scanner entry failed for {best['mint']}: {e}")
+                    await hub.broadcast("scanner_attempt", {
+                        "mint": mint, "symbol": b.get("symbol"),
+                        "metrics": m, "score": score,
+                    })
+                    try:
+                        await self._enter(synthetic, risk_score=40, action="scanner_momentum")
+                        entries_made += 1
+                    except Exception as e:
+                        logger.exception(f"scanner entry failed for {mint}: {e}")
             except asyncio.CancelledError:
                 raise
             except Exception as e:
