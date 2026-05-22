@@ -3,6 +3,7 @@ import { Copy, Wallet as WalletIcon, Check, Send } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { toast } from "sonner";
 import WithdrawDialog from "@/components/WithdrawDialog";
+import { copyToClipboard } from "@/lib/clipboard";
 
 export default function WalletCard({ wallet }) {
   const [copied, setCopied] = useState(false);
@@ -11,10 +12,14 @@ export default function WalletCard({ wallet }) {
 
   const copy = async () => {
     if (!wallet?.public_key) return;
-    await navigator.clipboard.writeText(wallet.public_key);
-    setCopied(true);
-    toast.success("Address copied");
-    setTimeout(() => setCopied(false), 1500);
+    const ok = await copyToClipboard(wallet.public_key);
+    if (ok) {
+      setCopied(true);
+      toast.success("Address copied");
+      setTimeout(() => setCopied(false), 1500);
+    } else {
+      toast.error("Clipboard blocked — long-press the address to select & copy manually");
+    }
   };
 
   return (
@@ -55,7 +60,18 @@ export default function WalletCard({ wallet }) {
       <div className="border-t border-neutral-800 pt-3">
         <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-500 mb-1">Deposit address</div>
         <div className="flex items-center gap-2">
-          <code className="text-[11px] font-mono text-neutral-300 break-all flex-1" data-testid="wallet-public-key">
+          <code
+            className="text-[11px] font-mono text-neutral-300 break-all flex-1 select-all cursor-text"
+            data-testid="wallet-public-key"
+            onClick={(e) => {
+              // Select all on tap/click for easy manual copy if needed
+              const range = document.createRange();
+              range.selectNodeContents(e.currentTarget);
+              const sel = window.getSelection();
+              sel.removeAllRanges();
+              sel.addRange(range);
+            }}
+          >
             {wallet?.public_key || "loading..."}
           </code>
           <button
