@@ -12,6 +12,8 @@ import TradeHistoryTable from "@/components/TradeHistoryTable";
 import ClassifierRulesEditor from "@/components/ClassifierRulesEditor";
 import ReentryWatchCard from "@/components/ReentryWatchCard";
 import ScannerCandidatesCard from "@/components/ScannerCandidatesCard";
+import SuggestionsCard from "@/components/SuggestionsCard";
+import PLBySourceCard from "@/components/PLBySourceCard";
 import { Activity } from "lucide-react";
 
 export default function Dashboard() {
@@ -25,6 +27,7 @@ export default function Dashboard() {
   const [pl, setPl] = useState({ series: [], daily_pnl_usd: 0, cumulative_usd: 0 });
   const [reentry, setReentry] = useState([]);
   const [scanner, setScanner] = useState([]);
+  const [plSourceRefresh, setPlSourceRefresh] = useState(0);
 
   // Initial full pull + slow polling fallback (every 20s)
   const refreshAll = useCallback(async () => {
@@ -87,6 +90,7 @@ export default function Dashboard() {
         setActiveTrades((prev) => prev.filter((t) => t.id !== data.id));
         setHistory((prev) => [data, ...prev]);
         api.plSummary(7).then(setPl).catch(() => {});
+        setPlSourceRefresh((n) => n + 1);
         // Refresh reentry watchlist (may have a new entry)
         api.reentryWatchlist().then(setReentry).catch(() => {});
         break;
@@ -151,7 +155,11 @@ export default function Dashboard() {
 
         <ReentryWatchCard watchlist={reentry} onRefresh={() => api.reentryWatchlist().then(setReentry).catch(() => {})} />
 
+        <PLBySourceCard refreshSignal={plSourceRefresh} />
+
         <ScannerCandidatesCard candidates={scanner} />
+
+        <SuggestionsCard onApplied={() => api.config().then(setConfig).catch(() => {})} />
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
           <TradeHistoryTable history={history} />

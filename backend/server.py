@@ -26,6 +26,8 @@ from solana_client import get_sol_balance, get_sol_usd_price
 from ws_hub import hub
 from creator_history import get_creator
 from wallet_send import send_sol
+from suggestions import generate_suggestions
+from pl_sources import compute_pl_by_source
 
 logging.basicConfig(
     level=logging.INFO,
@@ -316,6 +318,12 @@ async def pl_summary(days: int = 7):
     return {"series": rows, "daily_pnl_usd": today, "cumulative_usd": cum}
 
 
+# ---------- P/L by source (Sniper vs Scanner vs Reentry) ----------
+@api.get("/pl/by-source")
+async def pl_by_source(days: int = 7):
+    return await compute_pl_by_source(db, days)
+
+
 # ---------- Creator history ----------
 @api.get("/creators/{creator}")
 async def creator_info(creator: str):
@@ -355,7 +363,29 @@ async def reentry_remove(mint: str):
 # ---------- Scanner candidates ----------
 @api.get("/scanner/candidates")
 async def scanner_candidates():
-    return bot_state._scanner_candidates_snapshot()
+    return bot_state.scanner.candidates_snapshot()
+
+
+# ---------- Suggested settings intelligence ----------
+@api.get("/suggestions")
+async def get_suggestions():
+    return await generate_suggestions(db, bot_state.config)
+
+
+@api.post("/suggestions/apply")
+async def apply_suggestion(payload: dict):
+    """Apply a single suggestion: payload = {field, suggested}."""
+    field = payload.get("field")
+    val = payload.get("suggested")
+    if not field or val is None:
+        raise HTTPException(400, "missing field/suggested")
+    cfg = bot_state.config.model_dump()
+    if field not in cfg:
+        raise HTTPException(400, f"unknown field: {field}")
+    cfg[field] = val
+    new_cfg = BotConfig(**cfg)
+    # Reuse the clamps from update_config
+    return await update_config(new_cfg)
 
 
 # ---------- WebSocket push ----------

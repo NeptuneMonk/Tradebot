@@ -22,6 +22,7 @@ from wallet import get_keypair, get_pubkey
 from social import score_term
 from ws_hub import hub
 from creator_history import record_new_launch, mark_outcome, get_creator, derive_rug_count
+from scanner import MomentumScanner
 
 logger = logging.getLogger("bot")
 
@@ -48,6 +49,7 @@ class BotState:
         # Mints we have already entered (or attempted) so the scanner doesn't double-trade
         self.entered_mints: set[str] = set()
         self._scanner_task: asyncio.Task | None = None
+        self.scanner = MomentumScanner(self)
 
     async def load(self):
         cfg = await self.db.bot_config.find_one({"_id": "current"}, {"_id": 0})
@@ -63,7 +65,7 @@ class BotState:
             self._reentry_task = asyncio.create_task(self._reentry_watcher())
         # Start momentum scanner
         if self._scanner_task is None or self._scanner_task.done():
-            self._scanner_task = asyncio.create_task(self._scanner_loop())
+            self._scanner_task = asyncio.create_task(self.scanner.loop())
 
     async def save_config(self):
         await self.db.bot_config.update_one(
@@ -409,176 +411,6 @@ class BotState:
             await asyncio.sleep(remaining)
             self.tracking.pop(mint, None)
         asyncio.create_task(_final_drop())
-
-    # ---------- Momentum scanner ----------
-    def _scanner_score(self, b: dict, state: dict | None, now: float) -> dict:
-        """Compute live metrics for a tracked mint."""
-        age_s = now - b.get("start", now)
-        cur_price = 0.0
-        if state and state.get("virtual_token_reserves"):
-            cur_price = state["virtual_sol_reserves"] / state["virtual_token_reserves"] / LAMPORTS_PER_SOL
-        elif b.get("last_price_sol"):
-            cur_price = b["last_price_sol"]
-        first_price = b.get("first_seen_price_sol", 0.0) or cur_price
-        growth_pct = ((cur_price - first_price) / first_price * 100) if first_price > 0 else 0.0
-        # Windowed metrics
-        inflow_win = self.config.scanner_recent_inflow_window_s
-        velocity_win = self.config.scanner_holder_velocity_window_s
-        cutoff_inflow = now - inflow_win
-        cutoff_velocity = now - velocity_win
-        recent_inflow_lamports = 0
-        recent_buyers_set = set()
-        for ts, lamports, user in b.get("buy_events", ()):
-            if ts >= cutoff_inflow:
-                recent_inflow_lamports += lamports
-            if ts >= cutoff_velocity:
-                recent_buyers_set.add(user)
-        return {
-            "age_s": age_s,
-            "cur_price_sol": cur_price,
-            "first_price_sol": first_price,
-            "growth_pct": growth_pct,
-            "recent_inflow_sol": recent_inflow_lamports / LAMPORTS_PER_SOL,
-            "new_buyers_recent": len(recent_buyers_set),
-            "unique_buyers_total": len(b.get("buyers", set())),
-            "real_sol_reserves": (
-                (state["real_sol_reserves"] / LAMPORTS_PER_SOL) if state
-                else max(0.0, (b.get("last_vsr_lamports", 0) - 30_000_000_000) / LAMPORTS_PER_SOL)
-            ),
-            "curve_complete": bool(state["complete"]) if state else False,
-        }
-
-    def _scanner_candidates_snapshot(self) -> list[dict]:
-        """For the API: ranked candidates with current metrics (no RPC calls)."""
-        now = time.time()
-        out = []
-        max_age = self.config.scanner_window_hours * 3600
-        for mint, b in self.tracking.items():
-            if (now - b["start"]) > max_age:
-                continue
-            if mint in self.entered_mints or mint in self.active_trades:
-                continue
-            m = self._scanner_score(b, None, now)
-            m["mint"] = mint
-            m["symbol"] = b.get("symbol")
-            m["name"] = b.get("name")
-            m["launch_id"] = b.get("launch_id")
-            m["passes"] = (
-                m["growth_pct"] >= self.config.scanner_min_growth_pct
-                and m["recent_inflow_sol"] >= self.config.scanner_min_recent_inflow_sol
-                and m["new_buyers_recent"] >= self.config.scanner_min_new_buyers
-            )
-            out.append(m)
-        # Rank by growth then recent inflow
-        out.sort(key=lambda x: (x["passes"], x["growth_pct"], x["recent_inflow_sol"]), reverse=True)
-        return out[:50]
-
-    async def _scanner_loop(self):
-        """Background: every scanner_interval_s scan tracked mints for momentum
-        signal (growth + volume + new buyers) and attempt entry on the best."""
-        while True:
-            try:
-                interval = max(5, int(self.config.scanner_interval_s))
-                await asyncio.sleep(interval)
-                if not self.config.scanner_enabled:
-                    continue
-                if not self.config.enabled or self.kill_switch_tripped:
-                    continue
-                if len(self.active_trades) >= self.config.max_concurrent_positions:
-                    continue
-                if await self.check_kill_switch():
-                    continue
-
-                now = time.time()
-                max_age = self.config.scanner_window_hours * 3600
-                cooldown = 60.0  # don't re-attempt the same mint within 60s
-
-                # Pre-rank candidates using CACHED metrics (no RPC).
-                # Only the top-N by momentum score get a real state fetch — this
-                # prevents wasting RPC budget on 0-liquidity fresh launches and
-                # avoids Helius 429s when many launches arrive at once.
-                scored = []
-                for mint, b in self.tracking.items():
-                    if (now - b["start"]) > max_age:
-                        continue
-                    if mint in self.entered_mints or mint in self.active_trades:
-                        continue
-                    if (now - b.get("scanner_last_attempt", 0)) < cooldown:
-                        continue
-                    if not b.get("buy_events"):
-                        continue
-                    m = self._scanner_score(b, None, now)
-                    # Apply all gates against cached data first (cheap)
-                    if m["growth_pct"] < self.config.scanner_min_growth_pct:
-                        continue
-                    if m["recent_inflow_sol"] < self.config.scanner_min_recent_inflow_sol:
-                        continue
-                    if m["new_buyers_recent"] < self.config.scanner_min_new_buyers:
-                        continue
-                    # Estimated liquidity from cached vsr (also no RPC)
-                    if m["real_sol_reserves"] < self.config.min_curve_liquidity_sol:
-                        continue
-                    score = (
-                        m["growth_pct"]
-                        + m["recent_inflow_sol"] * 5
-                        + m["new_buyers_recent"] * 2
-                    )
-                    scored.append((mint, b, m, score))
-
-                if not scored:
-                    continue
-
-                scored.sort(key=lambda x: x[3], reverse=True)
-                top = scored[:5]  # only fetch real state for the top-5 momentum candidates
-
-                # Enter up to N candidates this pass (N = remaining portfolio capacity, max 3 per pass)
-                remaining = max(0, self.config.max_concurrent_positions - len(self.active_trades))
-                max_entries_this_pass = min(3, remaining)
-                entries_made = 0
-
-                for mint, b, cached_m, cached_score in top:
-                    if entries_made >= max_entries_this_pass:
-                        break
-                    if mint in self.active_trades or mint in self.entered_mints:
-                        continue
-                    state = await pumpfun.fetch_bonding_curve_state(mint)
-                    if not state or state["complete"]:
-                        continue
-                    m = self._scanner_score(b, state, now)
-                    # Re-verify gates against authoritative state
-                    if m["real_sol_reserves"] < self.config.min_curve_liquidity_sol:
-                        continue
-                    if m["growth_pct"] < self.config.scanner_min_growth_pct:
-                        continue
-                    if m["recent_inflow_sol"] < self.config.scanner_min_recent_inflow_sol:
-                        continue
-                    if m["new_buyers_recent"] < self.config.scanner_min_new_buyers:
-                        continue
-
-                    synthetic = Launch(
-                        mint=mint,
-                        creator=b.get("creator") or "",
-                        bonding_curve="",
-                        name=b.get("name"),
-                        symbol=b.get("symbol"),
-                    )
-                    synthetic.id = b.get("launch_id") or synthetic.id
-                    synthetic.classifier_action = "scanner_momentum"
-                    b["scanner_last_attempt"] = now
-                    score = m["growth_pct"] + m["recent_inflow_sol"] * 5 + m["new_buyers_recent"] * 2
-                    await hub.broadcast("scanner_attempt", {
-                        "mint": mint, "symbol": b.get("symbol"),
-                        "metrics": m, "score": score,
-                    })
-                    try:
-                        await self._enter(synthetic, risk_score=40, action="scanner_momentum")
-                        entries_made += 1
-                    except Exception as e:
-                        logger.exception(f"scanner entry failed for {mint}: {e}")
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning(f"scanner loop error: {e}")
 
     # ---------- Entry decision ----------
     async def _assess_and_enter(self, launch: Launch, creator_rugs: int = 0):

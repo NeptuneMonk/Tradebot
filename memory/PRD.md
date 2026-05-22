@@ -179,3 +179,30 @@ For learning and experimentation only — no deployment outside preview.
 - P2: Creator watchlist UI (one-click blacklist top ruggers)
 - P3: Jito bundle support
 - P3: Per-trade idempotency lock on /api/wallet/send
+
+
+## 2026-02-22 (continued) — Per-source P/L + Scanner refactor
+
+### Per-source P/L tracking (P1)
+- ✅ New module `backend/pl_sources.py` classifies each closed trade by `classifier_action`:
+  - `scanner_momentum` → **Momentum Scanner**
+  - `reentry` → **Winner Re-entry**
+  - everything else → **Launch Sniper**
+- ✅ New endpoint `GET /api/pl/by-source?days=N` returns trades / wins / losses / win-rate / pnl_usd / pnl_sol / avg_pnl_pct / best_pct / worst_pct per source + a `total` bucket
+- ✅ Frontend card `PLBySourceCard.jsx` with 1d / 7d / 30d toggles, live-refresh on `trade_exit` WS event, color-coded per source
+- ✅ Wired into Dashboard between ReentryWatch and ScannerCandidates
+- **Verified live**: Sniper +$1.66 (56% win, 16 trades) · Scanner +$0.85 (38% win, 61 trades) · Reentry -$0.01 (53% win, 15 trades) · Total +$2.50 / 92 trades / 43% win
+
+### Scanner refactor (code health)
+- ✅ Extracted `_scanner_loop`, `_scanner_score`, `_scanner_candidates_snapshot` from `bot.py` into new `backend/scanner.py`
+- ✅ New `MomentumScanner` class holds a reference to `BotState`; `bot.py` instantiates it once and starts `scanner.loop()` from `BotState.load()`
+- ✅ `bot.py` reduced from 858 → ~690 lines; momentum logic is now isolated and unit-testable
+- ✅ `GET /api/scanner/candidates` now delegates to `bot_state.scanner.candidates_snapshot()`
+- **Verified live**: 40 candidates rendered post-refactor (2 passing, 38 watching) with no regression in entries or Helius rate-limit behaviour
+
+### Remaining backlog
+- P2: Per-source P/L unit tests (currently end-to-end verified with live data only)
+- P2: Real RPC-backed curve state cache for the snapshot
+- P2: Telegram alerts
+- P2: Creator watchlist UI
+- P3: Jito bundle support

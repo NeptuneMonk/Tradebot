@@ -20,10 +20,13 @@ export const api = {
   tradeHistory: (limit = 100) => client.get(`/trades/history?limit=${limit}`).then(r => r.data),
   exitTrade: (id) => client.post(`/trades/${id}/exit`).then(r => r.data),
   plSummary: (days = 7) => client.get(`/pl/summary?days=${days}`).then(r => r.data),
+  plBySource: (days = 7) => client.get(`/pl/by-source?days=${days}`).then(r => r.data),
   sendSol: (to, amount_sol) => client.post("/wallet/send", { to, amount_sol }).then(r => r.data),
   reentryWatchlist: () => client.get("/reentry/watchlist").then(r => r.data),
   removeReentry: (mint) => client.delete(`/reentry/watchlist/${mint}`).then(r => r.data),
   scannerCandidates: () => client.get("/scanner/candidates").then(r => r.data),
   paperReset: () => client.post("/paper/reset").then(r => r.data),
   resetConfig: () => client.post("/bot/reset-config").then(r => r.data),
+  suggestions: () => client.get("/suggestions").then(r => r.data),
+  applySuggestion: (field, suggested) => client.post("/suggestions/apply", { field, suggested }).then(r => r.data),
 };
