@@ -98,6 +98,9 @@ class MomentumScanner:
             m["launch_id"] = b.get("launch_id")
             m["seasoned"] = age >= min_age
             m["discovered"] = bool(b.get("discovered"))
+            m["usd_market_cap"] = float(b.get("usd_market_cap") or 0.0)
+            last_trade_ms = b.get("last_trade_ms") or 0
+            m["last_trade_age_s"] = max(0.0, now - last_trade_ms / 1000.0) if last_trade_ms else None
             # Pre-seasoning tokens belong to the sniper (Recent Launches feed),
             # not the momentum scanner — skip them from this view entirely.
             if not m["seasoned"]:

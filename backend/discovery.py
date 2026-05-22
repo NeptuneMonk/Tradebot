@@ -75,6 +75,9 @@ class PumpfunDiscovery:
             return 0
 
         seeded = 0
+        skipped_idle = 0
+        max_idle_ms = cfg.scanner_discovery_max_idle_minutes * 60 * 1000
+        now_ms = now * 1000
         for c in coins:
             if seeded >= COINS_PER_CYCLE:
                 break
@@ -91,13 +94,18 @@ class PumpfunDiscovery:
             # Skip tokens whose curve has already completed (LP deployed)
             if c.get("complete"):
                 continue
+            # Freshness gate: skip tokens whose last trade is too stale
+            last_trade_ms = c.get("last_trade_timestamp") or 0
+            if max_idle_ms > 0 and (not last_trade_ms or now_ms - last_trade_ms > max_idle_ms):
+                skipped_idle += 1
+                continue
             try:
                 await self._seed_token(c, created_s)
                 seeded += 1
             except Exception as e:
                 logger.debug(f"seed failed for {mint}: {e}")
 
-        logger.info(f"discovery: {len(coins)} in band, seeded {seeded}")
+        logger.info(f"discovery: {len(coins)} in band, seeded {seeded}, skipped_idle {skipped_idle}")
         if seeded:
             await hub.broadcast("discovery", {"seeded": seeded, "ts": now})
         return seeded
@@ -152,6 +160,8 @@ class PumpfunDiscovery:
         vsr = int(coin.get("virtual_sol_reserves") or 0)
         vtr = int(coin.get("virtual_token_reserves") or 0)
         cur_price = (vsr / vtr / LAMPORTS_PER_SOL) if (vsr and vtr) else 0.0
+        usd_mc = float(coin.get("usd_market_cap") or 0.0)
+        last_trade_ms = int(coin.get("last_trade_timestamp") or 0)
 
         bucket = {
             "launch_id": f"disc-{mint[:8]}",
@@ -173,7 +183,9 @@ class PumpfunDiscovery:
             "last_vsr_lamports": vsr,
             "scanner_eligible": True,
             "scanner_last_attempt": 0.0,
-            "discovered": True,  # flag so UI / API can distinguish
+            "discovered": True,
+            "usd_market_cap": usd_mc,
+            "last_trade_ms": last_trade_ms,
         }
         st.tracking[mint] = bucket
         # Also push a synthetic launch into the recent feed so the UI shows it

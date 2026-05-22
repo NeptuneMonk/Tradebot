@@ -138,6 +138,9 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
           <Field label="Min new buyers" testid="scanner-buyers-input"
                  value={local.scanner_min_new_buyers}
                  onChange={(v) => setLocal({ ...local, scanner_min_new_buyers: parseInt(v, 10) || 0 })} step="1" />
+          <Field label="Max Idle (min)" testid="scanner-max-idle-input"
+                 value={local.scanner_discovery_max_idle_minutes}
+                 onChange={(v) => setLocal({ ...local, scanner_discovery_max_idle_minutes: parseInt(v, 10) || 0 })} step="1" />
         </div>
       </div>
 

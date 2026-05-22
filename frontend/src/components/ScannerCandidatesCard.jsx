@@ -6,6 +6,12 @@ const fmtAge = (s) => {
   if (s < 3600) return `${Math.floor(s / 60)}m`;
   return `${(s / 3600).toFixed(1)}h`;
 };
+const fmtUsd = (n) => {
+  const v = Number(n) || 0;
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
+  if (v >= 1_000) return `$${(v / 1_000).toFixed(1)}K`;
+  return `$${v.toFixed(0)}`;
+};
 
 export default function ScannerCandidatesCard({ candidates, config }) {
   const passing = candidates.filter((c) => c.passes);
@@ -97,6 +103,12 @@ function CandidateRow({ c, passing }) {
         <span>inflow(5m) <span className="text-neutral-200">{(c.recent_inflow_sol ?? 0).toFixed(2)}</span> SOL</span>
         <span>new buyers(1m) <span className="text-neutral-200">{c.new_buyers_recent ?? 0}</span></span>
         <span>total holders <span className="text-neutral-200">{c.unique_buyers_total ?? 0}</span></span>
+        {c.usd_market_cap > 0 && (
+          <span>MC <span className="text-neutral-200">{fmtUsd(c.usd_market_cap)}</span></span>
+        )}
+        {c.last_trade_age_s != null && (
+          <span>last trade <span className="text-neutral-200">{fmtAge(c.last_trade_age_s)} ago</span></span>
+        )}
       </div>
     </li>
   );

@@ -143,6 +143,7 @@ async def update_config(cfg: BotConfig):
     cfg.scanner_min_recent_inflow_sol = max(0.0, min(1000.0, cfg.scanner_min_recent_inflow_sol))
     cfg.scanner_holder_velocity_window_s = max(15, min(3600, cfg.scanner_holder_velocity_window_s))
     cfg.scanner_min_new_buyers = max(0, min(500, cfg.scanner_min_new_buyers))
+    cfg.scanner_discovery_max_idle_minutes = max(0, min(1440, cfg.scanner_discovery_max_idle_minutes))
     # Exit-behavior clamps
     cfg.trailing_stop_pct = max(0.0, min(95.0, cfg.trailing_stop_pct))
     if cfg.exit_slippage_bps != 0:

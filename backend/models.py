@@ -47,6 +47,9 @@ class BotConfig(BaseModel):
     scanner_min_recent_inflow_sol: float = 3.0
     scanner_holder_velocity_window_s: int = 60
     scanner_min_new_buyers: int = 5
+    # Discovery: only seed tokens whose last trade is fresher than this (minutes).
+    # Set 0 to disable the freshness gate.
+    scanner_discovery_max_idle_minutes: int = 5
     # Re-entry on winners
     reentry_enabled: bool = True
     reentry_max_attempts: int = 2
