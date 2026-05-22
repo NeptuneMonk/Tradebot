@@ -1,0 +1,39 @@
+{
+  "summary": "Iteration 5 backend testing for Pump.fun bot v5/v6 — two new features: (1) Entry filters (min_curve_liquidity_sol, min_buyers_for_entry, max_concurrent_positions) and (2) Momentum Scanner (scanner_enabled + 7 scanner_* tunables, /api/scanner/candidates endpoint). Wrote /app/backend/tests/test_pump_bot_v5.py with 22 tests across 6 classes — all 22 PASSED (100%). Coverage: (a) GET /api/bot/config exposes the 3 entry-filter fields with correct types; (b) GET /api/bot/config exposes the 8 scanner fields with correct types; (c) PUT /api/bot/config enforces all 9 declared clamps — min_curve_liquidity_sol [0..85], min_buyers_for_entry [0..100], max_concurrent_positions [1..50], scanner_window_hours [1..24], scanner_interval_s [5..600], scanner_min_growth_pct [0..10000], scanner_recent_inflow_window_s [30..3600], scanner_min_recent_inflow_sol [0..1000], scanner_holder_velocity_window_s [15..3600], scanner_min_new_buyers [0..500] (each verified at upper AND lower bound, with baseline restore in try/finally); (d) PUT /api/bot/config accepts scanner_enabled toggle (false->true) and the change persists across GET; (e) GET /api/scanner/candidates returns a list with all required fields {mint, symbol, name, launch_id, age_s, cur_price_sol, first_price_sol, growth_pct, recent_inflow_sol, new_buyers_recent, unique_buyers_total, real_sol_reserves, curve_complete, passes} and correct types; verified real_sol_reserves==0.0 since snapshot passes state=None (no RPC); (f) Non-blocking validation: 5 back-to-back rapid /api/scanner/candidates calls each return < 2s with no errors — confirms _scanner_candidates_snapshot() is synchronous (no await, no rpc_call inside the body — verified by static source inspection too); (g) Accumulation: within 75s the live Helius stream populated >=5 candidates (live observed 22 candidates including 'Grogu' with +124.9% growth_pct, 62.9 SOL recent_inflow_sol, 116 new_buyers_recent, passes=true) — momentum scanner is actively working; (h) MAX_TRACKED_MINTS=500 constant verified by source-grep (cannot import bot module in test process due to required HELIUS_RPC_URL env var); _scanner_candidates_snapshot() method body confirmed free of `await` and `rpc_call`. Regression: full suite (test_pump_bot_api.py + test_pump_bot_enhancements.py + test_pump_bot_v3.py + test_pump_bot_v4.py + test_pump_bot_v5.py) = 85/85 PASSED in 47.23s — INCLUDING the previously flaky TestSocialScoreAvailability::test_some_launch_has_nonzero_social_score (DDG was responsive this run). No regressions from v5/v6 changes. Bot is left in paper-mode with user's original config values restored after each clamp test.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_pump_bot_v5.py",
+    "/app/test_reports/pytest/pytest_v5.xml",
+    "/app/test_reports/pytest/pytest_v5_regression.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "bot.py L397-420 _scanner_candidates_snapshot — synchronous + no RPC as required; passes state=None so real_sol_reserves is always 0.0 in the API response. Consider snapshotting last-known state from a cached `self.curve_states` dict (if maintained by the listener) so the UI can show real liquidity without RPC. Currently the user has to guess whether the curve is shallow.",
+    "bot.py L401 max_age = scanner_window_hours * 3600 — correct retention window. Combined with MAX_TRACKED_MINTS=500 cap, a high-throughput launch period (>125 launches/hour over 4h) will silently evict the oldest tracked mints from the dict. Recommend logging at WARN when MAX_TRACKED_MINTS is hit, or scaling the cap.",
+    "bot.py L419 ranking sort key `(passes, growth_pct, recent_inflow_sol)` — passes bool acts as a tier, then growth, then inflow. Recommend tie-breaking on new_buyers_recent to favor broader buyer-base momentum over a single whale's inflow.",
+    "server.py L132-142 clamp block — clean and symmetric. Suggestion: factor into a single helper `_clamp(cfg, field, lo, hi)` to reduce repetition (10 lines -> 1 dispatch table) and to centrally log when a value was clamped (helps debugging UI-set values that silently get capped).",
+    "bot.py SCANNER_TRACK_HOURS=4 module constant duplicates the runtime cfg `scanner_window_hours` (also default 4). If the user raises cfg.scanner_window_hours to 24 via PUT /api/bot/config, the launch handler's final-removal schedule (asyncio.sleep at SCANNER_TRACK_HOURS*3600) still expires at 4h — so a 24h scanner window will still lose entries at 4h. Recommend sourcing the removal delay from cfg.scanner_window_hours at scheduling time.",
+    "bot.py — _scanner_loop catches exceptions but logs at DEBUG (L511 'logger.debug(f\"scanner loop error: ...\")') — promote to WARN/ERROR so silent scanner failures are visible in /var/log/supervisor/backend.*.log. Otherwise a single bug could disable the entire feature without anyone noticing.",
+    "/api/scanner/candidates returns up to 50 items unconditionally — consider supporting ?limit and ?only_passing query params; the UI may want to render all 50 ranked entries but a JSON consumer may want only `passes=true`.",
+    "models.py BotConfig.scanner_min_growth_pct default 20.0 + scanner_min_new_buyers default 5 + scanner_min_recent_inflow_sol default 2.0 — fairly permissive; in the live snapshot most of the 22 observed candidates were already 'passes=true'. Tune defaults upward (e.g. growth 30%, 8 new buyers) to reduce noise on entry, OR document that the user is expected to tighten via UI."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pump_bot_v5.py (new — 22 tests, 6 classes)"
+  ],
+  "success_rate": {
+    "backend_v5_new": "100% (22/22)",
+    "backend_regression_v5": "100% (63/63 prior tests)",
+    "backend_overall": "100% (85/85)",
+    "frontend": "not tested (backend-only request)"
+  },
+  "test_credentials": "n/a (no auth)",
+  "seed_data_creation": "None persisted. All PUT /api/bot/config clamp/toggle tests mutate config but restore the captured baseline in try/finally. Net config delta after suite = none. The user's `scanner_enabled=true, max_concurrent_positions=10, kill_switch=50` values are intact. Did NOT touch live_trading.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "v5/v6 features fully verified. Re-run safe: `REACT_APP_BACKEND_URL=https://micro-stake-trader.preview.emergentagent.com pytest /app/backend/tests/test_pump_bot_v5.py -v` (~24s; accumulation test waits up to 75s, exits early once >=5 candidates seen). Full regression: `pytest /app/backend/tests/ -v` (~47s, 85 tests). Scanner is producing live candidates (22 visible at test time including 'Grogu' +124% growth). real_sol_reserves is always 0.0 in /api/scanner/candidates because the snapshot passes state=None to _scanner_score — this is a documented design choice (no RPC in snapshot); main agent could later wire in a cached state dict if the UI needs liquidity. MAX_TRACKED_MINTS=500 and _scanner_candidates_snapshot existence verified via source-grep because backend bot.py needs HELIUS_RPC_URL at import time which pytest doesn't have — but the running supervisor process has it, so the endpoint and live-stream tests cover the runtime behavior fully.",
+  "rca of the issue": "n/a — no v5/v6 issues found. All clamps, exposure, persistence, shape, non-blocking, and accumulation contracts met."
+}

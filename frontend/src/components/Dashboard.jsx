@@ -11,6 +11,7 @@ import RecentLaunchesFeed from "@/components/RecentLaunchesFeed";
 import TradeHistoryTable from "@/components/TradeHistoryTable";
 import ClassifierRulesEditor from "@/components/ClassifierRulesEditor";
 import ReentryWatchCard from "@/components/ReentryWatchCard";
+import ScannerCandidatesCard from "@/components/ScannerCandidatesCard";
 import { Activity } from "lucide-react";
 
 export default function Dashboard() {
@@ -23,11 +24,12 @@ export default function Dashboard() {
   const [history, setHistory] = useState([]);
   const [pl, setPl] = useState({ series: [], daily_pnl_usd: 0, cumulative_usd: 0 });
   const [reentry, setReentry] = useState([]);
+  const [scanner, setScanner] = useState([]);
 
   // Initial full pull + slow polling fallback (every 20s)
   const refreshAll = useCallback(async () => {
     try {
-      const [w, s, c, r, l, a, h, p, re] = await Promise.all([
+      const [w, s, c, r, l, a, h, p, re, sc] = await Promise.all([
         api.wallet().catch(() => null),
         api.status().catch(() => null),
         api.config().catch(() => null),
@@ -37,6 +39,7 @@ export default function Dashboard() {
         api.tradeHistory(50).catch(() => []),
         api.plSummary(7).catch(() => ({ series: [], daily_pnl_usd: 0, cumulative_usd: 0 })),
         api.reentryWatchlist().catch(() => []),
+        api.scannerCandidates().catch(() => []),
       ]);
       if (w) setWallet(w);
       if (s) setStatus(s);
@@ -47,6 +50,7 @@ export default function Dashboard() {
       setHistory(h || []);
       setPl(p);
       setReentry(re || []);
+      setScanner(sc || []);
     } catch (e) { /* swallow */ }
   }, []);
 
@@ -146,6 +150,8 @@ export default function Dashboard() {
         </div>
 
         <ReentryWatchCard watchlist={reentry} onRefresh={() => api.reentryWatchlist().then(setReentry).catch(() => {})} />
+
+        <ScannerCandidatesCard candidates={scanner} />
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
           <TradeHistoryTable history={history} />

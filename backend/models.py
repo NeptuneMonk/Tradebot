@@ -31,6 +31,15 @@ class BotConfig(BaseModel):
     min_curve_liquidity_sol: float = 2.0   # skip if real_sol_reserves < X SOL
     min_buyers_for_entry: int = 0          # require >= N unique buyers in assess window (0 = disabled)
     max_concurrent_positions: int = 5      # cap simultaneous open trades
+    # Momentum scanner (added v6 — also enter on already-launched tokens with growth)
+    scanner_enabled: bool = True
+    scanner_window_hours: int = 4          # look at tokens launched in last N hours
+    scanner_interval_s: int = 30           # scan every N seconds
+    scanner_min_growth_pct: float = 20.0   # price must be up X% from first-seen
+    scanner_recent_inflow_window_s: int = 300   # measure inflow over last X seconds
+    scanner_min_recent_inflow_sol: float = 2.0  # require >= X SOL in window
+    scanner_holder_velocity_window_s: int = 60  # measure new buyers in last X seconds
+    scanner_min_new_buyers: int = 5             # require >= N new buyers in window
     # Re-entry on winners
     reentry_enabled: bool = True
     reentry_max_attempts: int = 2

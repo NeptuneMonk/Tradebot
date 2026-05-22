@@ -9,6 +9,7 @@ Bot orchestrator:
 import asyncio
 import logging
 import time
+from collections import deque
 from datetime import datetime, timezone, timedelta
 
 from solders.pubkey import Pubkey
@@ -25,8 +26,10 @@ from creator_history import record_new_launch, mark_outcome, get_creator, derive
 logger = logging.getLogger("bot")
 
 ASSESS_DELAY_S = 3.0          # wait this long after launch before deciding entry
-TRACK_DURATION_S = 60.0       # how long to keep collecting metrics after launch
+TRACK_DURATION_S = 60.0       # short-window heavy tracking (for fresh-launch classifier)
+SCANNER_TRACK_HOURS = 4       # how long we keep light tracking for the scanner
 PERSIST_INTERVAL_S = 2.0      # how often to flush tracker metrics to DB
+MAX_TRACKED_MINTS = 500       # cap memory
 
 
 class BotState:
@@ -42,6 +45,9 @@ class BotState:
         # Re-entry watchlist: mint -> {exit_price_sol, exit_time, attempts, ...}
         self.reentry_watch: dict[str, dict] = {}
         self._reentry_task: asyncio.Task | None = None
+        # Mints we have already entered (or attempted) so the scanner doesn't double-trade
+        self.entered_mints: set[str] = set()
+        self._scanner_task: asyncio.Task | None = None
 
     async def load(self):
         cfg = await self.db.bot_config.find_one({"_id": "current"}, {"_id": 0})
@@ -55,6 +61,9 @@ class BotState:
         # Start re-entry watcher
         if self._reentry_task is None or self._reentry_task.done():
             self._reentry_task = asyncio.create_task(self._reentry_watcher())
+        # Start momentum scanner
+        if self._scanner_task is None or self._scanner_task.done():
+            self._scanner_task = asyncio.create_task(self._scanner_loop())
 
     async def save_config(self):
         await self.db.bot_config.update_one(
@@ -243,6 +252,7 @@ class BotState:
             "creator": launch.creator,
             "start": time.time(),
             "buyers": set(),
+            "buy_events": deque(maxlen=500),  # (ts, sol_lamports, user)
             "sol_inflow_lamports": 0,
             "buy_count": 0,
             "curve_fill_pct": 0.0,
@@ -252,7 +262,15 @@ class BotState:
             "name": launch.name,
             "symbol": launch.symbol,
             "creator_rugs": creator_rugs,
+            "first_seen_price_sol": 0.0,  # filled on first TradeEvent / curve fetch
+            "last_price_sol": 0.0,
+            "scanner_eligible": True,
+            "scanner_last_attempt": 0.0,
         }
+        # LRU-style cap: drop oldest if over the limit
+        if len(self.tracking) > MAX_TRACKED_MINTS:
+            oldest = min(self.tracking.items(), key=lambda kv: kv[1]["start"])[0]
+            self.tracking.pop(oldest, None)
 
         asyncio.create_task(self._compute_social(launch.mint))
         asyncio.create_task(self._assess_and_enter(launch, creator_rugs))
@@ -263,22 +281,25 @@ class BotState:
         mint = trade_data["mint"]
         bucket = self.tracking.get(mint)
         if not bucket:
-            return  # not tracking this mint
+            return
+        now = time.time()
         if trade_data.get("is_buy"):
             bucket["buyers"].add(trade_data["user"])
             bucket["sol_inflow_lamports"] += int(trade_data.get("sol_amount", 0))
             bucket["buy_count"] += 1
-        # Update virtual-reserve-derived fill % if event includes it
+            bucket["buy_events"].append((now, int(trade_data.get("sol_amount", 0)), trade_data["user"]))
+        # Track price via virtual reserves
         vsr = trade_data.get("virtual_sol_reserves", 0)
-        if vsr:
-            # Pump.fun graduates around 85 SOL total raise (~30 real SOL in real_sol_reserves;
-            # using vsr - initial_vsr as a proxy)
+        vtr = trade_data.get("virtual_token_reserves", 0)
+        if vsr and vtr:
+            cur_price = vsr / vtr / LAMPORTS_PER_SOL
+            if bucket["first_seen_price_sol"] <= 0:
+                bucket["first_seen_price_sol"] = cur_price
+            bucket["last_price_sol"] = cur_price
             bucket["curve_fill_pct"] = min(
                 100.0, max(0.0, (vsr - 30_000_000_000) / (85_000_000_000) * 100)
             )
 
-        # Throttled persistence
-        now = time.time()
         if now - bucket.get("last_persist", 0) >= PERSIST_INTERVAL_S:
             bucket["last_persist"] = now
             await self._persist_metrics(mint)
@@ -317,9 +338,9 @@ class BotState:
 
     async def _tracker_cleanup(self, mint: str):
         await asyncio.sleep(TRACK_DURATION_S)
-        # Final metric flush
+        # Final metric flush for the heavy-tracking window
         await self._persist_metrics(mint)
-        # Determine outcome and update creator history
+        # Determine launch outcome at the 60s mark (good signal vs the 4h scanner window)
         b = self.tracking.get(mint)
         if b:
             try:
@@ -329,12 +350,165 @@ class BotState:
                     if state["complete"]:
                         await mark_outcome(self.db, b["creator"], "graduated")
                     elif real_sol < 0.5 and b["sol_inflow_lamports"] / LAMPORTS_PER_SOL < 1.0:
-                        # Abandoned: very little real SOL accumulated
                         await mark_outcome(self.db, b["creator"], "failed")
-                    # else: still active — leave counter as-is
             except Exception as e:
                 logger.debug(f"outcome check failed for {mint}: {e}")
-        self.tracking.pop(mint, None)
+        # Schedule final removal at SCANNER_TRACK_HOURS so the scanner can still see this mint
+        async def _final_drop():
+            await asyncio.sleep(SCANNER_TRACK_HOURS * 3600 - TRACK_DURATION_S)
+            self.tracking.pop(mint, None)
+        asyncio.create_task(_final_drop())
+
+    # ---------- Momentum scanner ----------
+    def _scanner_score(self, b: dict, state: dict | None, now: float) -> dict:
+        """Compute live metrics for a tracked mint."""
+        age_s = now - b.get("start", now)
+        cur_price = 0.0
+        if state and state.get("virtual_token_reserves"):
+            cur_price = state["virtual_sol_reserves"] / state["virtual_token_reserves"] / LAMPORTS_PER_SOL
+        elif b.get("last_price_sol"):
+            cur_price = b["last_price_sol"]
+        first_price = b.get("first_seen_price_sol", 0.0) or cur_price
+        growth_pct = ((cur_price - first_price) / first_price * 100) if first_price > 0 else 0.0
+        # Windowed metrics
+        inflow_win = self.config.scanner_recent_inflow_window_s
+        velocity_win = self.config.scanner_holder_velocity_window_s
+        cutoff_inflow = now - inflow_win
+        cutoff_velocity = now - velocity_win
+        recent_inflow_lamports = 0
+        recent_buyers_set = set()
+        for ts, lamports, user in b.get("buy_events", ()):
+            if ts >= cutoff_inflow:
+                recent_inflow_lamports += lamports
+            if ts >= cutoff_velocity:
+                recent_buyers_set.add(user)
+        return {
+            "age_s": age_s,
+            "cur_price_sol": cur_price,
+            "first_price_sol": first_price,
+            "growth_pct": growth_pct,
+            "recent_inflow_sol": recent_inflow_lamports / LAMPORTS_PER_SOL,
+            "new_buyers_recent": len(recent_buyers_set),
+            "unique_buyers_total": len(b.get("buyers", set())),
+            "real_sol_reserves": (state["real_sol_reserves"] / LAMPORTS_PER_SOL) if state else 0.0,
+            "curve_complete": bool(state["complete"]) if state else False,
+        }
+
+    def _scanner_candidates_snapshot(self) -> list[dict]:
+        """For the API: ranked candidates with current metrics (no RPC calls)."""
+        now = time.time()
+        out = []
+        max_age = self.config.scanner_window_hours * 3600
+        for mint, b in self.tracking.items():
+            if (now - b["start"]) > max_age:
+                continue
+            if mint in self.entered_mints or mint in self.active_trades:
+                continue
+            m = self._scanner_score(b, None, now)
+            m["mint"] = mint
+            m["symbol"] = b.get("symbol")
+            m["name"] = b.get("name")
+            m["launch_id"] = b.get("launch_id")
+            m["passes"] = (
+                m["growth_pct"] >= self.config.scanner_min_growth_pct
+                and m["recent_inflow_sol"] >= self.config.scanner_min_recent_inflow_sol
+                and m["new_buyers_recent"] >= self.config.scanner_min_new_buyers
+            )
+            out.append(m)
+        # Rank by growth then recent inflow
+        out.sort(key=lambda x: (x["passes"], x["growth_pct"], x["recent_inflow_sol"]), reverse=True)
+        return out[:50]
+
+    async def _scanner_loop(self):
+        """Background: every scanner_interval_s scan tracked mints for momentum
+        signal (growth + volume + new buyers) and attempt entry on the best."""
+        while True:
+            try:
+                interval = max(5, int(self.config.scanner_interval_s))
+                await asyncio.sleep(interval)
+                if not self.config.scanner_enabled:
+                    continue
+                if not self.config.enabled or self.kill_switch_tripped:
+                    continue
+                if len(self.active_trades) >= self.config.max_concurrent_positions:
+                    continue
+                if await self.check_kill_switch():
+                    continue
+
+                now = time.time()
+                max_age = self.config.scanner_window_hours * 3600
+                cooldown = 60.0  # don't re-attempt the same mint within 60s
+
+                # Build candidate list (skip ineligible)
+                candidates = []
+                for mint, b in list(self.tracking.items()):
+                    if (now - b["start"]) > max_age:
+                        continue
+                    if mint in self.entered_mints or mint in self.active_trades:
+                        continue
+                    if (now - b.get("scanner_last_attempt", 0)) < cooldown:
+                        continue
+                    # Only consider mints with at least some signal
+                    if not b.get("buy_events"):
+                        continue
+                    candidates.append((mint, b))
+
+                if not candidates:
+                    continue
+
+                # Fetch curve state for top N candidates (sorted by recent activity)
+                candidates.sort(key=lambda mb: len(mb[1].get("buy_events", [])), reverse=True)
+                top = candidates[:20]
+
+                best = None
+                for mint, b in top:
+                    state = await pumpfun.fetch_bonding_curve_state(mint)
+                    if not state or state["complete"]:
+                        continue
+                    m = self._scanner_score(b, state, now)
+                    # Apply gates
+                    if m["real_sol_reserves"] < self.config.min_curve_liquidity_sol:
+                        continue
+                    if m["growth_pct"] < self.config.scanner_min_growth_pct:
+                        continue
+                    if m["recent_inflow_sol"] < self.config.scanner_min_recent_inflow_sol:
+                        continue
+                    if m["new_buyers_recent"] < self.config.scanner_min_new_buyers:
+                        continue
+                    score = m["growth_pct"] + m["recent_inflow_sol"] * 5 + m["new_buyers_recent"] * 2
+                    cand = {"mint": mint, "bucket": b, "metrics": m, "score": score}
+                    if best is None or score > best["score"]:
+                        best = cand
+
+                if not best:
+                    continue
+
+                # Build a Launch-like object to reuse _enter
+                b = best["bucket"]
+                synthetic = Launch(
+                    mint=best["mint"],
+                    creator=b.get("creator") or "",
+                    bonding_curve="",
+                    name=b.get("name"),
+                    symbol=b.get("symbol"),
+                )
+                synthetic.id = b.get("launch_id") or synthetic.id
+                synthetic.classifier_action = "scanner_momentum"
+                b["scanner_last_attempt"] = now
+                await hub.broadcast("scanner_attempt", {
+                    "mint": best["mint"],
+                    "symbol": b.get("symbol"),
+                    "metrics": best["metrics"],
+                    "score": best["score"],
+                })
+                try:
+                    await self._enter(synthetic, risk_score=40, action="scanner_momentum")
+                except Exception as e:
+                    logger.exception(f"scanner entry failed for {best['mint']}: {e}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"scanner loop error: {e}")
 
     # ---------- Entry decision ----------
     async def _assess_and_enter(self, launch: Launch, creator_rugs: int = 0):

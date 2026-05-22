@@ -23,4 +23,5 @@ export const api = {
   sendSol: (to, amount_sol) => client.post("/wallet/send", { to, amount_sol }).then(r => r.data),
   reentryWatchlist: () => client.get("/reentry/watchlist").then(r => r.data),
   removeReentry: (mint) => client.delete(`/reentry/watchlist/${mint}`).then(r => r.data),
+  scannerCandidates: () => client.get("/scanner/candidates").then(r => r.data),
 };

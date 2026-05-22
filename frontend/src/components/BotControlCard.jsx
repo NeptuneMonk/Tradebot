@@ -96,6 +96,42 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
         </div>
       </div>
 
+      {/* Momentum scanner config */}
+      <div className="border-t border-neutral-800 pt-3 mt-1">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[10px] uppercase tracking-[0.15em] text-neutral-500">Momentum Scanner</span>
+          <label className="flex items-center gap-1.5 text-[10px] font-mono uppercase text-neutral-400">
+            <input
+              type="checkbox"
+              data-testid="scanner-enabled-checkbox"
+              checked={local.scanner_enabled}
+              onChange={(e) => setLocal({ ...local, scanner_enabled: e.target.checked })}
+            />
+            enabled
+          </label>
+        </div>
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Field label="Window (h)" testid="scanner-window-input"
+                 value={local.scanner_window_hours}
+                 onChange={(v) => setLocal({ ...local, scanner_window_hours: parseInt(v, 10) || 0 })} step="1" />
+          <Field label="Scan every (s)" testid="scanner-interval-input"
+                 value={local.scanner_interval_s}
+                 onChange={(v) => setLocal({ ...local, scanner_interval_s: parseInt(v, 10) || 0 })} step="5" />
+          <Field label="Min Growth (%)" testid="scanner-growth-input"
+                 value={local.scanner_min_growth_pct}
+                 onChange={(v) => setLocal({ ...local, scanner_min_growth_pct: parseFloat(v) || 0 })} step="5" />
+          <Field label="Min Inflow (SOL)" testid="scanner-inflow-input"
+                 value={local.scanner_min_recent_inflow_sol}
+                 onChange={(v) => setLocal({ ...local, scanner_min_recent_inflow_sol: parseFloat(v) || 0 })} step="0.5" />
+          <Field label="Inflow Win (s)" testid="scanner-inflow-window-input"
+                 value={local.scanner_recent_inflow_window_s}
+                 onChange={(v) => setLocal({ ...local, scanner_recent_inflow_window_s: parseInt(v, 10) || 0 })} step="30" />
+          <Field label="Min new buyers" testid="scanner-buyers-input"
+                 value={local.scanner_min_new_buyers}
+                 onChange={(v) => setLocal({ ...local, scanner_min_new_buyers: parseInt(v, 10) || 0 })} step="1" />
+        </div>
+      </div>
+
       {/* Re-entry config */}
       <div className="border-t border-neutral-800 pt-3 mt-1">
         <div className="flex items-center justify-between mb-2">

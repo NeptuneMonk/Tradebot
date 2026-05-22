@@ -132,6 +132,14 @@ async def update_config(cfg: BotConfig):
     cfg.min_curve_liquidity_sol = max(0.0, min(85.0, cfg.min_curve_liquidity_sol))
     cfg.min_buyers_for_entry = max(0, min(100, cfg.min_buyers_for_entry))
     cfg.max_concurrent_positions = max(1, min(50, cfg.max_concurrent_positions))
+    # Scanner clamps
+    cfg.scanner_window_hours = max(1, min(24, cfg.scanner_window_hours))
+    cfg.scanner_interval_s = max(5, min(600, cfg.scanner_interval_s))
+    cfg.scanner_min_growth_pct = max(0.0, min(10000.0, cfg.scanner_min_growth_pct))
+    cfg.scanner_recent_inflow_window_s = max(30, min(3600, cfg.scanner_recent_inflow_window_s))
+    cfg.scanner_min_recent_inflow_sol = max(0.0, min(1000.0, cfg.scanner_min_recent_inflow_sol))
+    cfg.scanner_holder_velocity_window_s = max(15, min(3600, cfg.scanner_holder_velocity_window_s))
+    cfg.scanner_min_new_buyers = max(0, min(500, cfg.scanner_min_new_buyers))
     bot_state.config = cfg
     await bot_state.save_config()
     return cfg
@@ -287,6 +295,12 @@ async def reentry_remove(mint: str):
         raise HTTPException(404, "not on watchlist")
     await hub.broadcast("reentry_watch_remove", {"mint": mint})
     return {"ok": True}
+
+
+# ---------- Scanner candidates ----------
+@api.get("/scanner/candidates")
+async def scanner_candidates():
+    return bot_state._scanner_candidates_snapshot()
 
 
 # ---------- WebSocket push ----------
