@@ -1,0 +1,43 @@
+{
+  "summary": "Iteration 3 backend testing for Pump.fun bot v3 (P1 items: WebSocket push + creator-wallet rug history with Helius backfill). Wrote and ran a new pytest suite /app/backend/tests/test_pump_bot_v3.py with 19 tests covering all v3 requirements — all 19 PASSED (100%). Verified: (a) wss://.../api/ws accepts connections, immediately pushes a 'status' event on connect; (b) periodic 'status' AND 'wallet' events arrive every ~3s (saw >=2 status + >=1 wallet within 12s); (c) HTTP API serves 200 concurrently while WS clients are connected (no event-loop blocking); (d) opening/closing 3 WS connections back-to-back leaves server healthy; (e) 'launch' / 'launch_update' events conform to expected shape when they arrive (optional skip if no mainnet activity in 20s window); (f) GET /api/creators/{addr} returns the full v3 contract — tokens_created/graduated/failed/active, recent_mints, first_seen, last_seen, backfill_attempted (and prior_pump_txs/prior_distinct_mints/prior_creates_estimate when backfill_ok=true); (g) unknown creator returns zeroed defaults (200, not 404/500); (h) Helius backfill_attempted=true on >=1 creator in the recent feed (backfill_ok varies due to Helius 429 — graceful as specified); (i) every launch in /api/launches/recent now includes creator_tokens_created/failed/graduated as ints; (j) creator-history growth: a creator with N>=2 launches in the recent feed has tokens_created >= N in their /creators record and recent_mints overlaps. Regression: ran the prior 28 tests (test_pump_bot_api.py + test_pump_bot_enhancements.py) — 27/28 pass. The single failure is TestSocialScoreAvailability::test_some_launch_has_nonzero_social_score, which is pre-existing flakiness from iteration_2 (DuckDuckGo returning HTTP 202 Accepted with no payload from the cloud IP today — confirmed in backend logs). This is unrelated to v3 changes.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "social.py (pre-existing)", "issue": "DuckDuckGo Instant Answer API returning HTTP 202 (no payload) for every query from the preview cloud IP at the moment, so social_score stays 0 across launches. Pipeline code is correct; this is an external service throttling. Already noted in iteration_2. Not a v3 regression."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_pump_bot_v3.py",
+    "/app/test_reports/pytest/pytest_v3.xml",
+    "/app/test_reports/pytest/pytest_regression_v3.xml"
+  ],
+  "action_items": [
+    "(Optional / cosmetic) Make TestSocialScoreAvailability::test_some_launch_has_nonzero_social_score tolerant of DDG-202 days (e.g., skip if no DDG abstract/heading observed across all sampled launches) since the failure is upstream-service flakiness, not a server bug."
+  ],
+  "critical_code_review_comments": [
+    "creator_history.py L26 — _API_KEY parsed from HELIUS_RPC_URL only if it contains 'api-key='. If a different RPC provider URL or key style is configured, backfill silently disables. Acceptable for MVP but document this assumption.",
+    "creator_history.py L74 — `if 'CREATE' in t and 'PUMP' in t` is too strict for Helius enhanced-API types (Helius typically returns labels like 'UNKNOWN', 'TRANSFER', 'TOKEN_MINT', not 'PUMP_CREATE'). In practice the function then falls back to mints_seen via PUMP_PROGRAM_ID matching, which works — so prior_creates_estimate is driven by mints_seen. Confirm by inspecting a successful backfill payload; consider deriving prior_creates_estimate from 'TOKEN_MINT' type or pump program inner-instruction patterns for more accuracy.",
+    "creator_history.py L62-71 — accs[0] is taken as the 'mint' candidate. The first account in a Pump.fun create instruction is the mint in current IDL, but this is fragile; if Pump.fun ever reorders, prior_distinct_mints will be wrong. Add a defensive guard or use named-account decoding.",
+    "ws_hub.py — broadcast iterates clients without holding the lock (uses list() snapshot, good); dead-client cleanup re-acquires the lock — correct. One nit: send_text() is awaited serially per client; with N clients each slow this could pile up. Use asyncio.gather(... return_exceptions=True) for parallel fan-out if scaling beyond a few dozen viewers.",
+    "server.py L73-93 ws_endpoint — initial status send is wrapped in try/except but if bot_status() raises, the client gets nothing and just waits. Acceptable, but logging at WARNING would help debugging.",
+    "server.py L97-107 _status_broadcaster — calls wallet_info() every 3s, which itself calls get_sol_balance() + get_sol_usd_price() (network round-trips to RPC + price feed). At scale this is heavy; consider caching wallet balance/SOL price for 3-5s rather than refetching on every broadcast.",
+    "bot.py on_launch L120-122 — exposes creator_tokens_created/failed/graduated on the launch doc as of insert time. Note that 'tokens_failed' is a lagging counter (only set when the bot's _tracker_cleanup runs at 60s+), so a fresh creator's first launch always shows creator_tokens_failed=0 even if they previously rugged — only Helius backfill fields (prior_pump_txs, prior_creates_estimate) capture pre-bot-deployment history. Make sure classifier uses backfill data in addition to tokens_failed if rug detection on first-encounter creators is required.",
+    "bot.py L128 broadcasts 'launch' via hub immediately after DB insert — good. L194 broadcasts 'launch_update' on every metric tick — at 30+ active launches this could be chatty; consider throttling to once per second per mint."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pump_bot_v3.py (new — 19 tests, 6 classes)"
+  ],
+  "success_rate": {
+    "backend_v3_new": "100% (19/19)",
+    "backend_regression": "96.4% (27/28); 1 flaky pre-existing test driven by upstream DDG 202s",
+    "backend_overall": "97.9% (46/47)",
+    "frontend": "not tested (backend-only request)"
+  },
+  "test_credentials": "n/a (no auth)",
+  "seed_data_creation": "None persisted. Tests transiently mutated /api/bot/config (clamping tests) and /api/bot/start /api/bot/stop but reset to disabled state by end of run. No creator_history rows are seeded — all observations come from live Helius WSS launches.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "v3 features (WebSocket /api/ws, creator history endpoint, Helius backfill, launch creator-counts) are fully verified end-to-end against live mainnet. Re-run safe: `pytest /app/backend/tests/test_pump_bot_v3.py -v`. The DDG-driven social score test (test_some_launch_has_nonzero_social_score) is environment-flaky — re-run later in the day or skip if DDG continues to 202. WebSocket URL pattern: wss://<REACT_APP_BACKEND_URL host>/api/ws. Ingress correctly upgrades the HTTPS request to a WS connection. Bot remains in paper mode (enabled toggled during lifecycle test but reset to false). No 'launch' WS events arrived in the 20s window during one test run — acceptable per problem statement, and the test correctly skip()s rather than failing.",
+  "rca of the issue": "Single regression failure (test_some_launch_has_nonzero_social_score): RCA — DuckDuckGo's instant-answer API is responding with HTTP 202 (deferred/no content) to every query originating from the preview cluster IP today. Verified by grepping backend.err.log: every `GET https://api.duckduckgo.com/?q=...` returns 202. social.py treats 202 as empty payload, so abstract/heading/related stay empty and social_score stays 0. Mitigation: (a) backoff/retry DDG with exponential delay; (b) make the test tolerant of upstream-zero days; (c) add a second free source (e.g., Wikipedia opensearch which currently 403s from cloud IPs too — needs a UA/Referer header to be friendly). No code change needed for v3; this is a pre-existing pipeline robustness issue."
+}

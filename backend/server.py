@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
@@ -20,6 +20,8 @@ from models import BotConfig, ClassifierRules, WalletInfo, BotStatus
 from bot import BotState
 from listener import PumpFunListener
 from solana_client import get_sol_balance, get_sol_usd_price
+from ws_hub import hub
+from creator_history import get_creator
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,7 +42,10 @@ async def lifespan(app: FastAPI):
     await bot_state.load()
     listener.start()
     logger.info(f"Wallet address: {wallet.get_pubkey_str()}")
+    import asyncio as _aio
+    broadcaster = _aio.create_task(_status_broadcaster())
     yield
+    broadcaster.cancel()
     listener.stop()
     mongo_client.close()
 
@@ -52,6 +57,54 @@ api = APIRouter(prefix="/api")
 @api.get("/")
 async def root():
     return {"name": "pump-bot", "ok": True}
+
+
+# ---------- Creator history ----------
+@api.get("/creators/{creator}")
+async def creator_info(creator: str):
+    doc = await get_creator(db, creator)
+    if not doc:
+        return {"creator": creator, "tokens_created": 0, "tokens_failed": 0, "tokens_graduated": 0, "tokens_active": 0, "recent_mints": []}
+    doc["creator"] = creator
+    return doc
+
+
+# ---------- WebSocket push ----------
+@app.websocket("/api/ws")
+async def ws_endpoint(websocket: WebSocket):
+    await hub.connect(websocket)
+    # Send initial status snapshot on connect
+    try:
+        status = await bot_status()
+        await websocket.send_json({"type": "status", "data": status.model_dump()})
+    except Exception:
+        pass
+    try:
+        while True:
+            # Keep-alive: receive ignored messages (or pings)
+            msg = await websocket.receive_text()
+            if msg == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        await hub.disconnect(websocket)
+
+
+# Periodic status broadcaster
+async def _status_broadcaster():
+    import asyncio as _aio
+    while True:
+        try:
+            status = await bot_status()
+            await hub.broadcast("status", status.model_dump())
+            wallet_info_obj = await wallet_info()
+            await hub.broadcast("wallet", wallet_info_obj.model_dump())
+        except Exception as e:
+            logger.debug(f"status broadcaster: {e}")
+        await _aio.sleep(3)
 
 
 # ---------- Wallet ----------

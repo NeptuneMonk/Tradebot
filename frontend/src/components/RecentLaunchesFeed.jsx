@@ -44,6 +44,7 @@ export default function RecentLaunchesFeed({ launches }) {
                     <span>mint <span className="text-neutral-300">{short(l.mint)}</span></span>
                     <span>·</span>
                     <span>creator <span className="text-neutral-300">{short(l.creator)}</span></span>
+                    <CreatorBadge l={l} />
                   </div>
                   <div className="mt-1.5 flex items-center gap-2 text-[10px] font-mono">
                     <Stat icon={<Users className="w-3 h-3" />} value={l.unique_buyers ?? 0} label="buyers" data-testid={`launch-buyers-${l.mint}`} />
@@ -71,6 +72,27 @@ function Stat({ icon, value, suffix, label, "data-testid": testid }) {
       <span className="text-neutral-600">{icon}</span>
       <span className="text-neutral-200">{value}</span>
       {suffix && <span className="text-neutral-600">{suffix}</span>}
+    </span>
+  );
+}
+
+function CreatorBadge({ l }) {
+  const created = l.creator_tokens_created ?? 1;
+  const failed = l.creator_tokens_failed ?? 0;
+  const graduated = l.creator_tokens_graduated ?? 0;
+  if (created <= 1 && failed === 0 && graduated === 0) return null;
+  let cls = "border-neutral-800 text-neutral-500";
+  if (failed >= 1) cls = "border-red-800 text-red-400 bg-red-950/40";
+  else if (graduated >= 1) cls = "border-emerald-800 text-emerald-400 bg-emerald-950/40";
+  else if (created >= 3) cls = "border-amber-800 text-amber-400 bg-amber-950/40";
+  const tooltip = `Creator: ${created} created · ${graduated} graduated · ${failed} failed`;
+  return (
+    <span
+      title={tooltip}
+      data-testid={`launch-creator-stats-${l.mint}`}
+      className={`px-1.5 py-0.5 border ${cls} text-[10px] font-mono uppercase`}
+    >
+      {created}c·{graduated}g·{failed}f
     </span>
   );
 }

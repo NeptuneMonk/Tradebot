@@ -19,6 +19,8 @@ import pumpfun
 from solana_client import get_sol_usd_price, LAMPORTS_PER_SOL
 from wallet import get_keypair, get_pubkey
 from social import score_term
+from ws_hub import hub
+from creator_history import record_new_launch, mark_outcome, get_creator, derive_rug_count
 
 logger = logging.getLogger("bot")
 
@@ -97,10 +99,15 @@ class BotState:
             symbol=launch_data.get("symbol"),
             signature=launch_data.get("signature"),
         )
-        # Initial baseline classification (no metrics yet)
+
+        # Record into creator history & get rug count
+        creator_doc = await record_new_launch(self.db, launch.creator, launch.mint)
+        creator_rugs = derive_rug_count(creator_doc)
+
+        # Initial baseline classification (no metrics yet, but we have rug count)
         verdict = classify(
             {"curve_fill_pct": 0, "elapsed_s": 0, "unique_buyers": 0,
-             "sol_inflow": 0, "creator_rugs": 0, "social_score": 0},
+             "sol_inflow": 0, "creator_rugs": creator_rugs, "social_score": 0},
             self.rules.model_dump(),
         )
         launch.classifier_action = verdict["action"]
@@ -109,13 +116,21 @@ class BotState:
 
         doc = launch.model_dump()
         doc["detected_at"] = doc["detected_at"].isoformat()
+        # Surface a few creator stats inline on the launch doc
+        doc["creator_tokens_created"] = (creator_doc or {}).get("tokens_created", 1)
+        doc["creator_tokens_failed"] = (creator_doc or {}).get("tokens_failed", 0)
+        doc["creator_tokens_graduated"] = (creator_doc or {}).get("tokens_graduated", 0)
         await self.db.launches.insert_one({**doc, "_id": launch.id})
         self.recent_launches.insert(0, doc)
         self.recent_launches = self.recent_launches[:50]
 
+        # WS push
+        await hub.broadcast("launch", doc)
+
         # Start in-memory metric tracker for this mint
         self.tracking[launch.mint] = {
             "launch_id": launch.id,
+            "creator": launch.creator,
             "start": time.time(),
             "buyers": set(),
             "sol_inflow_lamports": 0,
@@ -126,11 +141,11 @@ class BotState:
             "last_persist": 0.0,
             "name": launch.name,
             "symbol": launch.symbol,
+            "creator_rugs": creator_rugs,
         }
 
-        # Async tasks: social score + assess-then-enter + tracker cleanup
         asyncio.create_task(self._compute_social(launch.mint))
-        asyncio.create_task(self._assess_and_enter(launch))
+        asyncio.create_task(self._assess_and_enter(launch, creator_rugs))
         asyncio.create_task(self._tracker_cleanup(launch.mint))
 
     async def on_trade(self, trade_data: dict):
@@ -171,11 +186,12 @@ class BotState:
             "social_sources": b["social_sources"],
         }
         await self.db.launches.update_one({"_id": b["launch_id"]}, {"$set": update})
-        # Also reflect in memory
         for r in self.recent_launches:
             if r.get("id") == b["launch_id"]:
                 r.update(update)
                 break
+        # WS push
+        await hub.broadcast("launch_update", {"id": b["launch_id"], "mint": mint, **update})
 
     async def _compute_social(self, mint: str):
         b = self.tracking.get(mint)
@@ -191,11 +207,27 @@ class BotState:
 
     async def _tracker_cleanup(self, mint: str):
         await asyncio.sleep(TRACK_DURATION_S)
+        # Final metric flush
         await self._persist_metrics(mint)
+        # Determine outcome and update creator history
+        b = self.tracking.get(mint)
+        if b:
+            try:
+                state = await pumpfun.fetch_bonding_curve_state(mint)
+                if state:
+                    real_sol = state["real_sol_reserves"] / LAMPORTS_PER_SOL
+                    if state["complete"]:
+                        await mark_outcome(self.db, b["creator"], "graduated")
+                    elif real_sol < 0.5 and b["sol_inflow_lamports"] / LAMPORTS_PER_SOL < 1.0:
+                        # Abandoned: very little real SOL accumulated
+                        await mark_outcome(self.db, b["creator"], "failed")
+                    # else: still active — leave counter as-is
+            except Exception as e:
+                logger.debug(f"outcome check failed for {mint}: {e}")
         self.tracking.pop(mint, None)
 
     # ---------- Entry decision ----------
-    async def _assess_and_enter(self, launch: Launch):
+    async def _assess_and_enter(self, launch: Launch, creator_rugs: int = 0):
         try:
             await asyncio.sleep(ASSESS_DELAY_S)
             b = self.tracking.get(launch.mint, {})
@@ -204,7 +236,7 @@ class BotState:
                 "curve_fill_pct": b.get("curve_fill_pct", 0.0),
                 "unique_buyers": len(b.get("buyers", set())),
                 "sol_inflow": b.get("sol_inflow_lamports", 0) / LAMPORTS_PER_SOL,
-                "creator_rugs": 0,
+                "creator_rugs": creator_rugs,
                 "social_score": b.get("social_score", 0),
             }
             verdict = classify(metrics, self.rules.model_dump())
@@ -294,7 +326,6 @@ class BotState:
                 return
 
         await self._persist_trade(trade)
-        # Mark launch as entered
         await self.db.launches.update_one({"_id": launch.id}, {"$set": {"entered": True}})
         for r in self.recent_launches:
             if r.get("id") == launch.id:
@@ -302,6 +333,7 @@ class BotState:
                 break
 
         self.active_trades[launch.mint] = {"trade": trade.model_dump(), "launch": launch.model_dump()}
+        await hub.broadcast("trade_enter", trade.model_dump())
         asyncio.create_task(self._monitor_position(launch.mint))
 
     async def _persist_trade(self, trade: Trade):
@@ -355,7 +387,7 @@ class BotState:
                         "curve_fill_pct": b.get("curve_fill_pct", 0.0),
                         "unique_buyers": len(b.get("buyers", set())),
                         "sol_inflow": b.get("sol_inflow_lamports", 0) / LAMPORTS_PER_SOL,
-                        "creator_rugs": 0,
+                        "creator_rugs": b.get("creator_rugs", 0),
                         "social_score": b.get("social_score", 0),
                     }
                     verdict = classify(metrics, self.rules.model_dump())
@@ -429,4 +461,5 @@ class BotState:
         await self.db.trades.update_one(
             {"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
         )
+        await hub.broadcast("trade_exit", trade_doc)
         await self.check_kill_switch()
