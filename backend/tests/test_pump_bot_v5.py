@@ -265,9 +265,9 @@ class TestScannerCandidatesEndpoint:
         assert isinstance(c["real_sol_reserves"], (int, float))
         assert isinstance(c["curve_complete"], bool)
         assert isinstance(c["passes"], bool)
-        # real_sol_reserves is 0 when state unknown in the snapshot path
-        # (snapshot passes state=None) — verify that contract.
-        assert c["real_sol_reserves"] == 0 or c["real_sol_reserves"] == 0.0
+        # real_sol_reserves is now estimated from cached last_vsr_lamports in the snapshot
+        # path (no RPC call) — may be 0 when no TradeEvents seen yet, or positive thereafter.
+        assert c["real_sol_reserves"] >= 0
 
     def test_candidates_accumulate_within_60s(self, client):
         """Wait up to ~75s and verify the scanner accumulates >=5 candidates,
