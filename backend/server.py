@@ -128,6 +128,10 @@ async def update_config(cfg: BotConfig):
     cfg.reentry_pullback_pct = max(0.0, min(95.0, cfg.reentry_pullback_pct))
     cfg.reentry_window_seconds = max(10, min(3600, cfg.reentry_window_seconds))
     cfg.reentry_size_multiplier = max(0.0, min(1.0, cfg.reentry_size_multiplier))
+    # Entry filter clamps
+    cfg.min_curve_liquidity_sol = max(0.0, min(85.0, cfg.min_curve_liquidity_sol))
+    cfg.min_buyers_for_entry = max(0, min(100, cfg.min_buyers_for_entry))
+    cfg.max_concurrent_positions = max(1, min(50, cfg.max_concurrent_positions))
     bot_state.config = cfg
     await bot_state.save_config()
     return cfg

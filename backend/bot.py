@@ -140,6 +140,9 @@ class BotState:
 
     async def _attempt_reentry(self, w: dict):
         mint = w["mint"]
+        # Apply the same portfolio + liquidity gates as fresh entries
+        if len(self.active_trades) >= max(1, self.config.max_concurrent_positions):
+            return
         sol_price = await get_sol_usd_price()
         base_usd = max(self.config.min_trade_usd, self.config.max_trade_usd)
         trade_usd = max(self.config.min_trade_usd, base_usd * w["size_multiplier"])
@@ -149,6 +152,9 @@ class BotState:
             return
         state = await pumpfun.fetch_bonding_curve_state(mint)
         if not state or state["complete"]:
+            return
+        real_sol = state["real_sol_reserves"] / LAMPORTS_PER_SOL
+        if real_sol < self.config.min_curve_liquidity_sol:
             return
         tokens_out, max_sol = pumpfun.quote_buy_tokens(state, sol_in_lamports, self.config.slippage_bps)
         if tokens_out <= 0:
@@ -375,6 +381,10 @@ class BotState:
 
     # ---------- Entry / exit (live + paper) ----------
     async def _enter(self, launch: Launch, risk_score: int, action: str):
+        # Portfolio limit: don't pile in beyond max concurrent positions
+        if len(self.active_trades) >= max(1, self.config.max_concurrent_positions):
+            return
+
         sol_price = await get_sol_usd_price()
         trade_usd = max(self.config.min_trade_usd, self.config.max_trade_usd)
         trade_sol = trade_usd / sol_price if sol_price > 0 else 0
@@ -385,6 +395,20 @@ class BotState:
         state = await pumpfun.fetch_bonding_curve_state(launch.mint)
         if not state or state["complete"]:
             return
+
+        # Liquidity gate: skip entry if curve has too little real SOL
+        real_sol = state["real_sol_reserves"] / LAMPORTS_PER_SOL
+        if real_sol < self.config.min_curve_liquidity_sol:
+            logger.info(f"skip {launch.mint}: liquidity {real_sol:.2f} SOL < min {self.config.min_curve_liquidity_sol}")
+            return
+
+        # Buyer gate (optional)
+        if self.config.min_buyers_for_entry > 0:
+            b = self.tracking.get(launch.mint, {})
+            buyers = len(b.get("buyers", set()))
+            if buyers < self.config.min_buyers_for_entry:
+                logger.info(f"skip {launch.mint}: only {buyers} buyers < min {self.config.min_buyers_for_entry}")
+                return
 
         tokens_out, max_sol = pumpfun.quote_buy_tokens(
             state, sol_in_lamports, self.config.slippage_bps

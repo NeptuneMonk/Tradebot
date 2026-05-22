@@ -80,6 +80,22 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                onChange={(v) => setLocal({ ...local, priority_fee_microlamports: parseInt(v, 10) || 0 })} step="100000" />
       </div>
 
+      {/* Entry filters */}
+      <div className="border-t border-neutral-800 pt-3 mt-1">
+        <div className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 mb-2">Entry Filters</div>
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Field label="Min Liquidity (SOL)" testid="min-liq-input"
+                 value={local.min_curve_liquidity_sol}
+                 onChange={(v) => setLocal({ ...local, min_curve_liquidity_sol: parseFloat(v) || 0 })} step="0.5" />
+          <Field label="Min Buyers" testid="min-buyers-input"
+                 value={local.min_buyers_for_entry}
+                 onChange={(v) => setLocal({ ...local, min_buyers_for_entry: parseInt(v, 10) || 0 })} step="1" />
+          <Field label="Max Positions" testid="max-positions-input"
+                 value={local.max_concurrent_positions}
+                 onChange={(v) => setLocal({ ...local, max_concurrent_positions: parseInt(v, 10) || 0 })} step="1" />
+        </div>
+      </div>
+
       {/* Re-entry config */}
       <div className="border-t border-neutral-800 pt-3 mt-1">
         <div className="flex items-center justify-between mb-2">
