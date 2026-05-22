@@ -1,0 +1,105 @@
+"""
+Pydantic models for API contracts and MongoDB persistence.
+"""
+from datetime import datetime, timezone
+from typing import Literal, Optional
+from pydantic import BaseModel, Field, ConfigDict
+import uuid
+
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def new_id() -> str:
+    return str(uuid.uuid4())
+
+
+class BotConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    enabled: bool = False
+    live_trading: bool = False  # If False -> paper trading (simulated fills)
+    min_trade_usd: float = 0.50
+    max_trade_usd: float = 1.00
+    slippage_bps: int = 500  # 5%
+    daily_kill_switch_usd: float = 20.00
+    priority_fee_microlamports: int = 500_000
+    hold_max_seconds: int = 30  # max time we'll hold a position
+    take_profit_pct: float = 25.0  # exit if up X%
+    stop_loss_pct: float = 30.0  # exit if down X%
+
+
+class ClassifierRules(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    fast_curve_fill_pct: float = 30.0
+    fast_curve_window_s: int = 10
+    many_buyers_count: int = 15
+    many_buyers_window_s: int = 5
+    low_inflow_sol: float = 0.5
+    low_inflow_window_s: int = 8
+    creator_rug_threshold: int = 1
+
+
+class Launch(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    mint: str
+    creator: str
+    bonding_curve: str
+    detected_at: datetime = Field(default_factory=now_utc)
+    name: Optional[str] = None
+    symbol: Optional[str] = None
+    classifier_action: Optional[str] = None
+    classifier_risk: Optional[int] = None
+    classifier_reasons: list[str] = []
+    signature: Optional[str] = None  # tx that created it
+
+
+class Trade(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    mint: str
+    name: Optional[str] = None
+    symbol: Optional[str] = None
+    status: Literal["active", "closed", "failed"] = "active"
+    mode: Literal["live", "paper"] = "paper"
+    # Entry
+    entry_time: datetime = Field(default_factory=now_utc)
+    entry_sol: float = 0.0
+    entry_usd: float = 0.0
+    entry_tokens: float = 0.0
+    entry_price_sol: float = 0.0  # SOL per token
+    entry_sig: Optional[str] = None
+    # Exit
+    exit_time: Optional[datetime] = None
+    exit_sol: float = 0.0
+    exit_usd: float = 0.0
+    exit_price_sol: float = 0.0
+    exit_sig: Optional[str] = None
+    exit_reason: Optional[str] = None
+    # P/L
+    pnl_sol: float = 0.0
+    pnl_usd: float = 0.0
+    pnl_pct: float = 0.0
+    # Classifier snapshot
+    risk_score: int = 50
+    classifier_action: Optional[str] = None
+
+
+class WalletInfo(BaseModel):
+    public_key: str
+    sol_balance: float
+    usd_balance: float
+    sol_price_usd: float
+
+
+class BotStatus(BaseModel):
+    enabled: bool
+    live_trading: bool
+    kill_switch_tripped: bool
+    listener_connected: bool
+    daily_pnl_usd: float
+    daily_loss_usd: float  # positive number representing loss magnitude
+    daily_kill_switch_usd: float
+    total_trades_today: int
+    active_trade_count: int

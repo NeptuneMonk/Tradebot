@@ -1,89 +1,224 @@
-from fastapi import FastAPI, APIRouter
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
+"""
+FastAPI server for the Pump.fun Micro-Stake Trading Bot (preview-only).
+"""
 import os
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
+from fastapi import FastAPI, APIRouter, HTTPException
+from starlette.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+import wallet  # noqa: triggers key load
+from models import BotConfig, ClassifierRules, WalletInfo, BotStatus
+from bot import BotState
+from listener import PumpFunListener
+from solana_client import get_sol_balance, get_sol_usd_price
 
-# Create the main app without a prefix
-app = FastAPI()
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger("server")
 
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
+mongo_url = os.environ["MONGO_URL"]
+mongo_client = AsyncIOMotorClient(mongo_url)
+db = mongo_client[os.environ["DB_NAME"]]
+
+bot_state = BotState(db)
+listener = PumpFunListener(on_launch=bot_state.on_launch)
 
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await bot_state.load()
+    listener.start()
+    logger.info(f"Wallet address: {wallet.get_pubkey_str()}")
+    yield
+    listener.stop()
+    mongo_client.close()
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
 
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
+app = FastAPI(lifespan=lifespan)
+api = APIRouter(prefix="/api")
+
+
+@api.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"name": "pump-bot", "ok": True}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
+# ---------- Wallet ----------
+@api.get("/wallet", response_model=WalletInfo)
+async def wallet_info():
+    pubkey = wallet.get_pubkey_str()
+    sol = await get_sol_balance(pubkey)
+    price = await get_sol_usd_price()
+    return WalletInfo(
+        public_key=pubkey,
+        sol_balance=sol,
+        usd_balance=sol * price,
+        sol_price_usd=price,
+    )
 
-# Include the router in the main app
-app.include_router(api_router)
 
+# ---------- Bot config / status ----------
+@api.get("/bot/config", response_model=BotConfig)
+async def get_config():
+    return bot_state.config
+
+
+@api.put("/bot/config", response_model=BotConfig)
+async def update_config(cfg: BotConfig):
+    # Hard caps for safety
+    if cfg.max_trade_usd > 5.0:
+        cfg.max_trade_usd = 5.0
+    if cfg.min_trade_usd < 0.10:
+        cfg.min_trade_usd = 0.10
+    if cfg.max_trade_usd < cfg.min_trade_usd:
+        cfg.max_trade_usd = cfg.min_trade_usd
+    if cfg.slippage_bps < 50:
+        cfg.slippage_bps = 50
+    if cfg.slippage_bps > 5000:
+        cfg.slippage_bps = 5000
+    if cfg.daily_kill_switch_usd > 100:
+        cfg.daily_kill_switch_usd = 100
+    bot_state.config = cfg
+    await bot_state.save_config()
+    return cfg
+
+
+@api.post("/bot/start")
+async def bot_start():
+    if bot_state.kill_switch_tripped:
+        # Allow restart only if user manually reset (reset endpoint)
+        raise HTTPException(400, "Kill switch tripped. Reset before starting.")
+    bot_state.config.enabled = True
+    await bot_state.save_config()
+    return {"ok": True, "enabled": True}
+
+
+@api.post("/bot/stop")
+async def bot_stop():
+    bot_state.config.enabled = False
+    await bot_state.save_config()
+    return {"ok": True, "enabled": False}
+
+
+@api.post("/bot/reset-kill-switch")
+async def reset_kill_switch():
+    bot_state.kill_switch_tripped = False
+    return {"ok": True, "kill_switch_tripped": False}
+
+
+@api.get("/bot/status", response_model=BotStatus)
+async def bot_status():
+    pnl = await bot_state.daily_pnl_usd()
+    total_today = await db.trades.count_documents(
+        {
+            "entry_time": {
+                "$gte": datetime.now(timezone.utc)
+                .replace(hour=0, minute=0, second=0, microsecond=0)
+                .isoformat()
+            }
+        }
+    )
+    return BotStatus(
+        enabled=bot_state.config.enabled,
+        live_trading=bot_state.config.live_trading,
+        kill_switch_tripped=bot_state.kill_switch_tripped,
+        listener_connected=listener.connected,
+        daily_pnl_usd=pnl,
+        daily_loss_usd=max(0.0, -pnl),
+        daily_kill_switch_usd=bot_state.config.daily_kill_switch_usd,
+        total_trades_today=total_today,
+        active_trade_count=len(bot_state.active_trades),
+    )
+
+
+# ---------- Classifier rules ----------
+@api.get("/classifier/rules", response_model=ClassifierRules)
+async def get_rules():
+    return bot_state.rules
+
+
+@api.put("/classifier/rules", response_model=ClassifierRules)
+async def update_rules(rules: ClassifierRules):
+    bot_state.rules = rules
+    await bot_state.save_rules()
+    return rules
+
+
+# ---------- Launches & Trades ----------
+@api.get("/launches/recent")
+async def launches_recent(limit: int = 30):
+    docs = await db.launches.find({}, {"_id": 0}).sort("detected_at", -1).to_list(limit)
+    return docs
+
+
+@api.get("/trades/active")
+async def trades_active():
+    docs = await db.trades.find({"status": "active"}, {"_id": 0}).sort("entry_time", -1).to_list(100)
+    # Attach runtime risk score from in-memory state
+    for d in docs:
+        slot = bot_state.active_trades.get(d["mint"])
+        if slot:
+            d["risk_score"] = slot["trade"].get("risk_score", d.get("risk_score", 50))
+    return docs
+
+
+@api.get("/trades/history")
+async def trades_history(limit: int = 100):
+    docs = await db.trades.find({"status": {"$ne": "active"}}, {"_id": 0}).sort("entry_time", -1).to_list(limit)
+    return docs
+
+
+@api.post("/trades/{trade_id}/exit")
+async def trades_manual_exit(trade_id: str):
+    trade = await db.trades.find_one({"_id": trade_id}, {"_id": 0})
+    if not trade:
+        raise HTTPException(404, "Trade not found")
+    if trade["status"] != "active":
+        raise HTTPException(400, "Trade not active")
+    await bot_state._exit(trade["mint"], reason="manual exit")
+    return {"ok": True}
+
+
+# ---------- P/L summary ----------
+@api.get("/pl/summary")
+async def pl_summary(days: int = 7):
+    start = datetime.now(timezone.utc) - timedelta(days=days)
+    cursor = db.trades.find(
+        {"status": "closed", "exit_time": {"$gte": start.isoformat()}},
+        {"_id": 0, "pnl_usd": 1, "pnl_sol": 1, "exit_time": 1, "mint": 1},
+    ).sort("exit_time", 1)
+    rows = []
+    cum = 0.0
+    async for d in cursor:
+        cum += float(d.get("pnl_usd", 0.0))
+        rows.append(
+            {
+                "exit_time": d["exit_time"],
+                "pnl_usd": float(d.get("pnl_usd", 0.0)),
+                "cumulative_usd": cum,
+                "mint": d["mint"],
+            }
+        )
+    today = await bot_state.daily_pnl_usd()
+    return {"series": rows, "daily_pnl_usd": today, "cumulative_usd": cum}
+
+
+app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()

@@ -1,0 +1,23 @@
+import axios from "axios";
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+export const API = `${BACKEND_URL}/api`;
+
+const client = axios.create({ baseURL: API, timeout: 15000 });
+
+export const api = {
+  wallet: () => client.get("/wallet").then(r => r.data),
+  status: () => client.get("/bot/status").then(r => r.data),
+  config: () => client.get("/bot/config").then(r => r.data),
+  updateConfig: (cfg) => client.put("/bot/config", cfg).then(r => r.data),
+  start: () => client.post("/bot/start").then(r => r.data),
+  stop: () => client.post("/bot/stop").then(r => r.data),
+  resetKillSwitch: () => client.post("/bot/reset-kill-switch").then(r => r.data),
+  rules: () => client.get("/classifier/rules").then(r => r.data),
+  updateRules: (rules) => client.put("/classifier/rules", rules).then(r => r.data),
+  launches: (limit = 30) => client.get(`/launches/recent?limit=${limit}`).then(r => r.data),
+  activeTrades: () => client.get("/trades/active").then(r => r.data),
+  tradeHistory: (limit = 100) => client.get(`/trades/history?limit=${limit}`).then(r => r.data),
+  exitTrade: (id) => client.post(`/trades/${id}/exit`).then(r => r.data),
+  plSummary: (days = 7) => client.get(`/pl/summary?days=${days}`).then(r => r.data),
+};

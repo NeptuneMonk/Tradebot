@@ -1,0 +1,103 @@
+import { useEffect, useState, useCallback } from "react";
+import { api } from "@/lib/api";
+import StatusBanner from "@/components/StatusBanner";
+import WalletCard from "@/components/WalletCard";
+import BotControlCard from "@/components/BotControlCard";
+import PLSummaryCard from "@/components/PLSummaryCard";
+import DailyLossMeter from "@/components/DailyLossMeter";
+import ActiveTradesTable from "@/components/ActiveTradesTable";
+import RecentLaunchesFeed from "@/components/RecentLaunchesFeed";
+import TradeHistoryTable from "@/components/TradeHistoryTable";
+import ClassifierRulesEditor from "@/components/ClassifierRulesEditor";
+import { Activity } from "lucide-react";
+
+export default function Dashboard() {
+  const [wallet, setWallet] = useState(null);
+  const [status, setStatus] = useState(null);
+  const [config, setConfig] = useState(null);
+  const [rules, setRules] = useState(null);
+  const [launches, setLaunches] = useState([]);
+  const [activeTrades, setActiveTrades] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [pl, setPl] = useState({ series: [], daily_pnl_usd: 0, cumulative_usd: 0 });
+
+  const refreshAll = useCallback(async () => {
+    try {
+      const [w, s, c, r, l, a, h, p] = await Promise.all([
+        api.wallet().catch(() => null),
+        api.status().catch(() => null),
+        api.config().catch(() => null),
+        api.rules().catch(() => null),
+        api.launches(30).catch(() => []),
+        api.activeTrades().catch(() => []),
+        api.tradeHistory(50).catch(() => []),
+        api.plSummary(7).catch(() => ({ series: [], daily_pnl_usd: 0, cumulative_usd: 0 })),
+      ]);
+      if (w) setWallet(w);
+      if (s) setStatus(s);
+      if (c) setConfig(c);
+      if (r) setRules(r);
+      setLaunches(l || []);
+      setActiveTrades(a || []);
+      setHistory(h || []);
+      setPl(p);
+    } catch (e) {
+      console.error("refresh error", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshAll();
+    const id = setInterval(refreshAll, 3000);
+    return () => clearInterval(id);
+  }, [refreshAll]);
+
+  return (
+    <div className="min-h-screen bg-neutral-950 text-neutral-50" data-testid="dashboard">
+      {/* Header */}
+      <header className="border-b border-neutral-800 px-6 py-3 flex items-center justify-between bg-neutral-950 sticky top-0 z-20">
+        <div className="flex items-center gap-3">
+          <Activity className="w-5 h-5 text-blue-500" />
+          <div>
+            <h1 className="text-base font-mono font-bold tracking-tight" data-testid="app-title">PUMP.BOT // micro-stake</h1>
+            <p className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">preview-only · solana mainnet</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 text-xs font-mono">
+          <span className={`w-2 h-2 rounded-full ${status?.listener_connected ? "bg-emerald-500" : "bg-red-500"}`}></span>
+          <span className="text-neutral-400" data-testid="listener-status">
+            {status?.listener_connected ? "LISTENER LIVE" : "LISTENER OFFLINE"}
+          </span>
+        </div>
+      </header>
+
+      <StatusBanner status={status} onResetKill={async () => { await api.resetKillSwitch(); refreshAll(); }} />
+
+      <main className="max-w-[1600px] mx-auto p-4 md:p-6 space-y-4 md:space-y-6">
+        {/* Top row: Wallet, Bot Control, P/L, Daily Loss */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
+          <WalletCard wallet={wallet} />
+          <BotControlCard status={status} config={config} onUpdate={async (cfg) => { setConfig(await api.updateConfig(cfg)); refreshAll(); }} onStart={async () => { await api.start(); refreshAll(); }} onStop={async () => { await api.stop(); refreshAll(); }} />
+          <PLSummaryCard pl={pl} />
+          <DailyLossMeter status={status} />
+        </div>
+
+        {/* Middle row: Active trades + Recent launches */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
+          <ActiveTradesTable trades={activeTrades} onExit={async (id) => { await api.exitTrade(id); refreshAll(); }} />
+          <RecentLaunchesFeed launches={launches} />
+        </div>
+
+        {/* Bottom row: history + classifier rules */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
+          <TradeHistoryTable history={history} />
+          <ClassifierRulesEditor rules={rules} onSave={async (r) => { setRules(await api.updateRules(r)); }} />
+        </div>
+
+        <footer className="text-[10px] text-neutral-600 font-mono text-center pt-4 pb-8 tracking-wider uppercase">
+          // Preview-only. Real funds at risk. Never deploy this outside Emergent preview.
+        </footer>
+      </main>
+    </div>
+  );
+}
