@@ -139,6 +139,10 @@ class BotState:
         # Start on-chain PnL reconciler (overwrites quoted pnl with actual
         # wallet deltas read from getTransaction every 30s)
         self.pnl_reconciler.start()
+        # Periodically reconcile in-memory active_trades against DB so any
+        # mints leaked by an unhandled exit exception get re-attached to a
+        # monitor instead of sitting orphaned in DB.
+        asyncio.create_task(self._active_trades_reconciler_loop())
         # Surface the auto-disable to any WS clients listening — front-end
         # will show "Bot auto-disabled on restart" toast if connected.
         if was_running_before_restart:
@@ -238,6 +242,48 @@ class BotState:
             {"$set": {**self.rules.model_dump(), "_id": "current"}},
             upsert=True,
         )
+
+    async def _active_trades_reconciler_loop(self):
+        """Every 60s, find DB rows with status=active whose mint is NOT in
+        `self.active_trades` (orphaned by unhandled exit exceptions, prior
+        bugs, etc.) and re-attach a monitor. This is the safety net for the
+        race / leak class of bugs — if anything ever silently pops a slot
+        without persisting status=closed, the position will be picked back up
+        within a minute instead of leaking forever.
+        """
+        await asyncio.sleep(30.0)  # let load() finish first
+        while True:
+            try:
+                await self._reattach_orphaned_active_rows()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.exception(f"active_trades reconciler error: {e}")
+            await asyncio.sleep(60.0)
+
+    async def _reattach_orphaned_active_rows(self):
+        cursor = self.db.trades.find({"status": "active"}, {"_id": 0})
+        reattached = 0
+        async for t in cursor:
+            mint = t.get("mint")
+            if not mint or mint in self.active_trades:
+                continue
+            # Orphaned — re-build the in-memory slot and respawn monitor
+            self.active_trades[mint] = {
+                "trade": t,
+                "protocol": t.get("protocol", "pumpfun"),
+                "pumpswap_pool": t.get("pumpswap_pool") or "",
+            }
+            asyncio.create_task(self._monitor_position(mint))
+            reattached += 1
+            logger.warning(
+                f"reattached orphaned active row for {t.get('symbol','?')} "
+                f"({mint}) — was in DB but not in active_trades"
+            )
+        if reattached:
+            logger.warning(
+                f"active-trades reconciler reattached {reattached} orphans"
+            )
 
     async def _sweep_legacy_active_without_protocol(self):
         """Active trades persisted before the `protocol` field was added to
@@ -1264,9 +1310,26 @@ class BotState:
         return True
 
     async def _exit(self, mint: str, reason: str):
+        # Atomically pop the slot so concurrent monitors don't both try to exit
+        # the same position. If anything below raises before we've persisted a
+        # terminal status, we re-insert in the finally so the slot isn't lost.
         slot = self.active_trades.pop(mint, None)
         if not slot:
             return
+        try:
+            await self._exit_impl(mint, reason, slot)
+        except Exception as e:
+            # Unhandled error (RPC blip, network timeout, pool fetch fail, etc.)
+            # Keep the position alive — re-insert into active_trades so the
+            # monitor's next tick will retry. Without this, the dict-vs-DB
+            # desync grows every time a 429 hits during exit.
+            logger.exception(
+                f"_exit unhandled error for {mint} ({reason!r}) — re-inserting "
+                f"into active_trades for retry: {e}"
+            )
+            self.active_trades[mint] = slot
+
+    async def _exit_impl(self, mint: str, reason: str, slot: dict):
         trade_doc = slot["trade"]
         sol_price = await get_sol_usd_price()
         protocol = slot.get("protocol", "pumpfun")
@@ -1387,9 +1450,18 @@ class BotState:
                 )
             else:
                 # Persist retry counter but keep position open
+                trade_doc["status"] = "active"  # ensure DB shows the truth
                 await self.db.trades.update_one(
                     {"id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
                 )
+                # CRITICAL: re-insert into active_trades since _exit pop'd it
+                # at the top. Without this re-insert, the in-memory dict no
+                # longer tracks the mint → scanner thinks the slot is free →
+                # opens DUPLICATE position with a new trade.id → DB ends up
+                # with N "active" rows for the same mint, each with its own
+                # phantom monitor. This was the root cause of the 36-active /
+                # 12-in-memory desync.
+                self.active_trades[mint] = slot
                 await hub.broadcast("trade_exit_failed", {
                     "mint": mint, "symbol": trade_doc.get("symbol"),
                     "retries": retries, "reason": reason,

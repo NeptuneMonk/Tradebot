@@ -713,3 +713,55 @@ User saw 3 trades stuck in the Active Trades table that wouldn't clear (Nietzsch
 ### Important user note
 Tokens for force-closed trades remain in the wallet (the bot couldn't safely sell without protocol info). Users can recover via Jupiter/Phantom/Solflare swap UI. Exit reason captures this recovery instruction.
 
+
+
+## 2026-02-23 — Active-trades dict-vs-DB desync (multiple compounding bugs)
+
+### Bug report
+User saw "ACTIVE: 13" in header but ~30+ rows in active-trades table. Previous fix (asyncio lock) had prevented concurrent _enter races but a new leak class emerged.
+
+### Investigation
+- DB had 36 active rows, 7 mints with multiple rows (WCI26×4, MogEmoji×3, SnowBank×3, etc).
+- Entry times of duplicates spread over MINUTES — not a concurrent race; a sequential re-entry bug.
+- 12 in-memory but 25 unique mints in DB → another 13-mint leak unrelated to duplicates.
+
+### Root causes (two distinct leaks)
+
+#### Leak 1 — phantom-PnL retry didn't re-insert into dict
+`_exit` pops the slot at the very top, then runs the exit pipeline. The phantom-PnL guard I added earlier (when a live sell fails, keep position alive) was persisting `status="active"` to DB but **not re-inserting into `active_trades`**. Scanner saw slot as free → opened duplicate. Repeat every ~30s.
+
+#### Leak 2 — unhandled exceptions in _exit
+`_exit` pops the slot, then calls `await get_sol_usd_price()`, `pumpfun.fetch_bonding_curve_state()`, `pumpswap.fetch_pool_state()` — any of which raise on Helius 429s (which happen regularly). Exception propagates up, slot lost from dict, DB still shows active. ~13 rows leaked this way.
+
+### Fixes (`bot.py`)
+
+- ✅ **`_exit` refactor** — thin wrapper that pops slot, calls `_exit_impl(slot)`, and **re-inserts on any unhandled exception**:
+```python
+slot = self.active_trades.pop(mint, None)
+if not slot:
+    return
+try:
+    await self._exit_impl(mint, reason, slot)
+except Exception:
+    logger.exception(...)
+    self.active_trades[mint] = slot
+```
+
+- ✅ **Phantom-PnL retry now also re-inserts** the slot when keeping position alive after a failed sell (was the missing piece from the earlier fix):
+```python
+trade_doc["status"] = "active"
+await self.db.trades.update_one(...)
+self.active_trades[mint] = slot  # ← critical re-insert
+```
+
+- ✅ **Safety net: `_active_trades_reconciler_loop`** runs every 60s. Finds DB rows with `status=active` whose mint is NOT in `self.active_trades` (orphaned by any future bugs) and re-attaches a fresh `_monitor_position` task. Self-healing.
+
+### Verified
+- Pre-fix: header=12, table=36 (24-row gap)
+- Post-fix: header=23, table=23 ✅ MATCH
+- 11 duplicate active rows swept on the latest restart
+- Reconciler running every 60s, ready to catch anything else
+
+### Architectural takeaway
+"Pop first, do work" is fragile in async code with unreliable RPCs. The wrapper + reconciler pattern means any code path that can leak gets healed within a minute. Future _exit-style functions should follow the same template.
+
