@@ -12,6 +12,7 @@ export const api = {
   updateConfig: (cfg) => client.put("/bot/config", cfg).then(r => r.data),
   start: () => client.post("/bot/start").then(r => r.data),
   stop: () => client.post("/bot/stop").then(r => r.data),
+  abortBot: () => client.post("/bot/abort").then(r => r.data),
   resetKillSwitch: () => client.post("/bot/reset-kill-switch").then(r => r.data),
   rules: () => client.get("/classifier/rules").then(r => r.data),
   updateRules: (rules) => client.put("/classifier/rules", rules).then(r => r.data),

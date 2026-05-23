@@ -191,3 +191,4 @@ class BotStatus(BaseModel):
     daily_kill_switch_usd: float
     total_trades_today: int
     active_trade_count: int
+    stopping_gracefully: bool = False

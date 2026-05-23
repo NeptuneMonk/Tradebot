@@ -490,3 +490,52 @@ Two-part addition:
 ### Default behavior unchanged
 `speed_mode` defaults to `"manual"` — existing users keep their current priority/slippage configs. They can opt into a preset whenever ready.
 
+
+
+## 2026-02-23 — Smart Stop (graceful wind-down)
+
+### Feature
+Pressing **Stop Bot** now defaults to a graceful wind-down:
+1. Refuse new entries immediately (scanner / momentum / re-entry watchlist all gated)
+2. Let active positions ride to their natural TP / SL / trailing / timeout exits
+3. Auto-finalise (`enabled=False`) once `active_trade_count` reaches 0
+
+The user can either **▸ resume trading** (cancels wind-down and starts opening new positions again) or **✕ abort all** (hard stop — force-closes every position right now, skipping TP/SL).
+
+### Backend
+
+#### `bot.py BotState`
+- ✅ New flag `stopping_gracefully: bool`
+- ✅ `begin_graceful_stop()` — sets flag, broadcasts `bot_stopping_graceful`, spins up the finaliser task; instant-finalises if `active_trades` is already empty
+- ✅ `cancel_graceful_stop()` — clears the flag (used by /bot/start while stopping)
+- ✅ `_graceful_stop_finaliser()` — polls every 2s; once `active_trades` is empty, flips `enabled=False` and broadcasts `bot_stopped`
+- ✅ `hard_stop()` — disables AND force-exits every position (used by /bot/abort)
+- ✅ Entry guards in `_enter` and `_attempt_reentry` reject new positions when `stopping_gracefully=True`
+- ✅ Re-entry watchlist additions in `_exit` also blocked during graceful stop (would otherwise queue another position)
+- ✅ `_exit` eagerly calls `_finalise_graceful_stop()` when the last position closes — UI transitions without waiting for the 2s tick
+
+#### `models.py`
+- ✅ `BotStatus.stopping_gracefully: bool = False` exposed to UI
+
+#### `server.py`
+- ✅ `POST /bot/stop` accepts `?mode=graceful` (default) or `?mode=hard`
+- ✅ `POST /bot/abort` — convenience hard-stop endpoint
+- ✅ `POST /bot/start` cancels any in-progress graceful stop
+
+### Frontend
+- ✅ `BotControlCard` button now has 3 states:
+  - **Stopped:** green "Start Bot"
+  - **Running:** red "Stop Bot"
+  - **Stopping:** amber "Stopping · waiting on N positions" (animated, disabled) + secondary "▸ resume trading" and "✕ abort all" links
+- ✅ `api.abortBot()` helper added to `lib/api.js`
+- ✅ Confirm dialog before abort (force-close skips TP/SL — destructive op)
+
+### Verified end-to-end
+| Test | Result |
+|---|---|
+| `POST /bot/stop` with 12 active positions | `stopping_gracefully=true`, enabled stays true, 12 positions remain |
+| `POST /bot/start` mid-stop | Cancels wind-down, `stopping_gracefully=false` |
+| `POST /bot/abort` | Force-closes all 12 → `enabled=false, active=0` |
+| `POST /bot/stop?mode=hard` | Direct hard stop bypasses graceful path |
+| Natural drain | All paper positions hit timeout → finaliser auto-flipped enabled=false |
+

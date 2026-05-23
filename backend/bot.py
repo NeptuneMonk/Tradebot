@@ -55,6 +55,11 @@ class BotState:
         # Mints we have already entered (or attempted) so the scanner doesn't double-trade
         self.entered_mints: set[str] = set()
         self._scanner_task: asyncio.Task | None = None
+        # Smart-stop flag: when True, refuse new entries but let active positions
+        # ride to their natural exits. A background task auto-flips enabled=False
+        # once active_trades is empty.
+        self.stopping_gracefully: bool = False
+        self._graceful_stop_task: asyncio.Task | None = None
         self.scanner = MomentumScanner(self)
         self.discovery = PumpfunDiscovery(self)
 
@@ -91,6 +96,71 @@ class BotState:
              else self.config.slippage_bps),
             auto_priority_cache=auto_tuner.current_value,
         )
+
+    # ---------- Graceful stop ----------
+    async def begin_graceful_stop(self):
+        """Stop opening new positions immediately, but let active trades ride
+        to their natural TP/SL/trailing/timeout exits. A background watcher
+        finalises the stop (flips `enabled=False`) once all positions close.
+
+        Idempotent — calling twice is a no-op.
+        """
+        if self.stopping_gracefully:
+            return
+        self.stopping_gracefully = True
+        await hub.broadcast("bot_stopping_graceful", {
+            "active_positions": len(self.active_trades),
+        })
+        # Spin up the finaliser (or reuse the existing one)
+        if self._graceful_stop_task is None or self._graceful_stop_task.done():
+            self._graceful_stop_task = asyncio.create_task(self._graceful_stop_finaliser())
+        # If there are no active positions, finalise immediately
+        if not self.active_trades:
+            await self._finalise_graceful_stop()
+
+    async def cancel_graceful_stop(self):
+        """User pressed Start while we were in graceful-stop mode — abort the
+        wind-down and resume normal trading."""
+        if not self.stopping_gracefully:
+            return
+        self.stopping_gracefully = False
+        await hub.broadcast("bot_stopping_cancelled", {})
+
+    async def _graceful_stop_finaliser(self):
+        """Polls until active_trades drains, then flips enabled=False."""
+        try:
+            while self.stopping_gracefully:
+                if not self.active_trades:
+                    await self._finalise_graceful_stop()
+                    return
+                await asyncio.sleep(2.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.exception(f"graceful stop finaliser error: {e}")
+
+    async def _finalise_graceful_stop(self):
+        if not self.stopping_gracefully:
+            return
+        self.config.enabled = False
+        self.stopping_gracefully = False
+        await self.save_config()
+        await hub.broadcast("bot_stopped", {"reason": "graceful_complete"})
+
+    async def hard_stop(self):
+        """Immediate hard stop — disable trading AND force-exit every open
+        position right now. Used for emergencies or when the user can't wait
+        for natural exits."""
+        self.stopping_gracefully = False
+        self.config.enabled = False
+        await self.save_config()
+        mints = list(self.active_trades.keys())
+        await hub.broadcast("bot_hard_stop", {"closing": len(mints)})
+        for mint in mints:
+            try:
+                await self._exit(mint, reason="hard-stop (user requested)")
+            except Exception as e:
+                logger.exception(f"hard-stop exit failed for {mint}: {e}")
 
     async def save_config(self):
         await self.db.bot_config.update_one(
@@ -176,6 +246,9 @@ class BotState:
 
     async def _attempt_reentry(self, w: dict):
         mint = w["mint"]
+        # Don't open new positions during a graceful stop
+        if self.stopping_gracefully:
+            return
         # Apply the same portfolio + liquidity gates as fresh entries
         if len(self.active_trades) >= max(1, self.config.max_concurrent_positions):
             return
@@ -548,6 +621,9 @@ class BotState:
 
     # ---------- Entry / exit (live + paper) ----------
     async def _enter(self, launch: Launch, risk_score: int, action: str):
+        # Smart-stop: refuse new entries while we're winding down
+        if self.stopping_gracefully:
+            return
         # Portfolio limit: don't pile in beyond max concurrent positions
         if len(self.active_trades) >= max(1, self.config.max_concurrent_positions):
             return
@@ -1124,8 +1200,15 @@ class BotState:
             {"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
         )
         await hub.broadcast("trade_exit", trade_doc)
-        # Re-entry watchlist: if we exited profitably and curve hasn't graduated, watch for a pullback
-        if self.config.reentry_enabled and total_pnl_sol > 0 and not state.get("complete", False):
+        # Re-entry watchlist: if we exited profitably and curve hasn't graduated, watch for a pullback.
+        # During a graceful stop we don't queue any new re-entries — the user
+        # is winding down, the watchlist would just open another position.
+        if (
+            self.config.reentry_enabled
+            and not self.stopping_gracefully
+            and total_pnl_sol > 0
+            and not state.get("complete", False)
+        ):
             self.reentry_watch[mint] = {
                 "mint": mint,
                 "name": trade_doc.get("name"),
@@ -1143,3 +1226,9 @@ class BotState:
             }
             await hub.broadcast("reentry_watch_add", self.reentry_watch[mint])
         await self.check_kill_switch()
+        # If a graceful stop is in progress, the finaliser watches active_trades
+        # and will flip enabled=False on its own. Wake it eagerly so the UI
+        # transitions from "Stopping (N positions)…" → "Stopped" without
+        # waiting for the next 2s tick.
+        if self.stopping_gracefully and not self.active_trades:
+            await self._finalise_graceful_stop()

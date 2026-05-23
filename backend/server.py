@@ -168,16 +168,41 @@ async def update_config(cfg: BotConfig):
 async def bot_start():
     if bot_state.kill_switch_tripped:
         raise HTTPException(400, "Kill switch tripped. Reset before starting.")
+    # If a graceful stop was in progress, cancel it — user is resuming
+    if bot_state.stopping_gracefully:
+        await bot_state.cancel_graceful_stop()
     bot_state.config.enabled = True
     await bot_state.save_config()
     return {"ok": True, "enabled": True}
 
 
 @api.post("/bot/stop")
-async def bot_stop():
-    bot_state.config.enabled = False
-    await bot_state.save_config()
-    return {"ok": True, "enabled": False}
+async def bot_stop(mode: str = "graceful"):
+    """Smart stop:
+      mode='graceful' (default) — refuse new entries; let active positions
+        ride to their natural TP/SL/trailing exits, then flip enabled=False.
+      mode='hard' — disable immediately AND force-exit every open position.
+    """
+    if mode == "hard":
+        await bot_state.hard_stop()
+        return {"ok": True, "enabled": False, "mode": "hard"}
+    # Graceful path
+    await bot_state.begin_graceful_stop()
+    return {
+        "ok": True,
+        "enabled": bot_state.config.enabled,
+        "stopping_gracefully": bot_state.stopping_gracefully,
+        "active_positions": len(bot_state.active_trades),
+        "mode": "graceful",
+    }
+
+
+@api.post("/bot/abort")
+async def bot_abort():
+    """Convenience endpoint — force hard-stop from the UI while in graceful
+    wind-down. Equivalent to POST /bot/stop?mode=hard."""
+    await bot_state.hard_stop()
+    return {"ok": True, "enabled": False, "mode": "hard"}
 
 
 @api.post("/bot/reset-kill-switch")
@@ -259,6 +284,7 @@ async def bot_status():
         daily_kill_switch_usd=bot_state.config.daily_kill_switch_usd,
         total_trades_today=total_today,
         active_trade_count=len(bot_state.active_trades),
+        stopping_gracefully=bot_state.stopping_gracefully,
     )
 
 

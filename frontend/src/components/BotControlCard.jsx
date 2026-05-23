@@ -41,19 +41,64 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
         </div>
       </div>
 
-      <button
-        onClick={running ? onStop : onStart}
-        disabled={status?.kill_switch_tripped}
-        data-testid={running ? "stop-bot-btn" : "start-bot-btn"}
-        className={`w-full flex items-center justify-center gap-2 px-3 py-2.5 border font-mono text-xs uppercase tracking-[0.2em] transition-colors duration-100 ${
-          running
-            ? "border-red-700 text-red-300 bg-red-950 hover:bg-red-900"
-            : "border-emerald-700 text-emerald-300 bg-emerald-950 hover:bg-emerald-900"
-        } disabled:opacity-40 disabled:cursor-not-allowed`}
-      >
-        <Power className="w-3 h-3" />
-        {running ? "Stop Bot" : "Start Bot"}
-      </button>
+      {(() => {
+        const stopping = status?.stopping_gracefully;
+        const activeN = status?.active_trade_count || 0;
+        if (stopping) {
+          return (
+            <div className="space-y-1">
+              <button
+                disabled
+                data-testid="stopping-bot-indicator"
+                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 border border-amber-700 text-amber-300 bg-amber-950/50 font-mono text-xs uppercase tracking-[0.2em] cursor-not-allowed"
+              >
+                <Power className="w-3 h-3 animate-pulse" />
+                Stopping · waiting on {activeN} position{activeN === 1 ? "" : "s"}
+              </button>
+              <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-[0.15em] px-1">
+                <button
+                  onClick={onStart}
+                  data-testid="resume-bot-btn"
+                  className="text-emerald-400 hover:text-emerald-300 transition-colors"
+                >
+                  ▸ resume trading
+                </button>
+                <button
+                  onClick={async () => {
+                    if (!window.confirm(`Force-close ${activeN} active position${activeN === 1 ? "" : "s"} right now? This skips TP/SL triggers.`)) return;
+                    try {
+                      const m = await import("@/lib/api");
+                      await m.api.abortBot();
+                      toast.success("Hard stop — all positions force-closed");
+                    } catch {
+                      toast.error("Abort failed");
+                    }
+                  }}
+                  data-testid="abort-bot-btn"
+                  className="text-red-400 hover:text-red-300 transition-colors"
+                >
+                  ✕ abort all
+                </button>
+              </div>
+            </div>
+          );
+        }
+        return (
+          <button
+            onClick={running ? onStop : onStart}
+            disabled={status?.kill_switch_tripped}
+            data-testid={running ? "stop-bot-btn" : "start-bot-btn"}
+            className={`w-full flex items-center justify-center gap-2 px-3 py-2.5 border font-mono text-xs uppercase tracking-[0.2em] transition-colors duration-100 ${
+              running
+                ? "border-red-700 text-red-300 bg-red-950 hover:bg-red-900"
+                : "border-emerald-700 text-emerald-300 bg-emerald-950 hover:bg-emerald-900"
+            } disabled:opacity-40 disabled:cursor-not-allowed`}
+          >
+            <Power className="w-3 h-3" />
+            {running ? "Stop Bot" : "Start Bot"}
+          </button>
+        );
+      })()}
 
       {/* Speed Mode slider — controls priority fee + slippage as a bundle */}
       <SpeedModeSlider
