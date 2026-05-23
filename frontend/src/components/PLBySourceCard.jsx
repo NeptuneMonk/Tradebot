@@ -1,17 +1,19 @@
 import { useEffect, useState, useCallback } from "react";
-import { Crosshair, Radar, Repeat, TrendingUp, TrendingDown, Layers } from "lucide-react";
+import { Sparkles, Hourglass, Repeat, TrendingUp, TrendingDown, Layers, Archive } from "lucide-react";
 import { api } from "@/lib/api";
 
 const ICONS = {
-  sniper: Crosshair,
-  scanner: Radar,
+  new: Sparkles,
+  seasoned: Hourglass,
   reentry: Repeat,
+  legacy: Archive,
 };
 
 const COLORS = {
-  sniper: "text-blue-300 border-blue-900/60 bg-blue-950/30",
-  scanner: "text-amber-300 border-amber-900/60 bg-amber-950/30",
+  new: "text-amber-300 border-amber-900/60 bg-amber-950/30",
+  seasoned: "text-cyan-300 border-cyan-900/60 bg-cyan-950/30",
   reentry: "text-fuchsia-300 border-fuchsia-900/60 bg-fuchsia-950/30",
+  legacy: "text-neutral-400 border-neutral-800 bg-neutral-950/30",
 };
 
 function fmtUsd(n) {
@@ -129,18 +131,19 @@ export default function PLBySourceCard({ refreshSignal }) {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
         {sources.length > 0
           ? sources.map((s) => <SourceRow key={s.source} s={s} />)
-          : ["sniper", "scanner", "reentry"].map((src) => (
+          : ["new", "seasoned", "reentry", "legacy"].map((src) => (
               <SourceRow
                 key={src}
                 s={{
                   source: src,
                   label: {
-                    sniper: "Launch Sniper",
-                    scanner: "Momentum Scanner",
+                    new: "New Momentum",
+                    seasoned: "Seasoned Momentum",
                     reentry: "Winner Re-entry",
+                    legacy: "Legacy Sniper",
                   }[src],
                   trades: 0,
                   wins: 0,

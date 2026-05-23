@@ -234,3 +234,17 @@ User clarification: scanner should consider tokens that *already exist* on Pump.
 - ✅ Frontend: cyan **DISCOVERED** badge next to discovered candidates in ScannerCandidatesCard
 - ✅ Pump.fun's per-token `/trades/all/{mint}` endpoint returns 404 on the public v3 API — historical trade backfill removed; live trades from Helius are sufficient
 - **Verified live**: Discovery found **WIVES** (World Cup Wives, 3.8h old, +34.5% growth, 14.67 SOL inflow/5m, 10 new buyers/1m) and the scanner correctly listed it as **PASSING** with the DISCOVERED badge
+
+
+## 2026-02-22 — Momentum-only entries (drop blind sniper)
+
+### Replace blind sniper with momentum-gated entries on both bands (P0)
+User feedback: "get rid of recent launch investment and replace it with momentum tokens that are new and meet whatever config criteria is set. So we have momentum tokens < set seasoning, and tokens => seasoning config"
+- ✅ `bot.py`: `_assess_and_enter` now runs the classifier for **display only** (so Recent Launches feed shows verdicts) — no auto-entry
+- ✅ `scanner.py`: dropped the `age < min_age` filter in the scanner loop; both bands are now scanned with identical momentum gates
+- ✅ Each entry is tagged: `momentum_new` for `age < scanner_min_age_minutes`, `scanner_momentum` for `age >= scanner_min_age_minutes`
+- ✅ `candidates_snapshot()` returns a `band: "new" | "seasoned"` field; returns up to 80 (vs 50)
+- ✅ Frontend `ScannerCandidatesCard`: split into two columns (New Momentum < 3h / Seasoned Momentum 3h–4h) with distinct icons & colors
+- ✅ `pl_sources.py`: 4 buckets — `new`, `seasoned`, `reentry`, `legacy` (historical pre-refactor trades preserved as "Legacy Sniper")
+- ✅ Frontend `PLBySourceCard`: 4-column grid
+- **Verified live**: trade history shows new `momentum_new` action firing on entries; Legacy Sniper bucket holds 41 historical trades (-$7.02, 15% wr), New Momentum already has 2 trades (+$0.15, 50% wr).

@@ -78,7 +78,9 @@ class MomentumScanner:
         }
 
     def candidates_snapshot(self) -> list[dict]:
-        """For the API: ranked candidates with current cached metrics (no RPC)."""
+        """For the API: ranked candidates with current cached metrics (no RPC).
+        Returns both bands (`new` < min_age, `seasoned` >= min_age) so the UI
+        can render them separately."""
         st = self.state
         cfg = st.config
         now = time.time()
@@ -96,26 +98,23 @@ class MomentumScanner:
             m["symbol"] = b.get("symbol")
             m["name"] = b.get("name")
             m["launch_id"] = b.get("launch_id")
-            m["seasoned"] = age >= min_age
+            m["band"] = "seasoned" if age >= min_age else "new"
             m["discovered"] = bool(b.get("discovered"))
             m["usd_market_cap"] = float(b.get("usd_market_cap") or 0.0)
             last_trade_ms = b.get("last_trade_ms") or 0
             m["last_trade_age_s"] = max(0.0, now - last_trade_ms / 1000.0) if last_trade_ms else None
-            # Pre-seasoning tokens belong to the sniper (Recent Launches feed),
-            # not the momentum scanner — skip them from this view entirely.
-            if not m["seasoned"]:
-                continue
             m["passes"] = (
                 m["growth_pct"] >= cfg.scanner_min_growth_pct
                 and m["recent_inflow_sol"] >= cfg.scanner_min_recent_inflow_sol
                 and m["new_buyers_recent"] >= cfg.scanner_min_new_buyers
+                and m["real_sol_reserves"] >= cfg.min_curve_liquidity_sol
             )
             out.append(m)
         out.sort(
             key=lambda x: (x["passes"], x["growth_pct"], x["recent_inflow_sol"]),
             reverse=True,
         )
-        return out[:50]
+        return out[:80]
 
     async def loop(self):
         """Background: every scanner_interval_s scan tracked mints for momentum
@@ -141,13 +140,13 @@ class MomentumScanner:
                 cooldown = 60.0  # don't re-attempt the same mint within 60s
 
                 # Pre-rank candidates using CACHED metrics (no RPC).
+                # Scanner now covers BOTH bands:
+                #   - "new"      : age < min_age  (replaces the old blind sniper)
+                #   - "seasoned" : age >= min_age (3h+ tokens, often discovered)
                 scored = []
                 for mint, b in st.tracking.items():
                     age = now - b["start"]
                     if age > max_age:
-                        continue
-                    if age < min_age:
-                        # Seasoning gate: too fresh — sniper's turf, scanner stays out
                         continue
                     if mint in st.entered_mints or mint in st.active_trades:
                         continue
@@ -169,7 +168,8 @@ class MomentumScanner:
                         + m["recent_inflow_sol"] * 5
                         + m["new_buyers_recent"] * 2
                     )
-                    scored.append((mint, b, m, rank_score))
+                    band = "seasoned" if age >= min_age else "new"
+                    scored.append((mint, b, m, rank_score, band))
 
                 if not scored:
                     continue
@@ -181,7 +181,7 @@ class MomentumScanner:
                 max_entries_this_pass = min(3, remaining)
                 entries_made = 0
 
-                for mint, b, _cached_m, _cached_score in top:
+                for mint, b, _cached_m, _cached_score, band in top:
                     if entries_made >= max_entries_this_pass:
                         break
                     if mint in st.active_trades or mint in st.entered_mints:
@@ -199,6 +199,7 @@ class MomentumScanner:
                     if m["new_buyers_recent"] < cfg.scanner_min_new_buyers:
                         continue
 
+                    action = "scanner_momentum" if band == "seasoned" else "momentum_new"
                     synthetic = Launch(
                         mint=mint,
                         creator=b.get("creator") or "",
@@ -207,7 +208,7 @@ class MomentumScanner:
                         symbol=b.get("symbol"),
                     )
                     synthetic.id = b.get("launch_id") or synthetic.id
-                    synthetic.classifier_action = "scanner_momentum"
+                    synthetic.classifier_action = action
                     b["scanner_last_attempt"] = now
                     score_val = (
                         m["growth_pct"]
@@ -219,12 +220,13 @@ class MomentumScanner:
                         {
                             "mint": mint,
                             "symbol": b.get("symbol"),
+                            "band": band,
                             "metrics": m,
                             "score": score_val,
                         },
                     )
                     try:
-                        await st._enter(synthetic, risk_score=40, action="scanner_momentum")
+                        await st._enter(synthetic, risk_score=40, action=action)
                         entries_made += 1
                     except Exception as e:
                         logger.exception(f"scanner entry failed for {mint}: {e}")

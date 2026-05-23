@@ -1,28 +1,32 @@
 """
 Per-source P/L analytics.
 
-Classifies each trade into one of three buckets based on `classifier_action`:
-  - "scanner"  : entered by the 4h momentum scanner ("scanner_momentum")
-  - "reentry"  : re-entered after a profitable exit ("reentry")
-  - "sniper"   : everything else (fresh mempool launches)
+Classifies each trade into one of four buckets based on `classifier_action`:
+  - "new"       : scanner entry in the < seasoning band ("momentum_new")
+  - "seasoned"  : scanner entry in the >= seasoning band ("scanner_momentum")
+  - "reentry"   : re-entered after a profitable exit ("reentry")
+  - "legacy"    : historical blind-sniper trades (pre momentum-only refactor)
 """
 from datetime import datetime, timezone, timedelta
 from typing import Iterable
 
 
 SOURCE_LABELS = {
-    "sniper": "Launch Sniper",
-    "scanner": "Momentum Scanner",
+    "new": "New Momentum",
+    "seasoned": "Seasoned Momentum",
     "reentry": "Winner Re-entry",
+    "legacy": "Legacy Sniper",
 }
 
 
 def classify_source(classifier_action: str | None) -> str:
     if classifier_action == "scanner_momentum":
-        return "scanner"
+        return "seasoned"
+    if classifier_action == "momentum_new":
+        return "new"
     if classifier_action == "reentry":
         return "reentry"
-    return "sniper"
+    return "legacy"
 
 
 def _empty_bucket(source: str) -> dict:
@@ -87,6 +91,6 @@ async def compute_pl_by_source(db, days: int = 7) -> dict:
 
     return {
         "days": days,
-        "sources": [_finalize(buckets[s]) for s in ("sniper", "scanner", "reentry")],
+        "sources": [_finalize(buckets[s]) for s in ("new", "seasoned", "reentry", "legacy")],
         "total": _finalize(total),
     }

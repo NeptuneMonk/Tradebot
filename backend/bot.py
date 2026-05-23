@@ -416,8 +416,11 @@ class BotState:
             self.tracking.pop(mint, None)
         asyncio.create_task(_final_drop())
 
-    # ---------- Entry decision ----------
+    # ---------- Entry decision (assess only — entry handled by MomentumScanner) ----------
     async def _assess_and_enter(self, launch: Launch, creator_rugs: int = 0):
+        """Runs the classifier on the early-window metrics so the Recent Launches
+        feed shows a verdict, but does NOT auto-enter. All entries now flow
+        through the momentum scanner (both new and seasoned bands)."""
         try:
             await asyncio.sleep(ASSESS_DELAY_S)
             b = self.tracking.get(launch.mint, {})
@@ -430,7 +433,6 @@ class BotState:
                 "social_score": b.get("social_score", 0),
             }
             verdict = classify(metrics, self.rules.model_dump())
-            # Update launch verdict in DB
             await self.db.launches.update_one(
                 {"_id": launch.id},
                 {"$set": {
@@ -445,19 +447,8 @@ class BotState:
                     r["classifier_risk"] = verdict["risk"]
                     r["classifier_reasons"] = verdict["reasons"]
                     break
-
-            if not self.config.enabled or self.kill_switch_tripped:
-                return
-            if await self.check_kill_switch():
-                return
-            if launch.mint in self.active_trades:
-                return
-            if verdict["action"] == "abort_trade":
-                return
-
-            await self._enter(launch, verdict["risk"], verdict["action"])
         except Exception as e:
-            logger.exception(f"assess_and_enter failed for {launch.mint}: {e}")
+            logger.exception(f"assess failed for {launch.mint}: {e}")
 
     # ---------- Entry / exit (live + paper) ----------
     async def _enter(self, launch: Launch, risk_score: int, action: str):
