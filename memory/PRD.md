@@ -313,3 +313,25 @@ Graduated tokens trade on PumpSwap AMM, but `last_trade_timestamp` on Pump.fun's
 - ✅ `_fetch_aged_coins` now polls **two sort orders** (`last_trade_timestamp DESC` + `market_cap DESC`), merged via mint dedup — covers both active movers and high-MC names
 - ✅ Idle-minutes freshness gate now applies **only to non-graduated tokens** (PumpSwap tokens skip it since Pump.fun doesn't track their AMM trades)
 - **Verified**: graduated PumpSwap tokens `dumped` ($17.8K MC) and `Mootoo` ($4.3K MC) immediately surfaced in seasoned candidates after the fix.
+
+
+## 2026-02-23 — Pre-trade classifier gate (fees protection)
+
+### Bug
+35 of the last 40 closed paper trades exited at **-0.1% to -0.2% within ~2s of entry**, every one with reason `classifier abort: ['creator has 0 prior rugs']`. Two compounding faults:
+
+1. **`creator_rug_threshold` in DB was `0`** (set via `ClassifierRulesEditor` UI). The check `rugs >= threshold` then evaluated `0 >= 0 == True` for every clean creator — semantic inversion (the rule was *meant* to fire only when a creator has ≥1 prior rug).
+2. **Classifier ran only inside `_monitor_position`**, *after* the buy tx. So even if the classifier knew the trade was a certain loser, the entry fees + exit slippage were already burned by the time the abort fired (~$0.005/trade × 35 = ~$0.18 wasted).
+
+### Fix (`classifier.py`)
+- ✅ Guarded the rug-abort condition: `if rugs > 0 and rugs >= max(1, threshold)`. A 0-rug creator can **never** abort regardless of how the threshold is set in the UI. Threshold semantics: "abort if creator has rugged before AND has reached the configured count."
+- ✅ DB value reset `creator_rug_threshold: 0 → 1`.
+
+### Fix (`bot.py _enter`)
+- ✅ Added **pre-trade classifier gate** for NEW-band PumpFun entries — runs `classify()` on the same metrics `_monitor_position` would have used, and refuses entry if the verdict is `abort_trade` or `exit_early`. Saves entry fees + exit slippage on certain-loser candidates that pass scanner gates but fail classifier.
+- ✅ Skipped for seasoned/PumpSwap entries (they have no mempool metrics so classifier would spuriously abort).
+- ✅ Skip events broadcast as `scanner_skip` for UI visibility.
+
+### Validated
+Unit tests cover (a) threshold=0 + rugs=0 no longer aborts, (b) real rugger still aborts correctly, (c) normal config unaffected, (d) low-inflow abort still detected (now blocks entry instead of post-trade exit).
+

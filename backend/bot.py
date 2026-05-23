@@ -530,6 +530,34 @@ class BotState:
                 logger.info(f"skip {launch.mint} [{action}]: only {buyers} buyers < min {min_buyers}")
                 return
 
+        # Pre-trade classifier gate (NEW band PumpFun only — seasoned/PumpSwap
+        # tokens don't have mempool metrics so the classifier would spuriously
+        # abort them). If the classifier would abort/exit_early *immediately*
+        # post-entry, refuse to enter — saves entry fees + exit slippage on a
+        # certain loser.
+        if is_new_band and protocol == "pumpfun":
+            b = self.tracking.get(launch.mint, {})
+            metrics = {
+                "elapsed_s": time.time() - b.get("start", time.time()),
+                "curve_fill_pct": b.get("curve_fill_pct", 0.0),
+                "unique_buyers": len(b.get("buyers", set())),
+                "sol_inflow": b.get("sol_inflow_lamports", 0) / LAMPORTS_PER_SOL,
+                "creator_rugs": b.get("creator_rugs", 0),
+                "social_score": b.get("social_score", 0),
+            }
+            verdict = classify(metrics, self.rules.model_dump())
+            if verdict["action"] in ("abort_trade", "exit_early"):
+                logger.info(
+                    f"skip {launch.mint} [{action}]: pre-trade classifier "
+                    f"{verdict['action']} — {verdict['reasons']}"
+                )
+                await hub.broadcast("scanner_skip", {
+                    "mint": launch.mint, "symbol": launch.symbol,
+                    "band": "new", "reason": verdict["action"],
+                    "details": verdict["reasons"],
+                })
+                return
+
         tokens_out, max_sol = (
             pumpswap.quote_buy_tokens(pumpswap_state, sol_in_lamports, self.config.slippage_bps)
             if protocol == "pumpswap"
