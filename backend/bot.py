@@ -338,14 +338,36 @@ class BotState:
 
         pct_change = (cur_price_sol - entry_p) / entry_p * 100
 
-        # Take profit
-        if pct_change >= self.config.take_profit_pct:
+        # Take profit — either full exit or partial-then-tighten-trailing.
+        # NOTE: after a successful partial, we skip the TP check entirely — the
+        # runner is governed by the tightened trailing stop only.
+        if pct_change >= self.config.take_profit_pct and not slot.get("partial_done"):
+            ptp = self.config.partial_tp_pct
+            if 0 < ptp < 100:
+                # Reserve the partial flag synchronously to prevent concurrent
+                # fast-exit invocations from racing into the same partial.
+                slot["partial_done"] = True
+                did = await self._partial_exit(
+                    mint, ptp / 100.0,
+                    reason=f"partial-tp ({ptp:.0f}%) at +{pct_change:.1f}% [fast]",
+                )
+                if did:
+                    slot["peak_price_sol"] = cur_price_sol
+                    return
+                # Partial failed — clear the reservation and fall through to full exit
+                slot["partial_done"] = False
             await self._exit(mint, reason=f"take-profit hit (+{pct_change:.1f}%) [fast]")
             return
-        # Trailing stop (if enabled and we have unrealized gain)
-        if self.config.trailing_stop_pct > 0 and peak > entry_p:
+        # Trailing stop (if enabled and we have unrealized gain).
+        # After partial TP, use the tighter trail to lock in runner gains.
+        trail_pct = (
+            self.config.partial_tp_trail_tighten_pct
+            if slot.get("partial_done") and self.config.partial_tp_trail_tighten_pct > 0
+            else self.config.trailing_stop_pct
+        )
+        if trail_pct > 0 and peak > entry_p:
             trail_drop = (peak - cur_price_sol) / peak * 100
-            if trail_drop >= self.config.trailing_stop_pct:
+            if trail_drop >= trail_pct:
                 peak_pct = (peak - entry_p) / entry_p * 100
                 await self._exit(
                     mint,
@@ -634,7 +656,19 @@ class BotState:
 
                 pct_change = (cur_price_sol - trade_doc["entry_price_sol"]) / max(trade_doc["entry_price_sol"], 1e-18) * 100
 
-                if pct_change >= self.config.take_profit_pct:
+                if pct_change >= self.config.take_profit_pct and not slot.get("partial_done"):
+                    ptp = self.config.partial_tp_pct
+                    if 0 < ptp < 100:
+                        slot["partial_done"] = True
+                        did = await self._partial_exit(
+                            mint, ptp / 100.0,
+                            reason=f"partial-tp ({ptp:.0f}%) at +{pct_change:.1f}%",
+                        )
+                        if did:
+                            slot["peak_price_sol"] = cur_price_sol
+                            await asyncio.sleep(0.5)
+                            continue
+                        slot["partial_done"] = False
                     await self._exit(mint, reason=f"take-profit hit (+{pct_change:.1f}%)")
                     return
                 if pct_change <= -self.config.stop_loss_pct:
@@ -674,6 +708,125 @@ class BotState:
             raise
         except Exception as e:
             logger.exception(f"monitor error for {mint}: {e}")
+
+    async def _partial_exit(self, mint: str, fraction: float, reason: str):
+        """Sell `fraction` of the remaining position. Banks realized PnL onto
+        the trade doc, reduces `entry_tokens`, and keeps the slot active so the
+        runner can ride further with a tightened trailing stop.
+
+        Returns True if a partial exit was actually performed."""
+        slot = self.active_trades.get(mint)
+        if not slot:
+            return False
+        if slot.get("partial_persisted"):
+            return False  # already partialled — don't re-partial
+        if not (0.0 < fraction < 1.0):
+            return False
+        trade_doc = slot["trade"]
+        protocol = slot.get("protocol", "pumpfun")
+        sol_price = await get_sol_usd_price()
+        pumpswap_state = None
+        if protocol == "pumpswap":
+            pool = slot.get("pumpswap_pool") or ""
+            pumpswap_state = await pumpswap.fetch_pool_state(pool) if pool else None
+            state = pumpswap_state
+        else:
+            state = await pumpfun.fetch_bonding_curve_state(mint)
+        if not state:
+            return False
+
+        held = int(trade_doc["entry_tokens"])
+        sell_tokens = int(held * fraction)
+        if sell_tokens <= 0:
+            return False
+
+        # For live trades, cap by ACTUAL wallet balance
+        if trade_doc["mode"] == "live":
+            try:
+                user = get_pubkey()
+                mint_pk = Pubkey.from_string(mint)
+                ata = (
+                    pumpswap.get_associated_token_address(user, mint_pk, pumpswap.TOKEN_PROGRAM)
+                    if protocol == "pumpswap"
+                    else pumpfun.derive_associated_token(user, mint_pk)
+                )
+                actual = await pumpswap.get_token_balance(ata)
+                if actual > 0:
+                    sell_tokens = min(sell_tokens, actual)
+            except Exception as e:
+                logger.warning(f"partial balance read failed for {mint}: {e}")
+
+        exit_slip = self.config.exit_slippage_bps if self.config.exit_slippage_bps > 0 else self.config.slippage_bps
+        if protocol == "pumpswap":
+            sol_out, min_sol = pumpswap.quote_sell_sol(pumpswap_state, sell_tokens, exit_slip)
+        else:
+            sol_out, min_sol = pumpfun.quote_sell_sol(state, sell_tokens, exit_slip)
+        if sol_out <= 0:
+            return False
+        partial_sol = sol_out / LAMPORTS_PER_SOL
+
+        partial_sig = None
+        if trade_doc["mode"] == "live":
+            try:
+                kp = get_keypair()
+                user = get_pubkey()
+                mint_pk = Pubkey.from_string(mint)
+                if protocol == "pumpswap":
+                    user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, pumpswap.TOKEN_PROGRAM)
+                    wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, 0)
+                    ixs = [
+                        *wsol_ixs,
+                        pumpswap.build_sell_ix(
+                            user, pumpswap_state, user_token_ata, wsol_acc,
+                            base_amount_in=sell_tokens, min_quote_amount_out=min_sol,
+                        ),
+                        pumpswap.build_close_wsol_ix(user, wsol_acc),
+                    ]
+                    partial_sig = await pumpfun.send_versioned_tx(
+                        kp, ixs, self.config.priority_fee_microlamports, compute_unit_limit=400_000,
+                    )
+                else:
+                    ix = pumpfun.build_sell_ix(user, mint_pk, sell_tokens, min_sol)
+                    partial_sig = await pumpfun.send_versioned_tx(
+                        kp, [ix], self.config.priority_fee_microlamports
+                    )
+            except Exception as e:
+                logger.exception(f"partial sell failed for {mint}: {e}")
+                return False
+
+        # Compute realized contribution from this partial
+        entry_sol_per_token = trade_doc["entry_sol"] / max(trade_doc["entry_tokens"], 1)
+        partial_cost_sol = entry_sol_per_token * sell_tokens
+        realized_sol = partial_sol - partial_cost_sol
+        realized_usd = realized_sol * sol_price
+
+        # Update trade doc — reduce remaining position, bank realized PnL
+        trade_doc["partial_done"] = True
+        trade_doc["partial_sell_tokens"] = sell_tokens
+        trade_doc["partial_sell_sol"] = partial_sol
+        trade_doc["partial_sell_usd"] = partial_sol * sol_price
+        trade_doc["partial_realized_sol"] = realized_sol
+        trade_doc["partial_realized_usd"] = realized_usd
+        trade_doc["partial_sig"] = partial_sig
+        trade_doc["partial_reason"] = reason
+        trade_doc["entry_tokens"] = held - sell_tokens
+        trade_doc["entry_sol"] = trade_doc["entry_sol"] - partial_cost_sol
+        trade_doc["entry_usd"] = trade_doc["entry_sol"] * sol_price
+        slot["partial_done"] = True
+        slot["partial_persisted"] = True
+
+        await self.db.trades.update_one(
+            {"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
+        )
+        await hub.broadcast("trade_partial", {
+            "id": trade_doc["id"], "mint": mint, "symbol": trade_doc.get("symbol"),
+            "partial_realized_usd": realized_usd, "fraction": fraction, "reason": reason,
+        })
+        logger.info(
+            f"partial exit {mint} ({fraction*100:.0f}%): banked ${realized_usd:+.2f}, "
+            f"remaining {trade_doc['entry_tokens']} tokens"
+        )
+        return True
 
     async def _exit(self, mint: str, reason: str):
         slot = self.active_trades.pop(mint, None)
@@ -760,8 +913,20 @@ class BotState:
                 trade_doc["exit_reason"] = f"{reason} | sell failed: {e}"
 
         pnl_sol = exit_sol - trade_doc["entry_sol"]
-        pnl_usd = pnl_sol * sol_price
-        pnl_pct = (pnl_sol / trade_doc["entry_sol"] * 100) if trade_doc["entry_sol"] > 0 else 0
+        # Combine with any earlier partial-TP realised PnL so the trade's
+        # reported total reflects both legs.
+        partial_realized_sol = float(trade_doc.get("partial_realized_sol") or 0.0)
+        partial_realized_usd = float(trade_doc.get("partial_realized_usd") or 0.0)
+        total_pnl_sol = pnl_sol + partial_realized_sol
+        total_pnl_usd = (pnl_sol * sol_price) + partial_realized_usd
+        # PnL % is over the ORIGINAL cost basis so it stays comparable to
+        # non-partial trades. We reconstruct original cost = current entry_sol +
+        # partial cost basis (= partial_sell_sol - partial_realized_sol).
+        orig_cost_sol = (
+            trade_doc["entry_sol"]
+            + (float(trade_doc.get("partial_sell_sol") or 0.0) - partial_realized_sol)
+        )
+        pnl_pct = (total_pnl_sol / orig_cost_sol * 100) if orig_cost_sol > 0 else 0
 
         trade_doc.update(
             {
@@ -772,8 +937,8 @@ class BotState:
                 "exit_price_sol": exit_price_sol,
                 "exit_sig": exit_sig,
                 "exit_reason": reason,
-                "pnl_sol": pnl_sol,
-                "pnl_usd": pnl_usd,
+                "pnl_sol": total_pnl_sol,
+                "pnl_usd": total_pnl_usd,
                 "pnl_pct": pnl_pct,
             }
         )
@@ -782,7 +947,7 @@ class BotState:
         )
         await hub.broadcast("trade_exit", trade_doc)
         # Re-entry watchlist: if we exited profitably and curve hasn't graduated, watch for a pullback
-        if self.config.reentry_enabled and pnl_sol > 0 and not state["complete"]:
+        if self.config.reentry_enabled and total_pnl_sol > 0 and not state.get("complete", False):
             self.reentry_watch[mint] = {
                 "mint": mint,
                 "name": trade_doc.get("name"),
@@ -794,7 +959,7 @@ class BotState:
                 "window_s": self.config.reentry_window_seconds,
                 "pullback_pct": self.config.reentry_pullback_pct,
                 "size_multiplier": self.config.reentry_size_multiplier,
-                "original_pnl_usd": pnl_usd,
+                "original_pnl_usd": total_pnl_usd,
                 "peak_price_after_exit": exit_price_sol,
                 "creator": (slot.get("launch") or {}).get("creator"),
             }

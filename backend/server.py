@@ -131,6 +131,9 @@ async def update_config(cfg: BotConfig):
     cfg.reentry_pullback_pct = max(0.0, min(95.0, cfg.reentry_pullback_pct))
     cfg.reentry_window_seconds = max(10, min(3600, cfg.reentry_window_seconds))
     cfg.reentry_size_multiplier = max(0.0, min(1.0, cfg.reentry_size_multiplier))
+    # Partial TP clamps
+    cfg.partial_tp_pct = max(0.0, min(100.0, cfg.partial_tp_pct))
+    cfg.partial_tp_trail_tighten_pct = max(0.5, min(50.0, cfg.partial_tp_trail_tighten_pct))
     # Entry filter clamps
     cfg.min_curve_liquidity_sol = max(0.0, min(85.0, cfg.min_curve_liquidity_sol))
     cfg.min_buyers_for_entry = max(0, min(100, cfg.min_buyers_for_entry))

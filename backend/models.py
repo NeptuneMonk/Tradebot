@@ -30,6 +30,12 @@ class BotConfig(BaseModel):
     take_profit_pct: float = 35.0    # winners observed averaging ~+37%
     stop_loss_pct: float = 20.0      # tight cap, enforced by fast-exit
     trailing_stop_pct: float = 10.0  # lock in profits once peak appears
+    # Partial take-profit: sell partial_tp_pct of the position at TP, ride the
+    # remainder with a tightened trailing stop (driven by the 26x lift signal
+    # showing TP exits dominate winners 66% vs 3% in losers).
+    # Set partial_tp_pct=0 to disable (full exit at TP — old behaviour).
+    partial_tp_pct: float = 50.0          # sell 50% at TP
+    partial_tp_trail_tighten_pct: float = 5.0  # tighten trailing to 5% after partial
     exit_slippage_bps: int = 500     # separate exit slippage ensures exits fill on dumps
     # Entry filters (applied to scanner_momentum entries; reentry uses its own size logic)
     min_curve_liquidity_sol: float = 12.0  # skip thin/dead launches

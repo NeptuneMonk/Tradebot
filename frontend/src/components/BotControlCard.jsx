@@ -84,6 +84,12 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
         <Field label="Exit Slip (bps)" testid="exit-slip-input"
                value={local.exit_slippage_bps}
                onChange={(v) => setLocal({ ...local, exit_slippage_bps: parseInt(v, 10) || 0 })} step="50" />
+        <Field label="Partial TP (%)" testid="partial-tp-input"
+               value={local.partial_tp_pct}
+               onChange={(v) => setLocal({ ...local, partial_tp_pct: parseFloat(v) || 0 })} step="5" />
+        <Field label="Runner Trail (%)" testid="partial-trail-input"
+               value={local.partial_tp_trail_tighten_pct}
+               onChange={(v) => setLocal({ ...local, partial_tp_trail_tighten_pct: parseFloat(v) || 0 })} step="1" />
       </div>
 
       {/* Portfolio / global entry settings (per-band liquidity & buyer thresholds live in the gates table below) */}
