@@ -244,14 +244,12 @@ class BotState:
         )
 
     async def _active_trades_reconciler_loop(self):
-        """Every 60s, find DB rows with status=active whose mint is NOT in
+        """Every 15s, find DB rows with status=active whose mint is NOT in
         `self.active_trades` (orphaned by unhandled exit exceptions, prior
-        bugs, etc.) and re-attach a monitor. This is the safety net for the
-        race / leak class of bugs — if anything ever silently pops a slot
-        without persisting status=closed, the position will be picked back up
-        within a minute instead of leaking forever.
+        bugs, etc.) OR whose monitor heartbeat is stale (dead monitor task)
+        and re-attach a fresh monitor.
         """
-        await asyncio.sleep(30.0)  # let load() finish first
+        await asyncio.sleep(10.0)  # let load() finish first
         while True:
             try:
                 await self._reattach_orphaned_active_rows()
@@ -259,30 +257,47 @@ class BotState:
                 raise
             except Exception as e:
                 logger.exception(f"active_trades reconciler error: {e}")
-            await asyncio.sleep(60.0)
+            await asyncio.sleep(15.0)
 
     async def _reattach_orphaned_active_rows(self):
         cursor = self.db.trades.find({"status": "active"}, {"_id": 0})
         reattached = 0
+        respawned = 0
+        seen_mints = set()
         async for t in cursor:
             mint = t.get("mint")
-            if not mint or mint in self.active_trades:
+            if not mint:
                 continue
-            # Orphaned — re-build the in-memory slot and respawn monitor
-            self.active_trades[mint] = {
-                "trade": t,
-                "protocol": t.get("protocol", "pumpfun"),
-                "pumpswap_pool": t.get("pumpswap_pool") or "",
-            }
-            asyncio.create_task(self._monitor_position(mint))
-            reattached += 1
+            seen_mints.add(mint)
+            slot = self.active_trades.get(mint)
+            if slot is None:
+                # Orphan — in DB but not in memory. Rebuild slot + monitor.
+                self.active_trades[mint] = {
+                    "trade": t,
+                    "protocol": t.get("protocol", "pumpfun"),
+                    "pumpswap_pool": t.get("pumpswap_pool") or "",
+                }
+                asyncio.create_task(self._monitor_position(mint))
+                reattached += 1
+                logger.warning(
+                    f"reattached orphaned active row for {t.get('symbol','?')} "
+                    f"({mint}) — was in DB but not in active_trades"
+                )
+            else:
+                # In memory — check if monitor is alive. Dead monitors leave
+                # `last_monitor_tick` stale. Respawn if last tick > 15s ago.
+                last_tick = float(slot.get("last_monitor_tick") or 0.0)
+                if time.time() - last_tick > 15.0:
+                    asyncio.create_task(self._monitor_position(mint))
+                    respawned += 1
+                    logger.warning(
+                        f"respawned dead monitor for {t.get('symbol','?')} ({mint}) — "
+                        f"last_monitor_tick was {time.time() - last_tick:.0f}s ago"
+                    )
+        if reattached or respawned:
             logger.warning(
-                f"reattached orphaned active row for {t.get('symbol','?')} "
-                f"({mint}) — was in DB but not in active_trades"
-            )
-        if reattached:
-            logger.warning(
-                f"active-trades reconciler reattached {reattached} orphans"
+                f"active-trades reconciler: reattached={reattached} orphans, "
+                f"respawned={respawned} dead monitors"
             )
 
     async def _sweep_legacy_active_without_protocol(self):
@@ -1100,14 +1115,29 @@ class BotState:
         slot = self.active_trades.get(mint)
         if not slot:
             return
+        # Mark this monitor as the live one for this slot — if another monitor
+        # was running it'll see a different uid on the next tick and exit.
+        # Combined with `last_monitor_tick`, the reconciler can detect and
+        # respawn dead monitors without spawning duplicates.
+        import uuid as _uuid
+        monitor_uid = _uuid.uuid4().hex[:8]
+        slot["monitor_uid"] = monitor_uid
+        slot["last_monitor_tick"] = time.time()
         trade_doc = slot["trade"]
         start = time.time()
         max_hold = self.config.hold_max_seconds
         last_classify = 0.0
 
-        try:
-            while True:
-                elapsed = time.time() - start
+        while True:
+            # Liveness heartbeat — refreshed every tick. Reconciler uses this
+            # to detect dead monitors and respawn them.
+            slot = self.active_trades.get(mint)
+            if not slot or slot.get("monitor_uid") != monitor_uid:
+                return  # slot evicted OR another monitor took over
+            slot["last_monitor_tick"] = time.time()
+            elapsed = time.time() - start
+
+            try:
                 if elapsed > max_hold:
                     await self._exit(mint, reason=f"timeout after {max_hold}s")
                     return
@@ -1181,10 +1211,20 @@ class BotState:
                         return
 
                 await asyncio.sleep(0.8)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.exception(f"monitor error for {mint}: {e}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # Transient RPC error (429, ConnectTimeout, etc.) — DON'T let
+                # this kill the monitor. Sleep with backoff and retry next tick.
+                # The previous behaviour exited the task entirely on the first
+                # blip, leaving the position orphaned with the dict still
+                # holding the slot. Reconciler now detects dead monitors via
+                # last_monitor_tick but it's cheaper to just survive the blip.
+                logger.warning(
+                    f"monitor transient error for {mint}: {type(e).__name__}: {e} — retrying"
+                )
+                await asyncio.sleep(2.0)
+                continue
 
     async def _partial_exit(self, mint: str, fraction: float, reason: str):
         """Sell `fraction` of the remaining position. Banks realized PnL onto

@@ -765,3 +765,33 @@ self.active_trades[mint] = slot  # ← critical re-insert
 ### Architectural takeaway
 "Pop first, do work" is fragile in async code with unreliable RPCs. The wrapper + reconciler pattern means any code path that can leak gets healed within a minute. Future _exit-style functions should follow the same template.
 
+
+
+## 2026-02-23 — Monitor RPC-resilience (the stuck-trades bug)
+
+### Bug
+User reported "no trades exiting in 60s, max_hold is 45s" while bot showed 15+ active trades, some 30+ minutes old. Investigation found:
+
+- `_monitor_position` had a `try/except Exception` wrapping the ENTIRE while loop. On any exception (Helius 429, ConnectTimeout, etc.) the catch logged the error and **let the task exit**. No retry. Position became permanently orphaned.
+- Helius is regularly returning 429 Too Many Requests under our current load (~16 active monitors polling every 0.8s + reconciler + scanner + discovery). First 429 → monitor dies.
+- Reconciler couldn't detect this case because the slot was still in `self.active_trades` — only its monitor task was dead.
+
+### Fixes (`bot.py _monitor_position`)
+- ✅ **Inner try/except inside the while loop** — transient errors (429, ConnectTimeout, etc.) get logged + 2s sleep + `continue`. Monitor survives RPC blips indefinitely.
+- ✅ **Monitor heartbeat** — `slot["monitor_uid"]` (unique per monitor task) + `slot["last_monitor_tick"]` refreshed every iteration. Lets the reconciler detect dead monitors even when slot is still in dict.
+- ✅ **Single-monitor invariant** — every tick re-reads `slot["monitor_uid"]`. If another monitor took over, this one exits cleanly. Prevents duplicate monitors from racing.
+
+### Reconciler enhanced
+- ✅ Now also respawns dead monitors (slot in dict, but `last_monitor_tick > 15s ago`)
+- ✅ Tick interval shortened: 60s → 15s
+- ✅ Initial delay: 30s → 10s
+
+### Verified end-to-end
+- Restart → 16 stuck active rows
+- 60s later → 6 active (10 drained via natural timeout exits)
+- Logs show `monitor transient error … — retrying` instead of monitor death
+- `_exit unhandled error … — re-inserting into active_trades for retry` when sell tx hits 429 mid-flight — slot survives for next monitor tick
+
+### Environmental note
+The current 429 storm is from us hammering Helius too hard. The code is now resilient, but throughput is degraded. Future tuning options: upgrade Helius plan, lower `scanner_window_hours`, longer `getRecentPrioritizationFees` cache.
+
