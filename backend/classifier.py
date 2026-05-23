@@ -46,7 +46,11 @@ def classify(metrics: dict, rules: dict) -> dict:
     risk = 50  # baseline
 
     # Abort conditions
-    if rugs >= rules["creator_rug_threshold"]:
+    # NOTE: rugs > 0 guard is critical — without it, a misconfigured
+    # `creator_rug_threshold = 0` would abort EVERY trade because 0 >= 0.
+    # The semantic is "creator has rugged BEFORE", so 0 rugs must never abort
+    # regardless of how the threshold is set in the UI.
+    if rugs > 0 and rugs >= max(1, rules["creator_rug_threshold"]):
         action = "abort_trade"
         risk = 95
         reasons.append(f"creator has {rugs} prior rugs")
