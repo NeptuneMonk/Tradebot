@@ -184,6 +184,26 @@ class MomentumScanner:
                     and m["new_buyers_recent"] >= g["min_new_buyers"]
                     and m["real_sol_reserves"] >= g["min_liquidity_sol"]
                 )
+            # Distribution-vacuum filter (both bands): if every tracked holder
+            # appeared within the most-recent holder-velocity window AND the
+            # token is older than that window AND we have a meaningful sample
+            # size, reject. Indicates insider pre-distribution with no organic
+            # follow-on flow.
+            if cfg.gate_distribution_vacuum and m["passes"]:
+                win_s = max(1, int(cfg.scanner_holder_velocity_window_s))
+                total = int(m.get("unique_buyers_total") or 0)
+                recent = int(m.get("new_buyers_recent") or 0)
+                min_n = max(2, int(cfg.gate_distribution_min_holders))
+                if (
+                    m["age_s"] > win_s
+                    and total >= min_n
+                    and total == recent
+                ):
+                    m["passes"] = False
+                    m["fail_reason"] = (
+                        f"distribution-vacuum: all {total} holders appeared "
+                        f"in last {win_s}s (no organic follow-on)"
+                    )
             out.append(m)
         out.sort(
             key=lambda x: (x["passes"], x["growth_pct"], x["recent_inflow_sol"]),
@@ -253,6 +273,25 @@ class MomentumScanner:
                         if m["recent_inflow_sol"] < g["min_inflow_sol"]:
                             continue
                         if m["new_buyers_recent"] < g["min_new_buyers"]:
+                            continue
+                    # Distribution-vacuum gate — applies to both bands. If
+                    # every tracked holder appeared inside the velocity window
+                    # AND token is older than that window AND sample is
+                    # meaningful, skip: classic insider pre-distribution.
+                    if cfg.gate_distribution_vacuum:
+                        win_s = max(1, int(cfg.scanner_holder_velocity_window_s))
+                        total = int(m.get("unique_buyers_total") or 0)
+                        recent = int(m.get("new_buyers_recent") or 0)
+                        min_n = max(2, int(cfg.gate_distribution_min_holders))
+                        if (
+                            m["age_s"] > win_s
+                            and total >= min_n
+                            and total == recent
+                        ):
+                            logger.info(
+                                f"vacuum-skip {mint[:8]}… [{band}]: all "
+                                f"{total} holders in last {win_s}s (no organic flow)"
+                            )
                             continue
                     rank_score = (
                         m["growth_pct"]

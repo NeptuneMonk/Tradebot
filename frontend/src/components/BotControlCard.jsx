@@ -234,6 +234,29 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                  onChange={(v) => setLocal({ ...local, sl_cooldown_minutes: parseFloat(v) || 0 })} step="0.5" />
         </div>
 
+        {/* Distribution-vacuum gate (insider pre-distribution filter) */}
+        <div className="mt-3 border-t border-neutral-800 pt-2.5">
+          <label className="flex items-center justify-between text-[10px] font-mono uppercase tracking-[0.15em] text-neutral-400 cursor-pointer">
+            <span className="flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                data-testid="gate-distribution-vacuum-checkbox"
+                checked={local.gate_distribution_vacuum}
+                onChange={(e) => setLocal({ ...local, gate_distribution_vacuum: e.target.checked })}
+              />
+              Distribution vacuum filter
+            </span>
+            <span className="text-neutral-600 normal-case tracking-normal">
+              reject if all holders appeared in last window
+            </span>
+          </label>
+          <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+            <Field label="Min Holders" testid="gate-distribution-min-input"
+                   value={local.gate_distribution_min_holders}
+                   onChange={(v) => setLocal({ ...local, gate_distribution_min_holders: parseInt(v, 10) || 0 })} step="1" />
+          </div>
+        </div>
+
         {/* Socials gate */}
         <div className="mt-3 border-t border-neutral-800 pt-2.5">
           <label className="flex items-center justify-between text-[10px] font-mono uppercase tracking-[0.15em] text-neutral-400 cursor-pointer">

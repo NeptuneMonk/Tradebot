@@ -91,6 +91,14 @@ class BotConfig(BaseModel):
     # momentum already reversed; the next 5 minutes are statistically the
     # worst time to re-enter. Set to 0 to disable.
     sl_cooldown_minutes: float = 5.0
+    # Distribution-vacuum gate: reject tokens where ALL tracked holders appeared
+    # within the most-recent holder-velocity window. Classic insider-distribution
+    # tell — creator pre-distributes to many wallets, no organic flow follows.
+    # Only triggers when token is older than the velocity window (otherwise
+    # this trivially fires on every fresh launch). Set to 0 to disable; the
+    # minimum-holders threshold prevents false positives on tiny sample sizes.
+    gate_distribution_vacuum: bool = True
+    gate_distribution_min_holders: int = 5
     # Socials gate (pattern-mining insight: tokens with active replies + a
     # working twitter/telegram link have a meaningfully higher floor MC than
     # zero-engagement launches). When ON, refuse entry unless the mint has at
