@@ -375,3 +375,27 @@ Unit tests cover (a) threshold=0 + rugs=0 no longer aborts, (b) real rugger stil
 - User can set negative (e.g., `-5.0`) to be more permissive, or higher (e.g., `+5.0`) to require active uptrend at entry.
 - Tokens with `< 30s` of price history bypass the gate — won't accidentally block fresh sniper entries.
 
+
+
+## 2026-02-23 — Partial-TP validation + UI surfacing
+
+### Status
+**Backend partial-TP logic was working correctly all along** — verified against trade history (paper mode):
+- 28 trades with `partial_done=True` out of 327 closed
+- $7.43 banked early via partial sells (50% at +35–50% gains as configured)
+- $15.67 additional captured on runners via tightened trailing stop
+- $23.10 total realized = partial + runner combined
+
+Bug was purely UI: **no frontend component referenced `partial_done` / `partial_realized_usd` / `partial_reason`**, so all the data was invisible despite flowing through the `/api/trades/history` endpoint.
+
+### UI surfacing
+- ✅ `TradeHistoryTable.jsx`: new **½TP $** column showing banked partial profits per row, inline **½TP** cyan badge next to the symbol when `partial_done=True`, and a header summary chip `½TP × N · $X.XX` showing the total across the visible window. All with `data-testid` hooks for testability.
+- ✅ `ActiveTradesTable.jsx`: in-flight partial trades now show a **RUNNER · +$X.XX** cyan badge in the mint column so you can see partial-then-runner positions mid-life.
+
+### No backend changes
+Both `/api/trades/active` and `/api/trades/history` already returned the full Mongo doc minus `_id`, so all `partial_*` fields were already on the wire.
+
+### Verified
+- API curl confirms `partial_realized_usd`, `partial_reason`, `partial_sell_tokens`, etc. on history payloads.
+- Live screenshot confirms `½TP × 7 · $2.14` chip and per-row `+$0.18` banked column rendering correctly.
+

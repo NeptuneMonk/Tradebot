@@ -31,6 +31,13 @@ export default function ActiveTradesTable({ trades, onExit }) {
             {trades.map((t) => (
               <tr key={t.id} className="border-b border-neutral-900 hover:bg-neutral-900/40 transition-colors duration-100" data-testid={`active-trade-row-${t.mint}`}>
                 <td className="py-2 font-mono">
+                  {t.partial_done && (
+                    <span
+                      data-testid={`active-partial-badge-${t.id}`}
+                      className="mr-1 inline-block px-1 py-0 border border-cyan-700 text-cyan-300 bg-cyan-950/40 text-[9px] font-mono align-middle"
+                      title={`Partial TP done — runner on tightened trail. Banked $${(t.partial_realized_usd || 0).toFixed(2)}`}
+                    >RUNNER · +${(t.partial_realized_usd || 0).toFixed(2)}</span>
+                  )}
                   {t.symbol ? <span className="text-neutral-200">{t.symbol}</span> : <span className="text-neutral-500">—</span>}
                   <span className="text-neutral-600 ml-2 text-[10px]">{short(t.mint)}</span>
                 </td>
