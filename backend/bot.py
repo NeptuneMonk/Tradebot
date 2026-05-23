@@ -884,6 +884,14 @@ class BotState:
             cd_until = self.sl_cooldown_until.get(launch.mint, 0.0)
             if cd_until and time.time() < cd_until:
                 return
+            # Re-entry watchlist lockout: if this mint just exited profitably
+            # and is being watched for a pullback re-entry, the regular scanner
+            # must NOT re-buy it from the front-running side. The re-entry
+            # watcher owns this mint until the window expires (or `_attempt_reentry`
+            # fires, which routes through this same gate and is allowed because
+            # the watcher removes the mint from `reentry_watch` before calling).
+            if launch.mint in self.reentry_watch:
+                return
             # Reserve a slot — released in the finally below
             self._pending_entry_mints.add(launch.mint)
 
