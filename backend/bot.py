@@ -29,6 +29,7 @@ from speed_modes import (
     speed_mode_resolve, estimate_tx_fee_sol, auto_tuner,
     CU_PUMPFUN, CU_PUMPSWAP,
 )
+from pnl_reconciler import PnLReconciler
 
 logger = logging.getLogger("bot")
 
@@ -62,6 +63,7 @@ class BotState:
         self._graceful_stop_task: asyncio.Task | None = None
         self.scanner = MomentumScanner(self)
         self.discovery = PumpfunDiscovery(self)
+        self.pnl_reconciler = PnLReconciler(self)
 
     async def load(self):
         cfg = await self.db.bot_config.find_one({"_id": "current"}, {"_id": 0})
@@ -82,6 +84,9 @@ class BotState:
         self.discovery.start()
         # Start priority-fee auto-tuner (only consulted when speed_mode='auto')
         auto_tuner.start()
+        # Start on-chain PnL reconciler (overwrites quoted pnl with actual
+        # wallet deltas read from getTransaction every 30s)
+        self.pnl_reconciler.start()
 
     def _resolve_fees(self) -> tuple[int, int, int]:
         """Return (priority_fee_microlamports, slippage_bps, exit_slippage_bps)
@@ -1174,13 +1179,71 @@ class BotState:
         exit_fee_sol = estimate_tx_fee_sol(eff_priority, cu)
         trade_doc["exit_fee_sol"] = exit_fee_sol
 
+        # ----- PHANTOM-PNL GUARD -----
+        # If we attempted a live sell but the tx never landed (exit_sig is None),
+        # we still OWN the tokens. Booking a PnL based on the quoted exit price
+        # would be a phantom — the wallet didn't actually receive that SOL.
+        # Keep the position in active_trades and let the monitor retry.
+        if trade_doc["mode"] == "live" and exit_sig is None:
+            retries = int(trade_doc.get("exit_retries", 0)) + 1
+            trade_doc["exit_retries"] = retries
+            trade_doc["last_exit_attempt"] = now_utc().isoformat()
+            trade_doc["last_exit_attempt_reason"] = reason
+            # Gas IS gone whether or not the sell landed — track it
+            trade_doc["exit_fee_sol_failed_attempts"] = (
+                float(trade_doc.get("exit_fee_sol_failed_attempts") or 0.0) + exit_fee_sol
+            )
+            # If we've burned too many tries on this position, give up and
+            # mark it as a terminal failure so it stops eating gas. The user
+            # will need to recover the tokens manually.
+            if retries >= 3:
+                trade_doc["status"] = "exit_failed_terminal"
+                trade_doc["exit_time"] = now_utc().isoformat()
+                trade_doc["exit_reason"] = f"GAVE UP after {retries} sell retries — manual recovery needed: {reason}"
+                trade_doc["pnl_sol"] = 0.0
+                trade_doc["pnl_usd"] = 0.0
+                trade_doc["pnl_pct"] = 0.0
+                await self.db.trades.update_one(
+                    {"id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
+                )
+                self.active_trades.pop(mint, None)
+                await hub.broadcast("trade_exit_terminal", trade_doc)
+                logger.warning(
+                    f"GIVING UP on {mint} after {retries} failed sells — "
+                    f"position abandoned, manual recovery required"
+                )
+            else:
+                # Persist retry counter but keep position open
+                await self.db.trades.update_one(
+                    {"id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
+                )
+                await hub.broadcast("trade_exit_failed", {
+                    "mint": mint, "symbol": trade_doc.get("symbol"),
+                    "retries": retries, "reason": reason,
+                })
+                logger.warning(
+                    f"sell failed for {mint} (retry {retries}/3) — keeping "
+                    f"position active for monitor retry"
+                )
+            return
+
         pnl_sol = exit_sol - trade_doc["entry_sol"]
         # Combine with any earlier partial-TP realised PnL so the trade's
         # reported total reflects both legs.
         partial_realized_sol = float(trade_doc.get("partial_realized_sol") or 0.0)
         partial_realized_usd = float(trade_doc.get("partial_realized_usd") or 0.0)
-        total_pnl_sol = pnl_sol + partial_realized_sol
-        total_pnl_usd = (pnl_sol * sol_price) + partial_realized_usd
+        # Subtract gas fees so the displayed PnL matches actual wallet movement.
+        # The on-chain reconciler will refine this shortly with real deltas,
+        # but the initial display should already be fee-net to avoid confusion.
+        entry_fee_sol = float(trade_doc.get("entry_fee_sol") or 0.0)
+        partial_fee_sol = float(trade_doc.get("partial_fee_sol") or 0.0)
+        fees_total_sol = entry_fee_sol + exit_fee_sol + partial_fee_sol
+        total_pnl_sol = pnl_sol + partial_realized_sol - fees_total_sol
+        total_pnl_usd = (
+            (pnl_sol * sol_price)
+            + partial_realized_usd
+            - (fees_total_sol * sol_price)
+        )
         # PnL % is over the ORIGINAL cost basis so it stays comparable to
         # non-partial trades. We reconstruct original cost = current entry_sol +
         # partial cost basis (= partial_sell_sol - partial_realized_sol).

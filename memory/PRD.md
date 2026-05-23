@@ -566,3 +566,50 @@ The user can either **▸ resume trading** (cancels wind-down and starts opening
 | Kill-switch reference | -$8.67 (would have tripped at -$10!) | $0.00 (live is profitable) |
 | `/api/pl/summary?mode=live` | mixed paper+live | 56 trades, **+$4.81 cumulative** |
 
+
+
+## 2026-02-23 — On-chain PnL reconciliation (CRITICAL accuracy fix)
+
+### Bug (catastrophic accounting drift)
+User reported wallet down $1 while dashboard claimed +$4.81 live profit. Investigation found **THREE compounding bugs** producing phantom PnL:
+
+1. **Quote-based PnL** — `_exit` computed `pnl_sol = quoted_exit_sol - entry_sol`. The quoted SOL is what the pool *would* return pre-slippage, NOT what the wallet actually received. Real slippage between quote and fill was completely uncaptured (~$3.43 over-reporting on 58 trades today).
+
+2. **Failed sells booked phantom PnL** — When a live sell tx failed (RPC error, slippage exceeded, account check fail), the catch block logged the failure and set `exit_sig=None` but **continued to mark the trade as closed with the quoted PnL**. 4 trades today had this profile: real wallet impact was the FULL entry cost (we still hold tokens), but pnl_usd showed a partial loss based on the quote that never happened.
+
+3. **Fees not subtracted from displayed PnL** — `pnl_sol = exit_sol - entry_sol` ignored the `entry_fee_sol` / `exit_fee_sol` / `partial_fee_sol` already stamped on the doc. ~$0.67 of fees not deducted today.
+
+### Fix architecture
+
+#### `solana_client.py`
+- ✅ `get_tx_wallet_delta_lamports(sig, wallet)` — calls `getTransaction(sig, {commitment: confirmed, maxSupportedTransactionVersion: 0})`, locates the wallet in `accountKeys`, returns `postBalances[idx] - preBalances[idx]`. This IS the wallet delta — gas-inclusive, slippage-inclusive, the source of truth.
+
+#### `pnl_reconciler.py` (NEW)
+- ✅ Background task: every 30s, find closed live trades from the last 60 min that aren't yet reconciled (cap 25/pass for RPC politeness).
+- ✅ For each: fetch wallet delta for `entry_sig`, `partial_sig`, `exit_sig`; sum them.
+- ✅ Overwrite `pnl_sol` / `pnl_usd` / `pnl_pct` in-place with on-chain truth.
+- ✅ Stamps `pnl_reconciled=True` + `real_*_sol` audit fields for transparency.
+- ✅ Wired into `BotState.load()` via `self.pnl_reconciler.start()`.
+
+#### `bot.py _exit`
+- ✅ **Phantom-PnL guard:** If `mode=='live'` and `exit_sig is None` after the sell attempt, trade is NO LONGER booked closed. Retry counter `exit_retries` bumped; position kept in `active_trades` so the monitor retries on the next tick. After 3 failed retries → status `"exit_failed_terminal"`, pnl=0, position abandoned (manual recovery noted).
+- ✅ **Fee-net display PnL:** Initial pnl_usd now subtracts `entry_fee + partial_fee + exit_fee`. Reconciler overwrites with on-chain reality shortly after.
+
+### Verified end-to-end
+- Reconciler started → 3 passes ran in ~50s → all 58 live trades reconciled.
+- `daily_pnl_live_usd` corrected: **+$4.81 (phantom) → -$0.66 (real)** — matches user's observed wallet movement (~-$1 with some still-active positions).
+- 0 terminal-fail trades after the run (the 4 "no exit_sig" trades were correctly handled — their reconciled delta reflects only the entry cost, which has now been overwritten).
+- Kill switch reference now reads the actual loss.
+
+### New trade-doc fields
+| field | meaning |
+|---|---|
+| `real_entry_cost_sol` | actual SOL spent on the entry tx |
+| `real_exit_received_sol` | actual SOL credited on the exit tx |
+| `real_partial_received_sol` | actual SOL credited on the partial sell |
+| `real_pnl_sol` / `real_pnl_usd` / `real_pnl_pct` | reconciled truth |
+| `pnl_reconciled` / `pnl_reconciled_at` | dedup flag + timestamp |
+| `exit_retries` | for failed-sell tracking |
+| `exit_fee_sol_failed_attempts` | gas burned on failed sell attempts |
+| `status="exit_failed_terminal"` | abandoned after 3 sell retries |
+

@@ -34,6 +34,41 @@ async def get_account_info(pubkey_str: str) -> dict | None:
     return res.get("result", {}).get("value")
 
 
+async def get_tx_wallet_delta_lamports(sig: str, wallet: str) -> int | None:
+    """Return the actual signed lamport delta for `wallet` from a confirmed tx.
+    Positive = wallet GAINED SOL. Negative = wallet SPENT SOL. Includes the
+    gas fee (i.e., this is the true wallet movement).
+
+    Returns None if the tx isn't found / hasn't confirmed / failed.
+    """
+    res = await rpc_call(
+        "getTransaction",
+        [sig, {"encoding": "json", "commitment": "confirmed", "maxSupportedTransactionVersion": 0}],
+    )
+    tx = res.get("result")
+    if not tx:
+        return None
+    meta = tx.get("meta") or {}
+    if meta.get("err") is not None:
+        # Tx landed but failed on-chain — no balance change, gas WAS paid
+        # (the fee is already reflected in pre/post balances)
+        pass
+    # Resolve account index. V0 txs may put accounts in static + loaded.
+    msg = (tx.get("transaction") or {}).get("message") or {}
+    keys = msg.get("accountKeys") or []
+    # Some endpoints return accountKeys as list of {pubkey: ...} objects
+    flat_keys = [k if isinstance(k, str) else (k.get("pubkey") or "") for k in keys]
+    pre = meta.get("preBalances") or []
+    post = meta.get("postBalances") or []
+    try:
+        idx = flat_keys.index(wallet)
+    except ValueError:
+        return None
+    if idx >= len(pre) or idx >= len(post):
+        return None
+    return int(post[idx]) - int(pre[idx])
+
+
 _sol_price_cache = {"price": 0.0, "ts": 0.0}
 
 
