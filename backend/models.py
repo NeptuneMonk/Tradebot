@@ -169,6 +169,11 @@ class Trade(BaseModel):
     exit_fee_sol: float = 0.0
     partial_fee_sol: float = 0.0
     speed_mode_at_entry: Optional[str] = None
+    # Protocol routing fields — persisted so monitors can resume after a
+    # backend restart. Without these, a re-spawned _monitor_position can't
+    # route price polls / sell builds correctly.
+    protocol: str = "pumpfun"  # "pumpfun" or "pumpswap"
+    pumpswap_pool: Optional[str] = None
     # Classifier snapshot
     risk_score: int = 50
     classifier_action: Optional[str] = None

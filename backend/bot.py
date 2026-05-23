@@ -99,7 +99,14 @@ class BotState:
                 "for safety. Press Start in the UI to resume trading."
             )
         async for t in self.db.trades.find({"status": "active"}, {"_id": 0}):
-            self.active_trades[t["mint"]] = {"trade": t}
+            # Persist legacy active trades that lack the new protocol field —
+            # we can't safely respawn a monitor for them since price polling
+            # needs the protocol routing. They get force-closed below.
+            self.active_trades[t["mint"]] = {
+                "trade": t,
+                "protocol": t.get("protocol", "pumpfun"),
+                "pumpswap_pool": t.get("pumpswap_pool") or "",
+            }
         # Sweep duplicate active rows in DB. Concurrent _enter races (now fixed
         # via the entry_gate_lock) could have created multiple `status=active`
         # rows for the same mint in the past. The dict above naturally
@@ -107,6 +114,18 @@ class BotState:
         # orphaned DB rows would otherwise count toward portfolio limits and
         # never get monitored. Mark them as zombies so they're out of the way.
         await self._sweep_duplicate_active_rows()
+        # Sweep legacy active trades that lack the `protocol` field. These
+        # were opened before protocol was persisted, so a respawned monitor
+        # would default-route to pumpfun and potentially mis-trade. Safer to
+        # mark them as exit_failed_terminal — the user retains the tokens and
+        # can recover them manually via their wallet UI.
+        await self._sweep_legacy_active_without_protocol()
+        # Respawn monitor tasks for surviving active trades. After a backend
+        # restart, in-memory monitors are gone; without this, positions sit
+        # with status='active' forever, with nothing watching their TP/SL.
+        for mint in list(self.active_trades.keys()):
+            asyncio.create_task(self._monitor_position(mint))
+            logger.info(f"respawned monitor for active position {mint}")
         # Start re-entry watcher
         if self._reentry_task is None or self._reentry_task.done():
             self._reentry_task = asyncio.create_task(self._reentry_watcher())
@@ -219,6 +238,41 @@ class BotState:
             {"$set": {**self.rules.model_dump(), "_id": "current"}},
             upsert=True,
         )
+
+    async def _sweep_legacy_active_without_protocol(self):
+        """Active trades persisted before the `protocol` field was added to
+        the Trade model have no routing info — a respawned monitor would
+        default to pumpfun, which is wrong for any graduated/PumpSwap mint.
+        Mark them as terminally-failed so they stop counting against the
+        position cap. The user keeps the tokens in their wallet and can
+        recover via any standard Solana UI."""
+        stuck_mints = [
+            m for m, slot in self.active_trades.items()
+            if not slot["trade"].get("protocol")
+        ]
+        if not stuck_mints:
+            return
+        for mint in stuck_mints:
+            slot = self.active_trades.pop(mint, None)
+            if not slot:
+                continue
+            tid = slot["trade"].get("id")
+            sym = slot["trade"].get("symbol") or "?"
+            await self.db.trades.update_one(
+                {"id": tid},
+                {"$set": {
+                    "status": "exit_failed_terminal",
+                    "exit_time": now_utc().isoformat(),
+                    "exit_reason": "stuck active row from older code path (no protocol field) — bot can't safely re-monitor; recover tokens manually via your wallet",
+                    "pnl_sol": 0.0,
+                    "pnl_usd": 0.0,
+                    "pnl_pct": 0.0,
+                }},
+            )
+            logger.warning(
+                f"force-closed stuck active row for {sym} ({mint}) — "
+                f"missing protocol field, manual token recovery required"
+            )
 
     async def _sweep_duplicate_active_rows(self):
         """For each mint with multiple `status=active` rows in the DB, keep the
@@ -923,6 +977,8 @@ class BotState:
             speed_mode_at_entry=self.config.speed_mode,
             risk_score=risk_score,
             classifier_action=action,
+            protocol=protocol,
+            pumpswap_pool=bucket.get("pumpswap_pool") or None,
         )
         # Stash protocol on the trade dict (kept in active_trades) so _exit can route
         trade_extras = {"protocol": protocol, "pumpswap_pool": bucket.get("pumpswap_pool", "")}

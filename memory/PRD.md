@@ -681,3 +681,35 @@ The lock is only held for the gate check + reservation (microseconds). Async tx 
 - **Live sweep**: 5 zombie rows cleaned across 4 mints; 0 remaining duplicates in DB.
 - **Note:** Pre-existing 20 active trades remain above the new cap of 18 — these were opened before the fix and will drain via natural TP/SL/trailing exits. The new gate enforces cap going forward.
 
+
+
+## 2026-02-23 — Stuck active-trade rows after restart
+
+### Bug
+User saw 3 trades stuck in the Active Trades table that wouldn't clear (Nietzschean, SPCX, BUNNY). Header counter showed `ACTIVE: 0` but the table queried `/api/trades/active` from DB and returned 3 rows.
+
+### Root cause — three compounding issues
+1. **Monitor not respawned after restart.** `_monitor_position` is a background `asyncio.Task` spawned only from `_enter`. When the backend process restarts, all running tasks die; `load()` populated `active_trades` from DB but never re-spawned the monitor tasks. Positions sat with `status="active"` forever, with no one watching their TP/SL.
+2. **Protocol info not persisted.** `_enter` stored `protocol` and `pumpswap_pool` only in the in-memory dict, NEVER on the Trade doc. So even if we tried to respawn a monitor on restart, we wouldn't know whether to use pumpfun or pumpswap routing.
+3. **No cleanup path** for these stuck rows — `_sweep_duplicate_active_rows` only handles the multi-row-per-mint case.
+
+### Fix
+
+#### `models.py`
+- ✅ Added `Trade.protocol: str = "pumpfun"` and `Trade.pumpswap_pool: Optional[str] = None` — persisted now so monitors can resume after restart.
+
+#### `bot.py _enter`
+- ✅ Trade doc now stamped with `protocol=...` and `pumpswap_pool=...` at entry time.
+
+#### `bot.py BotState.load()`
+- ✅ Tracks `protocol` + `pumpswap_pool` in the in-memory slot from DB doc (default to pumpfun).
+- ✅ Calls new `_sweep_legacy_active_without_protocol()` — for any surviving active row missing the new protocol field, force-closes it with `status="exit_failed_terminal"`, `pnl=0`, and a recovery message pointing to manual wallet swap.
+- ✅ **Respawns `_monitor_position` task for every surviving active trade**. This is the long-term fix preventing this class of bug — TP/SL keeps firing across restarts.
+
+### Verified
+- Sweep cleaned the 2 visible stuck rows (Nietzschean, BUNNY). SPCX was already a `zombie_duplicate` from prior sweep.
+- `active_rows: 0` in DB. `active_trade_count: 0` via API. Header counter now matches the table.
+
+### Important user note
+Tokens for force-closed trades remain in the wallet (the bot couldn't safely sell without protocol info). Users can recover via Jupiter/Phantom/Solflare swap UI. Exit reason captures this recovery instruction.
+
