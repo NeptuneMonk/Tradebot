@@ -17,6 +17,7 @@ from solders.pubkey import Pubkey
 from models import BotConfig, ClassifierRules, Launch, Trade, now_utc
 from classifier import classify
 import pumpfun
+import pumpswap
 from solana_client import get_sol_usd_price, LAMPORTS_PER_SOL
 from wallet import get_keypair, get_pubkey
 from social import score_term
@@ -463,9 +464,28 @@ class BotState:
         if sol_in_lamports <= 0:
             return
 
-        state = await pumpfun.fetch_bonding_curve_state(launch.mint)
-        if not state or state["complete"]:
-            return
+        # Route by protocol — graduated tokens trade on PumpSwap AMM
+        bucket = self.tracking.get(launch.mint, {})
+        protocol = bucket.get("protocol") or "pumpfun"
+        pumpswap_state: dict | None = None
+        if protocol == "pumpswap":
+            pool = bucket.get("pumpswap_pool") or (await pumpswap.find_pool_for_mint(launch.mint))
+            if not pool:
+                logger.info(f"skip {launch.mint} [pumpswap]: no pool found")
+                return
+            pumpswap_state = await pumpswap.fetch_pool_state(pool)
+            if not pumpswap_state:
+                logger.info(f"skip {launch.mint} [pumpswap]: pool state unavailable")
+                return
+            bucket["pumpswap_pool"] = pool
+            state = {
+                "real_sol_reserves": pumpswap_state["quote_reserves"],
+                "complete": False,
+            }
+        else:
+            state = await pumpfun.fetch_bonding_curve_state(launch.mint)
+            if not state or state["complete"]:
+                return
 
         # Resolve band-specific gates: "new" (action=momentum_new) uses tighter
         # thresholds, "seasoned" (action=scanner_momentum) uses base thresholds.
@@ -487,8 +507,10 @@ class BotState:
                 logger.info(f"skip {launch.mint} [{action}]: only {buyers} buyers < min {min_buyers}")
                 return
 
-        tokens_out, max_sol = pumpfun.quote_buy_tokens(
-            state, sol_in_lamports, self.config.slippage_bps
+        tokens_out, max_sol = (
+            pumpswap.quote_buy_tokens(pumpswap_state, sol_in_lamports, self.config.slippage_bps)
+            if protocol == "pumpswap"
+            else pumpfun.quote_buy_tokens(state, sol_in_lamports, self.config.slippage_bps)
         )
         if tokens_out <= 0:
             return
@@ -509,16 +531,32 @@ class BotState:
             risk_score=risk_score,
             classifier_action=action,
         )
+        # Stash protocol on the trade dict (kept in active_trades) so _exit can route
+        trade_extras = {"protocol": protocol, "pumpswap_pool": bucket.get("pumpswap_pool", "")}
 
         if mode == "live":
             try:
                 kp = get_keypair()
                 user = get_pubkey()
                 mint_pk = Pubkey.from_string(launch.mint)
-                ixs = [
-                    pumpfun.build_create_ata_ix(user, user, mint_pk),
-                    pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol),
-                ]
+                if protocol == "pumpswap":
+                    user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, pumpswap.TOKEN_PROGRAM)
+                    wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, max_sol)
+                    ixs = [
+                        pumpswap.build_create_ata_ix(user, user, mint_pk),
+                        *wsol_ixs,
+                        pumpswap.build_buy_ix(
+                            user, pumpswap_state, user_token_ata, wsol_acc,
+                            base_amount_out=tokens_out,
+                            max_quote_amount_in=max_sol,
+                        ),
+                        pumpswap.build_close_wsol_ix(user, wsol_acc),
+                    ]
+                else:
+                    ixs = [
+                        pumpfun.build_create_ata_ix(user, user, mint_pk),
+                        pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol),
+                    ]
                 sig = await pumpfun.send_versioned_tx(
                     kp, ixs, self.config.priority_fee_microlamports
                 )
@@ -537,7 +575,11 @@ class BotState:
                 r["entered"] = True
                 break
 
-        self.active_trades[launch.mint] = {"trade": trade.model_dump(), "launch": launch.model_dump()}
+        self.active_trades[launch.mint] = {
+            "trade": trade.model_dump(),
+            "launch": launch.model_dump(),
+            **trade_extras,
+        }
         await hub.broadcast("trade_enter", trade.model_dump())
         asyncio.create_task(self._monitor_position(launch.mint))
 
@@ -566,15 +608,25 @@ class BotState:
                     await self._exit(mint, reason=f"timeout after {max_hold}s")
                     return
 
-                state = await pumpfun.fetch_bonding_curve_state(mint)
-                if not state:
-                    await asyncio.sleep(1.0)
-                    continue
-                if state["complete"]:
-                    await self._exit(mint, reason="bonding curve completed (LP about to deploy)")
-                    return
+                # Protocol-aware price polling
+                protocol = slot.get("protocol", "pumpfun")
+                if protocol == "pumpswap":
+                    pool = slot.get("pumpswap_pool") or ""
+                    pool_state = await pumpswap.fetch_pool_state(pool) if pool else None
+                    if not pool_state:
+                        await asyncio.sleep(1.0)
+                        continue
+                    cur_price_sol = pumpswap.price_sol_per_raw_token(pool_state)
+                else:
+                    state = await pumpfun.fetch_bonding_curve_state(mint)
+                    if not state:
+                        await asyncio.sleep(1.0)
+                        continue
+                    if state["complete"]:
+                        await self._exit(mint, reason="bonding curve completed (LP about to deploy)")
+                        return
+                    cur_price_sol = state["virtual_sol_reserves"] / state["virtual_token_reserves"] / LAMPORTS_PER_SOL
 
-                cur_price_sol = state["virtual_sol_reserves"] / state["virtual_token_reserves"] / LAMPORTS_PER_SOL
                 pct_change = (cur_price_sol - trade_doc["entry_price_sol"]) / max(trade_doc["entry_price_sol"], 1e-18) * 100
 
                 if pct_change >= self.config.take_profit_pct:
@@ -616,10 +668,18 @@ class BotState:
             return
         trade_doc = slot["trade"]
         sol_price = await get_sol_usd_price()
-        state = await pumpfun.fetch_bonding_curve_state(mint)
+        protocol = slot.get("protocol", "pumpfun")
+        # Resolve sell quote per protocol
+        pumpswap_state = None
+        if protocol == "pumpswap":
+            pool = slot.get("pumpswap_pool") or ""
+            pumpswap_state = await pumpswap.fetch_pool_state(pool) if pool else None
+            state = pumpswap_state
+        else:
+            state = await pumpfun.fetch_bonding_curve_state(mint)
         if not state:
             trade_doc["status"] = "closed"
-            trade_doc["exit_reason"] = f"{reason} | curve state unavailable"
+            trade_doc["exit_reason"] = f"{reason} | {protocol} state unavailable"
             trade_doc["exit_time"] = now_utc().isoformat()
             await self.db.trades.update_one(
                 {"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
@@ -629,7 +689,10 @@ class BotState:
         tokens_in = int(trade_doc["entry_tokens"])
         # Use exit_slippage_bps if user has set it, else fall back to slippage_bps
         exit_slip = self.config.exit_slippage_bps if self.config.exit_slippage_bps > 0 else self.config.slippage_bps
-        sol_out, min_sol = pumpfun.quote_sell_sol(state, tokens_in, exit_slip)
+        if protocol == "pumpswap":
+            sol_out, min_sol = pumpswap.quote_sell_sol(pumpswap_state, tokens_in, exit_slip)
+        else:
+            sol_out, min_sol = pumpfun.quote_sell_sol(state, tokens_in, exit_slip)
         exit_sol = sol_out / LAMPORTS_PER_SOL
         exit_price_sol = sol_out / tokens_in / LAMPORTS_PER_SOL if tokens_in > 0 else 0
 
@@ -639,10 +702,26 @@ class BotState:
                 kp = get_keypair()
                 user = get_pubkey()
                 mint_pk = Pubkey.from_string(mint)
-                ix = pumpfun.build_sell_ix(user, mint_pk, tokens_in, min_sol)
-                exit_sig = await pumpfun.send_versioned_tx(
-                    kp, [ix], self.config.priority_fee_microlamports
-                )
+                if protocol == "pumpswap":
+                    user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, pumpswap.TOKEN_PROGRAM)
+                    wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, 0)
+                    ixs = [
+                        *wsol_ixs,
+                        pumpswap.build_sell_ix(
+                            user, pumpswap_state, user_token_ata, wsol_acc,
+                            base_amount_in=tokens_in,
+                            min_quote_amount_out=min_sol,
+                        ),
+                        pumpswap.build_close_wsol_ix(user, wsol_acc),
+                    ]
+                    exit_sig = await pumpfun.send_versioned_tx(
+                        kp, ixs, self.config.priority_fee_microlamports
+                    )
+                else:
+                    ix = pumpfun.build_sell_ix(user, mint_pk, tokens_in, min_sol)
+                    exit_sig = await pumpfun.send_versioned_tx(
+                        kp, [ix], self.config.priority_fee_microlamports
+                    )
             except Exception as e:
                 logger.exception(f"Live sell failed: {e}")
                 trade_doc["exit_reason"] = f"{reason} | sell failed: {e}"

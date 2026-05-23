@@ -99,6 +99,7 @@ function CandidateRow({ c, passing }) {
   const growth = c.growth_pct ?? 0;
   const growthCls = growth >= 0 ? "text-emerald-400" : "text-red-400";
   const discovered = c.discovered === true;
+  const isPumpSwap = c.protocol === "pumpswap";
   return (
     <li
       data-testid={`scanner-row-${c.mint}`}
@@ -122,6 +123,15 @@ function CandidateRow({ c, passing }) {
                 title="Pulled from Pump.fun API (existed before bot started)"
               >
                 discovered
+              </span>
+            )}
+            {isPumpSwap && (
+              <span
+                className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-emerald-700 text-emerald-300 bg-emerald-950/40"
+                data-testid={`scanner-row-pumpswap-${c.mint}`}
+                title="Graduated to PumpSwap AMM"
+              >
+                pumpswap
               </span>
             )}
           </div>

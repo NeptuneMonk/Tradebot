@@ -23,6 +23,8 @@ import httpx
 
 from models import Launch
 from solana_client import LAMPORTS_PER_SOL
+from pumpfun import LAUNCH_BASELINE_PRICE_SOL
+import pumpswap
 from ws_hub import hub
 
 if TYPE_CHECKING:
@@ -91,16 +93,16 @@ class PumpfunDiscovery:
             # _fetch_aged_coins already filtered to the band, but double-check
             if not (lo_ts <= created_s <= hi_ts):
                 continue
-            # Skip tokens whose curve has already completed (LP deployed)
-            if c.get("complete"):
-                continue
+            # Graduated tokens trade on PumpSwap AMM. We still want them — they're
+            # often the biggest movers — so just tag the protocol.
+            is_pumpswap = bool(c.get("complete"))
             # Freshness gate: skip tokens whose last trade is too stale
             last_trade_ms = c.get("last_trade_timestamp") or 0
             if max_idle_ms > 0 and (not last_trade_ms or now_ms - last_trade_ms > max_idle_ms):
                 skipped_idle += 1
                 continue
             try:
-                await self._seed_token(c, created_s)
+                await self._seed_token(c, created_s, is_pumpswap)
                 seeded += 1
             except Exception as e:
                 logger.debug(f"seed failed for {mint}: {e}")
@@ -154,24 +156,50 @@ class PumpfunDiscovery:
                 await asyncio.sleep(0.25)
         return out
 
-    async def _seed_token(self, coin: dict, created_s: float):
+    async def _seed_token(self, coin: dict, created_s: float, is_pumpswap: bool = False):
         st = self.state
         mint = coin["mint"]
         vsr = int(coin.get("virtual_sol_reserves") or 0)
         vtr = int(coin.get("virtual_token_reserves") or 0)
-        cur_price = (vsr / vtr / LAMPORTS_PER_SOL) if (vsr and vtr) else 0.0
         usd_mc = float(coin.get("usd_market_cap") or 0.0)
         last_trade_ms = int(coin.get("last_trade_timestamp") or 0)
+        pool_address = coin.get("pump_swap_pool") or coin.get("pool_address") or ""
+
+        # Resolve current price per protocol
+        if is_pumpswap:
+            # Pump.fun API may carry the pool address directly; fall back to
+            # finding it via on-chain lookup.
+            if not pool_address:
+                try:
+                    found = await pumpswap.find_pool_for_mint(mint)
+                    if found:
+                        pool_address = found
+                except Exception:
+                    pool_address = ""
+            cur_price = 0.0
+            real_sol_lamports = 0
+            if pool_address:
+                try:
+                    ps_state = await pumpswap.fetch_pool_state(pool_address)
+                    if ps_state:
+                        cur_price = pumpswap.price_sol_per_raw_token(ps_state)
+                        real_sol_lamports = ps_state["quote_reserves"]
+                except Exception as e:
+                    logger.debug(f"pumpswap pool fetch failed for {mint}: {e}")
+        else:
+            cur_price = (vsr / vtr / LAMPORTS_PER_SOL) if (vsr and vtr) else 0.0
+            real_sol_lamports = vsr  # not exact but matches bonding-curve estimate elsewhere
 
         bucket = {
             "launch_id": f"disc-{mint[:8]}",
             "creator": coin.get("creator") or "",
-            "start": created_s,  # use real creation time so seasoning math is correct
+            "start": created_s,
             "buyers": set(),
             "buy_events": deque(maxlen=500),
             "sol_inflow_lamports": 0,
             "buy_count": 0,
-            "curve_fill_pct": min(100.0, max(0.0, (vsr - 30_000_000_000) / 85_000_000_000 * 100)) if vsr else 0.0,
+            "curve_fill_pct": (100.0 if is_pumpswap else
+                               (min(100.0, max(0.0, (vsr - 30_000_000_000) / 85_000_000_000 * 100)) if vsr else 0.0)),
             "social_score": 0,
             "social_sources": {},
             "last_persist": 0.0,
@@ -179,16 +207,17 @@ class PumpfunDiscovery:
             "symbol": coin.get("symbol"),
             "creator_rugs": 0,
             # Anchor "first seen" at the universal Pump launch baseline so that
-            # growth_pct reflects true chart growth (vs the curve's initial
-            # price) for tokens we discovered after they launched.
+            # growth_pct reflects true chart growth from launch.
             "first_seen_price_sol": LAUNCH_BASELINE_PRICE_SOL,
             "last_price_sol": cur_price,
-            "last_vsr_lamports": vsr,
+            "last_vsr_lamports": real_sol_lamports,
             "scanner_eligible": True,
             "scanner_last_attempt": 0.0,
             "discovered": True,
             "usd_market_cap": usd_mc,
             "last_trade_ms": last_trade_ms,
+            "protocol": "pumpswap" if is_pumpswap else "pumpfun",
+            "pumpswap_pool": pool_address if is_pumpswap else "",
         }
         st.tracking[mint] = bucket
         # Also push a synthetic launch into the recent feed so the UI shows it

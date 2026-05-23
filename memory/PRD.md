@@ -260,3 +260,16 @@ User: "Tighter for new. So I can set different liquidity limit and holder min et
 - ✅ Server-side clamps for all 5 new fields
 - ✅ Frontend: scanner config section now has a 3-column per-band gates table (Gate | New amber | Seasoned cyan)
 - **Verified live**: All 10 inputs reachable, defaults correct, scanner uses tighter gates for new-band candidates.
+
+
+## 2026-02-22 — PumpSwap AMM integration
+
+### Trade graduated tokens on PumpSwap AMM (P0)
+User: "B" — go straight to PumpSwap AMM trading. Graduated tokens are where the big winners live (BTCBANK ~50x in 24h) and the bot was previously blind to them.
+- ✅ New module `backend/pumpswap.py` (~350 lines): program constants, pool layout decoder, `fetch_pool_state` (reads pool account + both vault balances via getMultipleAccounts), `find_pool_for_mint` (getProgramAccounts memcmp filters on base/quote mint offsets), `quote_buy_tokens` / `quote_sell_sol` with 0.25% fee, `build_buy_ix` / `build_sell_ix` (23 / 21 accounts per IDL including creator_vault PDA, user_volume_accumulator PDA, fee_config PDA), `build_wsol_wrap_ixs` / `build_close_wsol_ix`.
+- ✅ `discovery.py`: no longer skips `complete=True`; tags them `protocol="pumpswap"` and stores `pumpswap_pool`. Seed-time fetches real pool reserves so `last_price_sol` is accurate.
+- ✅ `scanner.py`: authoritative state check routes by protocol.
+- ✅ `bot.py _enter`/`_monitor_position`/`_exit`: protocol-aware. PumpSwap paths build buy/sell ixs with WSOL wrap+close around the swap.
+- ✅ Frontend: emerald **PUMPSWAP** badge on scanner candidate rows.
+- **Verified live (read-only)**: 11 PumpSwap candidates detected, incl. BTCBANK (+12,838%, $302K MC, 228 SOL liquidity), WOJCUP (+22,770%, $540K MC, 317 SOL). Pool decoder extracts coin_creator correctly. quote_buy math verified (0.1 SOL → 24.9B BTCBANK tokens).
+- **Live signing not yet battle-tested with real funds**. Paper mode flows fully through the new code. Recommend tiny live test on a graduated token before larger positions.

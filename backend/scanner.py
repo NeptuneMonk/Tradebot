@@ -14,6 +14,7 @@ import time
 from typing import TYPE_CHECKING
 
 import pumpfun
+import pumpswap
 from models import Launch
 from solana_client import LAMPORTS_PER_SOL
 from ws_hub import hub
@@ -117,6 +118,7 @@ class MomentumScanner:
             m["launch_id"] = b.get("launch_id")
             m["band"] = "seasoned" if age >= min_age else "new"
             m["discovered"] = bool(b.get("discovered"))
+            m["protocol"] = b.get("protocol") or "pumpfun"
             m["usd_market_cap"] = float(b.get("usd_market_cap") or 0.0)
             last_trade_ms = b.get("last_trade_ms") or 0
             m["last_trade_age_s"] = max(0.0, now - last_trade_ms / 1000.0) if last_trade_ms else None
@@ -205,9 +207,30 @@ class MomentumScanner:
                         break
                     if mint in st.active_trades or mint in st.entered_mints:
                         continue
-                    curve_state = await pumpfun.fetch_bonding_curve_state(mint)
-                    if not curve_state or curve_state["complete"]:
-                        continue
+                    # Fetch authoritative state from the right protocol
+                    protocol = b.get("protocol") or "pumpfun"
+                    if protocol == "pumpswap":
+                        pool = b.get("pumpswap_pool") or (
+                            await pumpswap.find_pool_for_mint(mint)
+                        )
+                        if not pool:
+                            continue
+                        pool_state = await pumpswap.fetch_pool_state(pool)
+                        if not pool_state:
+                            continue
+                        # Refresh bucket's pool address if we just resolved it
+                        b["pumpswap_pool"] = pool
+                        # Inject AMM price into score for liquidity gate
+                        curve_state = {
+                            "virtual_sol_reserves": pool_state["quote_reserves"],
+                            "virtual_token_reserves": pool_state["base_reserves"],
+                            "real_sol_reserves": pool_state["quote_reserves"],
+                            "complete": False,
+                        }
+                    else:
+                        curve_state = await pumpfun.fetch_bonding_curve_state(mint)
+                        if not curve_state or curve_state["complete"]:
+                            continue
                     m = self.score(b, curve_state, now)
                     g = self._gates(cfg, band)
                     if m["real_sol_reserves"] < g["min_liquidity_sol"]:
