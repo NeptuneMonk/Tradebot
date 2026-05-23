@@ -72,6 +72,25 @@ class BotState:
         rules = await self.db.classifier_rules.find_one({"_id": "current"}, {"_id": 0})
         if rules:
             self.rules = ClassifierRules(**rules)
+        # SAFETY: Always start with trading disabled, regardless of what was
+        # persisted before the last shutdown. A crashed/restarted process
+        # should never automatically resume real-money trading — the user
+        # must press Start in the UI after confirming everything is healthy.
+        # We do NOT clear `live_trading` here so the user's live/paper mode
+        # preference is preserved across restarts; only the `enabled` flag is
+        # forced off.
+        was_running_before_restart = self.config.enabled
+        if was_running_before_restart:
+            self.config.enabled = False
+            await self.db.bot_config.update_one(
+                {"_id": "current"},
+                {"$set": {"enabled": False}},
+                upsert=True,
+            )
+            logger.warning(
+                "BOT WAS RUNNING BEFORE THIS PROCESS START — auto-disabled "
+                "for safety. Press Start in the UI to resume trading."
+            )
         async for t in self.db.trades.find({"status": "active"}, {"_id": 0}):
             self.active_trades[t["mint"]] = {"trade": t}
         # Start re-entry watcher
@@ -87,6 +106,12 @@ class BotState:
         # Start on-chain PnL reconciler (overwrites quoted pnl with actual
         # wallet deltas read from getTransaction every 30s)
         self.pnl_reconciler.start()
+        # Surface the auto-disable to any WS clients listening — front-end
+        # will show "Bot auto-disabled on restart" toast if connected.
+        if was_running_before_restart:
+            await hub.broadcast("bot_auto_disabled_on_restart", {
+                "active_positions": len(self.active_trades),
+            })
 
     def _resolve_fees(self) -> tuple[int, int, int]:
         """Return (priority_fee_microlamports, slippage_bps, exit_slippage_bps)

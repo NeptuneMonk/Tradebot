@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { useWebSocket } from "@/lib/useWebSocket";
 import StatusBanner from "@/components/StatusBanner";
@@ -104,6 +105,12 @@ export default function Dashboard() {
         break;
       case "reentry_attempted":
         api.reentryWatchlist().then(setReentry).catch(() => {});
+        break;
+      case "bot_auto_disabled_on_restart":
+        toast.warning(
+          `Bot was auto-disabled after backend restart (${data?.active_positions ?? 0} positions retained). Press Start to resume.`,
+          { duration: 12000 }
+        );
         break;
       default:
         break;

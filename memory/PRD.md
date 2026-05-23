@@ -613,3 +613,26 @@ User reported wallet down $1 while dashboard claimed +$4.81 live profit. Investi
 | `exit_fee_sol_failed_attempts` | gas burned on failed sell attempts |
 | `status="exit_failed_terminal"` | abandoned after 3 sell retries |
 
+
+
+## 2026-02-23 — Auto-disable on restart (safety)
+
+### Feature
+If the backend process restarts (crash, reboot, supervisor restart, code reload), the bot must NOT automatically resume real-money trading. Real funds + auto-resume after an unknown failure is a footgun.
+
+### Behaviour
+- On `BotState.load()`, the persisted `enabled` flag from MongoDB is read but immediately overridden to `False` (and persisted back) if it was `True`. A warning is logged: *"BOT WAS RUNNING BEFORE THIS PROCESS START — auto-disabled for safety. Press Start in the UI to resume trading."*
+- `live_trading` preference is preserved (we don't reset the user's mode choice).
+- Active positions tracked by `_monitor_position` are still retained — they ride to natural TP/SL/timeout via the existing monitor. Only NEW entries are blocked.
+- A `bot_auto_disabled_on_restart` event is broadcast over the WebSocket so connected clients see a warning toast.
+
+### UI
+- `Dashboard.jsx`: new toast handler `toast.warning("Bot was auto-disabled after backend restart …", { duration: 12000 })`.
+
+### Verified end-to-end
+1. Started bot → `enabled=true` confirmed
+2. `supervisorctl restart backend` (simulates server shutdown)
+3. After restart: `enabled=False`, `live_trading=True`, 16 active positions preserved
+4. Warning line confirmed in backend logs
+5. WebSocket broadcast confirmed (tested via toast handler)
+
