@@ -539,3 +539,30 @@ The user can either **▸ resume trading** (cancels wind-down and starts opening
 | `POST /bot/stop?mode=hard` | Direct hard stop bypasses graceful path |
 | Natural drain | All paper positions hit timeout → finaliser auto-flipped enabled=false |
 
+
+
+## 2026-02-23 — PnL split: live vs paper (critical bug)
+
+### Bug
+`daily_pnl_usd` was summing **all closed trades from today**, lumping paper-mode simulations and real live trades into a single number. Two real problems:
+
+1. **User confusion** — they were running live mode, saw `-$8.67` on the dashboard, but their actual real-money trades were *up* $4.03 today. The negative came from paper trades the bot had also been running.
+2. **Kill switch malfunction** — `check_kill_switch()` used the combined PnL. Paper losses could trip the real-money kill switch (and would have at -$10 → -$18.67 combined). Conversely, paper *winnings* could mask real live losses.
+
+### Fix
+- ✅ `BotState.daily_pnl_usd(mode=None)` — now accepts `mode='live' | 'paper' | None`. Default still returns combined (back-compat).
+- ✅ `check_kill_switch()` now uses `mode='live'` only — paper losses can never trip the real-money kill switch.
+- ✅ `BotStatus` exposes three fields: `daily_pnl_usd` (combined, legacy), `daily_pnl_live_usd`, `daily_pnl_paper_usd`. `daily_loss_usd` now reflects **live-only** loss magnitude (the kill-switch reference).
+- ✅ `/api/pl/summary?mode=live|paper` filter param added so the PnL chart can show live trades only.
+
+### UI (`DailyLossMeter.jsx`)
+- ✅ Two new stat cells: **LIVE today** (emerald/red) and **PAPER today** — split clearly
+- ✅ Header now says "live loss vs $X kill switch" instead of generic "loss"
+
+### Verified
+| | Before | After |
+|---|---|---|
+| Status `daily_pnl_usd` | -$8.67 (combined, misleading) | -$5.03 combined / **+$4.81 live** / -$8.67 paper |
+| Kill-switch reference | -$8.67 (would have tripped at -$10!) | $0.00 (live is profitable) |
+| `/api/pl/summary?mode=live` | mixed paper+live | 56 trades, **+$4.81 cumulative** |
+

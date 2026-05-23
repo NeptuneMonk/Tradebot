@@ -186,8 +186,10 @@ class BotStatus(BaseModel):
     live_trading: bool
     kill_switch_tripped: bool
     listener_connected: bool
-    daily_pnl_usd: float
-    daily_loss_usd: float  # positive number representing loss magnitude
+    daily_pnl_usd: float          # legacy combined (live + paper) — kept for compat
+    daily_pnl_live_usd: float = 0.0   # real-money PnL (drives kill switch)
+    daily_pnl_paper_usd: float = 0.0  # paper-mode simulated PnL
+    daily_loss_usd: float  # positive number representing LIVE loss magnitude (kill-switch ref)
     daily_kill_switch_usd: float
     total_trades_today: int
     active_trade_count: int

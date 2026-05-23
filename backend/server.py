@@ -265,6 +265,8 @@ async def paper_reset():
 @api.get("/bot/status", response_model=BotStatus)
 async def bot_status():
     pnl = await bot_state.daily_pnl_usd()
+    pnl_live = await bot_state.daily_pnl_usd(mode="live")
+    pnl_paper = await bot_state.daily_pnl_usd(mode="paper")
     total_today = await db.trades.count_documents(
         {
             "entry_time": {
@@ -280,7 +282,10 @@ async def bot_status():
         kill_switch_tripped=bot_state.kill_switch_tripped,
         listener_connected=listener.connected,
         daily_pnl_usd=pnl,
-        daily_loss_usd=max(0.0, -pnl),
+        daily_pnl_live_usd=pnl_live,
+        daily_pnl_paper_usd=pnl_paper,
+        # Loss magnitude that the kill switch checks against — LIVE only
+        daily_loss_usd=max(0.0, -pnl_live),
         daily_kill_switch_usd=bot_state.config.daily_kill_switch_usd,
         total_trades_today=total_today,
         active_trade_count=len(bot_state.active_trades),
@@ -422,11 +427,16 @@ async def costs_network():
 
 # ---------- P/L summary ----------
 @api.get("/pl/summary")
-async def pl_summary(days: int = 7):
+async def pl_summary(days: int = 7, mode: str | None = None):
+    """Cumulative PnL series. Pass `mode=live` or `mode=paper` to filter,
+    or omit for combined. Default returns combined for back-compat."""
     start = datetime.now(timezone.utc) - timedelta(days=days)
+    query: dict = {"status": "closed", "exit_time": {"$gte": start.isoformat()}}
+    if mode in ("live", "paper"):
+        query["mode"] = mode
     cursor = db.trades.find(
-        {"status": "closed", "exit_time": {"$gte": start.isoformat()}},
-        {"_id": 0, "pnl_usd": 1, "pnl_sol": 1, "exit_time": 1, "mint": 1},
+        query,
+        {"_id": 0, "pnl_usd": 1, "pnl_sol": 1, "exit_time": 1, "mint": 1, "mode": 1},
     ).sort("exit_time", 1)
     rows = []
     cum = 0.0
@@ -438,10 +448,19 @@ async def pl_summary(days: int = 7):
                 "pnl_usd": float(d.get("pnl_usd", 0.0)),
                 "cumulative_usd": cum,
                 "mint": d["mint"],
+                "mode": d.get("mode", "?"),
             }
         )
-    today = await bot_state.daily_pnl_usd()
-    return {"series": rows, "daily_pnl_usd": today, "cumulative_usd": cum}
+    today_live = await bot_state.daily_pnl_usd(mode="live")
+    today_paper = await bot_state.daily_pnl_usd(mode="paper")
+    return {
+        "series": rows,
+        "daily_pnl_usd": today_live + today_paper,
+        "daily_pnl_live_usd": today_live,
+        "daily_pnl_paper_usd": today_paper,
+        "cumulative_usd": cum,
+        "mode_filter": mode,
+    }
 
 
 # ---------- P/L by source (Sniper vs Scanner vs Reentry) ----------

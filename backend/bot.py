@@ -176,21 +176,29 @@ class BotState:
             upsert=True,
         )
 
-    async def daily_pnl_usd(self) -> float:
+    async def daily_pnl_usd(self, mode: str | None = None) -> float:
+        """Sum of pnl_usd for trades closed today (UTC). Pass mode='live' or
+        'paper' to filter; default (None) returns the combined total.
+
+        IMPORTANT: the kill switch must use mode='live' because we don't want
+        paper losses to trip the real-money bot, and we don't want paper
+        winnings to mask real losses.
+        """
         start = datetime.now(timezone.utc).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
-        cursor = self.db.trades.find(
-            {"status": "closed", "exit_time": {"$gte": start.isoformat()}},
-            {"_id": 0, "pnl_usd": 1},
-        )
+        query: dict = {"status": "closed", "exit_time": {"$gte": start.isoformat()}}
+        if mode in ("live", "paper"):
+            query["mode"] = mode
+        cursor = self.db.trades.find(query, {"_id": 0, "pnl_usd": 1})
         total = 0.0
         async for d in cursor:
             total += float(d.get("pnl_usd", 0.0))
         return total
 
     async def check_kill_switch(self) -> bool:
-        pnl = await self.daily_pnl_usd()
+        # Live-only — paper trades must never trip the real-money kill switch
+        pnl = await self.daily_pnl_usd(mode="live")
         if pnl <= -abs(self.config.daily_kill_switch_usd):
             self.kill_switch_tripped = True
             self.config.enabled = False
