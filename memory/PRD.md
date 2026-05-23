@@ -429,3 +429,64 @@ Single checkbox + threshold gate: when **Socials required for entry** is ✅, re
 - 6-case unit test on gate logic: off / empty / low replies / passing telegram / passing website / min-0 — all behave correctly.
 - UI rendered as expected (screenshot).
 
+
+
+## 2026-02-23 — Trading cost tracker + Speed Mode slider tuner
+
+### Feature
+Two-part addition:
+1. **Speed Mode slider** — single slider with 6 presets that bundle `priority_fee_microlamports` + `slippage_bps` + `exit_slippage_bps` into named tiers, replacing the raw inputs. AUTO mode dynamically tunes priority fee from Helius `getRecentPrioritizationFees` p75 every 30s.
+2. **Cost Tracker card** — surfaces accumulated trading fees from the per-trade fee fields, breaks down by speed mode, and shows live network conditions.
+
+### Backend
+
+#### `models.py`
+- ✅ `BotConfig.speed_mode: str = "manual"` — eco / normal / fast / aggressive / turbo / auto / manual
+- ✅ `Trade`: new `entry_fee_sol`, `exit_fee_sol`, `partial_fee_sol`, `speed_mode_at_entry` fields
+
+#### `speed_modes.py` (new)
+- ✅ Preset table (priority_fee, slippage_bps, exit_slippage_bps) for the 5 named tiers
+- ✅ `speed_mode_resolve()` — returns effective fees for a given mode
+- ✅ `estimate_tx_fee_sol()` — base sig (5000 lamports) + priority × CU / 1e6
+- ✅ `PriorityFeeAutoTuner` — background task polling Helius `getRecentPrioritizationFees` every 30s, computes p75, clamps to preset range. Falls back to NORMAL on errors.
+
+#### `bot.py`
+- ✅ `BotState._resolve_fees()` helper — single source of truth for effective fees at tx-submit time
+- ✅ All 6 tx sites (`_enter` entry × 2 protocols, `_partial_exit` × 2, `_exit` × 2, `_attempt_reentry`) now call `_resolve_fees()` instead of reading raw config
+- ✅ Each Trade doc now stamps `entry_fee_sol` / `exit_fee_sol` / `partial_fee_sol` / `speed_mode_at_entry`
+- ✅ `auto_tuner.start()` invoked on `BotState.load()`
+
+#### `server.py`
+- ✅ `GET /api/costs/summary?days=N` — fees totals, avg/trade, fee as % of notional and PnL, breakdown by mode and by speed mode
+- ✅ `GET /api/costs/network` — current speed mode, resolved effective values, auto-tuner state
+
+### Frontend
+
+#### `SpeedModeSlider.jsx` (new)
+- ✅ Native range slider + clickable preset buttons (zero deps)
+- ✅ Live header showing current mode label + bundled values (e.g., "TURBO · 3M · 10%")
+- ✅ Each preset has dedicated color + icon (Leaf/Gauge/Zap/Rocket/Flame/Activity)
+
+#### `BotControlCard.jsx`
+- ✅ Speed Mode slider placed right under Start/Stop button
+- ✅ "Manual fee override" toggle hides Priority µLamp / Slippage / Exit Slip inputs by default; clicking it both expands the inputs AND switches `speed_mode → manual`
+
+#### `CostTrackerCard.jsx` (new)
+- ✅ Top stat grid: Trades / Fees Total / Avg/Trade / Fee% of Notional
+- ✅ Per-speed-mode breakdown table
+- ✅ Live network section showing effective prio µLamp + slip bps + auto-tuner p75 (when in AUTO)
+- ✅ 1d / 7d / 30d window selector
+- ✅ Auto-refreshes every 8s
+
+#### `Dashboard.jsx`
+- ✅ Mounts CostTrackerCard between P/L By Source and Scanner Candidates
+
+### Verified
+- Config endpoint exposes `speed_mode` field correctly
+- `/api/costs/network` returns resolved (priority, slip, exit_slip) triples for all modes — eco/normal/fast/aggressive/turbo/auto/manual all behave correctly
+- Auto-tuner successfully polled Helius and returned `current_value=300000` (network was quiet → NORMAL floor applied)
+- UI screenshots confirm both the slider and the cost tracker render with expected data
+
+### Default behavior unchanged
+`speed_mode` defaults to `"manual"` — existing users keep their current priority/slippage configs. They can opt into a preset whenever ready.
+

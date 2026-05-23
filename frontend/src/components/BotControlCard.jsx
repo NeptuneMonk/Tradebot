@@ -1,10 +1,12 @@
 import { useState, useEffect } from "react";
-import { Power, Zap, Settings2 } from "lucide-react";
+import { Power, Zap, Settings2, ChevronDown, ChevronRight } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
+import SpeedModeSlider from "./SpeedModeSlider";
 
 export default function BotControlCard({ status, config, onUpdate, onStart, onStop }) {
   const [local, setLocal] = useState(null);
+  const [showAdvancedFees, setShowAdvancedFees] = useState(false);
 
   useEffect(() => { if (config) setLocal(config); }, [config]);
 
@@ -53,6 +55,26 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
         {running ? "Stop Bot" : "Start Bot"}
       </button>
 
+      {/* Speed Mode slider — controls priority fee + slippage as a bundle */}
+      <SpeedModeSlider
+        value={local.speed_mode || "manual"}
+        onChange={(mode) => setLocal({ ...local, speed_mode: mode })}
+      />
+      <button
+        onClick={() => {
+          setShowAdvancedFees((v) => !v);
+          // If they want manual control, opening Advanced switches mode to manual
+          if (!showAdvancedFees && local.speed_mode !== "manual") {
+            setLocal({ ...local, speed_mode: "manual" });
+          }
+        }}
+        data-testid="toggle-advanced-fees-btn"
+        className="flex items-center gap-1 text-[10px] uppercase tracking-[0.15em] text-neutral-500 hover:text-neutral-300 transition-colors -mt-1"
+      >
+        {showAdvancedFees ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+        Manual fee override
+      </button>
+
       <div className="grid grid-cols-2 gap-2 text-xs">
         <Field label="Min Trade ($)" testid="min-trade-input"
                value={local.min_trade_usd}
@@ -60,9 +82,11 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
         <Field label="Max Trade ($)" testid="max-trade-input"
                value={local.max_trade_usd}
                onChange={(v) => setLocal({ ...local, max_trade_usd: parseFloat(v) || 0 })} step="0.1" />
-        <Field label="Slippage (bps)" testid="slippage-input"
-               value={local.slippage_bps}
-               onChange={(v) => setLocal({ ...local, slippage_bps: parseInt(v, 10) || 0 })} step="50" />
+        {showAdvancedFees && (
+          <Field label="Slippage (bps)" testid="slippage-input"
+                 value={local.slippage_bps}
+                 onChange={(v) => setLocal({ ...local, slippage_bps: parseInt(v, 10) || 0 })} step="50" />
+        )}
         <Field label="Kill Switch ($)" testid="killswitch-input"
                value={local.daily_kill_switch_usd}
                onChange={(v) => setLocal({ ...local, daily_kill_switch_usd: parseFloat(v) || 0 })} step="1" />
@@ -75,15 +99,19 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
         <Field label="Max Hold (s)" testid="hold-input"
                value={local.hold_max_seconds}
                onChange={(v) => setLocal({ ...local, hold_max_seconds: parseInt(v, 10) || 0 })} step="1" />
-        <Field label="Priority µLamp" testid="prio-input"
-               value={local.priority_fee_microlamports}
-               onChange={(v) => setLocal({ ...local, priority_fee_microlamports: parseInt(v, 10) || 0 })} step="100000" />
+        {showAdvancedFees && (
+          <Field label="Priority µLamp" testid="prio-input"
+                 value={local.priority_fee_microlamports}
+                 onChange={(v) => setLocal({ ...local, priority_fee_microlamports: parseInt(v, 10) || 0 })} step="100000" />
+        )}
         <Field label="Trailing Stop (%)" testid="trailing-input"
                value={local.trailing_stop_pct}
                onChange={(v) => setLocal({ ...local, trailing_stop_pct: parseFloat(v) || 0 })} step="1" />
-        <Field label="Exit Slip (bps)" testid="exit-slip-input"
-               value={local.exit_slippage_bps}
-               onChange={(v) => setLocal({ ...local, exit_slippage_bps: parseInt(v, 10) || 0 })} step="50" />
+        {showAdvancedFees && (
+          <Field label="Exit Slip (bps)" testid="exit-slip-input"
+                 value={local.exit_slippage_bps}
+                 onChange={(v) => setLocal({ ...local, exit_slippage_bps: parseInt(v, 10) || 0 })} step="50" />
+        )}
         <Field label="Partial TP (%)" testid="partial-tp-input"
                value={local.partial_tp_pct}
                onChange={(v) => setLocal({ ...local, partial_tp_pct: parseFloat(v) || 0 })} step="5" />

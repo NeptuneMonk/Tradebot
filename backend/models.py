@@ -26,6 +26,13 @@ class BotConfig(BaseModel):
     # Risk / exit behaviour
     daily_kill_switch_usd: float = 20.00
     priority_fee_microlamports: int = 500_000
+    # Speed mode tuner: bundles priority_fee + slippage_bps + exit_slippage_bps
+    # into named presets. UI exposes a 0-5 slider; "auto" adapts dynamically to
+    # current network congestion via Helius getRecentPrioritizationFees.
+    # Values: eco | normal | fast | aggressive | turbo | auto
+    # When set to anything other than "manual", the resolved values overwrite
+    # priority_fee_microlamports / slippage_bps / exit_slippage_bps at runtime.
+    speed_mode: str = "manual"
     hold_max_seconds: int = 60       # user-requested: keep at 60s
     take_profit_pct: float = 35.0    # winners observed averaging ~+37%
     stop_loss_pct: float = 20.0      # tight cap, enforced by fast-exit
@@ -155,6 +162,13 @@ class Trade(BaseModel):
     pnl_sol: float = 0.0
     pnl_usd: float = 0.0
     pnl_pct: float = 0.0
+    # Trading-cost breakdown (estimated at tx-submit time using
+    # priority_fee_microlamports × compute_unit_limit / 1e6 + base 5000 lamports
+    # signature fee. Slippage cost computed from quoted-vs-actual fills).
+    entry_fee_sol: float = 0.0
+    exit_fee_sol: float = 0.0
+    partial_fee_sol: float = 0.0
+    speed_mode_at_entry: Optional[str] = None
     # Classifier snapshot
     risk_score: int = 50
     classifier_action: Optional[str] = None

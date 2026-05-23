@@ -307,6 +307,93 @@ async def trades_manual_exit(trade_id: str):
     return {"ok": True}
 
 
+# ---------- Cost tracker ----------
+@api.get("/costs/summary")
+async def costs_summary(days: int = 7):
+    """Per-window cost rollup. Aggregates fees from closed trades and reports
+    cost as a % of corresponding PnL. Used by the Cost Tracker UI card."""
+    start = datetime.now(timezone.utc) - timedelta(days=days)
+    cursor = db.trades.find(
+        {"status": "closed", "exit_time": {"$gte": start.isoformat()}},
+        {
+            "_id": 0,
+            "entry_fee_sol": 1, "exit_fee_sol": 1, "partial_fee_sol": 1,
+            "pnl_sol": 1, "pnl_usd": 1, "entry_sol": 1, "mode": 1,
+            "speed_mode_at_entry": 1, "classifier_action": 1,
+        },
+    )
+    n = 0
+    fee_sol_total = 0.0
+    pnl_usd_total = 0.0
+    pnl_sol_total = 0.0
+    notional_sol_total = 0.0
+    by_mode: dict = {}
+    by_speed: dict = {}
+    async for d in cursor:
+        n += 1
+        e = float(d.get("entry_fee_sol") or 0)
+        x = float(d.get("exit_fee_sol") or 0)
+        p = float(d.get("partial_fee_sol") or 0)
+        fee = e + x + p
+        fee_sol_total += fee
+        pnl_usd_total += float(d.get("pnl_usd") or 0)
+        pnl_sol_total += float(d.get("pnl_sol") or 0)
+        notional_sol_total += float(d.get("entry_sol") or 0)
+        m = d.get("mode") or "?"
+        by_mode.setdefault(m, {"n": 0, "fee_sol": 0.0})
+        by_mode[m]["n"] += 1
+        by_mode[m]["fee_sol"] += fee
+        s = d.get("speed_mode_at_entry") or "manual"
+        by_speed.setdefault(s, {"n": 0, "fee_sol": 0.0})
+        by_speed[s]["n"] += 1
+        by_speed[s]["fee_sol"] += fee
+    # Estimate SOL/USD using bot's cached price (avoids a network call)
+    from solana_client import get_sol_usd_price
+    sol_usd = await get_sol_usd_price()
+    return {
+        "window_days": days,
+        "trades": n,
+        "fee_sol_total": fee_sol_total,
+        "fee_usd_total": fee_sol_total * sol_usd,
+        "avg_fee_usd_per_trade": (fee_sol_total * sol_usd / n) if n else 0.0,
+        "pnl_usd_total": pnl_usd_total,
+        "pnl_sol_total": pnl_sol_total,
+        "notional_sol_total": notional_sol_total,
+        "fee_as_pct_of_notional": (
+            fee_sol_total / notional_sol_total * 100.0 if notional_sol_total > 0 else 0.0
+        ),
+        "fee_as_pct_of_pnl_abs": (
+            fee_sol_total / abs(pnl_sol_total) * 100.0 if pnl_sol_total != 0 else 0.0
+        ),
+        "by_mode": by_mode,
+        "by_speed": by_speed,
+        "sol_usd_at_query": sol_usd,
+    }
+
+
+@api.get("/costs/network")
+async def costs_network():
+    """Current network conditions: last polled p75 priority fee + the effective
+    fees the bot is using right now (resolves speed_mode)."""
+    from speed_modes import auto_tuner, speed_mode_resolve
+    cfg = bot_state.config
+    eff_priority, eff_slip, eff_exit_slip = speed_mode_resolve(
+        cfg.speed_mode,
+        cfg.priority_fee_microlamports,
+        cfg.slippage_bps,
+        cfg.exit_slippage_bps if cfg.exit_slippage_bps > 0 else cfg.slippage_bps,
+        auto_priority_cache=auto_tuner.current_value,
+    )
+    return {
+        "speed_mode": cfg.speed_mode,
+        "effective_priority_fee_microlamports": eff_priority,
+        "effective_slippage_bps": eff_slip,
+        "effective_exit_slippage_bps": eff_exit_slip,
+        "auto_tuner_current": auto_tuner.current_value,
+        "auto_tuner_last_poll_ts": auto_tuner.last_poll_ts,
+    }
+
+
 # ---------- P/L summary ----------
 @api.get("/pl/summary")
 async def pl_summary(days: int = 7):

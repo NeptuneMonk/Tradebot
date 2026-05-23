@@ -15,6 +15,7 @@ import ScannerCandidatesCard from "@/components/ScannerCandidatesCard";
 import SuggestionsCard from "@/components/SuggestionsCard";
 import InsightsCard from "@/components/InsightsCard";
 import PLBySourceCard from "@/components/PLBySourceCard";
+import CostTrackerCard from "@/components/CostTrackerCard";
 import { Activity } from "lucide-react";
 
 export default function Dashboard() {
@@ -157,6 +158,8 @@ export default function Dashboard() {
         <ReentryWatchCard watchlist={reentry} onRefresh={() => api.reentryWatchlist().then(setReentry).catch(() => {})} />
 
         <PLBySourceCard refreshSignal={plSourceRefresh} />
+
+        <CostTrackerCard apiBase={process.env.REACT_APP_BACKEND_URL || ""} />
 
         <ScannerCandidatesCard candidates={scanner} config={config} />
 

@@ -25,6 +25,10 @@ from ws_hub import hub
 from creator_history import record_new_launch, mark_outcome, get_creator, derive_rug_count
 from scanner import MomentumScanner, velocity_pct_strict
 from discovery import PumpfunDiscovery
+from speed_modes import (
+    speed_mode_resolve, estimate_tx_fee_sol, auto_tuner,
+    CU_PUMPFUN, CU_PUMPSWAP,
+)
 
 logger = logging.getLogger("bot")
 
@@ -71,6 +75,22 @@ class BotState:
             self._scanner_task = asyncio.create_task(self.scanner.loop())
         # Start Pump.fun discovery (aged tokens)
         self.discovery.start()
+        # Start priority-fee auto-tuner (only consulted when speed_mode='auto')
+        auto_tuner.start()
+
+    def _resolve_fees(self) -> tuple[int, int, int]:
+        """Return (priority_fee_microlamports, slippage_bps, exit_slippage_bps)
+        applying the current speed_mode preset. Falls back to raw config when
+        speed_mode='manual' or unrecognised."""
+        return speed_mode_resolve(
+            self.config.speed_mode,
+            self.config.priority_fee_microlamports,
+            self.config.slippage_bps,
+            (self.config.exit_slippage_bps
+             if self.config.exit_slippage_bps > 0
+             else self.config.slippage_bps),
+            auto_priority_cache=auto_tuner.current_value,
+        )
 
     async def save_config(self):
         await self.db.bot_config.update_one(
@@ -172,11 +192,13 @@ class BotState:
         real_sol = state["real_sol_reserves"] / LAMPORTS_PER_SOL
         if real_sol < self.config.min_curve_liquidity_sol:
             return
-        tokens_out, max_sol = pumpfun.quote_buy_tokens(state, sol_in_lamports, self.config.slippage_bps)
+        eff_priority, eff_slip, _ = self._resolve_fees()
+        tokens_out, max_sol = pumpfun.quote_buy_tokens(state, sol_in_lamports, eff_slip)
         if tokens_out <= 0:
             return
         entry_price_sol = sol_in_lamports / tokens_out / LAMPORTS_PER_SOL
         mode = "live" if self.config.live_trading else "paper"
+        est_entry_fee_sol = estimate_tx_fee_sol(eff_priority, CU_PUMPFUN)
         trade = Trade(
             mint=mint,
             name=w.get("name"),
@@ -187,6 +209,8 @@ class BotState:
             entry_usd=trade_sol * sol_price,
             entry_tokens=tokens_out,
             entry_price_sol=entry_price_sol,
+            entry_fee_sol=est_entry_fee_sol,
+            speed_mode_at_entry=self.config.speed_mode,
             risk_score=40,
             classifier_action="reentry",
         )
@@ -199,7 +223,7 @@ class BotState:
                     pumpfun.build_create_ata_ix(user, user, mint_pk),
                     pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol),
                 ]
-                sig = await pumpfun.send_versioned_tx(kp, ixs, self.config.priority_fee_microlamports)
+                sig = await pumpfun.send_versioned_tx(kp, ixs, eff_priority)
                 trade.entry_sig = sig
             except Exception as e:
                 logger.exception(f"Live re-entry buy failed for {mint}: {e}")
@@ -662,16 +686,22 @@ class BotState:
                 })
                 return
 
+        # Resolve effective fees from speed_mode (e.g. ECO/NORMAL/FAST/AUTO)
+        eff_priority, eff_slip, _eff_exit_slip = self._resolve_fees()
+
         tokens_out, max_sol = (
-            pumpswap.quote_buy_tokens(pumpswap_state, sol_in_lamports, self.config.slippage_bps)
+            pumpswap.quote_buy_tokens(pumpswap_state, sol_in_lamports, eff_slip)
             if protocol == "pumpswap"
-            else pumpfun.quote_buy_tokens(state, sol_in_lamports, self.config.slippage_bps)
+            else pumpfun.quote_buy_tokens(state, sol_in_lamports, eff_slip)
         )
         if tokens_out <= 0:
             return
 
         entry_price_sol = sol_in_lamports / tokens_out / LAMPORTS_PER_SOL
         mode = "live" if self.config.live_trading else "paper"
+
+        cu = CU_PUMPSWAP if protocol == "pumpswap" else CU_PUMPFUN
+        est_entry_fee_sol = estimate_tx_fee_sol(eff_priority, cu)
 
         trade = Trade(
             mint=launch.mint,
@@ -683,6 +713,8 @@ class BotState:
             entry_usd=trade_sol * sol_price,
             entry_tokens=tokens_out,
             entry_price_sol=entry_price_sol,
+            entry_fee_sol=est_entry_fee_sol,
+            speed_mode_at_entry=self.config.speed_mode,
             risk_score=risk_score,
             classifier_action=action,
         )
@@ -708,7 +740,7 @@ class BotState:
                         pumpswap.build_close_wsol_ix(user, wsol_acc),
                     ]
                     sig = await pumpfun.send_versioned_tx(
-                        kp, ixs, self.config.priority_fee_microlamports,
+                        kp, ixs, eff_priority,
                         compute_unit_limit=400_000,
                     )
                 else:
@@ -717,7 +749,7 @@ class BotState:
                         pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol),
                     ]
                     sig = await pumpfun.send_versioned_tx(
-                        kp, ixs, self.config.priority_fee_microlamports
+                        kp, ixs, eff_priority
                     )
                 trade.entry_sig = sig
             except Exception as e:
@@ -893,7 +925,8 @@ class BotState:
             except Exception as e:
                 logger.warning(f"partial balance read failed for {mint}: {e}")
 
-        exit_slip = self.config.exit_slippage_bps if self.config.exit_slippage_bps > 0 else self.config.slippage_bps
+        eff_priority, _eff_slip, eff_exit_slip = self._resolve_fees()
+        exit_slip = eff_exit_slip
         if protocol == "pumpswap":
             sol_out, min_sol = pumpswap.quote_sell_sol(pumpswap_state, sell_tokens, exit_slip)
         else:
@@ -920,12 +953,12 @@ class BotState:
                         pumpswap.build_close_wsol_ix(user, wsol_acc),
                     ]
                     partial_sig = await pumpfun.send_versioned_tx(
-                        kp, ixs, self.config.priority_fee_microlamports, compute_unit_limit=400_000,
+                        kp, ixs, eff_priority, compute_unit_limit=400_000,
                     )
                 else:
                     ix = pumpfun.build_sell_ix(user, mint_pk, sell_tokens, min_sol)
                     partial_sig = await pumpfun.send_versioned_tx(
-                        kp, [ix], self.config.priority_fee_microlamports
+                        kp, [ix], eff_priority
                     )
             except Exception as e:
                 logger.exception(f"partial sell failed for {mint}: {e}")
@@ -938,6 +971,8 @@ class BotState:
         realized_usd = realized_sol * sol_price
 
         # Update trade doc — reduce remaining position, bank realized PnL
+        cu = CU_PUMPSWAP if protocol == "pumpswap" else CU_PUMPFUN
+        partial_fee_sol = estimate_tx_fee_sol(eff_priority, cu)
         trade_doc["partial_done"] = True
         trade_doc["partial_sell_tokens"] = sell_tokens
         trade_doc["partial_sell_sol"] = partial_sol
@@ -946,6 +981,7 @@ class BotState:
         trade_doc["partial_realized_usd"] = realized_usd
         trade_doc["partial_sig"] = partial_sig
         trade_doc["partial_reason"] = reason
+        trade_doc["partial_fee_sol"] = partial_fee_sol
         trade_doc["entry_tokens"] = held - sell_tokens
         trade_doc["entry_sol"] = trade_doc["entry_sol"] - partial_cost_sol
         trade_doc["entry_usd"] = trade_doc["entry_sol"] * sol_price
@@ -990,8 +1026,9 @@ class BotState:
             return
 
         tokens_in = int(trade_doc["entry_tokens"])
-        # Use exit_slippage_bps if user has set it, else fall back to slippage_bps
-        exit_slip = self.config.exit_slippage_bps if self.config.exit_slippage_bps > 0 else self.config.slippage_bps
+        # Resolve effective fees from speed_mode for this exit
+        eff_priority, _eff_slip, eff_exit_slip = self._resolve_fees()
+        exit_slip = eff_exit_slip
 
         # For live trades, size the sell by the ACTUAL wallet balance — fees
         # taken at buy time mean our balance is usually a touch lower than
@@ -1037,17 +1074,21 @@ class BotState:
                         pumpswap.build_close_wsol_ix(user, wsol_acc),
                     ]
                     exit_sig = await pumpfun.send_versioned_tx(
-                        kp, ixs, self.config.priority_fee_microlamports,
+                        kp, ixs, eff_priority,
                         compute_unit_limit=400_000,
                     )
                 else:
                     ix = pumpfun.build_sell_ix(user, mint_pk, tokens_in, min_sol)
                     exit_sig = await pumpfun.send_versioned_tx(
-                        kp, [ix], self.config.priority_fee_microlamports
+                        kp, [ix], eff_priority
                     )
             except Exception as e:
                 logger.exception(f"Live sell failed: {e}")
                 trade_doc["exit_reason"] = f"{reason} | sell failed: {e}"
+
+        cu = CU_PUMPSWAP if protocol == "pumpswap" else CU_PUMPFUN
+        exit_fee_sol = estimate_tx_fee_sol(eff_priority, cu)
+        trade_doc["exit_fee_sol"] = exit_fee_sol
 
         pnl_sol = exit_sol - trade_doc["entry_sol"]
         # Combine with any earlier partial-TP realised PnL so the trade's
