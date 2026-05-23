@@ -552,14 +552,18 @@ class BotState:
                         ),
                         pumpswap.build_close_wsol_ix(user, wsol_acc),
                     ]
+                    sig = await pumpfun.send_versioned_tx(
+                        kp, ixs, self.config.priority_fee_microlamports,
+                        compute_unit_limit=400_000,
+                    )
                 else:
                     ixs = [
                         pumpfun.build_create_ata_ix(user, user, mint_pk),
                         pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol),
                     ]
-                sig = await pumpfun.send_versioned_tx(
-                    kp, ixs, self.config.priority_fee_microlamports
-                )
+                    sig = await pumpfun.send_versioned_tx(
+                        kp, ixs, self.config.priority_fee_microlamports
+                    )
                 trade.entry_sig = sig
             except Exception as e:
                 logger.exception(f"Live buy failed for {launch.mint}: {e}")
@@ -689,6 +693,25 @@ class BotState:
         tokens_in = int(trade_doc["entry_tokens"])
         # Use exit_slippage_bps if user has set it, else fall back to slippage_bps
         exit_slip = self.config.exit_slippage_bps if self.config.exit_slippage_bps > 0 else self.config.slippage_bps
+
+        # For live trades, size the sell by the ACTUAL wallet balance — fees
+        # taken at buy time mean our balance is usually a touch lower than
+        # entry_tokens, and trying to sell more than we hold reverts the tx.
+        if trade_doc["mode"] == "live":
+            try:
+                user = get_pubkey()
+                mint_pk = Pubkey.from_string(mint)
+                if protocol == "pumpswap":
+                    ata = pumpswap.get_associated_token_address(user, mint_pk, pumpswap.TOKEN_PROGRAM)
+                    actual = await pumpswap.get_token_balance(ata)
+                else:
+                    ata = pumpfun.derive_associated_token(user, mint_pk)
+                    actual = await pumpswap.get_token_balance(ata)
+                if actual > 0:
+                    tokens_in = min(tokens_in, actual)
+            except Exception as e:
+                logger.warning(f"balance read failed for {mint}, falling back to entry_tokens: {e}")
+
         if protocol == "pumpswap":
             sol_out, min_sol = pumpswap.quote_sell_sol(pumpswap_state, tokens_in, exit_slip)
         else:
@@ -715,7 +738,8 @@ class BotState:
                         pumpswap.build_close_wsol_ix(user, wsol_acc),
                     ]
                     exit_sig = await pumpfun.send_versioned_tx(
-                        kp, ixs, self.config.priority_fee_microlamports
+                        kp, ixs, self.config.priority_fee_microlamports,
+                        compute_unit_limit=400_000,
                     )
                 else:
                     ix = pumpfun.build_sell_ix(user, mint_pk, tokens_in, min_sol)

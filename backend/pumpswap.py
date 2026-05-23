@@ -35,7 +35,6 @@ from spl.token.instructions import (
     initialize_account,
     close_account,
     get_associated_token_address,
-    create_associated_token_account,
 )
 
 from solana_client import rpc_call, LAMPORTS_PER_SOL
@@ -365,4 +364,30 @@ def build_close_wsol_ix(user: Pubkey, wsol_account: Pubkey) -> Instruction:
 
 
 def build_create_ata_ix(payer: Pubkey, owner: Pubkey, mint: Pubkey) -> Instruction:
-    return create_associated_token_account(payer, owner, mint, TOKEN_PROGRAM)
+    """Create an ATA (idempotent — safe to call when account already exists)."""
+    ata = get_associated_token_address(owner, mint, TOKEN_PROGRAM)
+    return Instruction(
+        program_id=ASSOCIATED_TOKEN_PROGRAM,
+        data=bytes([1]),  # CreateIdempotent
+        accounts=[
+            AccountMeta(payer, True, True),
+            AccountMeta(ata, False, True),
+            AccountMeta(owner, False, False),
+            AccountMeta(mint, False, False),
+            AccountMeta(SYSTEM_PROGRAM_ID, False, False),
+            AccountMeta(TOKEN_PROGRAM, False, False),
+        ],
+    )
+
+
+async def get_token_balance(ata: Pubkey) -> int:
+    """Read the raw token amount currently held in an ATA. Returns 0 if account
+    doesn't exist. Used before selling to size the trade by actual balance."""
+    res = await rpc_call(
+        "getTokenAccountBalance",
+        [str(ata), {"commitment": "confirmed"}],
+    )
+    try:
+        return int(res["result"]["value"]["amount"])
+    except (KeyError, TypeError, ValueError):
+        return 0

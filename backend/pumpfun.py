@@ -124,7 +124,7 @@ def build_create_ata_ix(payer: Pubkey, owner: Pubkey, mint: Pubkey) -> Instructi
     ata = derive_associated_token(owner, mint)
     return Instruction(
         program_id=ASSOCIATED_TOKEN_PROGRAM,
-        data=bytes([0]),  # Create
+        data=bytes([1]),  # CreateIdempotent (no-op if ATA already exists)
         accounts=[
             AccountMeta(payer, True, True),
             AccountMeta(ata, False, True),
@@ -197,12 +197,13 @@ def build_sell_ix(
 
 
 async def send_versioned_tx(
-    keypair, instructions: list, priority_fee_microlamports: int = 500_000
+    keypair, instructions: list, priority_fee_microlamports: int = 500_000,
+    compute_unit_limit: int = 200_000,
 ) -> str:
     """Build, sign, and send a versioned transaction. Returns signature string."""
     # Prepend compute budget instructions
     ixs = [
-        set_compute_unit_limit(200_000),
+        set_compute_unit_limit(compute_unit_limit),
         set_compute_unit_price(priority_fee_microlamports),
         *instructions,
     ]
