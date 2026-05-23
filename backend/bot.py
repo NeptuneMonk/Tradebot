@@ -593,6 +593,11 @@ class BotState:
                 trade.status = "failed"
                 trade.exit_reason = f"buy failed: {e}"
                 await self._persist_trade(trade)
+                # Cooldown the mint in the scanner so we don't retry the same
+                # broken tx every pass.
+                b = self.tracking.get(launch.mint)
+                if b is not None:
+                    b["scanner_last_attempt"] = time.time()
                 return
 
         await self._persist_trade(trade)

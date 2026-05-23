@@ -98,11 +98,16 @@ class PumpfunDiscovery:
             # Graduated tokens trade on PumpSwap AMM. We still want them — they're
             # often the biggest movers — so just tag the protocol.
             is_pumpswap = bool(c.get("complete"))
-            # Freshness gate: skip tokens whose last trade is too stale
-            last_trade_ms = c.get("last_trade_timestamp") or 0
-            if max_idle_ms > 0 and (not last_trade_ms or now_ms - last_trade_ms > max_idle_ms):
-                skipped_idle += 1
-                continue
+            # Freshness gate: skip tokens whose last trade is too stale.
+            # IMPORTANT: graduated tokens trade on PumpSwap AMM, and Pump.fun's
+            # `last_trade_timestamp` only tracks bonding-curve trades — it goes
+            # stale the moment the token graduates. Skip the gate for those so
+            # we don't systematically exclude all high-MC graduated movers.
+            if not is_pumpswap and max_idle_ms > 0:
+                last_trade_ms = c.get("last_trade_timestamp") or 0
+                if not last_trade_ms or now_ms - last_trade_ms > max_idle_ms:
+                    skipped_idle += 1
+                    continue
             try:
                 await self._seed_token(c, created_s, is_pumpswap)
                 seeded += 1
@@ -115,47 +120,57 @@ class PumpfunDiscovery:
         return seeded
 
     async def _fetch_aged_coins(self, lo_ts: float, hi_ts: float) -> list[dict]:
-        """Pull actively-traded tokens (sorted by last_trade_timestamp DESC) and
-        filter to the [lo_ts, hi_ts] creation-time band. Sorting by trade time
-        rather than creation time naturally surfaces tokens with momentum and
-        bypasses Pump.fun's ~1000-offset creation-pagination cap."""
+        """Pull tokens via TWO sort orders and merge:
+          1. `last_trade_timestamp DESC` — surfaces actively-traded tokens
+             (covers most NEW band candidates).
+          2. `market_cap DESC`           — surfaces high-MC and graduated
+             tokens whose bonding-curve `last_trade_timestamp` has gone stale
+             since they moved to the PumpSwap AMM.
+        Filtered to the [lo_ts, hi_ts] creation-time band. Sorting via two
+        orders bypasses Pump.fun's ~1000-offset creation-pagination cap and
+        ensures the seasoned band sees both active movers AND big-cap names."""
         url = f"{PUMPFUN_API}/coins"
         PAGE_SIZE = 240
-        MAX_PAGES = 5  # 5×240 = ~1200 actively-traded tokens; plenty of overlap with the band
+        MAX_PAGES_PER_SORT = 5  # 5×240 = ~1200 tokens per sort order
         out: list[dict] = []
         seen: set[str] = set()
-        offset = 0
+        sort_orders = [
+            ("last_trade_timestamp", "DESC"),
+            ("market_cap", "DESC"),
+        ]
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            for _ in range(MAX_PAGES):
-                params = {
-                    "offset": offset,
-                    "limit": PAGE_SIZE,
-                    "sort": "last_trade_timestamp",
-                    "order": "DESC",
-                    "includeNsfw": "true",
-                }
-                try:
-                    r = await client.get(url, params=params, headers={"accept": "application/json"})
-                    r.raise_for_status()
-                    page = r.json()
-                    if isinstance(page, dict):
-                        page = page.get("data") or page.get("coins") or []
-                    if not isinstance(page, list) or not page:
+            for sort_field, order in sort_orders:
+                offset = 0
+                for _ in range(MAX_PAGES_PER_SORT):
+                    params = {
+                        "offset": offset,
+                        "limit": PAGE_SIZE,
+                        "sort": sort_field,
+                        "order": order,
+                        "includeNsfw": "true",
+                    }
+                    try:
+                        r = await client.get(url, params=params, headers={"accept": "application/json"})
+                        r.raise_for_status()
+                        page = r.json()
+                        if isinstance(page, dict):
+                            page = page.get("data") or page.get("coins") or []
+                        if not isinstance(page, list) or not page:
+                            break
+                    except Exception as e:
+                        logger.warning(f"pumpfun coins API page sort={sort_field} offset={offset} failed: {e}")
                         break
-                except Exception as e:
-                    logger.warning(f"pumpfun coins API page offset={offset} failed: {e}")
-                    break
-                for c in page:
-                    mint = c.get("mint")
-                    if not mint or mint in seen:
-                        continue
-                    seen.add(mint)
-                    ts_s = (c.get("created_timestamp") or 0) / 1000.0
-                    if lo_ts <= ts_s <= hi_ts:
-                        out.append(c)
-                offset += PAGE_SIZE
-                # Be a polite client between pages
-                await asyncio.sleep(0.25)
+                    for c in page:
+                        mint = c.get("mint")
+                        if not mint or mint in seen:
+                            continue
+                        seen.add(mint)
+                        ts_s = (c.get("created_timestamp") or 0) / 1000.0
+                        if lo_ts <= ts_s <= hi_ts:
+                            out.append(c)
+                    offset += PAGE_SIZE
+                    # Be a polite client between pages
+                    await asyncio.sleep(0.25)
         return out
 
     async def _seed_token(self, coin: dict, created_s: float, is_pumpswap: bool = False):

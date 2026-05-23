@@ -288,3 +288,28 @@ Seasoned/discovered/PumpSwap tokens never flow through Helius mempool listener (
 - ✅ New gates unchanged: `growth_pct + liquidity + inflow + buyers + holders`
 - ✅ Frontend: per-band gates table now has asymmetric rows with "n/a" placeholders; ScannerCandidatesCard metrics line shows MC velocity for seasoned (instead of inflow/buyers)
 - **Verified live**: 20 seasoned PumpSwap candidates rendering with MC, last_trade_age, and MC vel fields populated.
+
+
+
+## 2026-02-23 — Position-fill throttle + high-MC seasoned visibility
+
+### Issue 1: Scanner stopped short of `max_concurrent_positions`
+Hard-coded throttles prevented filling toward the user-configured cap (e.g., 18):
+- `top = scored[:5]` — only top 5 candidates considered per pass
+- `max_entries_this_pass = min(3, remaining)` — capped at 3 entries per pass
+- `b["scanner_last_attempt"] = now` was set **before** `_enter` — pre-entry gate failures (RPC blip, transient liquidity dip) locked the mint out for 60s with no tx ever attempted
+
+### Fix (`scanner.py`)
+- ✅ `top = scored[: max(50, max_entries_this_pass * 4)]` — wider candidate slice
+- ✅ `max_entries_this_pass = remaining` — let it fill toward the cap each pass
+- ✅ Cooldown shortened 60s → 30s
+- ✅ `scanner_last_attempt` only stamped when entry **actually opened a position** OR `_enter` raised an exception (real tx attempt). Pre-`_enter` gate skips retry on next pass.
+- ✅ `bot.py _enter` live-buy failure path now also stamps `scanner_last_attempt` so a broken mint isn't hammered every pass
+
+### Issue 2: Higher-MC tokens missing from Seasoned candidates
+Graduated tokens trade on PumpSwap AMM, but `last_trade_timestamp` on Pump.fun's `/coins` API only tracks bonding-curve trades. Once a token graduates, that timestamp goes stale → token falls off the `last_trade_timestamp DESC` sort and gets evicted by the freshness gate (`scanner_discovery_max_idle_minutes=5`). Net: all high-MC graduated movers systematically excluded.
+
+### Fix (`discovery.py`)
+- ✅ `_fetch_aged_coins` now polls **two sort orders** (`last_trade_timestamp DESC` + `market_cap DESC`), merged via mint dedup — covers both active movers and high-MC names
+- ✅ Idle-minutes freshness gate now applies **only to non-graduated tokens** (PumpSwap tokens skip it since Pump.fun doesn't track their AMM trades)
+- **Verified**: graduated PumpSwap tokens `dumped` ($17.8K MC) and `Mootoo` ($4.3K MC) immediately surfaced in seasoned candidates after the fix.

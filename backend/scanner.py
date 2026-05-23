@@ -185,7 +185,10 @@ class MomentumScanner:
                 now = time.time()
                 max_age = cfg.scanner_window_hours * 3600
                 min_age = cfg.scanner_min_age_minutes * 60
-                cooldown = 60.0  # don't re-attempt the same mint within 60s
+                # Cooldown is only applied AFTER an entry tx is actually
+                # attempted (see below). Pre-_enter gate failures shouldn't
+                # lock a candidate out — the next pass can retry them.
+                cooldown = 30.0
 
                 # Pre-rank candidates using CACHED metrics (no RPC).
                 # Scanner now covers BOTH bands:
@@ -235,10 +238,12 @@ class MomentumScanner:
                     continue
 
                 scored.sort(key=lambda x: x[3], reverse=True)
-                top = scored[:5]
-
                 remaining = max(0, cfg.max_concurrent_positions - len(st.active_trades))
-                max_entries_this_pass = min(3, remaining)
+                # Allow the loop to fill toward max_concurrent_positions in a
+                # single pass. We still consider only a generous top-N slice
+                # so we don't waste RPC budget on long-tail candidates.
+                max_entries_this_pass = remaining
+                top = scored[: max(50, max_entries_this_pass * 4)]
                 entries_made = 0
 
                 for mint, b, _cached_m, _cached_score, band in top:
@@ -299,7 +304,6 @@ class MomentumScanner:
                     )
                     synthetic.id = b.get("launch_id") or synthetic.id
                     synthetic.classifier_action = action
-                    b["scanner_last_attempt"] = now
                     score_val = (
                         m["growth_pct"]
                         + m["recent_inflow_sol"] * 5
@@ -315,11 +319,28 @@ class MomentumScanner:
                             "score": score_val,
                         },
                     )
+                    # Snapshot active-trade count BEFORE entry — used to detect
+                    # whether _enter actually opened a position so we only set
+                    # the cooldown when the tx was attempted.
+                    pre_count = len(st.active_trades)
+                    entered_ok = False
+                    raised_exc = False
                     try:
                         await st._enter(synthetic, risk_score=40, action=action)
-                        entries_made += 1
+                        entered_ok = mint in st.active_trades or len(st.active_trades) > pre_count
                     except Exception as e:
+                        raised_exc = True
                         logger.exception(f"scanner entry failed for {mint}: {e}")
+                    if entered_ok:
+                        entries_made += 1
+                        b["scanner_last_attempt"] = now
+                    elif raised_exc:
+                        # The buy tx itself failed — cooldown to avoid hammering
+                        # the same broken mint every pass.
+                        b["scanner_last_attempt"] = now
+                    # If _enter bailed before the buy (e.g., RPC blip,
+                    # pre-_enter liquidity/buyer gate), don't lock the mint out
+                    # — the next scanner pass will retry it.
             except asyncio.CancelledError:
                 raise
             except Exception as e:
