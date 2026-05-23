@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { toast } from "sonner";
+import { useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import { useWebSocket } from "@/lib/useWebSocket";
 import StatusBanner from "@/components/StatusBanner";
@@ -17,9 +18,11 @@ import SuggestionsCard from "@/components/SuggestionsCard";
 import InsightsCard from "@/components/InsightsCard";
 import PLBySourceCard from "@/components/PLBySourceCard";
 import CostTrackerCard from "@/components/CostTrackerCard";
-import { Activity } from "lucide-react";
+import { Activity, LogOut } from "lucide-react";
 
 export default function Dashboard() {
+  const navigate = useNavigate();
+  const [me, setMe] = useState(null);
   const [wallet, setWallet] = useState(null);
   const [status, setStatus] = useState(null);
   const [config, setConfig] = useState(null);
@@ -65,6 +68,16 @@ export default function Dashboard() {
     const id = setInterval(refreshAll, 20000);
     return () => clearInterval(id);
   }, [refreshAll]);
+
+  // Pull current user once for header display
+  useEffect(() => {
+    api.authMe().then(setMe).catch(() => {});
+  }, []);
+
+  const handleLogout = useCallback(async () => {
+    try { await api.authLogout(); } catch { /* ignore */ }
+    navigate("/login", { replace: true });
+  }, [navigate]);
 
   // Real-time WebSocket event handler
   const { connected: wsConnected } = useWebSocket(useCallback((evt) => {
@@ -138,6 +151,23 @@ export default function Dashboard() {
               {status?.listener_connected ? "LISTENER LIVE" : "LISTENER OFFLINE"}
             </span>
           </span>
+          {me && (
+            <span className="hidden md:flex items-center gap-2 text-neutral-500" data-testid="auth-user">
+              {me.picture ? (
+                <img src={me.picture} alt="" className="w-5 h-5 rounded-full" />
+              ) : null}
+              <span className="text-neutral-400">{me.email}</span>
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={handleLogout}
+            data-testid="logout-btn"
+            className="flex items-center gap-1.5 text-neutral-400 hover:text-red-400 transition uppercase tracking-wider"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>logout</span>
+          </button>
         </div>
       </header>
 

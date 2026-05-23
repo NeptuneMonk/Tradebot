@@ -3,7 +3,7 @@ import axios from "axios";
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
 
-const client = axios.create({ baseURL: API, timeout: 15000 });
+const client = axios.create({ baseURL: API, timeout: 15000, withCredentials: true });
 
 export const api = {
   wallet: () => client.get("/wallet").then(r => r.data),
@@ -31,4 +31,8 @@ export const api = {
   resetConfig: () => client.post("/bot/reset-config").then(r => r.data),
   suggestions: () => client.get("/suggestions").then(r => r.data),
   applySuggestion: (field, suggested) => client.post("/suggestions/apply", { field, suggested }).then(r => r.data),
+  // Auth
+  authMe: () => client.get("/auth/me").then(r => r.data),
+  authSession: (sessionId) => client.post("/auth/session", null, { headers: { "X-Session-ID": sessionId } }).then(r => r.data),
+  authLogout: () => client.post("/auth/logout").then(r => r.data),
 };

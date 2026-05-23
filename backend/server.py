@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
-from fastapi import FastAPI, APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
@@ -29,6 +29,7 @@ from wallet_send import send_sol
 from suggestions import generate_suggestions
 from pl_sources import compute_pl_by_source
 from pattern_miner import generate_insights
+from auth import auth_router, AuthDB, get_current_user, validate_token_str
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,6 +43,7 @@ db = mongo_client[os.environ["DB_NAME"]]
 
 bot_state = BotState(db)
 listener = PumpFunListener(on_launch=bot_state.on_launch, on_trade=bot_state.on_trade)
+AuthDB.set(db)
 
 
 @asynccontextmanager
@@ -57,7 +59,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-api = APIRouter(prefix="/api")
+api = APIRouter(prefix="/api", dependencies=[Depends(get_current_user)])
 
 
 @api.get("/")
@@ -542,6 +544,21 @@ async def apply_suggestion(payload: dict):
 # ---------- WebSocket push ----------
 @app.websocket("/api/ws")
 async def ws_endpoint(websocket: WebSocket):
+    # Auth gate: accept either ?token=... or session_token cookie
+    token = websocket.query_params.get("token") or ""
+    if not token:
+        # Parse session_token from Cookie header
+        cookie_hdr = websocket.headers.get("cookie", "")
+        for part in cookie_hdr.split(";"):
+            p = part.strip()
+            if p.startswith("session_token="):
+                token = p.split("=", 1)[1]
+                break
+    user = await validate_token_str(token)
+    if not user:
+        await websocket.close(code=4401)
+        return
+
     await hub.connect(websocket)
     try:
         status = await bot_status()
@@ -573,11 +590,24 @@ async def _status_broadcaster():
         await asyncio.sleep(3)
 
 
+app.include_router(auth_router)
 app.include_router(api)
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+_cors_env = os.environ.get("CORS_ORIGINS", "*").strip()
+if _cors_env == "*" or not _cors_env:
+    # With credentials we cannot use wildcard origins; reflect any origin via regex.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_credentials=True,
+        allow_origin_regex=".*",
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_credentials=True,
+        allow_origins=[o.strip() for o in _cors_env.split(",") if o.strip()],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )

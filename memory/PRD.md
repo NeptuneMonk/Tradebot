@@ -795,3 +795,14 @@ User reported "no trades exiting in 60s, max_hold is 45s" while bot showed 15+ a
 ### Environmental note
 The current 429 storm is from us hammering Helius too hard. The code is now resilient, but throughput is degraded. Future tuning options: upgrade Helius plan, lower `scanner_window_hours`, longer `getRecentPrioritizationFees` cache.
 
+
+---
+
+## 2026-02-23 — Auth lockdown added
+Full details in `/app/memory/CHANGELOG.md`.
+
+Summary:
+- Emergent-managed Google OAuth, single-user whitelist via `ALLOWED_EMAIL` env var, 1-hour sessions.
+- All `/api/*` routes + WebSocket gated; non-whitelisted Google accounts rejected with 403.
+- New frontend routes: `/login`, `/dashboard`, OAuth callback handler.
+- **Action required before first login**: set `ALLOWED_EMAIL` in `/app/backend/.env`.
