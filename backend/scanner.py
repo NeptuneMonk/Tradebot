@@ -200,10 +200,13 @@ class MomentumScanner:
                         continue
                     if (now - b.get("scanner_last_attempt", 0)) < cooldown:
                         continue
-                    if not b.get("buy_events"):
+                    # For NEW band we need mempool buy events as a proxy for activity.
+                    # SEASONED band uses Pump.fun-API signals (MC + MC velocity)
+                    # and can't observe events via Helius (esp. graduated tokens).
+                    band = "seasoned" if age >= min_age else "new"
+                    if band == "new" and not b.get("buy_events"):
                         continue
                     m = self.score(b, None, now)
-                    band = "seasoned" if age >= min_age else "new"
                     g = self._gates(cfg, band)
                     if m["growth_pct"] < g["min_growth_pct"]:
                         continue

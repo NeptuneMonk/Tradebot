@@ -499,8 +499,9 @@ class BotState:
             logger.info(f"skip {launch.mint} [{action}]: liquidity {real_sol:.2f} SOL < min {min_liq}")
             return
 
-        # Buyer gate (optional)
-        if min_buyers > 0:
+        # Buyer gate (NEW band only — seasoned tokens don't flow through the
+        # Helius mempool listener so buyers set is always empty)
+        if is_new_band and min_buyers > 0:
             b = self.tracking.get(launch.mint, {})
             buyers = len(b.get("buyers", set()))
             if buyers < min_buyers:
@@ -640,7 +641,15 @@ class BotState:
                     await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%)")
                     return
 
-                if time.time() - last_classify > 2.0:
+                # Classifier monitoring applies only to NEW band entries (fresh
+                # mempool launches). Seasoned/PumpSwap trades skip it because
+                # `curve_fill_pct=100` would trigger spurious exit_early signals
+                # and we don't have meaningful mempool metrics for them.
+                if (
+                    time.time() - last_classify > 2.0
+                    and trade_doc.get("classifier_action") == "momentum_new"
+                    and protocol == "pumpfun"
+                ):
                     last_classify = time.time()
                     b = self.tracking.get(mint, {})
                     metrics = {
