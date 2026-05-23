@@ -229,6 +229,9 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
           <Field label="Min Entry Vel (%)" testid="scanner-entry-vel-min-input"
                  value={local.scanner_entry_velocity_min_pct}
                  onChange={(v) => setLocal({ ...local, scanner_entry_velocity_min_pct: parseFloat(v) || 0 })} step="0.5" />
+          <Field label="SL Cooldown (min)" testid="sl-cooldown-input"
+                 value={local.sl_cooldown_minutes}
+                 onChange={(v) => setLocal({ ...local, sl_cooldown_minutes: parseFloat(v) || 0 })} step="0.5" />
         </div>
 
         {/* Socials gate */}

@@ -85,6 +85,12 @@ class BotConfig(BaseModel):
     # effectively disable the gate.
     scanner_entry_velocity_window_s: int = 30
     scanner_entry_velocity_min_pct: float = 0.0
+    # Stop-loss cooldown: when a position exits via stop-loss, the mint enters
+    # a cooldown window during which the scanner / re-entry watcher will refuse
+    # to re-enter it. Prevents "buy the exit" anti-pattern — if SL just tripped,
+    # momentum already reversed; the next 5 minutes are statistically the
+    # worst time to re-enter. Set to 0 to disable.
+    sl_cooldown_minutes: float = 5.0
     # Socials gate (pattern-mining insight: tokens with active replies + a
     # working twitter/telegram link have a meaningfully higher floor MC than
     # zero-engagement launches). When ON, refuse entry unless the mint has at

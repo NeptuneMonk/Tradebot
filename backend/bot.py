@@ -68,6 +68,10 @@ class BotState:
         # checks len(active_trades) + len(_pending_entry_mints) >= max.
         self._entry_gate_lock = asyncio.Lock()
         self._pending_entry_mints: set[str] = set()
+        # Stop-loss cooldown: mint -> unix timestamp when cooldown expires.
+        # Populated by `_exit_impl` when reason starts with "stop-loss hit".
+        # Checked inside the entry gate lock so concurrent attempts agree.
+        self.sl_cooldown_until: dict[str, float] = {}
         self.scanner = MomentumScanner(self)
         self.discovery = PumpfunDiscovery(self)
         self.pnl_reconciler = PnLReconciler(self)
@@ -260,6 +264,13 @@ class BotState:
             await asyncio.sleep(15.0)
 
     async def _reattach_orphaned_active_rows(self):
+        # Sweep expired SL cooldowns from the in-memory map. Cheap O(N) walk —
+        # the map is naturally bounded by recent SL exits in the cooldown window.
+        now = time.time()
+        for mint in list(self.sl_cooldown_until.keys()):
+            if self.sl_cooldown_until[mint] <= now:
+                del self.sl_cooldown_until[mint]
+
         cursor = self.db.trades.find({"status": "active"}, {"_id": 0})
         reattached = 0
         respawned = 0
@@ -469,6 +480,11 @@ class BotState:
             cap = max(1, self.config.max_concurrent_positions)
             in_flight = len(self.active_trades) + len(self._pending_entry_mints)
             if in_flight >= cap:
+                return
+            # SL cooldown applies to re-entry watcher too — if the previous
+            # exit was SL, give the price action time to settle.
+            cd_until = self.sl_cooldown_until.get(mint, 0.0)
+            if cd_until and time.time() < cd_until:
                 return
             self._pending_entry_mints.add(mint)
         try:
@@ -861,6 +877,12 @@ class BotState:
             cap = max(1, self.config.max_concurrent_positions)
             in_flight = len(self.active_trades) + len(self._pending_entry_mints)
             if in_flight >= cap:
+                return
+            # SL cooldown — if this mint just exited via stop-loss, refuse to
+            # re-enter for the configured window. Buying back into a freshly
+            # SL-tripped mint is the textbook "buy the exit" anti-pattern.
+            cd_until = self.sl_cooldown_until.get(launch.mint, 0.0)
+            if cd_until and time.time() < cd_until:
                 return
             # Reserve a slot — released in the finally below
             self._pending_entry_mints.add(launch.mint)
@@ -1555,6 +1577,19 @@ class BotState:
         await self.db.trades.update_one(
             {"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
         )
+        # SL cooldown — if this exit was triggered by stop-loss, lock the
+        # mint out of new entries for `sl_cooldown_minutes`. The check applies
+        # to fresh scanner entries AND the re-entry watcher. Buying back a
+        # mint immediately after SL is statistically the worst time — momentum
+        # has just reversed.
+        if reason.lower().startswith("stop-loss hit"):
+            cd_min = float(self.config.sl_cooldown_minutes)
+            if cd_min > 0:
+                self.sl_cooldown_until[mint] = time.time() + cd_min * 60.0
+                logger.info(
+                    f"SL cooldown set for {trade_doc.get('symbol','?')} "
+                    f"({mint[:8]}…) — locked out for {cd_min:.1f} min"
+                )
         await hub.broadcast("trade_exit", trade_doc)
         # Re-entry watchlist: if we exited profitably and curve hasn't graduated, watch for a pullback.
         # During a graceful stop we don't queue any new re-entries — the user
