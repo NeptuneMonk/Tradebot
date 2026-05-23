@@ -178,7 +178,10 @@ class PumpfunDiscovery:
             "name": coin.get("name"),
             "symbol": coin.get("symbol"),
             "creator_rugs": 0,
-            "first_seen_price_sol": cur_price,
+            # Anchor "first seen" at the universal Pump launch baseline so that
+            # growth_pct reflects true chart growth (vs the curve's initial
+            # price) for tokens we discovered after they launched.
+            "first_seen_price_sol": LAUNCH_BASELINE_PRICE_SOL,
             "last_price_sol": cur_price,
             "last_vsr_lamports": vsr,
             "scanner_eligible": True,

@@ -32,6 +32,15 @@ BUY_DISCRIMINATOR = bytes([102, 6, 61, 18, 1, 218, 235, 234])
 SELL_DISCRIMINATOR = bytes([51, 230, 133, 164, 1, 127, 131, 173])
 CREATE_DISCRIMINATOR = bytes([24, 30, 200, 40, 5, 28, 7, 119])
 
+# Pump.fun initial bonding curve constants — every newly created Pump token
+# starts at exactly these virtual reserves, so the launch-baseline price
+# (SOL per raw token unit) is universal and time-invariant.
+INITIAL_VIRTUAL_SOL_RESERVES = 30_000_000_000  # 30 SOL in lamports
+INITIAL_VIRTUAL_TOKEN_RESERVES = 1_073_000_000_000_000  # 1.073B tokens × 1e6
+LAUNCH_BASELINE_PRICE_SOL = (
+    INITIAL_VIRTUAL_SOL_RESERVES / INITIAL_VIRTUAL_TOKEN_RESERVES / LAMPORTS_PER_SOL
+)  # ≈ 2.796e-14 SOL per raw token unit
+
 
 def derive_bonding_curve(mint: Pubkey) -> Pubkey:
     pda, _ = Pubkey.find_program_address(
