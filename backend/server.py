@@ -148,6 +148,8 @@ async def update_config(cfg: BotConfig):
     cfg.scanner_min_growth_pct_new = max(0.0, min(10000.0, cfg.scanner_min_growth_pct_new))
     cfg.scanner_min_recent_inflow_sol_new = max(0.0, min(1000.0, cfg.scanner_min_recent_inflow_sol_new))
     cfg.scanner_min_new_buyers_new = max(0, min(500, cfg.scanner_min_new_buyers_new))
+    cfg.scanner_min_mc_usd_seasoned = max(0.0, min(1e9, cfg.scanner_min_mc_usd_seasoned))
+    cfg.scanner_min_mc_velocity_5m_pct_seasoned = max(-100.0, min(1000.0, cfg.scanner_min_mc_velocity_5m_pct_seasoned))
     cfg.scanner_discovery_max_idle_minutes = max(0, min(1440, cfg.scanner_discovery_max_idle_minutes))
     # Exit-behavior clamps
     cfg.trailing_stop_pct = max(0.0, min(95.0, cfg.trailing_stop_pct))

@@ -25,6 +25,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger("scanner")
 
 
+def _mc_velocity(samples, now: float, window_s: int = 300) -> float:
+    """% change in MC over the last `window_s` seconds based on rolling samples."""
+    if not samples or len(samples) < 2:
+        return 0.0
+    cutoff = now - window_s
+    # earliest sample inside the window (fallback to oldest available)
+    earliest = next((s for s in samples if s[0] >= cutoff), samples[0])
+    latest = samples[-1]
+    base = earliest[1] or 0.0
+    cur = latest[1] or 0.0
+    if base <= 0:
+        return 0.0
+    return (cur - base) / base * 100.0
+
+
 class MomentumScanner:
     """Owns the scanner loop and snapshot logic. Reads/writes `state.tracking`,
     delegates entry to `state._enter`."""
@@ -120,15 +135,28 @@ class MomentumScanner:
             m["discovered"] = bool(b.get("discovered"))
             m["protocol"] = b.get("protocol") or "pumpfun"
             m["usd_market_cap"] = float(b.get("usd_market_cap") or 0.0)
+            # 5-min MC velocity from rolling samples (kept by discovery refresh)
+            samples = b.get("mc_samples") or ()
+            m["mc_velocity_5m_pct"] = _mc_velocity(samples, now, window_s=300)
             last_trade_ms = b.get("last_trade_ms") or 0
             m["last_trade_age_s"] = max(0.0, now - last_trade_ms / 1000.0) if last_trade_ms else None
             g = self._gates(cfg, m["band"])
-            m["passes"] = (
-                m["growth_pct"] >= g["min_growth_pct"]
-                and m["recent_inflow_sol"] >= g["min_inflow_sol"]
-                and m["new_buyers_recent"] >= g["min_new_buyers"]
-                and m["real_sol_reserves"] >= g["min_liquidity_sol"]
-            )
+            if m["band"] == "seasoned":
+                # Seasoned-band gates use API-polled metrics (MC + MC velocity)
+                # since Helius mempool doesn't cover PumpSwap pools.
+                m["passes"] = (
+                    m["growth_pct"] >= g["min_growth_pct"]
+                    and m["real_sol_reserves"] >= g["min_liquidity_sol"]
+                    and m["usd_market_cap"] >= cfg.scanner_min_mc_usd_seasoned
+                    and m["mc_velocity_5m_pct"] >= cfg.scanner_min_mc_velocity_5m_pct_seasoned
+                )
+            else:
+                m["passes"] = (
+                    m["growth_pct"] >= g["min_growth_pct"]
+                    and m["recent_inflow_sol"] >= g["min_inflow_sol"]
+                    and m["new_buyers_recent"] >= g["min_new_buyers"]
+                    and m["real_sol_reserves"] >= g["min_liquidity_sol"]
+                )
             out.append(m)
         out.sort(
             key=lambda x: (x["passes"], x["growth_pct"], x["recent_inflow_sol"]),
@@ -179,12 +207,20 @@ class MomentumScanner:
                     g = self._gates(cfg, band)
                     if m["growth_pct"] < g["min_growth_pct"]:
                         continue
-                    if m["recent_inflow_sol"] < g["min_inflow_sol"]:
-                        continue
-                    if m["new_buyers_recent"] < g["min_new_buyers"]:
-                        continue
                     if m["real_sol_reserves"] < g["min_liquidity_sol"]:
                         continue
+                    if band == "seasoned":
+                        mc = float(b.get("usd_market_cap") or 0.0)
+                        if mc < cfg.scanner_min_mc_usd_seasoned:
+                            continue
+                        v = _mc_velocity(b.get("mc_samples") or (), now)
+                        if v < cfg.scanner_min_mc_velocity_5m_pct_seasoned:
+                            continue
+                    else:
+                        if m["recent_inflow_sol"] < g["min_inflow_sol"]:
+                            continue
+                        if m["new_buyers_recent"] < g["min_new_buyers"]:
+                            continue
                     rank_score = (
                         m["growth_pct"]
                         + m["recent_inflow_sol"] * 5
@@ -237,10 +273,18 @@ class MomentumScanner:
                         continue
                     if m["growth_pct"] < g["min_growth_pct"]:
                         continue
-                    if m["recent_inflow_sol"] < g["min_inflow_sol"]:
-                        continue
-                    if m["new_buyers_recent"] < g["min_new_buyers"]:
-                        continue
+                    if band == "seasoned":
+                        mc = float(b.get("usd_market_cap") or 0.0)
+                        if mc < cfg.scanner_min_mc_usd_seasoned:
+                            continue
+                        v = _mc_velocity(b.get("mc_samples") or (), now)
+                        if v < cfg.scanner_min_mc_velocity_5m_pct_seasoned:
+                            continue
+                    else:
+                        if m["recent_inflow_sol"] < g["min_inflow_sol"]:
+                            continue
+                        if m["new_buyers_recent"] < g["min_new_buyers"]:
+                            continue
 
                     action = "scanner_momentum" if band == "seasoned" else "momentum_new"
                     synthetic = Launch(

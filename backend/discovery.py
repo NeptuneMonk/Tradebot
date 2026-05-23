@@ -34,6 +34,8 @@ logger = logging.getLogger("discovery")
 
 PUMPFUN_API = "https://frontend-api-v3.pump.fun"
 DISCOVERY_INTERVAL_S = 120
+REFRESH_INTERVAL_S = 60      # how often to re-poll MC for already-tracked discovered tokens
+MC_SAMPLE_KEEP = 12          # 12 × 60s = 12min of MC samples for velocity calc
 COINS_PER_CYCLE = 50
 HTTP_TIMEOUT = 12.0
 

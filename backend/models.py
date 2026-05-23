@@ -56,6 +56,10 @@ class BotConfig(BaseModel):
     scanner_min_growth_pct_new: float = 50.0
     scanner_min_recent_inflow_sol_new: float = 5.0
     scanner_min_new_buyers_new: int = 10
+    # Seasoned-band-only gates (use Pump.fun API data since Helius mempool
+    # doesn't reach PumpSwap pools). Polled via the discovery refresh task.
+    scanner_min_mc_usd_seasoned: float = 30000.0      # $30K market cap floor
+    scanner_min_mc_velocity_5m_pct_seasoned: float = 5.0  # +5% MC change over 5min
     # Discovery: only seed tokens whose last trade is fresher than this (minutes).
     # Set 0 to disable the freshness gate.
     scanner_discovery_max_idle_minutes: int = 5

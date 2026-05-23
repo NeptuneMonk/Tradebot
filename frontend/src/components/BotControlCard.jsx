@@ -145,22 +145,6 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                      seasonedValue={local.scanner_min_growth_pct}
                      onSeasonedChange={(v) => setLocal({ ...local, scanner_min_growth_pct: parseFloat(v) || 0 })}
                      step="5" />
-            <GateRow label="Min Inflow (SOL/win)"
-                     newTestid="scanner-inflow-new-input"
-                     newValue={local.scanner_min_recent_inflow_sol_new}
-                     onNewChange={(v) => setLocal({ ...local, scanner_min_recent_inflow_sol_new: parseFloat(v) || 0 })}
-                     seasonedTestid="scanner-inflow-input"
-                     seasonedValue={local.scanner_min_recent_inflow_sol}
-                     onSeasonedChange={(v) => setLocal({ ...local, scanner_min_recent_inflow_sol: parseFloat(v) || 0 })}
-                     step="0.5" />
-            <GateRow label="Min new buyers (1m)"
-                     newTestid="scanner-newbuyers-new-input"
-                     newValue={local.scanner_min_new_buyers_new}
-                     onNewChange={(v) => setLocal({ ...local, scanner_min_new_buyers_new: parseInt(v, 10) || 0 })}
-                     seasonedTestid="scanner-buyers-input"
-                     seasonedValue={local.scanner_min_new_buyers}
-                     onSeasonedChange={(v) => setLocal({ ...local, scanner_min_new_buyers: parseInt(v, 10) || 0 })}
-                     step="1" parser={(v) => parseInt(v, 10) || 0} />
             <GateRow label="Min Liquidity (SOL)"
                      newTestid="min-liq-new-input"
                      newValue={local.min_curve_liquidity_sol_new}
@@ -169,14 +153,33 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                      seasonedValue={local.min_curve_liquidity_sol}
                      onSeasonedChange={(v) => setLocal({ ...local, min_curve_liquidity_sol: parseFloat(v) || 0 })}
                      step="0.5" />
-            <GateRow label="Min Total Holders"
+            {/* New-only: live mempool signals from Helius */}
+            <GateRow label="Min Inflow (SOL/win)" newOnly
+                     newTestid="scanner-inflow-new-input"
+                     newValue={local.scanner_min_recent_inflow_sol_new}
+                     onNewChange={(v) => setLocal({ ...local, scanner_min_recent_inflow_sol_new: parseFloat(v) || 0 })}
+                     step="0.5" />
+            <GateRow label="Min new buyers (1m)" newOnly
+                     newTestid="scanner-newbuyers-new-input"
+                     newValue={local.scanner_min_new_buyers_new}
+                     onNewChange={(v) => setLocal({ ...local, scanner_min_new_buyers_new: parseInt(v, 10) || 0 })}
+                     step="1" />
+            <GateRow label="Min Total Holders" newOnly
                      newTestid="min-buyers-new-input"
                      newValue={local.min_buyers_for_entry_new}
                      onNewChange={(v) => setLocal({ ...local, min_buyers_for_entry_new: parseInt(v, 10) || 0 })}
-                     seasonedTestid="min-buyers-seasoned-input"
-                     seasonedValue={local.min_buyers_for_entry}
-                     onSeasonedChange={(v) => setLocal({ ...local, min_buyers_for_entry: parseInt(v, 10) || 0 })}
-                     step="1" last />
+                     step="1" />
+            {/* Seasoned-only: Pump.fun API polled signals */}
+            <GateRow label="Min MC ($)" seasonedOnly
+                     seasonedTestid="scanner-mc-seasoned-input"
+                     seasonedValue={local.scanner_min_mc_usd_seasoned}
+                     onSeasonedChange={(v) => setLocal({ ...local, scanner_min_mc_usd_seasoned: parseFloat(v) || 0 })}
+                     step="1000" />
+            <GateRow label="Min MC vel (5m %)" seasonedOnly last
+                     seasonedTestid="scanner-mcvel-seasoned-input"
+                     seasonedValue={local.scanner_min_mc_velocity_5m_pct_seasoned}
+                     onSeasonedChange={(v) => setLocal({ ...local, scanner_min_mc_velocity_5m_pct_seasoned: parseFloat(v) || 0 })}
+                     step="1" />
           </div>
         </div>
       </div>
@@ -256,31 +259,40 @@ function Field({ label, value, onChange, step, testid }) {
   );
 }
 
-function GateRow({ label, newTestid, newValue, onNewChange, seasonedTestid, seasonedValue, onSeasonedChange, step, last }) {
+function GateRow({ label, newTestid, newValue, onNewChange, seasonedTestid, seasonedValue, onSeasonedChange, step, last, newOnly, seasonedOnly }) {
   const cell = "px-2 py-1 border-l border-neutral-800";
+  const dim = "px-2 py-1 border-l border-neutral-800 text-[10px] font-mono text-neutral-700 italic text-center self-center";
   return (
     <div className={`grid grid-cols-[1.4fr_1fr_1fr] ${last ? "" : "border-b border-neutral-800"}`}>
       <div className="px-2 py-1 text-[10px] uppercase tracking-[0.1em] text-neutral-400 font-mono self-center">{label}</div>
-      <div className={cell}>
-        <input
-          data-testid={newTestid}
-          type="number"
-          step={step}
-          value={newValue}
-          onChange={(e) => onNewChange(e.target.value)}
-          className="w-full bg-neutral-950 border border-amber-900/50 px-2 py-0.5 font-mono text-xs text-amber-200 focus:border-amber-500 focus:outline-none"
-        />
-      </div>
-      <div className={cell}>
-        <input
-          data-testid={seasonedTestid}
-          type="number"
-          step={step}
-          value={seasonedValue}
-          onChange={(e) => onSeasonedChange(e.target.value)}
-          className="w-full bg-neutral-950 border border-cyan-900/50 px-2 py-0.5 font-mono text-xs text-cyan-200 focus:border-cyan-500 focus:outline-none"
-        />
-      </div>
+      {seasonedOnly ? (
+        <div className={dim}>n/a</div>
+      ) : (
+        <div className={cell}>
+          <input
+            data-testid={newTestid}
+            type="number"
+            step={step}
+            value={newValue}
+            onChange={(e) => onNewChange(e.target.value)}
+            className="w-full bg-neutral-950 border border-amber-900/50 px-2 py-0.5 font-mono text-xs text-amber-200 focus:border-amber-500 focus:outline-none"
+          />
+        </div>
+      )}
+      {newOnly ? (
+        <div className={dim}>n/a</div>
+      ) : (
+        <div className={cell}>
+          <input
+            data-testid={seasonedTestid}
+            type="number"
+            step={step}
+            value={seasonedValue}
+            onChange={(e) => onSeasonedChange(e.target.value)}
+            className="w-full bg-neutral-950 border border-cyan-900/50 px-2 py-0.5 font-mono text-xs text-cyan-200 focus:border-cyan-500 focus:outline-none"
+          />
+        </div>
+      )}
     </div>
   );
 }

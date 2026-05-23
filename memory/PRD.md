@@ -273,3 +273,18 @@ User: "B" — go straight to PumpSwap AMM trading. Graduated tokens are where th
 - ✅ Frontend: emerald **PUMPSWAP** badge on scanner candidate rows.
 - **Verified live (read-only)**: 11 PumpSwap candidates detected, incl. BTCBANK (+12,838%, $302K MC, 228 SOL liquidity), WOJCUP (+22,770%, $540K MC, 317 SOL). Pool decoder extracts coin_creator correctly. quote_buy math verified (0.1 SOL → 24.9B BTCBANK tokens).
 - **Live signing not yet battle-tested with real funds**. Paper mode flows fully through the new code. Recommend tiny live test on a graduated token before larger positions.
+
+
+## 2026-02-22 — Seasoned-band gates use API-polled signals
+
+### Root cause
+Seasoned/discovered/PumpSwap tokens never flow through Helius mempool listener (different program ID), so `inflow`, `new_buyers`, and `holders` stay at 0 — making the old inflow/buyer gates meaningless for the seasoned band.
+
+### Fix
+- ✅ 2 new config fields: `scanner_min_mc_usd_seasoned` (default $30K), `scanner_min_mc_velocity_5m_pct_seasoned` (default 5%)
+- ✅ New `PumpfunDiscovery._refresh_loop` (every 60s) re-polls Pump.fun's coins API for tracked discovered tokens, updates MC + last_trade + PumpSwap pool reserves, and appends to a 12-sample rolling deque per token
+- ✅ Scanner computes `mc_velocity_5m_pct` from samples and applies it for the seasoned band
+- ✅ Seasoned gates: `growth_pct + liquidity + min_mc + mc_velocity` (no inflow/buyers/holders)
+- ✅ New gates unchanged: `growth_pct + liquidity + inflow + buyers + holders`
+- ✅ Frontend: per-band gates table now has asymmetric rows with "n/a" placeholders; ScannerCandidatesCard metrics line shows MC velocity for seasoned (instead of inflow/buyers)
+- **Verified live**: 20 seasoned PumpSwap candidates rendering with MC, last_trade_age, and MC vel fields populated.

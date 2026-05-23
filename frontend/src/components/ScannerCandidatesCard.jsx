@@ -144,9 +144,20 @@ function CandidateRow({ c, passing }) {
         </div>
       </div>
       <div className="flex items-center gap-x-3 gap-y-0.5 mt-1.5 text-[10px] font-mono text-neutral-400 flex-wrap">
-        <span>inflow(5m) <span className="text-neutral-200">{(c.recent_inflow_sol ?? 0).toFixed(2)}</span> SOL</span>
-        <span>new buyers(1m) <span className="text-neutral-200">{c.new_buyers_recent ?? 0}</span></span>
-        <span>holders <span className="text-neutral-200">{c.unique_buyers_total ?? 0}</span></span>
+        {c.band === "new" ? (
+          <>
+            <span>inflow(5m) <span className="text-neutral-200">{(c.recent_inflow_sol ?? 0).toFixed(2)}</span> SOL</span>
+            <span>new buyers(1m) <span className="text-neutral-200">{c.new_buyers_recent ?? 0}</span></span>
+            <span>holders <span className="text-neutral-200">{c.unique_buyers_total ?? 0}</span></span>
+          </>
+        ) : (
+          <span title="MC change over last 5 minutes (polled from Pump.fun API)">
+            MC vel(5m){" "}
+            <span className={`${(c.mc_velocity_5m_pct ?? 0) >= 0 ? "text-emerald-300" : "text-red-300"}`}>
+              {(c.mc_velocity_5m_pct ?? 0) >= 0 ? "+" : ""}{(c.mc_velocity_5m_pct ?? 0).toFixed(1)}%
+            </span>
+          </span>
+        )}
         {c.usd_market_cap > 0 && (
           <span>MC <span className="text-neutral-200">{fmtUsd(c.usd_market_cap)}</span></span>
         )}
