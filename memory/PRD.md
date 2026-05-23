@@ -636,3 +636,48 @@ If the backend process restarts (crash, reboot, supervisor restart, code reload)
 4. Warning line confirmed in backend logs
 5. WebSocket broadcast confirmed (tested via toast handler)
 
+
+
+## 2026-02-23 — max_concurrent_positions race + duplicate-row cleanup
+
+### Bug
+User set `max_concurrent_positions=18`, observed 25-26 active trades. Two compounding causes:
+
+1. **Concurrency race in `_enter` / `_attempt_reentry`:**
+   - The previous gate `if len(self.active_trades) >= max_positions: return` is checked, then `await` yields, then later the dict is mutated.
+   - With the earlier "fill aggressively" change (max_entries_this_pass = remaining), the scanner can fire 3+ concurrent `_enter()` calls per pass. All three pass the gate while in_flight=17, and all three add positions — finishing at 20+.
+   - Re-entry watcher could also fire concurrently with the scanner for the same mint.
+
+2. **Duplicate active rows in DB:**
+   - The in-memory `active_trades` dict is keyed by mint, so racing entries overwrite each other in memory. The earlier doc however persists with `status=active` in the DB. Result: orphaned active rows that NO monitor is watching — they stay active forever, never exit, and inflate the active count visible in the UI.
+   - Today's DB had 3 mints with 2-3 active rows each (5 zombie rows total).
+
+### Fix
+
+#### `bot.py BotState`
+- ✅ New `self._entry_gate_lock = asyncio.Lock()` + `self._pending_entry_mints: set[str] = set()`
+- ✅ `_enter` split into `_enter` (gate) + `_enter_impl` (pipeline). The gate is now wrapped:
+
+```python
+async with self._entry_gate_lock:
+    if launch.mint in self.active_trades or launch.mint in self._pending_entry_mints:
+        return
+    in_flight = len(self.active_trades) + len(self._pending_entry_mints)
+    if in_flight >= cap: return
+    self._pending_entry_mints.add(launch.mint)
+try:
+    await self._enter_impl(...)
+finally:
+    self._pending_entry_mints.discard(launch.mint)
+```
+
+The lock is only held for the gate check + reservation (microseconds). Async tx operations run unlocked so parallel buys still execute concurrently. Same pattern applied to `_attempt_reentry`.
+
+- ✅ New `_sweep_duplicate_active_rows()` runs once at `BotState.load()`. Aggregates DB to find mints with multiple active rows, keeps the row currently held in `active_trades`, marks the rest as `status="zombie_duplicate"` with pnl=0.
+
+### Verified
+- **Unit test (race)**: 30 concurrent `_enter`-style attempts at cap=3 → exactly 3 pass. ✅
+- **Unit test (dup)**: 5 concurrent attempts on the same mint → exactly 1 passes. ✅
+- **Live sweep**: 5 zombie rows cleaned across 4 mints; 0 remaining duplicates in DB.
+- **Note:** Pre-existing 20 active trades remain above the new cap of 18 — these were opened before the fix and will drain via natural TP/SL/trailing exits. The new gate enforces cap going forward.
+

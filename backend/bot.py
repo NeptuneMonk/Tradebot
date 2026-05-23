@@ -61,6 +61,13 @@ class BotState:
         # once active_trades is empty.
         self.stopping_gracefully: bool = False
         self._graceful_stop_task: asyncio.Task | None = None
+        # Reservation pattern: serialize the position-count gate in _enter so
+        # concurrent scanner attempts can't all race past max_concurrent_positions.
+        # `_pending_entry_mints` holds mints that have passed the gate but
+        # haven't yet been added to active_trades (tx in flight). The gate
+        # checks len(active_trades) + len(_pending_entry_mints) >= max.
+        self._entry_gate_lock = asyncio.Lock()
+        self._pending_entry_mints: set[str] = set()
         self.scanner = MomentumScanner(self)
         self.discovery = PumpfunDiscovery(self)
         self.pnl_reconciler = PnLReconciler(self)
@@ -93,6 +100,13 @@ class BotState:
             )
         async for t in self.db.trades.find({"status": "active"}, {"_id": 0}):
             self.active_trades[t["mint"]] = {"trade": t}
+        # Sweep duplicate active rows in DB. Concurrent _enter races (now fixed
+        # via the entry_gate_lock) could have created multiple `status=active`
+        # rows for the same mint in the past. The dict above naturally
+        # de-duplicates in memory (only the last-loaded row wins), but the
+        # orphaned DB rows would otherwise count toward portfolio limits and
+        # never get monitored. Mark them as zombies so they're out of the way.
+        await self._sweep_duplicate_active_rows()
         # Start re-entry watcher
         if self._reentry_task is None or self._reentry_task.done():
             self._reentry_task = asyncio.create_task(self._reentry_watcher())
@@ -206,6 +220,52 @@ class BotState:
             upsert=True,
         )
 
+    async def _sweep_duplicate_active_rows(self):
+        """For each mint with multiple `status=active` rows in the DB, keep the
+        most-recent one (assumed to be the one held in `self.active_trades`)
+        and mark the rest as `zombie_duplicate` with pnl=0. Runs once at load.
+
+        This is a recovery path for historical races — the new
+        `_entry_gate_lock` prevents fresh duplicates from being created.
+        """
+        pipeline = [
+            {"$match": {"status": "active"}},
+            {"$group": {"_id": "$mint", "n": {"$sum": 1}, "ids": {"$push": "$id"}}},
+            {"$match": {"n": {"$gt": 1}}},
+        ]
+        groups: list[dict] = []
+        async for g in self.db.trades.aggregate(pipeline):
+            groups.append(g)
+        if not groups:
+            return
+        total_zombied = 0
+        for g in groups:
+            mint = g["_id"]
+            ids = g["ids"]
+            # Keep the row that we loaded into active_trades (its `id` is the
+            # most-recently-inserted, since dict assignment overwrites and the
+            # DB find returns insertion order). Mark all others as zombies.
+            keep_id = self.active_trades.get(mint, {}).get("trade", {}).get("id")
+            for tid in ids:
+                if tid == keep_id:
+                    continue
+                await self.db.trades.update_one(
+                    {"id": tid},
+                    {"$set": {
+                        "status": "zombie_duplicate",
+                        "exit_time": now_utc().isoformat(),
+                        "exit_reason": "orphaned duplicate row from race (no monitor was watching this row)",
+                        "pnl_sol": 0.0,
+                        "pnl_usd": 0.0,
+                        "pnl_pct": 0.0,
+                    }},
+                )
+                total_zombied += 1
+        logger.warning(
+            f"swept {total_zombied} duplicate active rows across "
+            f"{len(groups)} mints — these had no monitor watching them"
+        )
+
     async def daily_pnl_usd(self, mode: str | None = None) -> float:
         """Sum of pnl_usd for trades closed today (UTC). Pass mode='live' or
         'paper' to filter; default (None) returns the combined total.
@@ -287,9 +347,22 @@ class BotState:
         # Don't open new positions during a graceful stop
         if self.stopping_gracefully:
             return
-        # Apply the same portfolio + liquidity gates as fresh entries
-        if len(self.active_trades) >= max(1, self.config.max_concurrent_positions):
-            return
+        # Atomic reservation — same pattern as _enter
+        async with self._entry_gate_lock:
+            if mint in self.active_trades or mint in self._pending_entry_mints:
+                return
+            cap = max(1, self.config.max_concurrent_positions)
+            in_flight = len(self.active_trades) + len(self._pending_entry_mints)
+            if in_flight >= cap:
+                return
+            self._pending_entry_mints.add(mint)
+        try:
+            await self._attempt_reentry_impl(w)
+        finally:
+            self._pending_entry_mints.discard(mint)
+
+    async def _attempt_reentry_impl(self, w: dict):
+        mint = w["mint"]
         sol_price = await get_sol_usd_price()
         base_usd = max(self.config.min_trade_usd, self.config.max_trade_usd)
         trade_usd = max(self.config.min_trade_usd, base_usd * w["size_multiplier"])
@@ -662,10 +735,29 @@ class BotState:
         # Smart-stop: refuse new entries while we're winding down
         if self.stopping_gracefully:
             return
-        # Portfolio limit: don't pile in beyond max concurrent positions
-        if len(self.active_trades) >= max(1, self.config.max_concurrent_positions):
-            return
+        # Reservation gate — serialized so concurrent scanner attempts can't
+        # all race past max_concurrent_positions. Holds the lock only for the
+        # gate check + reservation (microseconds), not the tx.
+        async with self._entry_gate_lock:
+            # Already entering this mint? (race between concurrent triggers
+            # for the same mint, e.g., scanner + sniper firing in parallel)
+            if launch.mint in self.active_trades or launch.mint in self._pending_entry_mints:
+                return
+            cap = max(1, self.config.max_concurrent_positions)
+            in_flight = len(self.active_trades) + len(self._pending_entry_mints)
+            if in_flight >= cap:
+                return
+            # Reserve a slot — released in the finally below
+            self._pending_entry_mints.add(launch.mint)
 
+        try:
+            await self._enter_impl(launch, risk_score, action)
+        finally:
+            self._pending_entry_mints.discard(launch.mint)
+
+    async def _enter_impl(self, launch: Launch, risk_score: int, action: str):
+        """The actual entry pipeline. Called from `_enter` after the
+        position-count reservation has been taken atomically."""
         sol_price = await get_sol_usd_price()
         trade_usd = max(self.config.min_trade_usd, self.config.max_trade_usd)
         trade_sol = trade_usd / sol_price if sol_price > 0 else 0
