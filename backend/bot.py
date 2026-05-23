@@ -23,7 +23,7 @@ from wallet import get_keypair, get_pubkey
 from social import score_term
 from ws_hub import hub
 from creator_history import record_new_launch, mark_outcome, get_creator, derive_rug_count
-from scanner import MomentumScanner
+from scanner import MomentumScanner, velocity_pct_strict
 from discovery import PumpfunDiscovery
 
 logger = logging.getLogger("bot")
@@ -271,6 +271,9 @@ class BotState:
             "creator_rugs": creator_rugs,
             "first_seen_price_sol": 0.0,  # filled on first TradeEvent / curve fetch
             "last_price_sol": 0.0,
+            # Throttled price-time samples (~1Hz) for the entry-velocity gate
+            "price_samples": deque(maxlen=120),  # 2min @ 1Hz
+            "last_price_sample_ts": 0.0,
             "scanner_eligible": True,
             "scanner_last_attempt": 0.0,
         }
@@ -315,6 +318,12 @@ class BotState:
             bucket["curve_fill_pct"] = min(
                 100.0, max(0.0, (vsr - 30_000_000_000) / (85_000_000_000) * 100)
             )
+            # Throttled price sampling (~1Hz) for the entry-velocity gate
+            if now - bucket.get("last_price_sample_ts", 0) >= 1.0:
+                bucket["last_price_sample_ts"] = now
+                samples = bucket.get("price_samples")
+                if samples is not None:
+                    samples.append((now, cur_price))
 
         if now - bucket.get("last_persist", 0) >= PERSIST_INTERVAL_S:
             bucket["last_persist"] = now
@@ -557,6 +566,34 @@ class BotState:
                     "details": verdict["reasons"],
                 })
                 return
+
+        # Entry-velocity gate (pattern-mining insight: SL exits dominate losers
+        # 39% vs winners 2%). Reject "dead-cat" entries by requiring a minimum
+        # price velocity over the configured window right before entry. Uses
+        # `price_samples` populated by either on_trade (NEW band) or the
+        # discovery refresh loop (SEASONED band). Skips silently if we don't
+        # yet have enough history to span the requested window — safer than
+        # using a partial-window reading to abort.
+        b = self.tracking.get(launch.mint, {})
+        samples = b.get("price_samples")
+        vel_window = max(5, int(self.config.scanner_entry_velocity_window_s))
+        velocity = velocity_pct_strict(samples, time.time(), vel_window) if samples else None
+        if velocity is not None and velocity < self.config.scanner_entry_velocity_min_pct:
+            logger.info(
+                f"skip {launch.mint} [{action}]: entry velocity "
+                f"{velocity:+.2f}% over {vel_window}s < min "
+                f"{self.config.scanner_entry_velocity_min_pct:.2f}% (dead-cat filter)"
+            )
+            await hub.broadcast("scanner_skip", {
+                "mint": launch.mint, "symbol": launch.symbol,
+                "band": "new" if is_new_band else "seasoned",
+                "reason": "entry_velocity",
+                "details": [
+                    f"velocity {velocity:+.2f}% over {vel_window}s < "
+                    f"{self.config.scanner_entry_velocity_min_pct:.2f}%"
+                ],
+            })
+            return
 
         tokens_out, max_sol = (
             pumpswap.quote_buy_tokens(pumpswap_state, sol_in_lamports, self.config.slippage_bps)

@@ -69,6 +69,15 @@ class BotConfig(BaseModel):
     # Discovery: only seed tokens whose last trade is fresher than this (minutes).
     # Set 0 to disable the freshness gate.
     scanner_discovery_max_idle_minutes: int = 5
+    # Entry velocity gate (pattern-mining insight: "stop-loss exits dominate
+    # losers 39% vs winners 2%" → most losers are "dead cat" entries where the
+    # token already peaked). Require >= scanner_entry_velocity_min_pct change
+    # over scanner_entry_velocity_window_s seconds RIGHT BEFORE entry. Skipped
+    # silently if we don't yet have enough samples to span the window.
+    # Set scanner_entry_velocity_min_pct to a large negative (e.g., -999) to
+    # effectively disable the gate.
+    scanner_entry_velocity_window_s: int = 30
+    scanner_entry_velocity_min_pct: float = 0.0
     # Re-entry on winners
     reentry_enabled: bool = True
     reentry_max_attempts: int = 2

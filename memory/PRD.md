@@ -335,3 +335,43 @@ Graduated tokens trade on PumpSwap AMM, but `last_trade_timestamp` on Pump.fun's
 ### Validated
 Unit tests cover (a) threshold=0 + rugs=0 no longer aborts, (b) real rugger still aborts correctly, (c) normal config unaffected, (d) low-inflow abort still detected (now blocks entry instead of post-trade exit).
 
+
+
+## 2026-02-23 — Entry-velocity gate (dead-cat filter) + MC samples refresh loop
+
+### Pattern Insight (26× lift, n=66/66)
+> "stop-loss exits dominate losers (39%) over winners (2%) — SL placement may be too wide or you're entering too late. Add an entry_velocity_check (require positive 30s growth right before entry) to filter dead-cat entries."
+
+### Pre-existing bug uncovered
+`mc_samples` was *referenced* by the seasoned-band MC velocity gate (scanner.py L166/249/315) but **never populated anywhere**. Result: `_mc_velocity` always returned 0%, gate always evaluated `0 < 5%` → seasoned tokens were silently rejected by an invisible filter. Likely root cause of the earlier "0 seasoned trades" report despite tokens passing visible gates.
+
+### Implementation
+
+#### `models.py`
+- ✅ Added `scanner_entry_velocity_window_s: int = 30` and `scanner_entry_velocity_min_pct: float = 0.0`
+
+#### `scanner.py`
+- ✅ Added `velocity_pct_strict(samples, now, window_s)` — STRICT variant that returns `None` if samples don't span the requested window (used by entry gate so partial-window readings can't mislead).
+
+#### `bot.py`
+- ✅ Tracking buckets (both `on_launch` and `discovery._seed_token`) now carry `price_samples: deque(maxlen=120)` (~2min at 1Hz) and a `last_price_sample_ts` throttle key.
+- ✅ `on_trade` pushes throttled (≥1s) `(now, cur_price)` samples — NEW band data feed.
+- ✅ `_enter` runs the entry-velocity gate **right after** the classifier gate, applied to both bands. Skips silently if `velocity_pct_strict` returns `None` (insufficient history). Broadcasts `scanner_skip` for UI/debug.
+
+#### `discovery.py`
+- ✅ **NEW `_refresh_loop`** — every `REFRESH_INTERVAL_S=60s`, polls Pump.fun's per-mint `/coins/{mint}` endpoint for each tracked discovered token. Updates `usd_market_cap`, `last_trade_ms`; fetches current price (virtual reserves for bonding-curve, `pumpswap.fetch_pool_state` for graduated); appends `(ts, usd_mc)` to **`mc_samples`** (deque maxlen=12) AND `(ts, cur_price)` to `price_samples`. 150ms throttling between mint requests.
+- ✅ Wired into `PumpfunDiscovery.start()` alongside `_loop`.
+
+#### `BotControlCard.jsx`
+- ✅ Two new inputs under "Momentum Scanner": **Entry Vel Win (s)** and **Min Entry Vel (%)**.
+
+### Validation
+- ✅ Unit tests on `velocity_pct_strict`: empty / insufficient-history / positive / dead-cat / flat cases all behave correctly.
+- ✅ Pre-trade classifier gate confirmed live-firing on actual launches — caught `creator has 1/4 prior rugs` and `curve filled 48-87% in <12s (fast pump)` candidates *before* the buy tx.
+- ✅ `mc_velocity_5m_pct` on seasoned candidates now reports real fractional values (was always 0% before), proving the refresh loop's sample feed reached the gate.
+
+### Behavior with defaults
+- `min_pct = 0.0` → entry requires **non-negative** 30s velocity (dead cats with bleeding price get filtered).
+- User can set negative (e.g., `-5.0`) to be more permissive, or higher (e.g., `+5.0`) to require active uptrend at entry.
+- Tokens with `< 30s` of price history bypass the gate — won't accidentally block fresh sniper entries.
+

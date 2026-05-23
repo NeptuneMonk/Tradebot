@@ -132,6 +132,12 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
           <Field label="Max Idle (min)" testid="scanner-max-idle-input"
                  value={local.scanner_discovery_max_idle_minutes}
                  onChange={(v) => setLocal({ ...local, scanner_discovery_max_idle_minutes: parseInt(v, 10) || 0 })} step="1" />
+          <Field label="Entry Vel Win (s)" testid="scanner-entry-vel-window-input"
+                 value={local.scanner_entry_velocity_window_s}
+                 onChange={(v) => setLocal({ ...local, scanner_entry_velocity_window_s: parseInt(v, 10) || 0 })} step="5" />
+          <Field label="Min Entry Vel (%)" testid="scanner-entry-vel-min-input"
+                 value={local.scanner_entry_velocity_min_pct}
+                 onChange={(v) => setLocal({ ...local, scanner_entry_velocity_min_pct: parseFloat(v) || 0 })} step="0.5" />
         </div>
 
         {/* Per-band gates table */}

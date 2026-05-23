@@ -44,10 +44,13 @@ class PumpfunDiscovery:
     def __init__(self, state: "BotState"):
         self.state = state
         self._task: asyncio.Task | None = None
+        self._refresh_task: asyncio.Task | None = None
 
     def start(self):
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._loop())
+        if self._refresh_task is None or self._refresh_task.done():
+            self._refresh_task = asyncio.create_task(self._refresh_loop())
 
     async def _loop(self):
         # Stagger first run by 5s so listener has time to settle
@@ -60,6 +63,88 @@ class PumpfunDiscovery:
             except Exception as e:
                 logger.warning(f"discovery loop error: {e}")
             await asyncio.sleep(DISCOVERY_INTERVAL_S)
+
+    async def _refresh_loop(self):
+        """Re-poll Pump.fun's /coins API every REFRESH_INTERVAL_S to update
+        live signals for already-tracked discovered tokens — MC, last_trade,
+        and price (via virtual reserves for bonding curve, pool reserves for
+        PumpSwap). Appends to rolling `mc_samples` and `price_samples` deques
+        so the seasoned-band velocity gates have real data to work with.
+
+        Without this loop, `mc_samples` was always empty → MC velocity always
+        computed as 0% → seasoned tokens never passed the velocity gate.
+        """
+        await asyncio.sleep(REFRESH_INTERVAL_S)
+        while True:
+            try:
+                await self._refresh_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"discovery refresh loop error: {e}")
+            await asyncio.sleep(REFRESH_INTERVAL_S)
+
+    async def _refresh_once(self):
+        """Iterate tracked discovered mints, pull fresh MC + price, append
+        samples. Batches Pump.fun API calls (per-mint endpoint) up to 25 at a
+        time with throttling to stay polite."""
+        st = self.state
+        # Snapshot mint list — discovered tokens only (mempool-tracked mints
+        # already get price samples via on_trade, no refresh needed)
+        targets = [
+            (mint, b) for mint, b in st.tracking.items()
+            if b.get("discovered") and (mint not in st.active_trades)
+        ]
+        if not targets:
+            return
+        now = time.time()
+        url = f"{PUMPFUN_API}/coins"
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            for mint, bucket in targets:
+                try:
+                    r = await client.get(f"{url}/{mint}", headers={"accept": "application/json"})
+                    if r.status_code != 200:
+                        continue
+                    c = r.json() or {}
+                except Exception as e:
+                    logger.debug(f"refresh fetch failed for {mint}: {e}")
+                    continue
+                usd_mc = float(c.get("usd_market_cap") or 0.0)
+                last_trade_ms = int(c.get("last_trade_timestamp") or 0)
+                is_graduated = bool(c.get("complete"))
+                # Resolve current price per protocol
+                cur_price = 0.0
+                if is_graduated:
+                    pool = bucket.get("pumpswap_pool") or c.get("pump_swap_pool") or ""
+                    if pool:
+                        try:
+                            ps_state = await pumpswap.fetch_pool_state(pool)
+                            if ps_state:
+                                cur_price = pumpswap.price_sol_per_raw_token(ps_state)
+                                bucket["last_vsr_lamports"] = ps_state["quote_reserves"]
+                        except Exception as e:
+                            logger.debug(f"refresh pool fetch failed for {mint}: {e}")
+                else:
+                    vsr = int(c.get("virtual_sol_reserves") or 0)
+                    vtr = int(c.get("virtual_token_reserves") or 0)
+                    if vsr and vtr:
+                        cur_price = vsr / vtr / LAMPORTS_PER_SOL
+                        bucket["last_vsr_lamports"] = vsr
+                # Update bucket
+                bucket["usd_market_cap"] = usd_mc
+                bucket["last_trade_ms"] = last_trade_ms
+                if cur_price > 0:
+                    bucket["last_price_sol"] = cur_price
+                # Append rolling MC sample
+                mc_samples = bucket.setdefault("mc_samples", deque(maxlen=MC_SAMPLE_KEEP))
+                mc_samples.append((now, usd_mc))
+                # Append rolling price sample (used by the entry-velocity gate)
+                if cur_price > 0:
+                    price_samples = bucket.setdefault("price_samples", deque(maxlen=120))
+                    price_samples.append((now, cur_price))
+                # Be polite to Pump.fun's per-mint endpoint
+                await asyncio.sleep(0.15)
+        logger.debug(f"discovery refresh: updated {len(targets)} tokens")
 
     async def run_once(self) -> int:
         """Returns the number of newly seeded tokens."""
@@ -228,6 +313,11 @@ class PumpfunDiscovery:
             "first_seen_price_sol": LAUNCH_BASELINE_PRICE_SOL,
             "last_price_sol": cur_price,
             "last_vsr_lamports": real_sol_lamports,
+            # Throttled price samples for entry-velocity gate. Discovered
+            # tokens populate this via the discovery refresh loop (not the
+            # mempool listener, which doesn't reach PumpSwap pools).
+            "price_samples": deque(maxlen=120),
+            "last_price_sample_ts": 0.0,
             "scanner_eligible": True,
             "scanner_last_attempt": 0.0,
             "discovered": True,

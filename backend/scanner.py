@@ -40,6 +40,33 @@ def _mc_velocity(samples, now: float, window_s: int = 300) -> float:
     return (cur - base) / base * 100.0
 
 
+def velocity_pct_strict(samples, now: float, window_s: int) -> float | None:
+    """% change over `window_s` seconds. STRICT variant: returns None if the
+    oldest available sample doesn't reach back at least `window_s` seconds —
+    i.e. we don't have enough history to measure the requested window.
+
+    Used by the pre-trade entry-velocity gate where a partial-window reading
+    could mislead (e.g., computing "30s velocity" from 4s of data on a fresh
+    launch). Returns 0.0 if base price is 0.
+    """
+    if not samples or len(samples) < 2:
+        return None
+    oldest_ts = samples[0][0]
+    if now - oldest_ts < window_s:
+        return None
+    cutoff = now - window_s
+    # find the earliest sample inside the window
+    earliest = next((s for s in samples if s[0] >= cutoff), None)
+    if earliest is None:
+        return None
+    latest = samples[-1]
+    base = earliest[1] or 0.0
+    cur = latest[1] or 0.0
+    if base <= 0:
+        return None
+    return (cur - base) / base * 100.0
+
+
 class MomentumScanner:
     """Owns the scanner loop and snapshot logic. Reads/writes `state.tracking`,
     delegates entry to `state._enter`."""
