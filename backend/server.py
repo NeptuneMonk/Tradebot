@@ -134,6 +134,8 @@ async def update_config(cfg: BotConfig):
     cfg.min_curve_liquidity_sol = max(0.0, min(85.0, cfg.min_curve_liquidity_sol))
     cfg.min_buyers_for_entry = max(0, min(100, cfg.min_buyers_for_entry))
     cfg.max_concurrent_positions = max(1, min(50, cfg.max_concurrent_positions))
+    cfg.min_curve_liquidity_sol_new = max(0.0, min(85.0, cfg.min_curve_liquidity_sol_new))
+    cfg.min_buyers_for_entry_new = max(0, min(100, cfg.min_buyers_for_entry_new))
     # Scanner clamps
     cfg.scanner_window_hours = max(1, min(24, cfg.scanner_window_hours))
     cfg.scanner_min_age_minutes = max(0, min(24 * 60, cfg.scanner_min_age_minutes))
@@ -143,6 +145,9 @@ async def update_config(cfg: BotConfig):
     cfg.scanner_min_recent_inflow_sol = max(0.0, min(1000.0, cfg.scanner_min_recent_inflow_sol))
     cfg.scanner_holder_velocity_window_s = max(15, min(3600, cfg.scanner_holder_velocity_window_s))
     cfg.scanner_min_new_buyers = max(0, min(500, cfg.scanner_min_new_buyers))
+    cfg.scanner_min_growth_pct_new = max(0.0, min(10000.0, cfg.scanner_min_growth_pct_new))
+    cfg.scanner_min_recent_inflow_sol_new = max(0.0, min(1000.0, cfg.scanner_min_recent_inflow_sol_new))
+    cfg.scanner_min_new_buyers_new = max(0, min(500, cfg.scanner_min_new_buyers_new))
     cfg.scanner_discovery_max_idle_minutes = max(0, min(1440, cfg.scanner_discovery_max_idle_minutes))
     # Exit-behavior clamps
     cfg.trailing_stop_pct = max(0.0, min(95.0, cfg.trailing_stop_pct))

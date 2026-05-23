@@ -86,16 +86,10 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                onChange={(v) => setLocal({ ...local, exit_slippage_bps: parseInt(v, 10) || 0 })} step="50" />
       </div>
 
-      {/* Entry filters */}
+      {/* Portfolio / global entry settings (per-band liquidity & buyer thresholds live in the gates table below) */}
       <div className="border-t border-neutral-800 pt-3 mt-1">
-        <div className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 mb-2">Entry Filters</div>
+        <div className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 mb-2">Portfolio</div>
         <div className="grid grid-cols-2 gap-2 text-xs">
-          <Field label="Min Liquidity (SOL)" testid="min-liq-input"
-                 value={local.min_curve_liquidity_sol}
-                 onChange={(v) => setLocal({ ...local, min_curve_liquidity_sol: parseFloat(v) || 0 })} step="0.5" />
-          <Field label="Min Buyers" testid="min-buyers-input"
-                 value={local.min_buyers_for_entry}
-                 onChange={(v) => setLocal({ ...local, min_buyers_for_entry: parseInt(v, 10) || 0 })} step="1" />
           <Field label="Max Positions" testid="max-positions-input"
                  value={local.max_concurrent_positions}
                  onChange={(v) => setLocal({ ...local, max_concurrent_positions: parseInt(v, 10) || 0 })} step="1" />
@@ -126,21 +120,64 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
           <Field label="Scan every (s)" testid="scanner-interval-input"
                  value={local.scanner_interval_s}
                  onChange={(v) => setLocal({ ...local, scanner_interval_s: parseInt(v, 10) || 0 })} step="5" />
-          <Field label="Min Growth (%)" testid="scanner-growth-input"
-                 value={local.scanner_min_growth_pct}
-                 onChange={(v) => setLocal({ ...local, scanner_min_growth_pct: parseFloat(v) || 0 })} step="5" />
-          <Field label="Min Inflow (SOL)" testid="scanner-inflow-input"
-                 value={local.scanner_min_recent_inflow_sol}
-                 onChange={(v) => setLocal({ ...local, scanner_min_recent_inflow_sol: parseFloat(v) || 0 })} step="0.5" />
           <Field label="Inflow Win (s)" testid="scanner-inflow-window-input"
                  value={local.scanner_recent_inflow_window_s}
                  onChange={(v) => setLocal({ ...local, scanner_recent_inflow_window_s: parseInt(v, 10) || 0 })} step="30" />
-          <Field label="Min new buyers" testid="scanner-buyers-input"
-                 value={local.scanner_min_new_buyers}
-                 onChange={(v) => setLocal({ ...local, scanner_min_new_buyers: parseInt(v, 10) || 0 })} step="1" />
           <Field label="Max Idle (min)" testid="scanner-max-idle-input"
                  value={local.scanner_discovery_max_idle_minutes}
                  onChange={(v) => setLocal({ ...local, scanner_discovery_max_idle_minutes: parseInt(v, 10) || 0 })} step="1" />
+        </div>
+
+        {/* Per-band gates table */}
+        <div className="mt-3">
+          <div className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 mb-1">Per-band gates</div>
+          <div className="border border-neutral-800 text-xs">
+            <div className="grid grid-cols-[1.4fr_1fr_1fr] bg-neutral-950 text-[10px] uppercase tracking-[0.15em] text-neutral-500 border-b border-neutral-800">
+              <div className="px-2 py-1.5">Gate</div>
+              <div className="px-2 py-1.5 text-amber-400">New (&lt; seasoning)</div>
+              <div className="px-2 py-1.5 text-cyan-300">Seasoned (≥ seasoning)</div>
+            </div>
+            <GateRow label="Min Growth (%)"
+                     newTestid="scanner-growth-new-input"
+                     newValue={local.scanner_min_growth_pct_new}
+                     onNewChange={(v) => setLocal({ ...local, scanner_min_growth_pct_new: parseFloat(v) || 0 })}
+                     seasonedTestid="scanner-growth-input"
+                     seasonedValue={local.scanner_min_growth_pct}
+                     onSeasonedChange={(v) => setLocal({ ...local, scanner_min_growth_pct: parseFloat(v) || 0 })}
+                     step="5" />
+            <GateRow label="Min Inflow (SOL/win)"
+                     newTestid="scanner-inflow-new-input"
+                     newValue={local.scanner_min_recent_inflow_sol_new}
+                     onNewChange={(v) => setLocal({ ...local, scanner_min_recent_inflow_sol_new: parseFloat(v) || 0 })}
+                     seasonedTestid="scanner-inflow-input"
+                     seasonedValue={local.scanner_min_recent_inflow_sol}
+                     onSeasonedChange={(v) => setLocal({ ...local, scanner_min_recent_inflow_sol: parseFloat(v) || 0 })}
+                     step="0.5" />
+            <GateRow label="Min new buyers (1m)"
+                     newTestid="scanner-newbuyers-new-input"
+                     newValue={local.scanner_min_new_buyers_new}
+                     onNewChange={(v) => setLocal({ ...local, scanner_min_new_buyers_new: parseInt(v, 10) || 0 })}
+                     seasonedTestid="scanner-buyers-input"
+                     seasonedValue={local.scanner_min_new_buyers}
+                     onSeasonedChange={(v) => setLocal({ ...local, scanner_min_new_buyers: parseInt(v, 10) || 0 })}
+                     step="1" parser={(v) => parseInt(v, 10) || 0} />
+            <GateRow label="Min Liquidity (SOL)"
+                     newTestid="min-liq-new-input"
+                     newValue={local.min_curve_liquidity_sol_new}
+                     onNewChange={(v) => setLocal({ ...local, min_curve_liquidity_sol_new: parseFloat(v) || 0 })}
+                     seasonedTestid="min-liq-seasoned-input"
+                     seasonedValue={local.min_curve_liquidity_sol}
+                     onSeasonedChange={(v) => setLocal({ ...local, min_curve_liquidity_sol: parseFloat(v) || 0 })}
+                     step="0.5" />
+            <GateRow label="Min Total Holders"
+                     newTestid="min-buyers-new-input"
+                     newValue={local.min_buyers_for_entry_new}
+                     onNewChange={(v) => setLocal({ ...local, min_buyers_for_entry_new: parseInt(v, 10) || 0 })}
+                     seasonedTestid="min-buyers-seasoned-input"
+                     seasonedValue={local.min_buyers_for_entry}
+                     onSeasonedChange={(v) => setLocal({ ...local, min_buyers_for_entry: parseInt(v, 10) || 0 })}
+                     step="1" last />
+          </div>
         </div>
       </div>
 
@@ -216,5 +253,34 @@ function Field({ label, value, onChange, step, testid }) {
         className="bg-neutral-950 border border-neutral-800 px-2 py-1 font-mono text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
       />
     </label>
+  );
+}
+
+function GateRow({ label, newTestid, newValue, onNewChange, seasonedTestid, seasonedValue, onSeasonedChange, step, last }) {
+  const cell = "px-2 py-1 border-l border-neutral-800";
+  return (
+    <div className={`grid grid-cols-[1.4fr_1fr_1fr] ${last ? "" : "border-b border-neutral-800"}`}>
+      <div className="px-2 py-1 text-[10px] uppercase tracking-[0.1em] text-neutral-400 font-mono self-center">{label}</div>
+      <div className={cell}>
+        <input
+          data-testid={newTestid}
+          type="number"
+          step={step}
+          value={newValue}
+          onChange={(e) => onNewChange(e.target.value)}
+          className="w-full bg-neutral-950 border border-amber-900/50 px-2 py-0.5 font-mono text-xs text-amber-200 focus:border-amber-500 focus:outline-none"
+        />
+      </div>
+      <div className={cell}>
+        <input
+          data-testid={seasonedTestid}
+          type="number"
+          step={step}
+          value={seasonedValue}
+          onChange={(e) => onSeasonedChange(e.target.value)}
+          className="w-full bg-neutral-950 border border-cyan-900/50 px-2 py-0.5 font-mono text-xs text-cyan-200 focus:border-cyan-500 focus:outline-none"
+        />
+      </div>
+    </div>
   );
 }

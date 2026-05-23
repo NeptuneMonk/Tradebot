@@ -248,3 +248,15 @@ User feedback: "get rid of recent launch investment and replace it with momentum
 - ✅ `pl_sources.py`: 4 buckets — `new`, `seasoned`, `reentry`, `legacy` (historical pre-refactor trades preserved as "Legacy Sniper")
 - ✅ Frontend `PLBySourceCard`: 4-column grid
 - **Verified live**: trade history shows new `momentum_new` action firing on entries; Legacy Sniper bucket holds 41 historical trades (-$7.02, 15% wr), New Momentum already has 2 trades (+$0.15, 50% wr).
+
+
+## 2026-02-22 — Per-band gates
+
+### Independent gates for New vs Seasoned momentum (P1)
+User: "Tighter for new. So I can set different liquidity limit and holder min etc."
+- ✅ 5 new config fields with `_new` suffix: `scanner_min_growth_pct_new` (50 vs 20), `scanner_min_recent_inflow_sol_new` (5 vs 3), `scanner_min_new_buyers_new` (10 vs 5), `min_curve_liquidity_sol_new` (20 vs 12), `min_buyers_for_entry_new` (8 vs 3)
+- ✅ Scanner picks gates by band via `MomentumScanner._gates(cfg, band)` — applied in 3 places (cached pre-rank, authoritative re-check, candidates_snapshot)
+- ✅ `_enter()` picks liquidity/buyer thresholds based on `action == "momentum_new"`
+- ✅ Server-side clamps for all 5 new fields
+- ✅ Frontend: scanner config section now has a 3-column per-band gates table (Gate | New amber | Seasoned cyan)
+- **Verified live**: All 10 inputs reachable, defaults correct, scanner uses tighter gates for new-band candidates.

@@ -31,6 +31,23 @@ class MomentumScanner:
     def __init__(self, state: "BotState"):
         self.state = state
 
+    @staticmethod
+    def _gates(cfg, band: str) -> dict:
+        """Resolve the gate values for a given band ('new' or 'seasoned')."""
+        if band == "new":
+            return {
+                "min_growth_pct": cfg.scanner_min_growth_pct_new,
+                "min_inflow_sol": cfg.scanner_min_recent_inflow_sol_new,
+                "min_new_buyers": cfg.scanner_min_new_buyers_new,
+                "min_liquidity_sol": cfg.min_curve_liquidity_sol_new,
+            }
+        return {
+            "min_growth_pct": cfg.scanner_min_growth_pct,
+            "min_inflow_sol": cfg.scanner_min_recent_inflow_sol,
+            "min_new_buyers": cfg.scanner_min_new_buyers,
+            "min_liquidity_sol": cfg.min_curve_liquidity_sol,
+        }
+
     def score(self, b: dict, curve_state: dict | None, now: float) -> dict:
         """Compute live metrics for a tracked mint. `curve_state` may be None
         (cheap path) or a real bonding-curve state dict (authoritative)."""
@@ -103,11 +120,12 @@ class MomentumScanner:
             m["usd_market_cap"] = float(b.get("usd_market_cap") or 0.0)
             last_trade_ms = b.get("last_trade_ms") or 0
             m["last_trade_age_s"] = max(0.0, now - last_trade_ms / 1000.0) if last_trade_ms else None
+            g = self._gates(cfg, m["band"])
             m["passes"] = (
-                m["growth_pct"] >= cfg.scanner_min_growth_pct
-                and m["recent_inflow_sol"] >= cfg.scanner_min_recent_inflow_sol
-                and m["new_buyers_recent"] >= cfg.scanner_min_new_buyers
-                and m["real_sol_reserves"] >= cfg.min_curve_liquidity_sol
+                m["growth_pct"] >= g["min_growth_pct"]
+                and m["recent_inflow_sol"] >= g["min_inflow_sol"]
+                and m["new_buyers_recent"] >= g["min_new_buyers"]
+                and m["real_sol_reserves"] >= g["min_liquidity_sol"]
             )
             out.append(m)
         out.sort(
@@ -155,20 +173,21 @@ class MomentumScanner:
                     if not b.get("buy_events"):
                         continue
                     m = self.score(b, None, now)
-                    if m["growth_pct"] < cfg.scanner_min_growth_pct:
+                    band = "seasoned" if age >= min_age else "new"
+                    g = self._gates(cfg, band)
+                    if m["growth_pct"] < g["min_growth_pct"]:
                         continue
-                    if m["recent_inflow_sol"] < cfg.scanner_min_recent_inflow_sol:
+                    if m["recent_inflow_sol"] < g["min_inflow_sol"]:
                         continue
-                    if m["new_buyers_recent"] < cfg.scanner_min_new_buyers:
+                    if m["new_buyers_recent"] < g["min_new_buyers"]:
                         continue
-                    if m["real_sol_reserves"] < cfg.min_curve_liquidity_sol:
+                    if m["real_sol_reserves"] < g["min_liquidity_sol"]:
                         continue
                     rank_score = (
                         m["growth_pct"]
                         + m["recent_inflow_sol"] * 5
                         + m["new_buyers_recent"] * 2
                     )
-                    band = "seasoned" if age >= min_age else "new"
                     scored.append((mint, b, m, rank_score, band))
 
                 if not scored:
@@ -190,13 +209,14 @@ class MomentumScanner:
                     if not curve_state or curve_state["complete"]:
                         continue
                     m = self.score(b, curve_state, now)
-                    if m["real_sol_reserves"] < cfg.min_curve_liquidity_sol:
+                    g = self._gates(cfg, band)
+                    if m["real_sol_reserves"] < g["min_liquidity_sol"]:
                         continue
-                    if m["growth_pct"] < cfg.scanner_min_growth_pct:
+                    if m["growth_pct"] < g["min_growth_pct"]:
                         continue
-                    if m["recent_inflow_sol"] < cfg.scanner_min_recent_inflow_sol:
+                    if m["recent_inflow_sol"] < g["min_inflow_sol"]:
                         continue
-                    if m["new_buyers_recent"] < cfg.scanner_min_new_buyers:
+                    if m["new_buyers_recent"] < g["min_new_buyers"]:
                         continue
 
                     action = "scanner_momentum" if band == "seasoned" else "momentum_new"

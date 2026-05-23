@@ -31,10 +31,14 @@ class BotConfig(BaseModel):
     stop_loss_pct: float = 20.0      # tight cap, enforced by fast-exit
     trailing_stop_pct: float = 10.0  # lock in profits once peak appears
     exit_slippage_bps: int = 500     # separate exit slippage ensures exits fill on dumps
-    # Entry filters
+    # Entry filters (applied to scanner_momentum entries; reentry uses its own size logic)
     min_curve_liquidity_sol: float = 12.0  # skip thin/dead launches
     min_buyers_for_entry: int = 3          # require real interest
     max_concurrent_positions: int = 8      # diversification cap
+    # Per-band entry filter overrides for the "new" momentum band (age < scanner_min_age_minutes).
+    # The base fields above apply to the "seasoned" band.
+    min_curve_liquidity_sol_new: float = 20.0
+    min_buyers_for_entry_new: int = 8
     # Momentum scanner — 81% of recent profitable trades came from here
     scanner_enabled: bool = True
     scanner_window_hours: int = 4
@@ -47,6 +51,11 @@ class BotConfig(BaseModel):
     scanner_min_recent_inflow_sol: float = 3.0
     scanner_holder_velocity_window_s: int = 60
     scanner_min_new_buyers: int = 5
+    # Per-band scanner gate overrides for the "new" band (age < seasoning).
+    # Defaults are tighter than the seasoned band to handle fresh-launch volatility.
+    scanner_min_growth_pct_new: float = 50.0
+    scanner_min_recent_inflow_sol_new: float = 5.0
+    scanner_min_new_buyers_new: int = 10
     # Discovery: only seed tokens whose last trade is fresher than this (minutes).
     # Set 0 to disable the freshness gate.
     scanner_discovery_max_idle_minutes: int = 5

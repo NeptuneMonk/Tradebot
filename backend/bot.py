@@ -467,18 +467,24 @@ class BotState:
         if not state or state["complete"]:
             return
 
+        # Resolve band-specific gates: "new" (action=momentum_new) uses tighter
+        # thresholds, "seasoned" (action=scanner_momentum) uses base thresholds.
+        is_new_band = action == "momentum_new"
+        min_liq = self.config.min_curve_liquidity_sol_new if is_new_band else self.config.min_curve_liquidity_sol
+        min_buyers = self.config.min_buyers_for_entry_new if is_new_band else self.config.min_buyers_for_entry
+
         # Liquidity gate: skip entry if curve has too little real SOL
         real_sol = state["real_sol_reserves"] / LAMPORTS_PER_SOL
-        if real_sol < self.config.min_curve_liquidity_sol:
-            logger.info(f"skip {launch.mint}: liquidity {real_sol:.2f} SOL < min {self.config.min_curve_liquidity_sol}")
+        if real_sol < min_liq:
+            logger.info(f"skip {launch.mint} [{action}]: liquidity {real_sol:.2f} SOL < min {min_liq}")
             return
 
         # Buyer gate (optional)
-        if self.config.min_buyers_for_entry > 0:
+        if min_buyers > 0:
             b = self.tracking.get(launch.mint, {})
             buyers = len(b.get("buyers", set()))
-            if buyers < self.config.min_buyers_for_entry:
-                logger.info(f"skip {launch.mint}: only {buyers} buyers < min {self.config.min_buyers_for_entry}")
+            if buyers < min_buyers:
+                logger.info(f"skip {launch.mint} [{action}]: only {buyers} buyers < min {min_buyers}")
                 return
 
         tokens_out, max_sol = pumpfun.quote_buy_tokens(
