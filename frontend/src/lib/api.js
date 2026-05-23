@@ -21,6 +21,7 @@ export const api = {
   exitTrade: (id) => client.post(`/trades/${id}/exit`).then(r => r.data),
   plSummary: (days = 7) => client.get(`/pl/summary?days=${days}`).then(r => r.data),
   plBySource: (days = 7) => client.get(`/pl/by-source?days=${days}`).then(r => r.data),
+  insights: () => client.get(`/bot/insights`).then(r => r.data),
   sendSol: (to, amount_sol) => client.post("/wallet/send", { to, amount_sol }).then(r => r.data),
   reentryWatchlist: () => client.get("/reentry/watchlist").then(r => r.data),
   removeReentry: (mint) => client.delete(`/reentry/watchlist/${mint}`).then(r => r.data),

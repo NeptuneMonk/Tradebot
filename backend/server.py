@@ -28,6 +28,7 @@ from creator_history import get_creator
 from wallet_send import send_sol
 from suggestions import generate_suggestions
 from pl_sources import compute_pl_by_source
+from pattern_miner import generate_insights
 
 logging.basicConfig(
     level=logging.INFO,
@@ -331,6 +332,12 @@ async def pl_summary(days: int = 7):
 @api.get("/pl/by-source")
 async def pl_by_source(days: int = 7):
     return await compute_pl_by_source(db, days)
+
+
+# ---------- Pattern Insights ----------
+@api.get("/bot/insights")
+async def bot_insights():
+    return await generate_insights(db)
 
 
 # ---------- Creator history ----------
