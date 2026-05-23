@@ -276,6 +276,12 @@ class BotState:
             "last_price_sample_ts": 0.0,
             "scanner_eligible": True,
             "scanner_last_attempt": 0.0,
+            # Social proof — populated asynchronously by _fetch_socials below
+            # (Pump.fun indexes the mint a few seconds after creation)
+            "reply_count": 0,
+            "twitter": "",
+            "telegram": "",
+            "website": "",
         }
         # LRU-style cap: drop oldest if over the limit
         if len(self.tracking) > MAX_TRACKED_MINTS:
@@ -283,6 +289,7 @@ class BotState:
             self.tracking.pop(oldest, None)
 
         asyncio.create_task(self._compute_social(launch.mint))
+        asyncio.create_task(self._fetch_pumpfun_socials(launch.mint))
         asyncio.create_task(self._assess_and_enter(launch, creator_rugs))
         asyncio.create_task(self._tracker_cleanup(launch.mint))
 
@@ -419,6 +426,39 @@ class BotState:
             await self._persist_metrics(mint)
         except Exception as e:
             logger.debug(f"social score failed for {mint}: {e}")
+
+    async def _fetch_pumpfun_socials(self, mint: str):
+        """Pull on-chain social proof fields (reply_count, twitter, telegram,
+        website) from Pump.fun's `/coins/{mint}` endpoint. Used by the entry
+        gate. Re-tries a few times because the mint is only indexed by Pump's
+        API after the first trade event hits it (usually 2-10s post-creation).
+        """
+        import httpx
+        b = self.tracking.get(mint)
+        if not b:
+            return
+        url = f"https://frontend-api-v3.pump.fun/coins/{mint}"
+        # Up to 4 attempts with backoff (2s, 6s, 14s, 30s — covers ~50s window)
+        for delay in (2.0, 6.0, 14.0, 30.0):
+            await asyncio.sleep(delay)
+            if mint not in self.tracking:
+                return  # bucket evicted
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    r = await client.get(url, headers={"accept": "application/json"})
+                    if r.status_code != 200:
+                        continue
+                    c = r.json() or {}
+                    b["reply_count"] = int(c.get("reply_count") or 0)
+                    b["twitter"] = (c.get("twitter") or "").strip()
+                    b["telegram"] = (c.get("telegram") or "").strip()
+                    b["website"] = (c.get("website") or "").strip()
+                    # We got a real response — exit early. Any later updates
+                    # will be picked up by the discovery refresh loop once the
+                    # mint becomes discoverable.
+                    return
+            except Exception as e:
+                logger.debug(f"social fetch retry for {mint}: {e}")
 
     async def _tracker_cleanup(self, mint: str):
         await asyncio.sleep(TRACK_DURATION_S)
@@ -594,6 +634,33 @@ class BotState:
                 ],
             })
             return
+
+        # On-chain social-proof gate. When enabled, require at least one
+        # social link (twitter / telegram / website) AND reply_count >= min.
+        # If we have no Pump.fun metadata yet (fresh launch not yet indexed),
+        # treat it as a fail — fees protection trumps timeliness.
+        if self.config.gate_socials_required:
+            b = self.tracking.get(launch.mint, {})
+            reply_count = int(b.get("reply_count") or 0)
+            has_social = bool((b.get("twitter") or b.get("telegram") or b.get("website") or "").strip())
+            min_replies = max(0, int(self.config.gate_min_reply_count))
+            if not has_social or reply_count < min_replies:
+                logger.info(
+                    f"skip {launch.mint} [{action}]: socials gate — "
+                    f"reply_count={reply_count} (min {min_replies}), "
+                    f"has_social={has_social}"
+                )
+                await hub.broadcast("scanner_skip", {
+                    "mint": launch.mint, "symbol": launch.symbol,
+                    "band": "new" if is_new_band else "seasoned",
+                    "reason": "socials",
+                    "details": [
+                        f"reply_count={reply_count} < min {min_replies}"
+                        if reply_count < min_replies
+                        else "no twitter / telegram / website link"
+                    ],
+                })
+                return
 
         tokens_out, max_sol = (
             pumpswap.quote_buy_tokens(pumpswap_state, sol_in_lamports, self.config.slippage_bps)

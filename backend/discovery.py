@@ -133,6 +133,12 @@ class PumpfunDiscovery:
                 # Update bucket
                 bucket["usd_market_cap"] = usd_mc
                 bucket["last_trade_ms"] = last_trade_ms
+                # Refresh social proof fields (creator can add twitter/telegram
+                # later, reply_count climbs over time)
+                bucket["reply_count"] = int(c.get("reply_count") or 0)
+                bucket["twitter"] = (c.get("twitter") or "").strip()
+                bucket["telegram"] = (c.get("telegram") or "").strip()
+                bucket["website"] = (c.get("website") or "").strip()
                 if cur_price > 0:
                     bucket["last_price_sol"] = cur_price
                 # Append rolling MC sample
@@ -325,6 +331,11 @@ class PumpfunDiscovery:
             "last_trade_ms": last_trade_ms,
             "protocol": "pumpswap" if is_pumpswap else "pumpfun",
             "pumpswap_pool": pool_address if is_pumpswap else "",
+            # Social proof fields (used by gate_socials_required entry gate)
+            "reply_count": int(coin.get("reply_count") or 0),
+            "twitter": (coin.get("twitter") or "").strip(),
+            "telegram": (coin.get("telegram") or "").strip(),
+            "website": (coin.get("website") or "").strip(),
         }
         st.tracking[mint] = bucket
         # Also push a synthetic launch into the recent feed so the UI shows it

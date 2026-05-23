@@ -399,3 +399,33 @@ Both `/api/trades/active` and `/api/trades/history` already returned the full Mo
 - API curl confirms `partial_realized_usd`, `partial_reason`, `partial_sell_tokens`, etc. on history payloads.
 - Live screenshot confirms `½TP × 7 · $2.14` chip and per-row `+$0.18` banked column rendering correctly.
 
+
+
+## 2026-02-23 — On-chain socials gate (P2)
+
+### Feature
+Single checkbox + threshold gate: when **Socials required for entry** is ✅, refuse entry unless the mint has **at least one** social link (twitter / telegram / website) **AND** `reply_count >= gate_min_reply_count`.
+
+### Implementation
+
+#### `models.py`
+- ✅ `gate_socials_required: bool = False`
+- ✅ `gate_min_reply_count: int = 50`
+
+#### `discovery.py`
+- ✅ `_seed_token` now captures `reply_count`, `twitter`, `telegram`, `website` from the Pump.fun `/coins` payload into the tracking bucket.
+- ✅ `_refresh_once` re-fetches all four fields every 60s so newly-added social links and growing reply counts are picked up.
+
+#### `bot.py`
+- ✅ New `_fetch_pumpfun_socials(mint)` task scheduled from `on_launch` — Pump's per-mint endpoint becomes available 2-10s after creation, so we retry up to 4 times with backoff (2s, 6s, 14s, 30s).
+- ✅ Tracking bucket initialised with empty `reply_count: 0` / `twitter: ""` / `telegram: ""` / `website: ""` so the gate has a consistent shape even before the API responds.
+- ✅ Pre-trade gate runs after the entry-velocity gate in `_enter`. Failure broadcasts `scanner_skip` with the specific reason ("no social link" vs `reply_count N < min M`). **Fail-closed** semantics — if Pump's API hasn't indexed the mint yet, the gate rejects (fees protection > timeliness).
+
+#### `BotControlCard.jsx`
+- ✅ Checkbox `gate-socials-required-checkbox` + `gate-min-replies-input` placed under the Momentum Scanner section with helper text "twitter / telegram / website + reply_count".
+
+### Verified
+- Live Pump.fun `/coins` API confirmed to return `reply_count`, `twitter`, `telegram`, `website` (high-MC tokens have 3.5k-14k replies).
+- 6-case unit test on gate logic: off / empty / low replies / passing telegram / passing website / min-0 — all behave correctly.
+- UI rendered as expected (screenshot).
+

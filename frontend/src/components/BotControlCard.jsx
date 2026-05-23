@@ -140,6 +140,29 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                  onChange={(v) => setLocal({ ...local, scanner_entry_velocity_min_pct: parseFloat(v) || 0 })} step="0.5" />
         </div>
 
+        {/* Socials gate */}
+        <div className="mt-3 border-t border-neutral-800 pt-2.5">
+          <label className="flex items-center justify-between text-[10px] font-mono uppercase tracking-[0.15em] text-neutral-400 cursor-pointer">
+            <span className="flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                data-testid="gate-socials-required-checkbox"
+                checked={local.gate_socials_required}
+                onChange={(e) => setLocal({ ...local, gate_socials_required: e.target.checked })}
+              />
+              Socials required for entry
+            </span>
+            <span className="text-neutral-600 normal-case tracking-normal">
+              twitter / telegram / website + reply_count
+            </span>
+          </label>
+          <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+            <Field label="Min Reply Count" testid="gate-min-replies-input"
+                   value={local.gate_min_reply_count}
+                   onChange={(v) => setLocal({ ...local, gate_min_reply_count: parseInt(v, 10) || 0 })} step="5" />
+          </div>
+        </div>
+
         {/* Per-band gates table */}
         <div className="mt-3">
           <div className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 mb-1">Per-band gates</div>

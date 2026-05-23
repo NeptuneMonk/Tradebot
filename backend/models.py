@@ -78,6 +78,12 @@ class BotConfig(BaseModel):
     # effectively disable the gate.
     scanner_entry_velocity_window_s: int = 30
     scanner_entry_velocity_min_pct: float = 0.0
+    # Socials gate (pattern-mining insight: tokens with active replies + a
+    # working twitter/telegram link have a meaningfully higher floor MC than
+    # zero-engagement launches). When ON, refuse entry unless the mint has at
+    # least one social link AND reply_count >= gate_min_reply_count.
+    gate_socials_required: bool = False
+    gate_min_reply_count: int = 50
     # Re-entry on winners
     reentry_enabled: bool = True
     reentry_max_attempts: int = 2
