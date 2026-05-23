@@ -8,7 +8,25 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
   const [local, setLocal] = useState(null);
   const [showAdvancedFees, setShowAdvancedFees] = useState(false);
 
-  useEffect(() => { if (config) setLocal(config); }, [config]);
+  // Seed `local` from `config` only when:
+  //   (a) we haven't initialized yet (first load), OR
+  //   (b) the form is clean (no unsaved edits) — so background config refreshes
+  //       (Dashboard's 20s poll, WS-driven refreshAll on every trade event)
+  //       can't wipe in-progress edits. Once the user starts typing, this
+  //       effect becomes a no-op until they Save (which round-trips and re-cleans
+  //       the form) or hit Reset.
+  // Without this dirty-guard, every trade triggered a refetch which called
+  // setLocal(config) and erased anything the user had typed but not saved —
+  // making it look like "saved values revert after trades" when in fact the
+  // backend was fine and the user's in-flight edits were being clobbered.
+  useEffect(() => {
+    if (!config) return;
+    setLocal((prev) => {
+      if (prev === null) return config;
+      const isDirty = JSON.stringify(prev) !== JSON.stringify(config);
+      return isDirty ? prev : config;
+    });
+  }, [config]);
 
   if (!local) return <div className="control-card text-neutral-500 text-sm">Loading...</div>;
 
