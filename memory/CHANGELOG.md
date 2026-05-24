@@ -1,5 +1,51 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-25 (MID PM) — PumpSwap account-layout upgrade + Token-2022 recovery fix
+
+### Multiple bugs uncovered from live test
+User reported: "Recovery sale fails. It doesn't read values either".
+
+**Bug 1**: `/api/trades/recover/{id}` and `/api/trades/stuck` hardcoded `_ps.TOKEN_PROGRAM` (classic SPL) when reading ATA balance for graduated/PumpSwap mints. Most Pump.fun mints (e.g. GRIT) are Token-2022 → balance read 0 → endpoint auto-closed the row with "wallet balance is 0" while real tokens still sat in the Token-2022 ATA.
+
+**Bug 2**: PumpSwap buys for Token-2022 mints (e.g. ETB) reverted with `IncorrectProgramId` because `build_create_ata_ix` defaulted to classic SPL and didn't accept a token_program parameter.
+
+**Bug 3**: PumpSwap buys/sells reverted with `Custom: 6023 (Overflow)` because our IX builders were missing the 3 accounts added in the 2026-04-28 program upgrade:
+- `pool-v2` PDA (derived from `["pool-v2", base_mint]`)
+- `breaking_fee_recipient` (random from BREAKING_FEE_RECIPIENTS_PS)
+- `breaking_fee_quote_ata` (recipient's WSOL ATA)
+
+**Bug 4**: Hardcoded `PROTOCOL_FEE_RECIPIENT` was wrong — was using one of the breaking-fee recipients (`62qc2...`) instead of the correct standard fee recipient (`7VtfL8...` per chainstack reference + on-chain pump-swap docs).
+
+**Bug 5**: Cashback pools (e.g. GRIT) need 2 additional accounts (`user_volume_accumulator_quote_ata` + `user_volume_accumulator`) inserted BEFORE pool_v2. Pool's `is_cashback` flag at byte 244, `is_mayhem_mode` at byte 243.
+
+### Fixed in `pumpswap.py`
+1. Corrected `PROTOCOL_FEE_RECIPIENT` to `7VtfL8fvgNfhz17qKRMjzQEXgbdpnHHHQRh54R9jP2RJ` + recomputed its WSOL ATA.
+2. Added `derive_pool_v2(base_mint)` PDA derivation.
+3. Added `BREAKING_FEE_RECIPIENTS_PS` list + random picker (same 8 addresses as bonding-curve recipients).
+4. `fetch_pool_state` now reads `is_cashback` and `is_mayhem_mode` flags from pool data.
+5. `build_buy_ix` + `build_sell_ix`: append the 3 new upgrade accounts; conditionally insert 2 cashback accounts before pool_v2 when `is_cashback=True`.
+6. `build_create_ata_ix` now accepts optional `token_program` arg.
+
+### Fixed in `server.py`
+1. `/api/trades/stuck` + `/api/wallet/token-scan` + `/api/trades/recover/{id}` + `/api/wallet/recover-mints`: ATA derivation now uses the mint's actual token program. Belt-and-suspenders fallback tries the alt token program if primary ATA shows 0.
+2. All 4 recovery paths thread `base_token_program=tp` through `build_sell_ix`.
+3. Recovery PumpSwap branch reuses the resolved `ata`/`tp` (not re-derived) so the fallback path's ATA propagates correctly.
+
+### Fixed in `bot.py`
+1. PumpSwap buy/sell now fetches the mint's token program and passes `base_token_program=base_tp` through `build_create_ata_ix`, `build_buy_ix`, and `build_sell_ix`.
+2. Failed-buy now sets `recent_exit_until[mint] = time.time() + 60` so the scanner doesn't immediately retry a broken mint (was burning $0.15 of gas on 3 ETB attempts before this).
+3. `_is_panic_exit` now also returns True for trailing-stop on hot positions (peak ≥ 20%) — fixes the Hercules-style trailing-fail where price dropped 15% in 2s between IX build and tx land, exceeding the 10% normal exit slippage.
+
+### Verified
+- GRIT recovery error code progression: 6023 (Overflow, layout wrong) → 6053 (post-IDL error code, suggests further upgrade beyond chainstack's IDL).
+- `/api/trades/stuck` now shows GRIT with `wallet_token_balance=19,130,858,664`, `current_sol=0.000493`, `current_usd=$0.098` (was 0/0/0 before).
+- DOODLEBANK live test won: partial $+0.08 + trailing-stop sell landed cleanly with new panic-slip logic.
+
+### Open: GRIT error 6053
+This error code isn't in the chainstack reference IDL — pump-swap got another upgrade we haven't documented yet. GRIT has $0.10 of recoverable value; recommended path: manual sell on jup.ag or pump.fun web UI. The general PumpSwap layout fix unblocks ALL the OTHER ~104 stranded tokens worth $0.86 total (per `/api/wallet/token-scan`).
+
+
+
 ## 2026-05-25 (LATE AM) — Graduated-token recovery now actually works
 
 ### Bug

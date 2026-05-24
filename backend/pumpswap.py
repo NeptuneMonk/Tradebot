@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import os
+import random
 import struct
 from typing import Optional
 
@@ -42,8 +43,11 @@ from solana_client import rpc_call, LAMPORTS_PER_SOL
 # ---- Program & system addresses ----
 PUMPSWAP_PROGRAM_ID = Pubkey.from_string("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA")
 GLOBAL_CONFIG = Pubkey.from_string("ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw")
-PROTOCOL_FEE_RECIPIENT = Pubkey.from_string("62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV")
-PROTOCOL_FEE_RECIPIENT_TOKEN_ACCOUNT = Pubkey.from_string("94qWNrtmfn42h3ZjUZwWvK1MEo9uVmmrBPd2hpNjYDjb")
+# Standard fee recipient (non-mayhem-mode pools). Confirmed against
+# chainstack's reference + on-chain pump-swap pools.
+PROTOCOL_FEE_RECIPIENT = Pubkey.from_string("7VtfL8fvgNfhz17qKRMjzQEXgbdpnHHHQRh54R9jP2RJ")
+# WSOL ATA owned by PROTOCOL_FEE_RECIPIENT (computed deterministically).
+PROTOCOL_FEE_RECIPIENT_TOKEN_ACCOUNT = Pubkey.from_string("7GFUN3bWzJMKMRZ34JLsvcqdssDbXnp589SiE33KVwcC")
 FEE_PROGRAM = Pubkey.from_string("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ")
 EVENT_AUTH = Pubkey.from_string("GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR")
 GLOBAL_VOL_ACC = Pubkey.from_string("C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw")
@@ -84,6 +88,32 @@ def derive_fee_config() -> Pubkey:
     return pda
 
 
+def derive_pool_v2(base_mint: Pubkey) -> Pubkey:
+    """Per-base-mint pool-v2 PDA. Required as the LAST 'pre-upgrade' account
+    on every PumpSwap buy/sell from the 2026-04-28 program upgrade onward.
+    Without this account, the program reverts with Custom:6023 (Overflow)."""
+    pda, _ = Pubkey.find_program_address(
+        [b"pool-v2", bytes(base_mint)], PUMPSWAP_PROGRAM_ID
+    )
+    return pda
+
+
+# Breaking-fee recipients (from pump-public-docs/BREAKING_FEE_RECIPIENT.md)
+# Same set as pumpfun's bonding curve recipients.
+BREAKING_FEE_RECIPIENTS_PS = [
+    Pubkey.from_string(s) for s in (
+        "62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV",
+        "7VtfL8fvgNfhz17qKRMjzQEXgbdpnHHHQRh54R4JKqaT",
+        "9rPYyANsfQZw3DnDmKE3YCQF5E8oD89UXoHn9JFEhJUz",
+        "AVmoTthdrX6tKt4nDjco2D775W2YK3sDhxPcMmzUAmTY",
+        "FWsW1xNtWscwNmKv6wVsU1iTzRN6wmmk3MjxRP5tT7hz",
+        "G5UZAVbAf46s7cKWoyKu8kYTip9DGTpbLZ2qa9Aq69dP",
+        "JCRGumoE9Qi5BBgULTgdgTLjSgkCMSbF62ZZfGs84JeU",
+        "JE6d6oFTYWxd1m4DucGNxqQbABMbeoTpphYDqA5fS5Mc",
+    )
+]
+
+
 # ---- Pool account decoder ----
 async def fetch_pool_state(pool_address: str) -> Optional[dict]:
     """Decode a PumpSwap pool account. Returns reserves + key addresses."""
@@ -107,6 +137,10 @@ async def fetch_pool_state(pool_address: str) -> Optional[dict]:
     pool_base = Pubkey.from_bytes(raw[139:171])
     pool_quote = Pubkey.from_bytes(raw[171:203])
     coin_creator = Pubkey.from_bytes(raw[211:243])
+    # Per pump-public-docs: byte 243 = is_mayhem_mode, byte 244 = is_cashback.
+    # Both affect the IX layout (extra accounts) and fee recipient resolution.
+    is_mayhem_mode = bool(raw[243]) if len(raw) > 243 else False
+    is_cashback = bool(raw[244]) if len(raw) > 244 else False
 
     # Fetch the two vaults' balances
     bal_res = await rpc_call(
@@ -135,6 +169,8 @@ async def fetch_pool_state(pool_address: str) -> Optional[dict]:
         # For symmetry with pumpfun's state dict
         "real_sol_reserves": quote_amt,  # WSOL vault balance == real SOL liquidity
         "complete": False,                # AMM pools don't "complete"
+        "is_mayhem_mode": is_mayhem_mode,
+        "is_cashback": is_cashback,
     }
 
 
@@ -247,6 +283,10 @@ def build_buy_ix(
     creator_vault_ata = get_associated_token_address(creator_vault_authority, WSOL, TOKEN_PROGRAM)
     user_vol_acc = derive_user_volume_accumulator(user)
     fee_config = derive_fee_config()
+    # 2026-04-28 upgrade additions
+    bf_recipient = random.choice(BREAKING_FEE_RECIPIENTS_PS)
+    bf_quote_ata = get_associated_token_address(bf_recipient, WSOL, TOKEN_PROGRAM)
+    pool_v2 = derive_pool_v2(base_mint)
 
     keys = [
         AccountMeta(pool, False, True),
@@ -272,6 +312,11 @@ def build_buy_ix(
         AccountMeta(user_vol_acc, False, True),
         AccountMeta(fee_config, False, False),
         AccountMeta(FEE_PROGRAM, False, False),
+        # 2026-04-28 upgrade: pool-v2 PDA + 2 breaking-fee accounts at end.
+        # Without these the program reverts with Custom:6023 (Overflow).
+        AccountMeta(pool_v2, False, False),
+        AccountMeta(bf_recipient, False, False),
+        AccountMeta(bf_quote_ata, False, True),
     ]
     data = BUY_DISCRIMINATOR + struct.pack("<QQ", base_amount_out, max_quote_amount_in)
     return Instruction(program_id=PUMPSWAP_PROGRAM_ID, data=data, accounts=keys)
@@ -296,6 +341,18 @@ def build_sell_ix(
     creator_vault_authority = derive_creator_vault(coin_creator)
     creator_vault_ata = get_associated_token_address(creator_vault_authority, WSOL, TOKEN_PROGRAM)
     fee_config = derive_fee_config()
+    # 2026-04-28 upgrade additions
+    bf_recipient = random.choice(BREAKING_FEE_RECIPIENTS_PS)
+    bf_quote_ata = get_associated_token_address(bf_recipient, WSOL, TOKEN_PROGRAM)
+    pool_v2 = derive_pool_v2(base_mint)
+    is_cashback = bool(state.get("is_cashback", False))
+    # Cashback variant adds 2 writable accounts BEFORE pool_v2:
+    # user_volume_accumulator + its WSOL ATA
+    user_vol_acc_cb = derive_user_volume_accumulator(user) if is_cashback else None
+    user_vol_acc_quote_ata = (
+        get_associated_token_address(user_vol_acc_cb, WSOL, TOKEN_PROGRAM)
+        if is_cashback else None
+    )
 
     keys = [
         AccountMeta(pool, False, True),
@@ -320,6 +377,19 @@ def build_sell_ix(
         AccountMeta(fee_config, False, False),
         AccountMeta(FEE_PROGRAM, False, False),
     ]
+    if is_cashback:
+        # Both writable, BEFORE pool_v2
+        keys.extend([
+            AccountMeta(user_vol_acc_quote_ata, False, True),
+            AccountMeta(user_vol_acc_cb, False, True),
+        ])
+    keys.extend([
+        # 2026-04-28 upgrade: pool-v2 PDA + 2 breaking-fee accounts at end.
+        # Without these the program reverts with Custom:6023 (Overflow).
+        AccountMeta(pool_v2, False, False),
+        AccountMeta(bf_recipient, False, False),
+        AccountMeta(bf_quote_ata, False, True),
+    ])
     data = SELL_DISCRIMINATOR + struct.pack("<QQ", base_amount_in, min_quote_amount_out)
     return Instruction(program_id=PUMPSWAP_PROGRAM_ID, data=data, accounts=keys)
 

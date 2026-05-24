@@ -595,6 +595,7 @@ async def wallet_recover_mints(req: RecoverMintsReq):
                     balance = await _ps.get_token_balance(ata_alt)
                     if balance > 0:
                         ata = ata_alt
+                        tp = _ps.TOKEN_PROGRAM  # tp must match the ATA we'll sell against
             if balance <= 0:
                 return {"mint": mint, "ok": False, "reason": "wallet balance is 0"}
             state = await pumpfun.fetch_bonding_curve_state(mint)
@@ -608,10 +609,11 @@ async def wallet_recover_mints(req: RecoverMintsReq):
                     return {"mint": mint, "ok": False, "reason": "pumpswap pool state unavailable"}
                 sell_amount = max(int(balance * 0.995), 1)
                 sol_out_q, min_sol = _ps.quote_sell_sol(pool_state, sell_amount, 3000)
-                # PumpSwap sell — thread the correct base token program so
-                # Token-2022 pools (e.g. ETB) don't revert with IncorrectProgramId.
-                base_tp = await pumpfun.get_mint_token_program(mint)
-                ata_pk = _ps.get_associated_token_address(user, mint_pk, base_tp)
+                # Use the SAME ATA we just verified has the balance — not a
+                # re-derivation. The fallback above may have switched `ata` to
+                # the alt token program; re-deriving here would point at the
+                # wrong (empty) ATA again.
+                ata_pk = ata
                 wsol_acc, wsol_ixs = _ps.build_wsol_wrap_ixs(user, 0)
                 ixs = [
                     *wsol_ixs,
@@ -619,7 +621,7 @@ async def wallet_recover_mints(req: RecoverMintsReq):
                         user, pool_state, ata_pk, wsol_acc,
                         base_amount_in=sell_amount,
                         min_quote_amount_out=min_sol,
-                        base_token_program=base_tp,
+                        base_token_program=tp,
                     ),
                     _ps.build_close_wsol_ix(user, wsol_acc),
                 ]
@@ -700,13 +702,24 @@ async def list_stuck_trades():
         mint = t["mint"]
         mint_pk = Pubkey.from_string(mint)
         protocol = t.get("protocol") or "pumpfun"
+        # ALWAYS derive ATA from the mint's real token program — most
+        # Pump.fun mints are Token-2022. Hardcoding classic SPL for the
+        # "pumpswap" branch caused stuck Token-2022 mints (e.g. GRIT) to
+        # show wallet_token_balance=0 → current_usd=$0 → user couldn't
+        # see they had recoverable tokens.
         try:
-            if protocol == "pumpswap":
-                ata = _ps.get_associated_token_address(user, mint_pk, _ps.TOKEN_PROGRAM)
-            else:
-                tp = await pumpfun.get_mint_token_program(mint)
-                ata = pumpfun.derive_associated_token_for_program(user, mint_pk, tp)
+            tp = await pumpfun.get_mint_token_program(mint)
+            ata = _ps.get_associated_token_address(user, mint_pk, tp)
             balance = await _ps.get_token_balance(ata)
+            # Belt-and-suspenders: try alt program if primary is empty
+            if balance <= 0:
+                from solders.pubkey import Pubkey as _Pk
+                TOKEN_2022 = _Pk.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+                alt_tp = TOKEN_2022 if str(tp) != str(TOKEN_2022) else _ps.TOKEN_PROGRAM
+                ata_alt = _ps.get_associated_token_address(user, mint_pk, alt_tp)
+                bal_alt = await _ps.get_token_balance(ata_alt)
+                if bal_alt > 0:
+                    balance = bal_alt
         except Exception:
             balance = 0
         current_sol = 0.0
@@ -793,12 +806,34 @@ async def recover_stuck_trade(trade_id: str):
         except Exception:
             pass
 
+    # ATA derivation MUST use the mint's actual token program, regardless of
+    # protocol. Most Pump.fun mints are Token-2022 (e.g. GRIT, VAGINA) and
+    # hardcoding classic SPL here reads an empty ATA → auto-closes the row
+    # with "wallet balance is 0" while real tokens still sit in the Token-2022
+    # ATA. This was the user-reported "recovery doesn't read values" bug.
+    tp = await pumpfun.get_mint_token_program(mint)
     if protocol == "pumpswap" or graduated:
-        ata = _ps.get_associated_token_address(user, mint_pk, _ps.TOKEN_PROGRAM)
+        ata = _ps.get_associated_token_address(user, mint_pk, tp)
     else:
-        tp = await pumpfun.get_mint_token_program(mint)
         ata = pumpfun.derive_associated_token_for_program(user, mint_pk, tp)
     actual_tokens = await _ps.get_token_balance(ata)
+    # Belt-and-suspenders: if the primary ATA shows 0, try the OTHER token
+    # program before giving up. Cheap (one extra RPC call) and prevents the
+    # auto-close-and-lose-the-row outcome when our program detection is stale.
+    if actual_tokens <= 0:
+        from solders.pubkey import Pubkey as _Pk
+        TOKEN_2022 = _Pk.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+        alt_tp = TOKEN_2022 if str(tp) != str(TOKEN_2022) else _ps.TOKEN_PROGRAM
+        ata_alt = _ps.get_associated_token_address(user, mint_pk, alt_tp)
+        bal_alt = await _ps.get_token_balance(ata_alt)
+        if bal_alt > 0:
+            logger.warning(
+                f"recovery {mint}: primary ATA empty but alt token program "
+                f"has balance {bal_alt} — switching to {alt_tp}"
+            )
+            ata = ata_alt
+            tp = alt_tp
+            actual_tokens = bal_alt
     if actual_tokens <= 0:
         # No tokens left — close the row so it stops appearing in the stuck list
         await bot_state.db.trades.update_one(
@@ -824,18 +859,19 @@ async def recover_stuck_trade(trade_id: str):
             return {"ok": False, "reason": f"pool state unavailable (pool={pool})"}
         sell_amount = max(int(actual_tokens * 0.995), 1)
         sol_out, min_sol = _ps.quote_sell_sol(pool_state, sell_amount, 3000)  # 30% slippage
-        # Token-2022 base mints (e.g. ETB) need explicit base_token_program
-        # in both the ATA derivation and the sell IX, else IncorrectProgramId.
-        base_tp = await pumpfun.get_mint_token_program(mint)
+        # Use the SAME ata + tp we resolved above (the fallback may have
+        # switched to the alt token program). Re-deriving here would point
+        # at a different (empty) ATA → the sell would fail or sell from the
+        # wrong account.
         wsol_acc, wsol_ixs = _ps.build_wsol_wrap_ixs(user, 0)
-        ata_pk = _ps.get_associated_token_address(user, mint_pk, base_tp)
+        ata_pk = ata
         ixs = [
             *wsol_ixs,
             _ps.build_sell_ix(
                 user, pool_state, ata_pk, wsol_acc,
                 base_amount_in=sell_amount,
                 min_quote_amount_out=min_sol,
-                base_token_program=base_tp,
+                base_token_program=tp,
             ),
             _ps.build_close_wsol_ix(user, wsol_acc),
         ]
