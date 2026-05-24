@@ -110,18 +110,30 @@ export default function StuckPositions() {
     if (mints.length === 0) return;
     const ok = window.confirm(
       `Sell ALL ${mints.length} pump.fun tokens in your wallet for ~$${walletTotalUsd.toFixed(2)}?\n\n` +
-      `Wide slippage (30%) + high priority fee. Each token takes ~5-15s on-chain.`
+      `Runs 3 sells in parallel. Each batch ~25s. Total ~${Math.ceil(mints.length/3) * 25}s.`
     );
     if (!ok) return;
     setRecovering(true);
     try {
       const res = await api.walletRecoverMints(mints);
-      toast.success(`Recovered ${res.recovered} / ${res.total}`);
-      await refreshWallet();
+      const failures = (res.results || []).filter(r => !r.ok);
+      if (failures.length > 0) {
+        toast.warning(`Recovered ${res.recovered}/${res.total} · ${failures.length} failed (see refresh)`);
+      } else {
+        toast.success(`Recovered all ${res.recovered}!`);
+      }
     } catch (e) {
-      toast.error(`Recover failed: ${e?.response?.data?.detail || e.message}`);
+      // 520 / 524 / timeout: backend probably still finishing in background
+      const code = e?.response?.status;
+      if (code === 520 || code === 524 || e?.code === "ECONNABORTED") {
+        toast.info("Recovery is taking longer than expected — backend is still processing. Re-scan in 30s.");
+      } else {
+        toast.error(`Recover failed: ${e?.response?.data?.detail || e.message}`);
+      }
     } finally {
       setRecovering(false);
+      // Re-scan after a delay so the user sees the resulting wallet state
+      setTimeout(refreshWallet, 5000);
     }
   };
 

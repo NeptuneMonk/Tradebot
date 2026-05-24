@@ -463,52 +463,66 @@ class RecoverMintsReq(BaseModel):
 @api.post("/wallet/recover-mints")
 async def wallet_recover_mints(req: RecoverMintsReq):
     """Sell whatever the wallet currently holds for each given mint. Wallet-wide
-    recovery — doesn't require a DB row. Uses wide slippage and high priority
-    fee to maximise landing rate."""
+    recovery — doesn't require a DB row.
+
+    Runs sells in PARALLEL batches of 3 to stay under the 100s Cloudflare
+    ingress timeout while keeping per-tx confirmation reliable. With 25s
+    confirm_timeout and 3-way parallelism, 12 tokens finishes in ~100s worst
+    case (4 batches × 25s). Wide slippage (30%) + high priority fee maximises
+    landing rate during the often-volatile post-stranding window.
+    """
     from solders.pubkey import Pubkey
     from wallet import get_keypair, get_pubkey
     import pumpfun
     import pumpswap as _ps
+    import asyncio as _asyncio
 
     kp = get_keypair()
     user = get_pubkey()
-    out = []
-    for mint in req.mints:
+
+    async def _sell_one(mint: str) -> dict:
         try:
             mint_pk = Pubkey.from_string(mint)
             tp = await pumpfun.get_mint_token_program(mint)
             ata = pumpfun.derive_associated_token_for_program(user, mint_pk, tp)
             balance = await _ps.get_token_balance(ata)
             if balance <= 0:
-                out.append({"mint": mint, "ok": False, "reason": "wallet balance is 0"})
-                continue
+                return {"mint": mint, "ok": False, "reason": "wallet balance is 0"}
             state = await pumpfun.fetch_bonding_curve_state(mint)
             if not state:
-                out.append({"mint": mint, "ok": False, "reason": "no bonding curve (may need PumpSwap)"})
-                continue
+                return {"mint": mint, "ok": False, "reason": "no bonding curve (graduated or invalid)"}
             if state.get("complete"):
-                out.append({"mint": mint, "ok": False, "reason": "graduated (needs PumpSwap path)"})
-                continue
+                return {"mint": mint, "ok": False, "reason": "graduated (needs PumpSwap path)"}
             creator_str = state.get("creator")
             if not creator_str:
-                out.append({"mint": mint, "ok": False, "reason": "no creator on curve"})
-                continue
+                return {"mint": mint, "ok": False, "reason": "no creator on curve"}
             is_cb = bool(state.get("is_cashback", False))
             sol_out_q, min_sol = pumpfun.quote_sell_sol(state, balance, 3000)  # 30% slippage
             creator_pk = Pubkey.from_string(creator_str)
-            ix = await pumpfun.build_sell_ix(user, mint_pk, balance, min_sol, creator_pk, tp, cashback=is_cb)
-            sig = await pumpfun.send_versioned_tx(
-                kp, [ix], priority_fee_microlamports=1_500_000, confirm_timeout_s=40.0,
+            ix = await pumpfun.build_sell_ix(
+                user, mint_pk, balance, min_sol, creator_pk, tp, cashback=is_cb
             )
-            out.append({
-                "mint": mint,
-                "ok": True,
-                "sig": sig,
+            sig = await pumpfun.send_versioned_tx(
+                kp, [ix], priority_fee_microlamports=1_500_000, confirm_timeout_s=25.0,
+            )
+            return {
+                "mint": mint, "ok": True, "sig": sig,
                 "tokens_sold": balance,
                 "sol_received_quoted": sol_out_q / 1e9,
-            })
+            }
         except Exception as e:
-            out.append({"mint": mint, "ok": False, "reason": f"error: {e}"})
+            return {"mint": mint, "ok": False, "reason": f"error: {e}"}
+
+    # Process in parallel batches of 3
+    BATCH = 3
+    out = []
+    for i in range(0, len(req.mints), BATCH):
+        batch = req.mints[i : i + BATCH]
+        results = await _asyncio.gather(
+            *[_sell_one(m) for m in batch], return_exceptions=False
+        )
+        out.extend(results)
+
     success = sum(1 for r in out if r.get("ok"))
     return {
         "ok": True,
