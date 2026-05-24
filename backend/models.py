@@ -33,14 +33,13 @@ class BotConfig(BaseModel):
     # When set to anything other than "manual", the resolved values overwrite
     # priority_fee_microlamports / slippage_bps / exit_slippage_bps at runtime.
     speed_mode: str = "manual"
-    hold_max_seconds: int = 60       # user-requested: keep at 60s
-    take_profit_pct: float = 35.0    # winners observed averaging ~+37%
-    stop_loss_pct: float = 20.0      # tight cap, enforced by fast-exit
-    trailing_stop_pct: float = 10.0  # lock in profits once peak appears
+    hold_max_seconds: int = 45       # data: timeouts WIN; give them room
+    take_profit_pct: float = 20.0    # data: 12% was cutting winners; 20% balanced
+    stop_loss_pct: float = 15.0      # data: -15 tighter than -20 cuts bleeders faster
+    trailing_stop_pct: float = 8.0   # tighter trail once armed
+    trailing_arm_pct: float = 15.0   # only arm trailing AFTER +15% gain
     # Partial take-profit: sell partial_tp_pct of the position at TP, ride the
-    # remainder with a tightened trailing stop (driven by the 26x lift signal
-    # showing TP exits dominate winners 66% vs 3% in losers).
-    # Set partial_tp_pct=0 to disable (full exit at TP — old behaviour).
+    # remainder with a tightened trailing stop.
     partial_tp_pct: float = 50.0          # sell 50% at TP
     partial_tp_trail_tighten_pct: float = 5.0  # tighten trailing to 5% after partial
     exit_slippage_bps: int = 500     # separate exit slippage ensures exits fill on dumps

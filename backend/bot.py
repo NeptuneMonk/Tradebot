@@ -737,26 +737,31 @@ class BotState:
                 slot["partial_done"] = False
             await self._exit(mint, reason=f"take-profit hit (+{pct_change:.1f}%) [fast]")
             return
-        # Trailing stop (if enabled and we have unrealized gain).
-        # After partial TP, use the tighter trail to lock in runner gains.
+        # Hard stop loss FIRST — protects against rugs that would otherwise
+        # be misattributed to trailing-stop with a tiny peak.
+        if pct_change <= -self.config.stop_loss_pct:
+            await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%) [fast]")
+            return
+        # Trailing stop — only ARM once the trade has shown a real peak (above
+        # `trailing_arm_pct`). Below that, a +0.5% peak followed by a -10%
+        # drop would otherwise fire trailing instead of letting the SL handle
+        # it. After partial TP, use the tighter trail to lock in runner gains.
         trail_pct = (
             self.config.partial_tp_trail_tighten_pct
             if slot.get("partial_done") and self.config.partial_tp_trail_tighten_pct > 0
             else self.config.trailing_stop_pct
         )
-        if trail_pct > 0 and peak > entry_p:
+        # peak_pct in % terms relative to entry
+        peak_pct = (peak - entry_p) / entry_p * 100 if entry_p > 0 else 0.0
+        arm_pct = self.config.trailing_arm_pct if not slot.get("partial_done") else 0.0
+        if trail_pct > 0 and peak > entry_p and peak_pct >= arm_pct:
             trail_drop = (peak - cur_price_sol) / peak * 100
             if trail_drop >= trail_pct:
-                peak_pct = (peak - entry_p) / entry_p * 100
                 await self._exit(
                     mint,
                     reason=f"trailing-stop hit (peak +{peak_pct:.1f}%, now +{pct_change:.1f}%) [fast]",
                 )
                 return
-        # Hard stop loss
-        if pct_change <= -self.config.stop_loss_pct:
-            await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%) [fast]")
-            return
 
     async def _persist_metrics(self, mint: str):
         b = self.tracking.get(mint)
