@@ -1,5 +1,30 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-25 (MID AM) — Two more race fixes + graduated-mint handler
+
+### Diagnosis from live log analysis
+Fresh data showed two NEW failure modes on top of the multi-position-per-mint race:
+
+1. **Custom: 6005 (BondingCurveComplete)** — token graduated to Raydium/PumpSwap DURING the sell retry window. Bot kept retrying on the dead bonding curve, burning 3× gas before giving up. Example: GRIT entered at curve_fill=97.3%, graduated 30s later, three 6005 reverts on retry attempts.
+2. **Custom: 6023 (NotEnoughTokensToSell) post-partial** — `_check_fast_exit` calls `_partial_exit` AND `_exit` (full) **concurrently** when both conditions trip on the same tick. The partial drains balance; the full exit's IX lands after with insufficient tokens. Example: ALM at 20:48:44 — full trailing-stop EXIT_DECISION + partial-tp BOTH fired in the same second; partial succeeded, full reverted 6023.
+
+### Fixes in `bot.py`
+1. **`exit_in_progress` per-slot mutex** added to:
+   - `_check_fast_exit`: guards all 3 branches (partial-tp, stop-loss, trailing-stop)
+   - `_monitor_position` (slow monitor): top-of-tick check + wraps all 5 exit branches (timeout, BC-complete, take-profit/partial, stop-loss, classifier abort, classifier exit_early)
+   - 20 total exit-call sites now serialize per position
+2. **Custom: 6005 handler in `_exit_impl`**: detects "Custom': 6005" in the sell exception, immediately marks position as `exit_failed_terminal` with a helpful message pointing the user to StuckPositions (which routes recovery through PumpSwap AMM). No more 3-retry gas burn on graduated mints.
+
+### Verified
+- Structural inspection confirms 13 `exit_in_progress` refs in monitor + 7 in fast_exit = full coverage
+- `_exit_impl` has both `6005` detection and `GRADUATED` log marker
+- Backend clean restart, app startup OK
+
+### About the "passed but not buying" report
+The UI shows scanner-gate "passed" status (curve_liq, growth%, inflow, buyers). The bot then applies a SECOND gate before entering — the **dead-cat filter** which requires +15% velocity over the 10 seconds immediately before the buy. ~80% of "passed" candidates fail this gate because they cooled off in those 10 seconds. This is **working as designed** — it's preventing dead entries. Log evidence: 21 `classifier abort_trade` skips (rugged creators) and ~30 `entry velocity < min 15%` skips per 10 min. The handful that DO pass both gates are then subject to risk-sized buy, depth-scaled slippage, etc.
+
+
+
 ## 2026-05-25 (EARLY AM) — Fixed the real bleed: multi-position-per-mint race
 
 ### Root cause (from production+preview log analysis)

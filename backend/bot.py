@@ -733,6 +733,14 @@ class BotState:
         slot = self.active_trades.get(mint)
         if not slot:
             return
+        # Per-position exit mutex — prevents a partial-TP from running
+        # concurrently with a full-exit when the monitor and fast-exit
+        # paths both detect an exit condition on the same tick. Without
+        # this, both built sell IXs for the same trade, the partial
+        # drained the balance, and the full exit reverted with
+        # Custom:6023 (NotEnoughTokensToSell).
+        if slot.get("exit_in_progress"):
+            return
         trade_doc = slot["trade"]
         entry_p = trade_doc.get("entry_price_sol", 0)
         if entry_p <= 0:
@@ -749,27 +757,35 @@ class BotState:
         # NOTE: after a successful partial, we skip the TP check entirely — the
         # runner is governed by the tightened trailing stop only.
         if pct_change >= self.config.take_profit_pct and not slot.get("partial_done"):
-            ptp = self.config.partial_tp_pct
-            if 0 < ptp < 100:
-                # Reserve the partial flag synchronously to prevent concurrent
-                # fast-exit invocations from racing into the same partial.
-                slot["partial_done"] = True
-                did = await self._partial_exit(
-                    mint, ptp / 100.0,
-                    reason=f"partial-tp ({ptp:.0f}%) at +{pct_change:.1f}% [fast]",
-                )
-                if did:
-                    slot["peak_price_sol"] = cur_price_sol
-                    return
-                # Partial failed — clear the reservation and fall through to full exit
-                slot["partial_done"] = False
-            await self._exit(mint, reason=f"take-profit hit (+{pct_change:.1f}%) [fast]")
-            return
+            slot["exit_in_progress"] = True
+            try:
+                ptp = self.config.partial_tp_pct
+                if 0 < ptp < 100:
+                    # Reserve the partial flag synchronously to prevent concurrent
+                    # fast-exit invocations from racing into the same partial.
+                    slot["partial_done"] = True
+                    did = await self._partial_exit(
+                        mint, ptp / 100.0,
+                        reason=f"partial-tp ({ptp:.0f}%) at +{pct_change:.1f}% [fast]",
+                    )
+                    if did:
+                        slot["peak_price_sol"] = cur_price_sol
+                        return
+                    # Partial failed — clear the reservation and fall through to full exit
+                    slot["partial_done"] = False
+                await self._exit(mint, reason=f"take-profit hit (+{pct_change:.1f}%) [fast]")
+                return
+            finally:
+                slot["exit_in_progress"] = False
         # Hard stop loss FIRST — protects against rugs that would otherwise
         # be misattributed to trailing-stop with a tiny peak.
         if pct_change <= -self.config.stop_loss_pct:
-            await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%) [fast]")
-            return
+            slot["exit_in_progress"] = True
+            try:
+                await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%) [fast]")
+                return
+            finally:
+                slot["exit_in_progress"] = False
         # Trailing stop — only ARM once the trade has shown a real peak (above
         # `trailing_arm_pct`). Below that, a +0.5% peak followed by a -10%
         # drop would otherwise fire trailing instead of letting the SL handle
@@ -785,10 +801,14 @@ class BotState:
         if trail_pct > 0 and peak > entry_p and peak_pct >= arm_pct:
             trail_drop = (peak - cur_price_sol) / peak * 100
             if trail_drop >= trail_pct:
-                await self._exit(
-                    mint,
-                    reason=f"trailing-stop hit (peak +{peak_pct:.1f}%, now +{pct_change:.1f}%) [fast]",
-                )
+                slot["exit_in_progress"] = True
+                try:
+                    await self._exit(
+                        mint,
+                        reason=f"trailing-stop hit (peak +{peak_pct:.1f}%, now +{pct_change:.1f}%) [fast]",
+                    )
+                finally:
+                    slot["exit_in_progress"] = False
                 return
 
     async def _persist_metrics(self, mint: str):
@@ -1322,8 +1342,12 @@ class BotState:
                                 )
                                 last_extend_log = now_t
                     if not extend_ok:
-                        await self._exit(mint, reason=f"timeout after {max_hold}s")
-                        return
+                        slot["exit_in_progress"] = True
+                        try:
+                            await self._exit(mint, reason=f"timeout after {max_hold}s")
+                            return
+                        finally:
+                            slot["exit_in_progress"] = False
 
                 # Protocol-aware price polling
                 protocol = slot.get("protocol", "pumpfun")
@@ -1340,11 +1364,23 @@ class BotState:
                         await asyncio.sleep(1.0)
                         continue
                     if state["complete"]:
-                        await self._exit(mint, reason="bonding curve completed (LP about to deploy)")
-                        return
+                        slot["exit_in_progress"] = True
+                        try:
+                            await self._exit(mint, reason="bonding curve completed (LP about to deploy)")
+                            return
+                        finally:
+                            slot["exit_in_progress"] = False
                     cur_price_sol = state["virtual_sol_reserves"] / state["virtual_token_reserves"] / LAMPORTS_PER_SOL
 
                 pct_change = (cur_price_sol - trade_doc["entry_price_sol"]) / max(trade_doc["entry_price_sol"], 1e-18) * 100
+
+                # Bail out of this tick if another exit (fast-exit path or a
+                # prior monitor tick) is already in flight — they're operating
+                # on the same slot and would race for the same wallet balance,
+                # producing Custom:6023 reverts on whichever loses.
+                if slot.get("exit_in_progress"):
+                    await asyncio.sleep(0.4)
+                    continue
 
                 # Track price samples for the velocity-aware timeout (cap window ~ 2x velocity window)
                 _now = time.time()
@@ -1357,23 +1393,31 @@ class BotState:
                         samples.pop(0)
 
                 if pct_change >= self.config.take_profit_pct and not slot.get("partial_done"):
-                    ptp = self.config.partial_tp_pct
-                    if 0 < ptp < 100:
-                        slot["partial_done"] = True
-                        did = await self._partial_exit(
-                            mint, ptp / 100.0,
-                            reason=f"partial-tp ({ptp:.0f}%) at +{pct_change:.1f}%",
-                        )
-                        if did:
-                            slot["peak_price_sol"] = cur_price_sol
-                            await asyncio.sleep(0.5)
-                            continue
-                        slot["partial_done"] = False
-                    await self._exit(mint, reason=f"take-profit hit (+{pct_change:.1f}%)")
-                    return
+                    slot["exit_in_progress"] = True
+                    try:
+                        ptp = self.config.partial_tp_pct
+                        if 0 < ptp < 100:
+                            slot["partial_done"] = True
+                            did = await self._partial_exit(
+                                mint, ptp / 100.0,
+                                reason=f"partial-tp ({ptp:.0f}%) at +{pct_change:.1f}%",
+                            )
+                            if did:
+                                slot["peak_price_sol"] = cur_price_sol
+                                await asyncio.sleep(0.5)
+                                continue
+                            slot["partial_done"] = False
+                        await self._exit(mint, reason=f"take-profit hit (+{pct_change:.1f}%)")
+                        return
+                    finally:
+                        slot["exit_in_progress"] = False
                 if pct_change <= -self.config.stop_loss_pct:
-                    await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%)")
-                    return
+                    slot["exit_in_progress"] = True
+                    try:
+                        await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%)")
+                        return
+                    finally:
+                        slot["exit_in_progress"] = False
 
                 # Classifier monitoring applies only to NEW band entries (fresh
                 # mempool launches). Seasoned/PumpSwap trades skip it because
@@ -1397,11 +1441,19 @@ class BotState:
                     verdict = classify(metrics, self.rules.model_dump())
                     trade_doc["risk_score"] = verdict["risk"]
                     if verdict["action"] == "abort_trade":
-                        await self._exit(mint, reason=f"classifier abort: {verdict['reasons']}")
-                        return
+                        slot["exit_in_progress"] = True
+                        try:
+                            await self._exit(mint, reason=f"classifier abort: {verdict['reasons']}")
+                            return
+                        finally:
+                            slot["exit_in_progress"] = False
                     if verdict["action"] == "exit_early" and elapsed > 3:
-                        await self._exit(mint, reason=f"classifier exit_early: {verdict['reasons']}")
-                        return
+                        slot["exit_in_progress"] = True
+                        try:
+                            await self._exit(mint, reason=f"classifier exit_early: {verdict['reasons']}")
+                            return
+                        finally:
+                            slot["exit_in_progress"] = False
 
                 await asyncio.sleep(0.8)
             except asyncio.CancelledError:
@@ -1774,8 +1826,35 @@ class BotState:
                         kp, [ix], eff_priority
                     )
             except Exception as e:
+                err_str = str(e)
                 logger.exception(f"Live sell failed: {e}")
                 trade_doc["exit_reason"] = f"{reason} | sell failed: {e}"
+                # Custom:6005 (BondingCurveComplete) — the token graduated to
+                # Raydium/PumpSwap mid-sell. Further retries on the bonding
+                # curve will burn gas forever. Skip the 3-retry window and go
+                # straight to terminal: user must recover via StuckPositions
+                # (which routes through PumpSwap AMM).
+                if "Custom': 6005" in err_str or "'Custom': 6005" in err_str:
+                    trade_doc["status"] = "exit_failed_terminal"
+                    trade_doc["exit_time"] = now_utc().isoformat()
+                    trade_doc["exit_reason"] = (
+                        f"{reason} | bonding curve completed mid-sell — "
+                        f"recover via StuckPositions (token now on PumpSwap AMM)"
+                    )
+                    trade_doc["pnl_sol"] = 0.0
+                    trade_doc["pnl_usd"] = 0.0
+                    trade_doc["pnl_pct"] = 0.0
+                    await self.db.trades.update_one(
+                        {"id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
+                    )
+                    self.active_trades.pop(mint, None)
+                    self.recent_exit_until[mint] = time.time() + 90.0
+                    await hub.broadcast("trade_exit_terminal", trade_doc)
+                    logger.warning(
+                        f"GRADUATED mint {mint[:8]}… — curve complete during sell. "
+                        f"Position marked terminal, recover on PumpSwap via StuckPositions."
+                    )
+                    return
 
         cu = CU_PUMPSWAP if protocol == "pumpswap" else CU_PUMPFUN
         exit_fee_sol = estimate_tx_fee_sol(eff_priority, cu)
