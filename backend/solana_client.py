@@ -10,12 +10,41 @@ RPC_URL = os.environ["HELIUS_RPC_URL"]
 LAMPORTS_PER_SOL = 1_000_000_000
 
 
-async def rpc_call(method: str, params: list, timeout: float = 10.0) -> dict:
+async def rpc_call(method: str, params: list, timeout: float = 10.0,
+                   max_retries: int = 3) -> dict:
+    """JSON-RPC call to Helius with transient-failure retry.
+
+    Retries on ConnectTimeout / ReadTimeout / 5xx / 429 (the only failure
+    modes that are safe to retry — Helius rate-limits and edge-node
+    cold-starts produce these intermittently). Backoff: 0.25s, 0.5s, 1.0s.
+
+    Without retries, a single transient ConnectTimeout to Helius bubbles up
+    to FastAPI as a 500, which the cluster ingress surfaces as a 502 to the
+    browser — breaking user-facing actions like wallet token-scan, recovery
+    sales, and stuck-position lookups."""
     payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        r = await client.post(RPC_URL, json=payload)
-        r.raise_for_status()
-        return r.json()
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                r = await client.post(RPC_URL, json=payload)
+                if r.status_code == 429 or 500 <= r.status_code < 600:
+                    # transient — retry
+                    last_exc = httpx.HTTPStatusError(
+                        f"helius {r.status_code}", request=r.request, response=r
+                    )
+                else:
+                    r.raise_for_status()
+                    return r.json()
+        except (httpx.ConnectTimeout, httpx.ReadTimeout,
+                httpx.ConnectError, httpx.RemoteProtocolError) as e:
+            last_exc = e
+        # Backoff before next attempt (skip on last iteration)
+        if attempt < max_retries - 1:
+            await asyncio.sleep(0.25 * (2 ** attempt))
+    # All retries exhausted
+    assert last_exc is not None
+    raise last_exc
 
 
 async def get_sol_balance(pubkey_str: str) -> float:

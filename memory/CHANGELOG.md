@@ -364,3 +364,23 @@ On-chain `simulateTransaction` against a real live Pump.fun token (`4L4hou…pum
   - Logout invalidates the session immediately.
   - WS handshake rejects unauthenticated connections.
 - **User action required**: set `ALLOWED_EMAIL="your.email@gmail.com"` in `/app/backend/.env` and `sudo supervisorctl restart backend`. Otherwise login returns 503 ("Server auth not configured").
+
+## 2026-05-24 (late) — PumpSwap sell + token-scan timeout
+
+### P0 verified fixed
+- **`Custom:6053` (BuybackFeeRecipientNotAuthorized)** — confirmed via on-chain `simulateTransaction`:
+  - Real graduated mint: `8C2wF9d…pump` (WEALTH) — ~$2.47 stuck
+  - Pool: `FJy7o9Ys5tKMq6AftMkypn1RoTETpYFc2ygo8y9H8yaT`
+  - 24-account sell IX, `err=None`, 107k CUs consumed, all program invocations green
+  - Both `BREAKING_FEE_RECIPIENTS_PS` (now PumpSwap's 8 addrs) AND `build_wsol_ata_idempotent_ixs()` (canonical WSOL ATA, not temp seed-account) confirmed working together
+  - Test artifact: `/app/backend/tests/sim_pumpswap_sell.py` — pass/fail script for any future mint
+
+### Live bug: token-scan 502 → 200
+- Symptom: `/api/wallet/token-scan` returning 502 on the Recovery panel
+- Root cause: wallet holds 155 non-zero mints. Per-mint sequential pricing exceeded the cluster ingress's 60s timeout
+- Fix: parallelize per-mint price probes with `asyncio.gather` + `Semaphore(10)`. Latency 60s+→ ~12s. (server.py:wallet_token_scan)
+
+### Defensive: rpc_call retry layer
+- `solana_client.rpc_call` now retries on `ConnectTimeout`/`ReadTimeout`/`ConnectError`/`RemoteProtocolError`/HTTP 429/5xx with backoff 0.25→0.5→1.0s (3 attempts max)
+- Centralized — every callsite (token-scan, recovery, bot polling, pnl reconciler, listener) inherits resilience
+- Prevents single transient Helius hiccup from 500-ing user-facing endpoints

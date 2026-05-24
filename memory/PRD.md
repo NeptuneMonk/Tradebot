@@ -21,6 +21,10 @@ For learning and experimentation only — no deployment outside preview.
 
 
 ## Recently fixed (2026-05-24 PM)
+- ✅ **PumpSwap sell `Custom:6053` (BuybackFeeRecipientNotAuthorized) FIXED** — `BREAKING_FEE_RECIPIENTS_PS` in `pumpswap.py` now correctly populated with the 8 PumpSwap-specific recipients (was cloned from `pumpfun.py`). Verified via live `simulateTransaction` against a real graduated mint (WEALTH, pool `FJy7o9…`): `err=None, unitsConsumed=107292`. Test: `/app/backend/tests/sim_pumpswap_sell.py`.
+- ✅ **PumpSwap sell WSOL ATA shape FIXED** — PumpSwap sell requires the canonical `ATA(user, WSOL, SPL)` (NOT a seed-derived temp account, which produced a separate Custom:6053 seeds-mismatch). New `build_wsol_ata_idempotent_ixs()` in `pumpswap.py`; both bot exit paths + recovery endpoints rewired.
+- ✅ **/wallet/token-scan 502 FIXED** — wallet has 155 non-zero token accounts; sequential per-mint pricing was exceeding the 60s cluster-ingress timeout. Now parallelized with `asyncio.gather` + semaphore(10). Drops latency from >60s (502 timeout) to ~12s (200 OK).
+- ✅ **Helius RPC transient retry** — `solana_client.rpc_call` now retries on ConnectTimeout / ReadTimeout / 5xx / 429 with 0.25→1.0s backoff (3 attempts). Centralized fix — prevents single transient Helius hiccup from 500-ing any API endpoint.
 - ✅ **Sell path 6022 / 6023 / 6003 root-causes nailed** (per official IDL): 6022 = SellZeroAmount (not slippage as prior agent claimed), 6023 = NotEnoughTokensToSell, 6003 = real slippage.
 - ✅ Early-return on zero ATA balance in `_exit_impl` and `_partial_exit` (no more 0-amount sell IXs).
 - ✅ Token-2022-aware ATA derivation in partial-exit path (was reading empty legacy ATA → falling back to oversized `entry_tokens` → 6023).

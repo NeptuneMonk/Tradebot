@@ -476,7 +476,12 @@ async def wallet_token_scan():
     Returns every non-zero Pump.fun mint with its current bonding-curve sell
     value — regardless of whether the bot has a DB row for it. This finds
     tokens stranded from old/buggy code paths that left no audit trail.
+
+    Per-mint pricing lookups are parallelized (concurrency=10) — sequential
+    pricing on 100+ stuck mints used to exceed the 60s ingress timeout and
+    return 502 to the UI.
     """
+    import asyncio as _asyncio
     from solders.pubkey import Pubkey
     from wallet import get_pubkey
     import pumpfun
@@ -485,14 +490,22 @@ async def wallet_token_scan():
 
     wallet = str(get_pubkey())
     sol_price = await get_sol_usd_price() or 100.0
-    results = []
+
+    # 1) Collect non-zero token accounts across both token programs.
+    candidates: list[dict] = []
     for prog in ("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
                  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"):
-        r = await rpc_call(
-            "getTokenAccountsByOwner",
-            [wallet, {"programId": prog},
-             {"encoding": "jsonParsed", "commitment": "confirmed"}],
-        )
+        try:
+            r = await rpc_call(
+                "getTokenAccountsByOwner",
+                [wallet, {"programId": prog},
+                 {"encoding": "jsonParsed", "commitment": "confirmed"}],
+            )
+        except Exception as e:
+            # Helius timed out after retries — keep scanning the other program
+            # instead of 500-ing the whole scan (would surface as 502 in UI).
+            logger.warning(f"token-scan RPC failed for {prog}: {e}")
+            continue
         accounts = (r.get("result") or {}).get("value") or []
         for acc in accounts:
             info = (((acc.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {}
@@ -504,12 +517,23 @@ async def wallet_token_scan():
             mint = info.get("mint")
             if not mint:
                 continue
-            # Quote current sell value — try bonding curve first, fall back
-            # to PumpSwap AMM for graduated tokens so the user can SEE what
-            # the stranded tokens are actually worth.
-            sol_val = 0.0
-            graduated = False
-            pumpswap_pool = None
+            candidates.append({
+                "mint": mint, "amount_raw": amt_raw, "amount_ui": amt_ui,
+                "program": prog,
+            })
+
+    # 2) Price each candidate in parallel with a bounded semaphore. Without
+    # this, 100+ mints × 1-3 sequential RPC calls each easily exceed the
+    # cluster's 60s ingress timeout, surfacing as a 502 in the UI.
+    sem = _asyncio.Semaphore(10)
+
+    async def _price_one(c: dict) -> dict:
+        mint = c["mint"]
+        amt_raw = c["amount_raw"]
+        sol_val = 0.0
+        graduated = False
+        pumpswap_pool = None
+        async with sem:
             try:
                 state = await pumpfun.fetch_bonding_curve_state(mint)
                 if state and not state.get("complete"):
@@ -529,22 +553,25 @@ async def wallet_token_scan():
                             sol_out, _ = _ps.quote_sell_sol(pool_state, amt_raw, 0)
                             sol_val = sol_out / LAMPORTS_PER_SOL
                             graduated = True
-            except Exception:
-                pass
-            # Try to enrich with a name from the bot DB (latest matching launch)
-            doc = await db.launches.find_one({"mint": mint}, {"_id": 0, "name": 1, "symbol": 1})
-            results.append({
-                "mint": mint,
-                "name": (doc or {}).get("name"),
-                "symbol": (doc or {}).get("symbol"),
-                "amount_raw": amt_raw,
-                "amount_ui": amt_ui,
-                "token_program": "Token-2022" if prog.startswith("Tokenz") else "Classic",
-                "current_sol": sol_val,
-                "current_usd": sol_val * sol_price,
-                "graduated": graduated,
-                "pumpswap_pool": pumpswap_pool,
-            })
+            except Exception as e:
+                logger.debug(f"token-scan pricing failed for {mint[:10]}…: {e}")
+        # DB enrichment is cheap (single Mongo lookup) — also inside the
+        # semaphore is fine; Mongo is local.
+        doc = await db.launches.find_one({"mint": mint}, {"_id": 0, "name": 1, "symbol": 1})
+        return {
+            "mint": mint,
+            "name": (doc or {}).get("name"),
+            "symbol": (doc or {}).get("symbol"),
+            "amount_raw": amt_raw,
+            "amount_ui": c["amount_ui"],
+            "token_program": "Token-2022" if c["program"].startswith("Tokenz") else "Classic",
+            "current_sol": sol_val,
+            "current_usd": sol_val * sol_price,
+            "graduated": graduated,
+            "pumpswap_pool": pumpswap_pool,
+        }
+
+    results = await _asyncio.gather(*[_price_one(c) for c in candidates])
     results.sort(key=lambda x: -x["current_usd"])
     total_usd = sum(r["current_usd"] for r in results)
     return {
