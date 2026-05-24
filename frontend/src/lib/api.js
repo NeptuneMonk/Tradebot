@@ -4,6 +4,9 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
 
 const client = axios.create({ baseURL: API, timeout: 15000, withCredentials: true });
+// Recovery operations need a longer timeout because they wait for on-chain
+// confirmation (sell tx + getSignatureStatuses polling can take 25–40s).
+const longClient = axios.create({ baseURL: API, timeout: 60000, withCredentials: true });
 
 export const api = {
   wallet: () => client.get("/wallet").then(r => r.data),
@@ -38,7 +41,10 @@ export const api = {
   authLogout: () => client.post("/auth/logout").then(r => r.data),
   // Stuck-trade recovery
   stuckTrades: () => client.get("/trades/stuck").then(r => r.data),
-  recoverStuck: (tradeId) => client.post(`/trades/recover/${tradeId}`).then(r => r.data),
-  recoverStuckBatch: (tradeIds) => client.post("/trades/recover-batch", { trade_ids: tradeIds }).then(r => r.data),
-  recoverStuckAll: () => client.post("/trades/recover-all").then(r => r.data),
+  recoverStuck: (tradeId) => longClient.post(`/trades/recover/${tradeId}`).then(r => r.data),
+  recoverStuckBatch: (tradeIds) => longClient.post("/trades/recover-batch", { trade_ids: tradeIds }, { timeout: 60000 + 30000 * tradeIds.length }).then(r => r.data),
+  recoverStuckAll: () => longClient.post("/trades/recover-all", null, { timeout: 600000 }).then(r => r.data),
+  // Wallet-wide token scan (finds ALL pump.fun tokens, even ones not in DB)
+  walletTokenScan: () => longClient.get("/wallet/token-scan").then(r => r.data),
+  walletRecoverMints: (mints) => longClient.post("/wallet/recover-mints", { mints }, { timeout: 60000 + 30000 * mints.length }).then(r => r.data),
 };

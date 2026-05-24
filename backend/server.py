@@ -387,6 +387,138 @@ async def recover_batch(req: RecoverBatchReq):
     }
 
 
+@api.get("/wallet/token-scan")
+async def wallet_token_scan():
+    """Scan ALL Token-2022 + classic SPL accounts owned by the bot wallet.
+    Returns every non-zero Pump.fun mint with its current bonding-curve sell
+    value — regardless of whether the bot has a DB row for it. This finds
+    tokens stranded from old/buggy code paths that left no audit trail.
+    """
+    from solders.pubkey import Pubkey
+    from wallet import get_pubkey
+    import pumpfun
+    from solana_client import rpc_call, get_sol_usd_price, LAMPORTS_PER_SOL
+
+    wallet = str(get_pubkey())
+    sol_price = await get_sol_usd_price() or 100.0
+    results = []
+    for prog in ("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                 "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"):
+        r = await rpc_call(
+            "getTokenAccountsByOwner",
+            [wallet, {"programId": prog},
+             {"encoding": "jsonParsed", "commitment": "confirmed"}],
+        )
+        accounts = (r.get("result") or {}).get("value") or []
+        for acc in accounts:
+            info = (((acc.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {}
+            ta = info.get("tokenAmount") or {}
+            amt_raw = int(ta.get("amount") or 0)
+            amt_ui = float(ta.get("uiAmount") or 0)
+            if amt_ui <= 0:
+                continue
+            mint = info.get("mint")
+            if not mint:
+                continue
+            # Quote current sell value (Pump.fun only)
+            sol_val = 0.0
+            graduated = False
+            try:
+                state = await pumpfun.fetch_bonding_curve_state(mint)
+                if state and not state.get("complete"):
+                    sol_out, _ = pumpfun.quote_sell_sol(state, amt_raw, 0)
+                    sol_val = sol_out / LAMPORTS_PER_SOL
+                elif state and state.get("complete"):
+                    graduated = True
+            except Exception:
+                pass
+            # Try to enrich with a name from the bot DB (latest matching launch)
+            doc = await db.launches.find_one({"mint": mint}, {"_id": 0, "name": 1, "symbol": 1})
+            results.append({
+                "mint": mint,
+                "name": (doc or {}).get("name"),
+                "symbol": (doc or {}).get("symbol"),
+                "amount_raw": amt_raw,
+                "amount_ui": amt_ui,
+                "token_program": "Token-2022" if prog.startswith("Tokenz") else "Classic",
+                "current_sol": sol_val,
+                "current_usd": sol_val * sol_price,
+                "graduated": graduated,
+            })
+    results.sort(key=lambda x: -x["current_usd"])
+    total_usd = sum(r["current_usd"] for r in results)
+    return {
+        "wallet": wallet,
+        "sol_price_usd": sol_price,
+        "tokens": results,
+        "total_usd": total_usd,
+        "count": len(results),
+    }
+
+
+class RecoverMintsReq(BaseModel):
+    mints: list[str]
+
+
+@api.post("/wallet/recover-mints")
+async def wallet_recover_mints(req: RecoverMintsReq):
+    """Sell whatever the wallet currently holds for each given mint. Wallet-wide
+    recovery — doesn't require a DB row. Uses wide slippage and high priority
+    fee to maximise landing rate."""
+    from solders.pubkey import Pubkey
+    from wallet import get_keypair, get_pubkey
+    import pumpfun
+    import pumpswap as _ps
+
+    kp = get_keypair()
+    user = get_pubkey()
+    out = []
+    for mint in req.mints:
+        try:
+            mint_pk = Pubkey.from_string(mint)
+            tp = await pumpfun.get_mint_token_program(mint)
+            ata = pumpfun.derive_associated_token_for_program(user, mint_pk, tp)
+            balance = await _ps.get_token_balance(ata)
+            if balance <= 0:
+                out.append({"mint": mint, "ok": False, "reason": "wallet balance is 0"})
+                continue
+            state = await pumpfun.fetch_bonding_curve_state(mint)
+            if not state:
+                out.append({"mint": mint, "ok": False, "reason": "no bonding curve (may need PumpSwap)"})
+                continue
+            if state.get("complete"):
+                out.append({"mint": mint, "ok": False, "reason": "graduated (needs PumpSwap path)"})
+                continue
+            creator_str = state.get("creator")
+            if not creator_str:
+                out.append({"mint": mint, "ok": False, "reason": "no creator on curve"})
+                continue
+            is_cb = bool(state.get("is_cashback", False))
+            sol_out_q, min_sol = pumpfun.quote_sell_sol(state, balance, 3000)  # 30% slippage
+            creator_pk = Pubkey.from_string(creator_str)
+            ix = await pumpfun.build_sell_ix(user, mint_pk, balance, min_sol, creator_pk, tp, cashback=is_cb)
+            sig = await pumpfun.send_versioned_tx(
+                kp, [ix], priority_fee_microlamports=1_500_000, confirm_timeout_s=40.0,
+            )
+            out.append({
+                "mint": mint,
+                "ok": True,
+                "sig": sig,
+                "tokens_sold": balance,
+                "sol_received_quoted": sol_out_q / 1e9,
+            })
+        except Exception as e:
+            out.append({"mint": mint, "ok": False, "reason": f"error: {e}"})
+    success = sum(1 for r in out if r.get("ok"))
+    return {
+        "ok": True,
+        "total": len(out),
+        "recovered": success,
+        "failed": len(out) - success,
+        "results": out,
+    }
+
+
 @api.get("/trades/stuck")
 async def list_stuck_trades():
     """List stuck positions enriched with current wallet token balance + USD value."""
