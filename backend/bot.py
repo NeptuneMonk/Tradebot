@@ -1582,17 +1582,19 @@ class BotState:
                 if protocol == "pumpswap":
                     # Token-2022 pools (e.g. ETB) require explicit base_token_program;
                     # default classic SPL is wrong and reverts with IncorrectProgramId.
+                    # ALSO: PumpSwap sell requires the canonical user WSOL ATA, not
+                    # a seed-derived temp account, or reverts with Custom:6053.
                     base_tp = await pumpfun.get_mint_token_program(mint)
                     user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
-                    wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, 0)
+                    wsol_ata, wsol_ixs = pumpswap.build_wsol_ata_idempotent_ixs(user)
                     ixs = [
+                        pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp),
                         *wsol_ixs,
                         pumpswap.build_sell_ix(
-                            user, pumpswap_state, user_token_ata, wsol_acc,
+                            user, pumpswap_state, user_token_ata, wsol_ata,
                             base_amount_in=sell_tokens, min_quote_amount_out=min_sol,
                             base_token_program=base_tp,
                         ),
-                        pumpswap.build_close_wsol_ix(user, wsol_acc),
                     ]
                     partial_sig = await pumpfun.send_versioned_tx(
                         kp, ixs, eff_priority, compute_unit_limit=400_000,
@@ -1836,19 +1838,21 @@ class BotState:
                 user = get_pubkey()
                 mint_pk = Pubkey.from_string(mint)
                 if protocol == "pumpswap":
-                    # Token-2022 pools require explicit base_token_program
+                    # Token-2022 pools require explicit base_token_program +
+                    # canonical user WSOL ATA (not seed-derived temp). Sells
+                    # with a temp WSOL revert with Custom:6053 (seeds mismatch).
                     base_tp = await pumpfun.get_mint_token_program(mint)
                     user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
-                    wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, 0)
+                    wsol_ata, wsol_ixs = pumpswap.build_wsol_ata_idempotent_ixs(user)
                     ixs = [
+                        pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp),
                         *wsol_ixs,
                         pumpswap.build_sell_ix(
-                            user, pumpswap_state, user_token_ata, wsol_acc,
+                            user, pumpswap_state, user_token_ata, wsol_ata,
                             base_amount_in=tokens_in,
                             min_quote_amount_out=min_sol,
                             base_token_program=base_tp,
                         ),
-                        pumpswap.build_close_wsol_ix(user, wsol_acc),
                     ]
                     exit_sig = await pumpfun.send_versioned_tx(
                         kp, ixs, eff_priority,

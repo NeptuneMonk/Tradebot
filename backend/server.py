@@ -614,16 +614,18 @@ async def wallet_recover_mints(req: RecoverMintsReq):
                 # the alt token program; re-deriving here would point at the
                 # wrong (empty) ATA again.
                 ata_pk = ata
-                wsol_acc, wsol_ixs = _ps.build_wsol_wrap_ixs(user, 0)
+                # PumpSwap SELL needs the canonical user WSOL ATA, not a temp.
+                # Seed-derived temps revert with Custom:6053 (seeds mismatch).
+                wsol_ata, wsol_ixs = _ps.build_wsol_ata_idempotent_ixs(user)
                 ixs = [
+                    _ps.build_create_ata_ix(user, user, mint_pk, tp),
                     *wsol_ixs,
                     _ps.build_sell_ix(
-                        user, pool_state, ata_pk, wsol_acc,
+                        user, pool_state, ata_pk, wsol_ata,
                         base_amount_in=sell_amount,
                         min_quote_amount_out=min_sol,
                         base_token_program=tp,
                     ),
-                    _ps.build_close_wsol_ix(user, wsol_acc),
                 ]
                 sig = await pumpfun.send_versioned_tx(
                     kp, ixs, priority_fee_microlamports=1_500_000,
@@ -859,21 +861,20 @@ async def recover_stuck_trade(trade_id: str):
             return {"ok": False, "reason": f"pool state unavailable (pool={pool})"}
         sell_amount = max(int(actual_tokens * 0.995), 1)
         sol_out, min_sol = _ps.quote_sell_sol(pool_state, sell_amount, 3000)  # 30% slippage
-        # Use the SAME ata + tp we resolved above (the fallback may have
-        # switched to the alt token program). Re-deriving here would point
-        # at a different (empty) ATA → the sell would fail or sell from the
-        # wrong account.
-        wsol_acc, wsol_ixs = _ps.build_wsol_wrap_ixs(user, 0)
-        ata_pk = ata
+        # PumpSwap SELL: use the deterministic WSOL ATA (NOT a seed-derived temp).
+        # The program requires `user_wsol_account` to be exactly the canonical
+        # ATA(user, WSOL, SPL) or it reverts with Custom:6053 (seeds mismatch).
+        # Also do NOT close it — keeps for future swaps, ~0.002 SOL recoverable.
+        wsol_ata, wsol_ixs = _ps.build_wsol_ata_idempotent_ixs(user)
         ixs = [
+            _ps.build_create_ata_ix(user, user, mint_pk, tp),
             *wsol_ixs,
             _ps.build_sell_ix(
-                user, pool_state, ata_pk, wsol_acc,
+                user, pool_state, ata, wsol_ata,
                 base_amount_in=sell_amount,
                 min_quote_amount_out=min_sol,
                 base_token_program=tp,
             ),
-            _ps.build_close_wsol_ix(user, wsol_acc),
         ]
         try:
             sig = await pumpfun.send_versioned_tx(

@@ -1,5 +1,52 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-25 (LATE PM) — Full PumpSwap recovery now working
+
+### Final root cause of `Custom: 6053`
+After exhausting the chainstack reference IDL (which only documents codes 6000-6052), pulled the on-chain logs from a failing GRIT recovery tx:
+```
+AnchorError thrown in programs/pump-amm/src/state/global_config.rs:142.
+Error Code: BuybackFeeRecipientNotAuthorized.
+Error Number: 6053.
+```
+
+**Real bug**: my `BREAKING_FEE_RECIPIENTS_PS` list was copy-pasted from pumpfun's bonding-curve list — but PumpSwap has its own DIFFERENT list of authorized recipients (per `pump-public-docs/BREAKING_FEE_RECIPIENT.md`). Using a non-authorized address as `bf_recipient` in the IX → 6053 BuybackFeeRecipientNotAuthorized.
+
+### Fixed
+Updated `BREAKING_FEE_RECIPIENTS_PS` in `pumpswap.py` to PumpSwap's actual authorized list:
+- `5YxQFdt3Tr9zJLvkFccqXVUwhdTWJQc1fFg2YPbxvxeD`
+- `9M4giFFMxmFGXtc3feFzRai56WbBqehoSeRE5GK7gf7`
+- `GXPFM2caqTtQYC2cJ5yJRi9VDkpsYZXzYdwYpGnLmtDL`
+- `3BpXnfJaUTiwXnJNe7Ej1rcbzqTTQUvLShZaWazebsVR`
+- `5cjcW9wExnJJiqgLjq7DEG75Pm6JBgE1hNv4B2vHXUW6`
+- `EHAAiTxcdDwQ3U4bU6YcMsQGaekdzLS3B5SmYo46kJtL`
+- `5eHhjP8JaYkz83CWwvGU2uMUXefd3AazWGx4gpcuEEYD`
+- `A7hAgCzFw14fejgCp387JUJRMNyz4j89JKnhtKU8piqW`
+
+### Also discovered + fixed earlier in this thread
+- Wrong `user_wsol_account` for SELL — must be canonical `ATA(user, WSOL, SPL)`, not seed-derived temp. Added `build_wsol_ata_idempotent_ixs()` helper.
+- Wrong `PROTOCOL_FEE_RECIPIENT` (was a breaking-fee addr, corrected to `7VtfL8...`).
+- Missing 3 accounts from 2026-04-28 upgrade: `pool_v2` PDA + 2 breaking-fee accounts.
+- Cashback pools need 2 extra accounts (`user_volume_accumulator_quote_ata` + `user_volume_accumulator`) before `pool_v2`.
+- Token-2022 base mints need `base_token_program` threaded through `build_create_ata_ix`, `build_buy_ix`, `build_sell_ix`.
+
+### Verified end-to-end
+GRIT recovery — tx `4p3dwvsw...AqXnn7sb7Y...AgB`:
+- Sold 19,130,858,664 tokens
+- Received 0.000816 SOL ($0.16)
+- Via PumpSwap AMM
+- All 26 accounts in correct order, correct fee recipient
+
+This unblocks recovery for ALL stuck PumpSwap-graduated tokens (104 in user's wallet worth ~$0.86 total).
+
+### Lesson for next agent
+When debugging unknown Custom error codes:
+1. Check the IDL — but it may be stale
+2. **Pull the actual on-chain tx logs** via `getTransaction` — AnchorErrors include the source file + line + named error code
+3. Don't trust external AI suggestions blindly (Bing claimed PumpSwap doesn't support cashback — wrong, chainstack confirmed it does with an on-chain sig)
+
+
+
 ## 2026-05-25 (MID PM) — PumpSwap account-layout upgrade + Token-2022 recovery fix
 
 ### Multiple bugs uncovered from live test

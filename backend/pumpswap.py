@@ -98,18 +98,19 @@ def derive_pool_v2(base_mint: Pubkey) -> Pubkey:
     return pda
 
 
-# Breaking-fee recipients (from pump-public-docs/BREAKING_FEE_RECIPIENT.md)
-# Same set as pumpfun's bonding curve recipients.
+# PumpSwap-specific breaking-fee recipients (DIFFERENT from pumpfun's bonding
+# curve list). Per pump-public-docs/BREAKING_FEE_RECIPIENT.md. Using the wrong
+# list reverts with Custom:6053 (BuybackFeeRecipientNotAuthorized).
 BREAKING_FEE_RECIPIENTS_PS = [
     Pubkey.from_string(s) for s in (
-        "62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV",
-        "7VtfL8fvgNfhz17qKRMjzQEXgbdpnHHHQRh54R4JKqaT",
-        "9rPYyANsfQZw3DnDmKE3YCQF5E8oD89UXoHn9JFEhJUz",
-        "AVmoTthdrX6tKt4nDjco2D775W2YK3sDhxPcMmzUAmTY",
-        "FWsW1xNtWscwNmKv6wVsU1iTzRN6wmmk3MjxRP5tT7hz",
-        "G5UZAVbAf46s7cKWoyKu8kYTip9DGTpbLZ2qa9Aq69dP",
-        "JCRGumoE9Qi5BBgULTgdgTLjSgkCMSbF62ZZfGs84JeU",
-        "JE6d6oFTYWxd1m4DucGNxqQbABMbeoTpphYDqA5fS5Mc",
+        "5YxQFdt3Tr9zJLvkFccqXVUwhdTWJQc1fFg2YPbxvxeD",
+        "9M4giFFMxmFGXtc3feFzRai56WbBqehoSeRE5GK7gf7",
+        "GXPFM2caqTtQYC2cJ5yJRi9VDkpsYZXzYdwYpGnLmtDL",
+        "3BpXnfJaUTiwXnJNe7Ej1rcbzqTTQUvLShZaWazebsVR",
+        "5cjcW9wExnJJiqgLjq7DEG75Pm6JBgE1hNv4B2vHXUW6",
+        "EHAAiTxcdDwQ3U4bU6YcMsQGaekdzLS3B5SmYo46kJtL",
+        "5eHhjP8JaYkz83CWwvGU2uMUXefd3AazWGx4gpcuEEYD",
+        "A7hAgCzFw14fejgCp387JUJRMNyz4j89JKnhtKU8piqW",
     )
 ]
 
@@ -397,7 +398,13 @@ def build_sell_ix(
 def build_wsol_wrap_ixs(user: Pubkey, lamports: int) -> tuple[Pubkey, list[Instruction]]:
     """Create a temporary WSOL token account funded with `lamports`. Returns
     (wsol_account_pubkey, instructions). Caller is responsible for closing the
-    account at the end of the tx with `build_close_wsol_ix`."""
+    account at the end of the tx with `build_close_wsol_ix`.
+
+    NOTE: This temp-account flow is for BUY (we need to deposit SOL).
+    For PumpSwap SELL, use `build_wsol_ata_idempotent_ixs` instead — pump-swap's
+    sell instruction requires `user_wsol_account` to be the user's deterministic
+    WSOL ATA, NOT a seed-derived temp account, or it reverts with Custom:6053
+    (constraint seeds mismatch)."""
     seed = base64.urlsafe_b64encode(os.urandom(24)).decode("utf-8")
     wsol_account = Pubkey.create_with_seed(user, seed, TOKEN_PROGRAM)
     create_ix = create_account_with_seed(
@@ -431,6 +438,20 @@ def build_close_wsol_ix(user: Pubkey, wsol_account: Pubkey) -> Instruction:
             owner=user,
         )
     )
+
+
+def build_wsol_ata_idempotent_ixs(user: Pubkey) -> tuple[Pubkey, list[Instruction]]:
+    """Return the user's deterministic WSOL ATA + a single idempotent-create IX.
+
+    Use this for PumpSwap SELL — the program REQUIRES `user_wsol_account` to be
+    the canonical ATA, not a seed-derived temp account. Sells revert with
+    Custom:6053 (seeds mismatch) when given a temp account.
+
+    For BUY you can use either, but the ATA path is also fine — we just don't
+    need to pre-fund it with lamports because we'll write SOL via PumpSwap and
+    receive base tokens out."""
+    wsol_ata = get_associated_token_address(user, WSOL, TOKEN_PROGRAM)
+    return wsol_ata, [build_create_ata_ix(user, user, WSOL, TOKEN_PROGRAM)]
 
 
 def build_create_ata_ix(payer: Pubkey, owner: Pubkey, mint: Pubkey,
