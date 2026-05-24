@@ -608,8 +608,10 @@ async def wallet_recover_mints(req: RecoverMintsReq):
                     return {"mint": mint, "ok": False, "reason": "pumpswap pool state unavailable"}
                 sell_amount = max(int(balance * 0.995), 1)
                 sol_out_q, min_sol = _ps.quote_sell_sol(pool_state, sell_amount, 3000)
-                # PumpSwap sell needs the wsol unwrap account + close
-                ata_pk = _ps.get_associated_token_address(user, mint_pk, _ps.TOKEN_PROGRAM)
+                # PumpSwap sell — thread the correct base token program so
+                # Token-2022 pools (e.g. ETB) don't revert with IncorrectProgramId.
+                base_tp = await pumpfun.get_mint_token_program(mint)
+                ata_pk = _ps.get_associated_token_address(user, mint_pk, base_tp)
                 wsol_acc, wsol_ixs = _ps.build_wsol_wrap_ixs(user, 0)
                 ixs = [
                     *wsol_ixs,
@@ -617,6 +619,7 @@ async def wallet_recover_mints(req: RecoverMintsReq):
                         user, pool_state, ata_pk, wsol_acc,
                         base_amount_in=sell_amount,
                         min_quote_amount_out=min_sol,
+                        base_token_program=base_tp,
                     ),
                     _ps.build_close_wsol_ix(user, wsol_acc),
                 ]
@@ -821,15 +824,18 @@ async def recover_stuck_trade(trade_id: str):
             return {"ok": False, "reason": f"pool state unavailable (pool={pool})"}
         sell_amount = max(int(actual_tokens * 0.995), 1)
         sol_out, min_sol = _ps.quote_sell_sol(pool_state, sell_amount, 3000)  # 30% slippage
-        # Build wsol unwrap account + sell + close
+        # Token-2022 base mints (e.g. ETB) need explicit base_token_program
+        # in both the ATA derivation and the sell IX, else IncorrectProgramId.
+        base_tp = await pumpfun.get_mint_token_program(mint)
         wsol_acc, wsol_ixs = _ps.build_wsol_wrap_ixs(user, 0)
-        ata_pk = _ps.get_associated_token_address(user, mint_pk, _ps.TOKEN_PROGRAM)
+        ata_pk = _ps.get_associated_token_address(user, mint_pk, base_tp)
         ixs = [
             *wsol_ixs,
             _ps.build_sell_ix(
                 user, pool_state, ata_pk, wsol_acc,
                 base_amount_in=sell_amount,
                 min_quote_amount_out=min_sol,
+                base_token_program=base_tp,
             ),
             _ps.build_close_wsol_ix(user, wsol_acc),
         ]

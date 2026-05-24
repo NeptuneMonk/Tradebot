@@ -1247,15 +1247,20 @@ class BotState:
                 user = get_pubkey()
                 mint_pk = Pubkey.from_string(launch.mint)
                 if protocol == "pumpswap":
-                    user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, pumpswap.TOKEN_PROGRAM)
+                    # PumpSwap pools can hold Token-2022 base mints (like ETB).
+                    # Failing to thread the correct token program through the
+                    # ATA + buy IX produces IncorrectProgramId reverts.
+                    base_tp = await pumpfun.get_mint_token_program(launch.mint)
+                    user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
                     wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, max_sol)
                     ixs = [
-                        pumpswap.build_create_ata_ix(user, user, mint_pk),
+                        pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp),
                         *wsol_ixs,
                         pumpswap.build_buy_ix(
                             user, pumpswap_state, user_token_ata, wsol_acc,
                             base_amount_out=tokens_out,
                             max_quote_amount_in=max_sol,
+                            base_token_program=base_tp,
                         ),
                         pumpswap.build_close_wsol_ix(user, wsol_acc),
                     ]
@@ -1287,6 +1292,12 @@ class BotState:
                 b = self.tracking.get(launch.mint)
                 if b is not None:
                     b["scanner_last_attempt"] = time.time()
+                # Hard 60s cross-system cooldown — without this the scanner
+                # re-evaluates the mint within 30s, re-passes the gates, and
+                # the bot burns another $0.05 in gas for the same failure
+                # (observed with ETB / IncorrectProgramId — 3 retries in 2 min
+                # cost $0.15 with zero chance of any of them succeeding).
+                self.recent_exit_until[launch.mint] = time.time() + 60.0
                 return
 
         await self._persist_trade(trade)
@@ -1569,13 +1580,17 @@ class BotState:
                 user = get_pubkey()
                 mint_pk = Pubkey.from_string(mint)
                 if protocol == "pumpswap":
-                    user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, pumpswap.TOKEN_PROGRAM)
+                    # Token-2022 pools (e.g. ETB) require explicit base_token_program;
+                    # default classic SPL is wrong and reverts with IncorrectProgramId.
+                    base_tp = await pumpfun.get_mint_token_program(mint)
+                    user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
                     wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, 0)
                     ixs = [
                         *wsol_ixs,
                         pumpswap.build_sell_ix(
                             user, pumpswap_state, user_token_ata, wsol_acc,
                             base_amount_in=sell_tokens, min_quote_amount_out=min_sol,
+                            base_token_program=base_tp,
                         ),
                         pumpswap.build_close_wsol_ix(user, wsol_acc),
                     ]
@@ -1821,7 +1836,9 @@ class BotState:
                 user = get_pubkey()
                 mint_pk = Pubkey.from_string(mint)
                 if protocol == "pumpswap":
-                    user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, pumpswap.TOKEN_PROGRAM)
+                    # Token-2022 pools require explicit base_token_program
+                    base_tp = await pumpfun.get_mint_token_program(mint)
+                    user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
                     wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, 0)
                     ixs = [
                         *wsol_ixs,
@@ -1829,6 +1846,7 @@ class BotState:
                             user, pumpswap_state, user_token_ata, wsol_acc,
                             base_amount_in=tokens_in,
                             min_quote_amount_out=min_sol,
+                            base_token_program=base_tp,
                         ),
                         pumpswap.build_close_wsol_ix(user, wsol_acc),
                     ]

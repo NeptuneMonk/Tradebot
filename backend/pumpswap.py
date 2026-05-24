@@ -363,9 +363,14 @@ def build_close_wsol_ix(user: Pubkey, wsol_account: Pubkey) -> Instruction:
     )
 
 
-def build_create_ata_ix(payer: Pubkey, owner: Pubkey, mint: Pubkey) -> Instruction:
-    """Create an ATA (idempotent — safe to call when account already exists)."""
-    ata = get_associated_token_address(owner, mint, TOKEN_PROGRAM)
+def build_create_ata_ix(payer: Pubkey, owner: Pubkey, mint: Pubkey,
+                        token_program: Pubkey | None = None) -> Instruction:
+    """Create an ATA (idempotent — safe to call when account already exists).
+    `token_program` defaults to classic SPL; pass Token-2022 for those mints
+    otherwise the ATA address will be wrong and the buy IX will revert
+    with IncorrectProgramId."""
+    tp = token_program or TOKEN_PROGRAM
+    ata = get_associated_token_address(owner, mint, tp)
     return Instruction(
         program_id=ASSOCIATED_TOKEN_PROGRAM,
         data=bytes([1]),  # CreateIdempotent
@@ -375,7 +380,7 @@ def build_create_ata_ix(payer: Pubkey, owner: Pubkey, mint: Pubkey) -> Instructi
             AccountMeta(owner, False, False),
             AccountMeta(mint, False, False),
             AccountMeta(SYSTEM_PROGRAM_ID, False, False),
-            AccountMeta(TOKEN_PROGRAM, False, False),
+            AccountMeta(tp, False, False),
         ],
     )
 
