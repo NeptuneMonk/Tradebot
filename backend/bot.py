@@ -1157,6 +1157,11 @@ class BotState:
         start = time.time()
         max_hold = self.config.hold_max_seconds
         last_classify = 0.0
+        # Rolling (ts, price_sol) samples for the velocity-aware timeout check.
+        # Survives across this monitor's lifetime; reset if a new monitor takes over.
+        if "monitor_price_samples" not in slot:
+            slot["monitor_price_samples"] = []
+        last_extend_log = 0.0
 
         while True:
             # Liveness heartbeat — refreshed every tick. Reconciler uses this
@@ -1169,8 +1174,28 @@ class BotState:
 
             try:
                 if elapsed > max_hold:
-                    await self._exit(mint, reason=f"timeout after {max_hold}s")
-                    return
+                    # Velocity-aware timeout: if the price is still trending up
+                    # over the last N seconds, defer the cutoff rather than
+                    # cutting a winner mid-pump. TP/SL/trailing keep guarding,
+                    # so this only stretches the *hard* timeout, never disables
+                    # protections.
+                    extend_ok = False
+                    if self.config.hold_timeout_velocity_extend_enabled:
+                        win_s = max(3, int(self.config.hold_timeout_velocity_window_s))
+                        samples = slot.get("monitor_price_samples") or []
+                        v = velocity_pct_strict(samples, time.time(), win_s) if samples else None
+                        if v is not None and v >= self.config.hold_timeout_velocity_min_pct:
+                            extend_ok = True
+                            now_t = time.time()
+                            if now_t - last_extend_log > 5.0:
+                                logger.info(
+                                    f"timeout extended for {mint}: velocity {v:+.2f}% over {win_s}s "
+                                    f">= {self.config.hold_timeout_velocity_min_pct:.2f}% — riding pump"
+                                )
+                                last_extend_log = now_t
+                    if not extend_ok:
+                        await self._exit(mint, reason=f"timeout after {max_hold}s")
+                        return
 
                 # Protocol-aware price polling
                 protocol = slot.get("protocol", "pumpfun")
@@ -1192,6 +1217,16 @@ class BotState:
                     cur_price_sol = state["virtual_sol_reserves"] / state["virtual_token_reserves"] / LAMPORTS_PER_SOL
 
                 pct_change = (cur_price_sol - trade_doc["entry_price_sol"]) / max(trade_doc["entry_price_sol"], 1e-18) * 100
+
+                # Track price samples for the velocity-aware timeout (cap window ~ 2x velocity window)
+                _now = time.time()
+                samples = slot.get("monitor_price_samples")
+                if samples is not None:
+                    samples.append((_now, cur_price_sol))
+                    cutoff = _now - max(30, int(self.config.hold_timeout_velocity_window_s) * 3)
+                    # Trim from the front
+                    while samples and samples[0][0] < cutoff:
+                        samples.pop(0)
 
                 if pct_change >= self.config.take_profit_pct and not slot.get("partial_done"):
                     ptp = self.config.partial_tp_pct

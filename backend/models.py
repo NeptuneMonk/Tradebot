@@ -85,6 +85,15 @@ class BotConfig(BaseModel):
     # effectively disable the gate.
     scanner_entry_velocity_window_s: int = 30
     scanner_entry_velocity_min_pct: float = 0.0
+    # Velocity-aware timeout: instead of hard-exiting at `hold_max_seconds`,
+    # check the price velocity over the last `hold_timeout_velocity_window_s`
+    # seconds. If positive (>= hold_timeout_velocity_min_pct), let the trade
+    # keep running so we don't cut a winner mid-pump. TP/SL/trailing still fire
+    # normally, so this can't run forever — it just delays the hard cutoff
+    # while momentum is intact.
+    hold_timeout_velocity_extend_enabled: bool = True
+    hold_timeout_velocity_window_s: int = 10
+    hold_timeout_velocity_min_pct: float = 0.0
     # Stop-loss cooldown: when a position exits via stop-loss, the mint enters
     # a cooldown window during which the scanner / re-entry watcher will refuse
     # to re-enter it. Prevents "buy the exit" anti-pattern — if SL just tripped,
