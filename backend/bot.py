@@ -553,11 +553,14 @@ class BotState:
                 kp = get_keypair()
                 user = get_pubkey()
                 mint_pk = Pubkey.from_string(mint)
-                creator_pk = Pubkey.from_string(creator_str)
+                bc_state = await pumpfun.fetch_bonding_curve_state(mint)
+                curve_creator = (bc_state or {}).get("creator") or creator_str
+                creator_pk = Pubkey.from_string(curve_creator)
+                trade.creator = curve_creator
                 tp = await pumpfun.get_mint_token_program(mint)
                 ixs = [
                     pumpfun.build_create_ata_ix(user, user, mint_pk, tp),
-                    pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol, creator_pk, tp),
+                    await pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol, creator_pk, tp),
                 ]
                 sig = await pumpfun.send_versioned_tx(kp, ixs, eff_priority)
                 trade.entry_sig = sig
@@ -1075,9 +1078,16 @@ class BotState:
         cu = CU_PUMPSWAP if protocol == "pumpswap" else CU_PUMPFUN
         est_entry_fee_sol = estimate_tx_fee_sol(eff_priority, cu)
 
+        # Use the creator stored ON the bonding curve, NOT launch metadata.
+        # For Pump.fun trades the program checks creator_vault PDA seeds against
+        # this; using launch.creator fails with ConstraintSeeds (2006) when the
+        # launch was deployed via a service that reports a different creator.
+        curve_creator = (state or {}).get("creator") if protocol != "pumpswap" else None
+        trade_creator = curve_creator or launch.creator
+
         trade = Trade(
             mint=launch.mint,
-            creator=launch.creator,
+            creator=trade_creator,
             name=launch.name,
             symbol=launch.symbol,
             status="active",
@@ -1119,13 +1129,14 @@ class BotState:
                         compute_unit_limit=400_000,
                     )
                 else:
-                    if not launch.creator:
-                        raise RuntimeError("missing launch.creator (required for creator_vault PDA)")
-                    creator_pk = Pubkey.from_string(launch.creator)
+                    # Use curve creator (already fetched into trade.creator)
+                    if not trade_creator:
+                        raise RuntimeError("missing creator (required for creator_vault PDA)")
+                    creator_pk = Pubkey.from_string(trade_creator)
                     tp = await pumpfun.get_mint_token_program(launch.mint)
                     ixs = [
                         pumpfun.build_create_ata_ix(user, user, mint_pk, tp),
-                        pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol, creator_pk, tp),
+                        await pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol, creator_pk, tp),
                     ]
                     sig = await pumpfun.send_versioned_tx(
                         kp, ixs, eff_priority
@@ -1396,12 +1407,15 @@ class BotState:
                     )
                 else:
                     creator_str = trade_doc.get("creator") or (slot.get("launch") or {}).get("creator") or ""
+                    # Re-pull from curve in case the stored creator is stale
+                    if state and state.get("creator"):
+                        creator_str = state["creator"]
                     if not creator_str:
                         raise RuntimeError("missing creator for partial-sell creator_vault PDA")
                     creator_pk = Pubkey.from_string(creator_str)
                     tp = await pumpfun.get_mint_token_program(mint)
                     is_cashback = bool((state or {}).get("is_cashback", False))
-                    ix = pumpfun.build_sell_ix(user, mint_pk, sell_tokens, min_sol, creator_pk, tp, cashback=is_cashback)
+                    ix = await pumpfun.build_sell_ix(user, mint_pk, sell_tokens, min_sol, creator_pk, tp, cashback=is_cashback)
                     partial_sig = await pumpfun.send_versioned_tx(
                         kp, [ix], eff_priority
                     )
@@ -1541,12 +1555,14 @@ class BotState:
                     )
                 else:
                     creator_str = trade_doc.get("creator") or (slot.get("launch") or {}).get("creator") or ""
+                    if state and state.get("creator"):
+                        creator_str = state["creator"]
                     if not creator_str:
                         raise RuntimeError("missing creator for final-sell creator_vault PDA")
                     creator_pk = Pubkey.from_string(creator_str)
                     tp = await pumpfun.get_mint_token_program(mint)
                     is_cashback = bool((state or {}).get("is_cashback", False))
-                    ix = pumpfun.build_sell_ix(user, mint_pk, tokens_in, min_sol, creator_pk, tp, cashback=is_cashback)
+                    ix = await pumpfun.build_sell_ix(user, mint_pk, tokens_in, min_sol, creator_pk, tp, cashback=is_cashback)
                     exit_sig = await pumpfun.send_versioned_tx(
                         kp, [ix], eff_priority
                     )

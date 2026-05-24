@@ -64,6 +64,31 @@ def _pick_breaking_fee_recipient() -> Pubkey:
     return random.choice(BREAKING_FEE_RECIPIENTS)
 
 
+# Authorized fee_recipients for account[1] in buy/sell ixs (post-2026-04-28).
+# These were extracted by scanning recent SUCCESSFUL on-chain Pump.fun trades.
+# The Global account also contains them but at non-uniform offsets mixed with
+# unrelated fields, so an offset-based scan can pick up an invalid pubkey and
+# trip NotAuthorized (6000). Using the observed-good list is the safe path.
+AUTHORIZED_FEE_RECIPIENTS = [
+    Pubkey.from_string("62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV"),  # legacy
+    Pubkey.from_string("7VtfL8fvgNfhz17qKRMjzQEXgbdpnHHHQRh54R9jP2RJ"),
+    Pubkey.from_string("9rPYyANsfQZw3DnDmKE3YCQF5E8oD89UXoHn9JFEhJUz"),
+    Pubkey.from_string("AVmoTthdrX6tKt4nDjco2D775W2YK3sDhxPcMmzUAmTY"),
+    Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM"),
+    Pubkey.from_string("FWsW1xNtWscwNmKv6wVsU1iTzRN6wmmk3MjxRP5tT7hz"),
+    Pubkey.from_string("G5UZAVbAf46s7cKWoyKu8kYTip9DGTpbLZ2qa9Aq69dP"),
+    Pubkey.from_string("TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM"),
+]
+
+
+async def pick_fee_recipient() -> Pubkey:
+    return random.choice(AUTHORIZED_FEE_RECIPIENTS)
+
+
+async def get_authorized_fee_recipients() -> list[Pubkey]:
+    return list(AUTHORIZED_FEE_RECIPIENTS)
+
+
 TOKEN_PROGRAM = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
 TOKEN_2022_PROGRAM = Pubkey.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
 ASSOCIATED_TOKEN_PROGRAM = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
@@ -200,6 +225,14 @@ async def fetch_bonding_curve_state(mint_str: str) -> dict | None:
         return None
     vtr, vsr, rtr, rsr, tts = struct.unpack_from("<QQQQQ", data, 8)
     complete = bool(data[48])
+    # Creator stored ON the bonding curve (offset 49-81). MUST use this for the
+    # creator_vault PDA — the launch metadata's "creator" can differ for
+    # tokens minted via Pump.fun's deployer-as-a-service, causing the program
+    # to reject the IX with ConstraintSeeds (2006).
+    try:
+        creator = str(Pubkey(data[49:81])) if len(data) >= 81 else None
+    except Exception:
+        creator = None
     is_cashback = bool(data[82]) if len(data) > 82 else False
     return {
         "virtual_token_reserves": vtr,
@@ -208,6 +241,7 @@ async def fetch_bonding_curve_state(mint_str: str) -> dict | None:
         "real_sol_reserves": rsr,
         "token_total_supply": tts,
         "complete": complete,
+        "creator": creator,
         "is_cashback": is_cashback,
     }
 
@@ -250,7 +284,7 @@ def build_create_ata_ix(payer: Pubkey, owner: Pubkey, mint: Pubkey, token_progra
     )
 
 
-def build_buy_ix(
+async def build_buy_ix(
     user: Pubkey,
     mint: Pubkey,
     amount_tokens: int,
@@ -268,7 +302,7 @@ def build_buy_ix(
     fee_config = derive_fee_config()
     bonding_curve_v2 = derive_bonding_curve_v2(mint)
     breaking_fee = _pick_breaking_fee_recipient()
-    fee_recipient = MAYHEM_FEE_RECIPIENT if token_program == TOKEN_2022_PROGRAM else FEE_RECIPIENT
+    fee_recipient = await pick_fee_recipient()
 
     data = (
         BUY_DISCRIMINATOR
@@ -301,7 +335,7 @@ def build_buy_ix(
     )
 
 
-def build_sell_ix(
+async def build_sell_ix(
     user: Pubkey,
     mint: Pubkey,
     amount_tokens: int,
@@ -322,7 +356,7 @@ def build_sell_ix(
     fee_config = derive_fee_config()
     bonding_curve_v2 = derive_bonding_curve_v2(mint)
     breaking_fee = _pick_breaking_fee_recipient()
-    fee_recipient = MAYHEM_FEE_RECIPIENT if token_program == TOKEN_2022_PROGRAM else FEE_RECIPIENT
+    fee_recipient = await pick_fee_recipient()
 
     data = (
         SELL_DISCRIMINATOR

@@ -37,20 +37,28 @@ async def main(mint_str: str, creator_str: str):
         print("ERROR: curve complete (graduated)")
         return
     print(f"Bonding curve state ok: vsr={state['virtual_sol_reserves']}, vtr={state['virtual_token_reserves']}, complete={state['complete']}")
+    curve_creator = state.get("creator")
+    print(f"Curve creator: {curve_creator}  (CLI creator was: {creator_str})")
+    if curve_creator and curve_creator != creator_str:
+        creator = Pubkey.from_string(curve_creator)
+        print("  -> using curve creator (overrides CLI value)")
 
     tp = await pumpfun.get_mint_token_program(mint_str)
     print(f"Token program: {tp}")
+    is_cb = state.get("is_cashback", False)
+    print(f"Cashback enabled: {is_cb}")
 
     # Quote a $0.50-ish buy
     sol_in = int(0.005 * LAMPORTS_PER_SOL)  # ~$0.50 at $100/SOL
     tokens_out, max_sol = pumpfun.quote_buy_tokens(state, sol_in, 500)
     print(f"Quote: {tokens_out} tokens for max {max_sol} lamports")
 
+    buy_ix = await pumpfun.build_buy_ix(user, mint, tokens_out, max_sol, creator, tp)
     ixs = [
         set_compute_unit_limit(200_000),
         set_compute_unit_price(500_000),
         pumpfun.build_create_ata_ix(user, user, mint, tp),
-        pumpfun.build_buy_ix(user, mint, tokens_out, max_sol, creator, tp),
+        buy_ix,
     ]
 
     bh = await rpc_call("getLatestBlockhash", [{"commitment": "finalized"}])
