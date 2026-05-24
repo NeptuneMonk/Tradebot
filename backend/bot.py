@@ -399,11 +399,25 @@ class BotState:
         IMPORTANT: the kill switch must use mode='live' because we don't want
         paper losses to trip the real-money bot, and we don't want paper
         winnings to mask real losses.
+
+        When `bot_config.live_pnl_reset_at` is set, the live-mode aggregation
+        starts from that timestamp instead of today's 00:00 UTC. Used to wipe
+        poisoned counters without deleting trade rows.
         """
         start = datetime.now(timezone.utc).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
-        query: dict = {"status": "closed", "exit_time": {"$gte": start.isoformat()}}
+        cutoff_iso = start.isoformat()
+        if mode == "live" and self.config.live_pnl_reset_at:
+            try:
+                reset = datetime.fromisoformat(self.config.live_pnl_reset_at)
+                if reset.tzinfo is None:
+                    reset = reset.replace(tzinfo=timezone.utc)
+                if reset > start:
+                    cutoff_iso = reset.isoformat()
+            except Exception:
+                pass
+        query: dict = {"status": "closed", "exit_time": {"$gte": cutoff_iso}}
         if mode in ("live", "paper"):
             query["mode"] = mode
         cursor = self.db.trades.find(query, {"_id": 0, "pnl_usd": 1})

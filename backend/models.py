@@ -120,6 +120,11 @@ class BotConfig(BaseModel):
     reentry_pullback_pct: float = 25.0
     reentry_window_seconds: int = 300
     reentry_size_multiplier: float = 0.5
+    # Live PnL reset cutoff: when set, daily_pnl_usd(mode='live') only sums
+    # trades closed at-or-after this ISO timestamp instead of today's 00:00 UTC.
+    # Used by /api/pnl/reset-live to wipe poisoned counters (e.g., pre-fix
+    # gas-burn relics) without deleting the underlying trade rows.
+    live_pnl_reset_at: Optional[str] = None
 
 
 class ClassifierRules(BaseModel):

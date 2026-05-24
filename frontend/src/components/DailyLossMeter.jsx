@@ -1,11 +1,15 @@
-import { ShieldAlert } from "lucide-react";
+import { ShieldAlert, RotateCcw } from "lucide-react";
+import { useState } from "react";
+import { toast } from "sonner";
+import { api } from "@/lib/api";
 
-export default function DailyLossMeter({ status }) {
+export default function DailyLossMeter({ status, onReset }) {
   const loss = status?.daily_loss_usd ?? 0;
   const limit = status?.daily_kill_switch_usd ?? 20;
   const pct = Math.min(100, (loss / Math.max(0.0001, limit)) * 100);
   const livePnl = status?.daily_pnl_live_usd ?? 0;
   const paperPnl = status?.daily_pnl_paper_usd ?? 0;
+  const [resetting, setResetting] = useState(false);
 
   let bar = "bg-emerald-600";
   if (pct >= 75) bar = "bg-red-600";
@@ -13,6 +17,20 @@ export default function DailyLossMeter({ status }) {
 
   const pnlClass = (v) => (v > 0 ? "text-emerald-400" : v < 0 ? "text-red-400" : "text-neutral-500");
   const pnlSign = (v) => (v > 0 ? "+" : "");
+
+  const handleResetLive = async () => {
+    if (!window.confirm("Reset LIVE daily PnL counter? Trade history stays — only the daily total is wiped. Kill switch will also be reset.")) return;
+    setResetting(true);
+    try {
+      await api.resetLivePnl();
+      toast.success("Live PnL counter reset");
+      onReset && onReset();
+    } catch (e) {
+      toast.error(`Reset failed: ${e?.response?.data?.detail || e.message}`);
+    } finally {
+      setResetting(false);
+    }
+  };
 
   return (
     <div className="control-card flex flex-col gap-3" data-testid="daily-loss-meter">
@@ -35,9 +53,21 @@ export default function DailyLossMeter({ status }) {
       </div>
       {/* LIVE / PAPER split */}
       <div className="grid grid-cols-2 gap-2 text-xs font-mono">
-        <div className="border border-neutral-800 px-2 py-1" data-testid="pnl-live-cell">
-          <div className="text-[9px] uppercase tracking-[0.15em] text-neutral-500">LIVE today</div>
-          <div className={pnlClass(livePnl)}>{pnlSign(livePnl)}${livePnl.toFixed(2)}</div>
+        <div className="border border-neutral-800 px-2 py-1 flex items-center justify-between gap-2" data-testid="pnl-live-cell">
+          <div>
+            <div className="text-[9px] uppercase tracking-[0.15em] text-neutral-500">LIVE today</div>
+            <div className={pnlClass(livePnl)}>{pnlSign(livePnl)}${livePnl.toFixed(2)}</div>
+          </div>
+          <button
+            type="button"
+            onClick={handleResetLive}
+            disabled={resetting}
+            data-testid="reset-live-pnl-btn"
+            title="Reset LIVE daily PnL counter (does not delete trade history)"
+            className="text-neutral-500 hover:text-red-400 transition disabled:opacity-40"
+          >
+            <RotateCcw className={`w-3.5 h-3.5 ${resetting ? "animate-spin" : ""}`} />
+          </button>
         </div>
         <div className="border border-neutral-800 px-2 py-1" data-testid="pnl-paper-cell">
           <div className="text-[9px] uppercase tracking-[0.15em] text-neutral-500">PAPER today</div>

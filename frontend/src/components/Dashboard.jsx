@@ -184,7 +184,7 @@ export default function Dashboard() {
             onStop={async () => { await api.stop(); refreshAll(); }}
           />
           <PLSummaryCard pl={pl} status={status} onReset={refreshAll} />
-          <DailyLossMeter status={status} />
+          <DailyLossMeter status={status} onReset={refreshAll} />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">

@@ -308,6 +308,25 @@ async def update_rules(rules: ClassifierRules):
     return rules
 
 
+@api.post("/pnl/reset-live")
+async def reset_live_pnl():
+    """Wipe the LIVE daily PnL counter without deleting trade history.
+
+    Sets `live_pnl_reset_at = now()` in the bot config so daily_pnl_usd(mode='live')
+    only sums trades closed after this moment. Also clears the kill_switch_tripped
+    flag (the previous trip was based on now-excluded losses).
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+    bot_state.config.live_pnl_reset_at = now_iso
+    bot_state.kill_switch_tripped = False
+    await bot_state.save_config()
+    return {
+        "ok": True,
+        "live_pnl_reset_at": now_iso,
+        "kill_switch_reset": True,
+    }
+
+
 # ---------- Launches & Trades ----------
 @api.get("/launches/recent")
 async def launches_recent(limit: int = 30):
