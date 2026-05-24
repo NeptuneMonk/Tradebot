@@ -14,6 +14,10 @@ export default function StuckPositions() {
   const [walletLoading, setWalletLoading] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
   const [recovering, setRecovering] = useState(false);
+  // Per-mint sell state — tracks which single mint (if any) is currently
+  // being sold via the row-level "Sell" button. Separate from the bulk
+  // `recovering` flag so individual rows can spin independently.
+  const [sellingMint, setSellingMint] = useState(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -105,6 +109,36 @@ export default function StuckPositions() {
       toast.error(`Recover failed: ${e?.response?.data?.detail || e.message}`);
     } finally {
       setRecovering(false);
+    }
+  };
+
+  const recoverWalletOne = async (token) => {
+    if (!token?.mint || token.current_usd <= 0) return;
+    const label = token.symbol || shortMint(token.mint);
+    const ok = window.confirm(
+      `Sell ${label} (${shortMint(token.mint)}) for ~$${token.current_usd.toFixed(4)}?`
+    );
+    if (!ok) return;
+    setSellingMint(token.mint);
+    try {
+      const res = await api.walletRecoverMints([token.mint]);
+      const r = (res.results || [])[0];
+      if (r?.ok) {
+        toast.success(`Sold ${label} — sig ${r.sig?.slice(0, 8)}…`);
+      } else {
+        toast.error(`Sell ${label} failed: ${r?.reason || "unknown error"}`);
+      }
+    } catch (e) {
+      const code = e?.response?.status;
+      if (code === 520 || code === 524 || e?.code === "ECONNABORTED") {
+        toast.info("Sell is still processing — re-scan in 30s to verify.");
+      } else {
+        toast.error(`Sell failed: ${e?.response?.data?.detail || e.message}`);
+      }
+    } finally {
+      setSellingMint(null);
+      // Re-scan after a short delay so the row drops off / value updates
+      setTimeout(refreshWallet, 4000);
     }
   };
 
@@ -230,26 +264,43 @@ export default function StuckPositions() {
               Total recoverable: <span className="text-blue-300">${walletTotalUsd.toFixed(4)}</span>
             </div>
             <div className="border border-neutral-800 rounded-sm overflow-hidden">
-              <div className="grid grid-cols-[1fr_60px_80px] gap-2 px-2 py-1.5 bg-neutral-900/60 text-[9px] uppercase tracking-wider text-neutral-500">
+              <div className="grid grid-cols-[1fr_60px_80px_56px] gap-2 px-2 py-1.5 bg-neutral-900/60 text-[9px] uppercase tracking-wider text-neutral-500">
                 <span>Mint</span>
                 <span className="text-right">Tokens</span>
                 <span className="text-right">Value</span>
+                <span className="text-right">Action</span>
               </div>
               <div className="max-h-40 overflow-y-auto divide-y divide-neutral-800/60">
-                {walletTokens.map((p) => (
-                  <div key={p.mint} className="grid grid-cols-[1fr_60px_80px] gap-2 px-2 py-1.5 text-[11px] font-mono" data-testid={`wallet-row-${p.mint}`}>
-                    <div className="min-w-0">
-                      <div className="text-neutral-200 truncate" title={p.mint}>{p.symbol || shortMint(p.mint)}</div>
-                      <div className="text-[9px] text-neutral-600 truncate">
-                        {shortMint(p.mint)}
-                        {p.graduated && <span className="ml-1 text-blue-400">grad</span>}
-                        {p.token_program === "Token-2022" && <span className="ml-1 text-neutral-700">t22</span>}
+                {walletTokens.map((p) => {
+                  const isSelling = sellingMint === p.mint;
+                  const canSell = (p.current_usd || 0) > 0;
+                  return (
+                    <div key={p.mint} className="grid grid-cols-[1fr_60px_80px_56px] gap-2 px-2 py-1.5 text-[11px] font-mono items-center" data-testid={`wallet-row-${p.mint}`}>
+                      <div className="min-w-0">
+                        <div className="text-neutral-200 truncate" title={p.mint}>{p.symbol || shortMint(p.mint)}</div>
+                        <div className="text-[9px] text-neutral-600 truncate">
+                          {shortMint(p.mint)}
+                          {p.graduated && <span className="ml-1 text-blue-400">grad</span>}
+                          {p.token_program === "Token-2022" && <span className="ml-1 text-neutral-700">t22</span>}
+                        </div>
+                      </div>
+                      <div className="text-right text-neutral-500 self-center text-[10px]">{(p.amount_ui >= 1e6 ? (p.amount_ui/1e6).toFixed(1) + "M" : p.amount_ui >= 1e3 ? (p.amount_ui/1e3).toFixed(1) + "K" : p.amount_ui.toFixed(0))}</div>
+                      <div className={`text-right self-center ${canSell ? "text-blue-300" : "text-neutral-600"}`}>${(p.current_usd || 0).toFixed(4)}</div>
+                      <div className="text-right self-center">
+                        <button
+                          type="button"
+                          onClick={() => recoverWalletOne(p)}
+                          disabled={!canSell || isSelling || recovering || !!sellingMint}
+                          data-testid={`wallet-sell-${p.mint}`}
+                          title={canSell ? `Sell this token for ~$${p.current_usd.toFixed(4)}` : "No sellable value"}
+                          className="px-1.5 py-0.5 text-[9px] uppercase tracking-wider font-mono border border-blue-800/60 text-blue-300 hover:bg-blue-950/50 disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center gap-1"
+                        >
+                          {isSelling ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : "Sell"}
+                        </button>
                       </div>
                     </div>
-                    <div className="text-right text-neutral-500 self-center text-[10px]">{(p.amount_ui >= 1e6 ? (p.amount_ui/1e6).toFixed(1) + "M" : p.amount_ui >= 1e3 ? (p.amount_ui/1e3).toFixed(1) + "K" : p.amount_ui.toFixed(0))}</div>
-                    <div className={`text-right self-center ${p.current_usd > 0 ? "text-blue-300" : "text-neutral-600"}`}>${(p.current_usd || 0).toFixed(4)}</div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
             <div className="flex items-center justify-between gap-2 mt-2">
