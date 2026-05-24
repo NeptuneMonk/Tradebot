@@ -527,6 +527,22 @@ async def wallet_token_scan():
     # cluster's 60s ingress timeout, surfacing as a 502 in the UI.
     sem = _asyncio.Semaphore(10)
 
+    async def _find_pool_cached(mint: str) -> str | None:
+        """Pool addresses never change for a mint — cache permanently in
+        Mongo to avoid the expensive `getProgramAccounts` (Helius throttles
+        these aggressively; each one can take 3-8s on busy nodes)."""
+        cached = await db.pumpswap_pool_cache.find_one({"_id": mint}, {"_id": 0, "pool": 1})
+        if cached and cached.get("pool"):
+            return cached["pool"]
+        pool = await _ps.find_pool_for_mint(mint)
+        if pool:
+            await db.pumpswap_pool_cache.update_one(
+                {"_id": mint},
+                {"$set": {"pool": pool, "updated_at": datetime.now(timezone.utc).isoformat()}},
+                upsert=True,
+            )
+        return pool
+
     async def _price_one(c: dict) -> dict:
         mint = c["mint"]
         amt_raw = c["amount_raw"]
@@ -535,7 +551,12 @@ async def wallet_token_scan():
         pumpswap_pool = None
         async with sem:
             try:
-                state = await pumpfun.fetch_bonding_curve_state(mint)
+                # Per-mint timeout — better to return partial data fast than
+                # block the whole scan past the 60s ingress limit on one
+                # slow Helius response.
+                state = await _asyncio.wait_for(
+                    pumpfun.fetch_bonding_curve_state(mint), timeout=4.0
+                )
                 if state and not state.get("complete"):
                     sol_out, _ = pumpfun.quote_sell_sol(state, amt_raw, 0)
                     sol_val = sol_out / LAMPORTS_PER_SOL
@@ -545,14 +566,18 @@ async def wallet_token_scan():
                 # try PumpSwap. This is the path that fixes the user-reported
                 # "doesn't read values for graduated" bug.
                 if graduated or state is None:
-                    pool = await _ps.find_pool_for_mint(mint)
+                    pool = await _asyncio.wait_for(_find_pool_cached(mint), timeout=6.0)
                     if pool:
                         pumpswap_pool = pool
-                        pool_state = await _ps.fetch_pool_state(pool)
+                        pool_state = await _asyncio.wait_for(
+                            _ps.fetch_pool_state(pool), timeout=4.0
+                        )
                         if pool_state:
                             sol_out, _ = _ps.quote_sell_sol(pool_state, amt_raw, 0)
                             sol_val = sol_out / LAMPORTS_PER_SOL
                             graduated = True
+            except _asyncio.TimeoutError:
+                logger.debug(f"token-scan pricing timeout for {mint[:10]}…")
             except Exception as e:
                 logger.debug(f"token-scan pricing failed for {mint[:10]}…: {e}")
         # DB enrichment is cheap (single Mongo lookup) — also inside the

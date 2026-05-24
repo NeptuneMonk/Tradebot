@@ -384,3 +384,19 @@ On-chain `simulateTransaction` against a real live Pump.fun token (`4L4hou…pum
 - `solana_client.rpc_call` now retries on `ConnectTimeout`/`ReadTimeout`/`ConnectError`/`RemoteProtocolError`/HTTP 429/5xx with backoff 0.25→0.5→1.0s (3 attempts max)
 - Centralized — every callsite (token-scan, recovery, bot polling, pnl reconciler, listener) inherits resilience
 - Prevents single transient Helius hiccup from 500-ing user-facing endpoints
+
+## 2026-05-24 (later) — token-scan tail-latency fix
+
+### Symptom
+User reported `/api/wallet/token-scan` still timing out intermittently even after the gather+semaphore parallelization. Reproduced: 5-run latency was 12s / **51.6s** / 14s — second run brushed the 60s ingress timeout.
+
+### Root cause
+`pumpswap.find_pool_for_mint` issues `getProgramAccounts` calls — Helius throttles these aggressively (3-8s on slow nodes). With 23+ graduated mints in the wallet, even at concurrency=10, a single slow Helius response would block its batch and push the tail over 60s.
+
+### Fix
+1. **Mongo pool cache** (`db.pumpswap_pool_cache` collection, `_id: mint, pool: str`). Pool addresses never change for a given mint, so cache permanently. New `_find_pool_cached()` helper in server.py.
+2. **Per-mint hard timeouts** wrapped around each RPC step (4s for curve fetch, 6s for pool lookup, 4s for pool state). On timeout the mint is returned with `current_sol=0` instead of stalling the whole scan.
+3. **Bulk-seeded the cache** from the previous good scan (23 entries) so first user-facing call is immediately fast.
+
+### Verified
+5 consecutive runs: **7.05s / 6.85s / 6.20s / 6.74s / 6.81s** (down from 12-51s). All 200 OK, count=155, $2.38 recoverable.
