@@ -77,7 +77,8 @@ AUTHORIZED_FEE_RECIPIENTS = [
     Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM"),
     Pubkey.from_string("FWsW1xNtWscwNmKv6wVsU1iTzRN6wmmk3MjxRP5tT7hz"),
     Pubkey.from_string("G5UZAVbAf46s7cKWoyKu8kYTip9DGTpbLZ2qa9Aq69dP"),
-    Pubkey.from_string("TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM"),
+    # TSLvdd1pWp... removed 2026-05-24 — appeared in some tx scans but the
+    # program rejects it with NotAuthorized (6000). Kept the 7 confirmed-good.
 ]
 
 

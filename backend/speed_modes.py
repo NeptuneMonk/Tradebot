@@ -38,12 +38,15 @@ CU_PUMPFUN = 200_000
 CU_PUMPSWAP = 400_000
 
 # Preset tiers: (priority_fee_microlamports, slippage_bps, exit_slippage_bps)
+# Slippage values bumped 2026-05-24: micro-stake Pump.fun launches move fast
+# enough that a 500bps quote-to-land lag was failing with TooMuchSolRequired
+# (6002) — wider tolerance lets buys land at the cost of ~$0.01 worst case.
 PRESETS: dict[str, tuple[int, int, int]] = {
-    "eco":        (100_000,  300, 300),
-    "normal":     (300_000,  400, 400),
-    "fast":       (700_000,  500, 500),
-    "aggressive": (1_500_000, 700, 700),
-    "turbo":      (3_000_000, 1000, 1000),
+    "eco":        (100_000,  800, 800),
+    "normal":     (300_000,  1000, 1000),
+    "fast":       (700_000,  1500, 1500),
+    "aggressive": (1_500_000, 2000, 2000),
+    "turbo":      (3_000_000, 2500, 2500),
 }
 
 # Ordered slider value -> mode name (UI uses index 0..5; index 5 == "auto")
