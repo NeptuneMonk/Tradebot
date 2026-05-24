@@ -395,14 +395,27 @@ async def build_sell_ix(
 async def send_versioned_tx(
     keypair, instructions: list, priority_fee_microlamports: int = 500_000,
     compute_unit_limit: int = 200_000,
+    confirm_timeout_s: float = 25.0,
 ) -> str:
-    """Build, sign, and send a versioned transaction. Returns signature string."""
+    """Build, sign, send, and CONFIRM a versioned transaction. Returns signature.
+
+    Why we confirm instead of fire-and-forget:
+    - `skipPreflight=True` + `finalized` blockhash is a known foot-gun that
+      silently drops txs when the blockhash expires before the leader picks
+      them up. We were seeing ~50% of buy sigs never appear on-chain.
+    - We now request a `confirmed` blockhash (fresher, ~60s landing window)
+      and poll `getSignatureStatuses` until the tx lands or times out.
+    - If the tx doesn't confirm within `confirm_timeout_s`, raise — the caller
+      treats this as a failed entry and won't open a phantom trade.
+    """
     ixs = [
         set_compute_unit_limit(compute_unit_limit),
         set_compute_unit_price(priority_fee_microlamports),
         *instructions,
     ]
-    bh_res = await rpc_call("getLatestBlockhash", [{"commitment": "finalized"}])
+    # `confirmed` (~5s old) gives the leader ~60s vs `finalized` (~30s old)
+    # which only gives ~30s — too tight when the network is busy.
+    bh_res = await rpc_call("getLatestBlockhash", [{"commitment": "confirmed"}])
     blockhash_str = bh_res["result"]["value"]["blockhash"]
     from solders.hash import Hash
     blockhash = Hash.from_string(blockhash_str)
@@ -423,4 +436,30 @@ async def send_versioned_tx(
     )
     if "error" in sig_res:
         raise RuntimeError(f"sendTransaction error: {sig_res['error']}")
-    return sig_res["result"]
+    sig = sig_res["result"]
+
+    # Poll for confirmation. Pump.fun trades usually land in 2-8 seconds.
+    import asyncio as _asyncio
+    deadline = _asyncio.get_event_loop().time() + confirm_timeout_s
+    poll = 0.6
+    last_err = None
+    while _asyncio.get_event_loop().time() < deadline:
+        try:
+            st_res = await rpc_call("getSignatureStatuses", [[sig], {"searchTransactionHistory": False}])
+            value = ((st_res.get("result") or {}).get("value") or [None])[0]
+            if value:
+                err = value.get("err")
+                conf = value.get("confirmationStatus") or ""
+                if err is not None:
+                    last_err = err
+                    break
+                if conf in ("confirmed", "finalized"):
+                    return sig
+        except Exception as e:
+            last_err = e
+        await _asyncio.sleep(poll)
+        poll = min(poll * 1.3, 2.0)
+
+    if last_err is not None:
+        raise RuntimeError(f"tx {sig[:16]}… landed but failed: {last_err}")
+    raise RuntimeError(f"tx {sig[:16]}… not confirmed in {confirm_timeout_s}s (blockhash likely expired)")
