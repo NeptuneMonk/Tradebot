@@ -176,13 +176,33 @@ class BotState:
 
     def _is_panic_exit(self, reason: str) -> bool:
         """Return True for exits where landing the sell matters more than the
-        price (stop-loss, hard-stop, classifier abort, bonding-curve complete).
+        price (stop-loss, hard-stop, classifier abort, bonding-curve complete,
+        OR trailing-stop on a position that already peaked >20% — those are
+        volatile exits where price can drop another 10-20% between IX build
+        and tx land, and the standard 10% slippage gets exceeded).
         These get wider `panic_exit_slippage_bps` to avoid 6003 reverts on dumps.
         """
         r = (reason or "").lower()
-        return any(k in r for k in (
+        if any(k in r for k in (
             "stop-loss", "hard-stop", "classifier", "bonding curve completed"
-        ))
+        )):
+            return True
+        # Trailing-stop on a hot position — extract peak pct from the reason
+        # string ("trailing-stop hit (peak +40.3%, now +32.4%)") and tier up
+        # when peak ≥ 20%. Tokens that ran that hard are still volatile on
+        # the way down and need 25% slippage to land the sell.
+        if "trailing-stop" in r:
+            try:
+                # parse "(peak +XX.X%"
+                idx = r.find("peak +")
+                if idx >= 0:
+                    peak_str = r[idx + 6:idx + 12].split("%")[0]
+                    peak_val = float(peak_str)
+                    if peak_val >= 20.0:
+                        return True
+            except (ValueError, IndexError):
+                pass
+        return False
 
     def _exit_slip_for(self, reason: str, base_exit_slip_bps: int) -> int:
         """Resolve the slippage tier for a given exit. Panic exits widen to
