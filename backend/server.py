@@ -480,6 +480,7 @@ async def wallet_token_scan():
     from solders.pubkey import Pubkey
     from wallet import get_pubkey
     import pumpfun
+    import pumpswap as _ps
     from solana_client import rpc_call, get_sol_usd_price, LAMPORTS_PER_SOL
 
     wallet = str(get_pubkey())
@@ -503,9 +504,12 @@ async def wallet_token_scan():
             mint = info.get("mint")
             if not mint:
                 continue
-            # Quote current sell value (Pump.fun only)
+            # Quote current sell value — try bonding curve first, fall back
+            # to PumpSwap AMM for graduated tokens so the user can SEE what
+            # the stranded tokens are actually worth.
             sol_val = 0.0
             graduated = False
+            pumpswap_pool = None
             try:
                 state = await pumpfun.fetch_bonding_curve_state(mint)
                 if state and not state.get("complete"):
@@ -513,6 +517,18 @@ async def wallet_token_scan():
                     sol_val = sol_out / LAMPORTS_PER_SOL
                 elif state and state.get("complete"):
                     graduated = True
+                # If graduated OR no curve state (could be pure PumpSwap token),
+                # try PumpSwap. This is the path that fixes the user-reported
+                # "doesn't read values for graduated" bug.
+                if graduated or state is None:
+                    pool = await _ps.find_pool_for_mint(mint)
+                    if pool:
+                        pumpswap_pool = pool
+                        pool_state = await _ps.fetch_pool_state(pool)
+                        if pool_state:
+                            sol_out, _ = _ps.quote_sell_sol(pool_state, amt_raw, 0)
+                            sol_val = sol_out / LAMPORTS_PER_SOL
+                            graduated = True
             except Exception:
                 pass
             # Try to enrich with a name from the bot DB (latest matching launch)
@@ -527,6 +543,7 @@ async def wallet_token_scan():
                 "current_sol": sol_val,
                 "current_usd": sol_val * sol_price,
                 "graduated": graduated,
+                "pumpswap_pool": pumpswap_pool,
             })
     results.sort(key=lambda x: -x["current_usd"])
     total_usd = sum(r["current_usd"] for r in results)
@@ -569,13 +586,51 @@ async def wallet_recover_mints(req: RecoverMintsReq):
             tp = await pumpfun.get_mint_token_program(mint)
             ata = pumpfun.derive_associated_token_for_program(user, mint_pk, tp)
             balance = await _ps.get_token_balance(ata)
+            # If the legacy/curve-derived ATA holds nothing, also check the
+            # PumpSwap-style ATA (used post-graduation when token-2022 isn't
+            # the program). Some graduated tokens migrate to standard SPL.
+            if balance <= 0:
+                ata_alt = _ps.get_associated_token_address(user, mint_pk, _ps.TOKEN_PROGRAM)
+                if str(ata_alt) != str(ata):
+                    balance = await _ps.get_token_balance(ata_alt)
+                    if balance > 0:
+                        ata = ata_alt
             if balance <= 0:
                 return {"mint": mint, "ok": False, "reason": "wallet balance is 0"}
             state = await pumpfun.fetch_bonding_curve_state(mint)
-            if not state:
-                return {"mint": mint, "ok": False, "reason": "no bonding curve (graduated or invalid)"}
-            if state.get("complete"):
-                return {"mint": mint, "ok": False, "reason": "graduated (needs PumpSwap path)"}
+            # GRADUATED PATH — route through PumpSwap AMM
+            if not state or state.get("complete"):
+                pool = await _ps.find_pool_for_mint(mint)
+                if not pool:
+                    return {"mint": mint, "ok": False, "reason": "no PumpSwap pool (token may not be tradeable yet)"}
+                pool_state = await _ps.fetch_pool_state(pool)
+                if not pool_state:
+                    return {"mint": mint, "ok": False, "reason": "pumpswap pool state unavailable"}
+                sell_amount = max(int(balance * 0.995), 1)
+                sol_out_q, min_sol = _ps.quote_sell_sol(pool_state, sell_amount, 3000)
+                # PumpSwap sell needs the wsol unwrap account + close
+                ata_pk = _ps.get_associated_token_address(user, mint_pk, _ps.TOKEN_PROGRAM)
+                wsol_acc, wsol_ixs = _ps.build_wsol_wrap_ixs(user, 0)
+                ixs = [
+                    *wsol_ixs,
+                    _ps.build_sell_ix(
+                        user, pool_state, ata_pk, wsol_acc,
+                        base_amount_in=sell_amount,
+                        min_quote_amount_out=min_sol,
+                    ),
+                    _ps.build_close_wsol_ix(user, wsol_acc),
+                ]
+                sig = await pumpfun.send_versioned_tx(
+                    kp, ixs, priority_fee_microlamports=1_500_000,
+                    compute_unit_limit=400_000, confirm_timeout_s=25.0,
+                )
+                return {
+                    "mint": mint, "ok": True, "sig": sig,
+                    "tokens_sold": balance,
+                    "sol_received_quoted": sol_out_q / 1e9,
+                    "via": "pumpswap_amm",
+                }
+            # BONDING CURVE PATH
             creator_str = state.get("creator")
             if not creator_str:
                 return {"mint": mint, "ok": False, "reason": "no creator on curve"}
@@ -595,6 +650,7 @@ async def wallet_recover_mints(req: RecoverMintsReq):
                 "mint": mint, "ok": True, "sig": sig,
                 "tokens_sold": balance,
                 "sol_received_quoted": sol_out_q / 1e9,
+                "via": "bonding_curve",
             }
         except Exception as e:
             return {"mint": mint, "ok": False, "reason": f"error: {e}"}
@@ -652,6 +708,7 @@ async def list_stuck_trades():
             balance = 0
         current_sol = 0.0
         graduated = False
+        pumpswap_pool = None
         if balance > 0 and protocol != "pumpswap":
             try:
                 state = await pumpfun.fetch_bonding_curve_state(mint)
@@ -660,6 +717,27 @@ async def list_stuck_trades():
                     current_sol = sol_out / LAMPORTS_PER_SOL
                 elif state and state.get("complete"):
                     graduated = True
+                    # Graduated to PumpSwap AMM — fetch the pool and quote
+                    # from there so the UI shows real recoverable SOL value.
+                    pool = await _ps.find_pool_for_mint(mint)
+                    if pool:
+                        pumpswap_pool = pool
+                        pool_state = await _ps.fetch_pool_state(pool)
+                        if pool_state:
+                            sol_out, _ = _ps.quote_sell_sol(pool_state, balance, 0)
+                            current_sol = sol_out / LAMPORTS_PER_SOL
+            except Exception:
+                pass
+        elif balance > 0 and protocol == "pumpswap":
+            # Already-tagged pumpswap protocol — quote from its pool
+            try:
+                pool = await _ps.find_pool_for_mint(mint)
+                if pool:
+                    pumpswap_pool = pool
+                    pool_state = await _ps.fetch_pool_state(pool)
+                    if pool_state:
+                        sol_out, _ = _ps.quote_sell_sol(pool_state, balance, 0)
+                        current_sol = sol_out / LAMPORTS_PER_SOL
             except Exception:
                 pass
         out.append({
@@ -669,6 +747,7 @@ async def list_stuck_trades():
             "current_usd": current_sol * sol_price,
             "entry_pct_held": (balance / t["entry_tokens"] * 100) if t.get("entry_tokens") else 0,
             "graduated": graduated,
+            "pumpswap_pool": pumpswap_pool,
         })
     out.sort(key=lambda x: -x.get("current_usd", 0))
     return {"stuck": out, "sol_price_usd": sol_price}
@@ -696,9 +775,22 @@ async def recover_stuck_trade(trade_id: str):
     kp = get_keypair()
     user = get_pubkey()
 
-    # Read actual token balance from the wallet ATA
+    # Read actual token balance from the wallet ATA. For graduated tokens
+    # the bonding-curve ATA is the same (it's the user's mint ATA), but the
+    # SELL path differs — we use PumpSwap AMM instead of the dead curve.
     protocol = trade.get("protocol") or "pumpfun"
-    if protocol == "pumpswap":
+    # Detect graduation: even if `protocol` says pumpfun, the bonding curve
+    # may have completed AFTER the trade was abandoned. Check fresh state.
+    graduated = False
+    if protocol != "pumpswap":
+        try:
+            _bc = await pumpfun.fetch_bonding_curve_state(mint)
+            if _bc and _bc.get("complete"):
+                graduated = True
+        except Exception:
+            pass
+
+    if protocol == "pumpswap" or graduated:
         ata = _ps.get_associated_token_address(user, mint_pk, _ps.TOKEN_PROGRAM)
     else:
         tp = await pumpfun.get_mint_token_program(mint)
@@ -719,9 +811,56 @@ async def recover_stuck_trade(trade_id: str):
         )
         return {"ok": False, "reason": "wallet balance is 0 — nothing to recover (auto-closed)"}
 
-    # Build & send sell with generous slippage (recovery prioritises landing)
-    if protocol == "pumpswap":
-        raise HTTPException(status_code=400, detail="pumpswap recovery not implemented yet")
+    # GRADUATED or PumpSwap-native: route the sell through PumpSwap AMM.
+    if protocol == "pumpswap" or graduated:
+        pool = await _ps.find_pool_for_mint(mint)
+        if not pool:
+            return {"ok": False, "reason": "no PumpSwap pool found for this mint — token may not have graduated yet"}
+        pool_state = await _ps.fetch_pool_state(pool)
+        if not pool_state:
+            return {"ok": False, "reason": f"pool state unavailable (pool={pool})"}
+        sell_amount = max(int(actual_tokens * 0.995), 1)
+        sol_out, min_sol = _ps.quote_sell_sol(pool_state, sell_amount, 3000)  # 30% slippage
+        # Build wsol unwrap account + sell + close
+        wsol_acc, wsol_ixs = _ps.build_wsol_wrap_ixs(user, 0)
+        ata_pk = _ps.get_associated_token_address(user, mint_pk, _ps.TOKEN_PROGRAM)
+        ixs = [
+            *wsol_ixs,
+            _ps.build_sell_ix(
+                user, pool_state, ata_pk, wsol_acc,
+                base_amount_in=sell_amount,
+                min_quote_amount_out=min_sol,
+            ),
+            _ps.build_close_wsol_ix(user, wsol_acc),
+        ]
+        try:
+            sig = await pumpfun.send_versioned_tx(
+                kp, ixs, priority_fee_microlamports=1_500_000,
+                compute_unit_limit=400_000, confirm_timeout_s=40.0,
+            )
+        except Exception as e:
+            return {"ok": False, "reason": f"pumpswap sell failed: {e}"}
+        await bot_state.db.trades.update_one(
+            {"id": trade_id},
+            {"$set": {
+                "status": "closed",
+                "exit_time": datetime.now(timezone.utc).isoformat(),
+                "exit_reason": f"manual recovery via PumpSwap (graduated, sold {actual_tokens} tokens for {sol_out/1e9:.6f} SOL)",
+                "exit_sig": sig,
+                "exit_sol": sol_out / 1e9,
+                "recovered": True,
+                "protocol": "pumpswap",
+            }},
+        )
+        return {
+            "ok": True,
+            "sig": sig,
+            "sold_tokens": actual_tokens,
+            "received_sol": sol_out / 1e9,
+            "via": "pumpswap_amm",
+        }
+
+    # Bonding curve recovery (curve not yet complete)
     state = await pumpfun.fetch_bonding_curve_state(mint)
     if not state:
         return {"ok": False, "reason": "bonding curve not found (may have graduated)"}

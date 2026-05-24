@@ -64,7 +64,10 @@ export default function StuckPositions() {
     () => walletTokens.reduce((s, p) => s + (p.current_usd || 0), 0),
     [walletTokens]
   );
-  const sellableWalletTokens = walletTokens.filter(p => p.current_usd > 0 && !p.graduated);
+  // After 2026-05-25, the backend recover endpoints route graduated tokens
+  // through PumpSwap AMM, so they ARE sellable — include them in the
+  // selectable wallet-tokens list. `current_usd > 0` is the only filter.
+  const sellableWalletTokens = walletTokens.filter(p => p.current_usd > 0);
 
   const toggleOne = (id) => {
     setSelected(prev => {

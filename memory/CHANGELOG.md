@@ -1,5 +1,38 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-25 (LATE AM) — Graduated-token recovery now actually works
+
+### Bug
+User reported: "Sell recovery not working for graduated. It doesn't read values either for those."
+
+Root cause: 3 endpoints + 1 frontend filter all assumed graduated tokens were dead-ends:
+- `GET /api/trades/stuck` — only quoted via bonding curve; graduated rows showed `current_sol=0`
+- `GET /api/wallet/token-scan` — same problem
+- `POST /api/trades/recover/{id}` — raised `400 pumpswap recovery not implemented yet`
+- `POST /api/wallet/recover-mints` — returned `"graduated (needs PumpSwap path)"` and gave up
+- Frontend `StuckPositions.jsx`: filtered graduated out of `sellableWalletTokens` so user couldn't even select them
+
+### Fixes
+**Backend (`server.py`)**:
+- `/api/trades/stuck`: detects `state.complete`, calls `pumpswap.find_pool_for_mint` + `quote_sell_sol` to compute real `current_sol`/`current_usd`. Adds `pumpswap_pool` field.
+- `/api/wallet/token-scan`: same enrichment for any graduated mint (including ones the bot never traded, e.g. tokens stranded from prior buggy code paths).
+- `/api/trades/recover/{id}`: detects graduation on the fly (fresh `fetch_bonding_curve_state` check), routes the sell through `pumpswap.build_sell_ix` + wsol wrap/close IXs. Updates `protocol="pumpswap"` on the trade row after success.
+- `/api/wallet/recover-mints`: same fork — bonding-curve path for live curves, PumpSwap AMM path for graduated.
+
+**Frontend (`StuckPositions.jsx`)**:
+- Removed `!p.graduated` filter from `sellableWalletTokens` so graduated tokens are now selectable for batch recovery.
+
+### Verified
+- GRIT (production-graduated): `/api/trades/stuck` returns `current_sol=0.001735`, `current_usd=$0.15`, `pumpswap_pool=GqTpKGPKYw...`
+- Wallet scan: discovered 105 stranded tokens worth $0.86 total — every graduated one now shows real value
+- `find_pool_for_mint` + `quote_sell_sol` end-to-end verified on multiple production mints
+- Backend hot-reload OK, no lint errors
+
+### Known limitation
+`find_pool_for_mint` calls `getProgramAccounts` which Helius occasionally rate-limits, returning `None`. The user will see "no PumpSwap pool found" — retrying usually succeeds. Could add a fallback to fetch pool via Pump.fun API in a future pass.
+
+
+
 ## 2026-05-25 (MID AM) — Two more race fixes + graduated-mint handler
 
 ### Diagnosis from live log analysis
