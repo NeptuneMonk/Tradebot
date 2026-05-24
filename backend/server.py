@@ -327,6 +327,132 @@ async def reset_live_pnl():
     }
 
 
+@api.post("/trades/recover-all")
+async def recover_all_stuck():
+    """Walk every stuck position. For each: if tokens still in wallet, sell;
+    if balance is 0, auto-close the row. Returns per-trade outcome."""
+    cursor = bot_state.db.trades.find(
+        {"status": "exit_failed_terminal"},
+        {"_id": 0, "id": 1, "symbol": 1},
+    )
+    rows = [t async for t in cursor]
+    results = []
+    for r in rows:
+        try:
+            res = await recover_stuck_trade(r["id"])
+        except HTTPException as e:
+            res = {"ok": False, "reason": f"http {e.status_code}: {e.detail}"}
+        except Exception as e:
+            res = {"ok": False, "reason": f"error: {e}"}
+        results.append({"id": r["id"], "symbol": r.get("symbol"), **res})
+    recovered = sum(1 for x in results if x.get("ok"))
+    auto_closed = sum(1 for x in results if not x.get("ok") and "auto-closed" in (x.get("reason") or ""))
+    return {
+        "ok": True,
+        "total": len(results),
+        "recovered": recovered,
+        "auto_closed": auto_closed,
+        "errors": len(results) - recovered - auto_closed,
+        "results": results,
+    }
+async def list_stuck_trades():
+    """List positions where the sell tx failed and tokens are still in wallet."""
+    cursor = bot_state.db.trades.find(
+        {"status": "exit_failed_terminal"},
+        {"_id": 0, "id": 1, "symbol": 1, "mint": 1, "entry_sol": 1, "entry_usd": 1,
+         "entry_tokens": 1, "exit_reason": 1, "exit_time": 1},
+    )
+    return {"stuck": [t async for t in cursor]}
+
+
+@api.post("/trades/recover/{trade_id}")
+async def recover_stuck_trade(trade_id: str):
+    """Manually retry selling a stuck position. Reads ACTUAL wallet balance
+    for the mint and sells whatever's there (so partial-TP'd positions work).
+
+    Uses the bot's current speed_mode for priority fee / slippage, with the
+    new tx-confirmation polling, so phantom sells are impossible.
+    """
+    from solders.pubkey import Pubkey
+    from wallet import get_keypair, get_pubkey
+    import pumpfun
+    import pumpswap as _ps
+
+    trade = await bot_state.db.trades.find_one({"id": trade_id, "status": "exit_failed_terminal"}, {"_id": 0})
+    if not trade:
+        raise HTTPException(status_code=404, detail="stuck trade not found")
+
+    mint = trade["mint"]
+    mint_pk = Pubkey.from_string(mint)
+    kp = get_keypair()
+    user = get_pubkey()
+
+    # Read actual token balance from the wallet ATA
+    protocol = trade.get("protocol") or "pumpfun"
+    if protocol == "pumpswap":
+        ata = _ps.get_associated_token_address(user, mint_pk, _ps.TOKEN_PROGRAM)
+    else:
+        tp = await pumpfun.get_mint_token_program(mint)
+        ata = pumpfun.derive_associated_token_for_program(user, mint_pk, tp)
+    actual_tokens = await _ps.get_token_balance(ata)
+    if actual_tokens <= 0:
+        # No tokens left — close the row so it stops appearing in the stuck list
+        await bot_state.db.trades.update_one(
+            {"id": trade_id},
+            {"$set": {
+                "status": "closed",
+                "exit_reason": (trade.get("exit_reason") or "") + " | auto-closed: wallet balance is 0",
+                "recovered": False,
+                "pnl_sol": 0.0,
+                "pnl_usd": 0.0,
+                "pnl_pct": 0.0,
+            }},
+        )
+        return {"ok": False, "reason": "wallet balance is 0 — nothing to recover (auto-closed)"}
+
+    # Build & send sell with generous slippage (recovery prioritises landing)
+    if protocol == "pumpswap":
+        raise HTTPException(status_code=400, detail="pumpswap recovery not implemented yet")
+    state = await pumpfun.fetch_bonding_curve_state(mint)
+    if not state:
+        return {"ok": False, "reason": "bonding curve not found (may have graduated)"}
+    creator_str = state.get("creator") or trade.get("creator")
+    if not creator_str:
+        return {"ok": False, "reason": "no creator available for creator_vault PDA"}
+    is_cb = bool(state.get("is_cashback", False))
+    tp = await pumpfun.get_mint_token_program(mint)
+
+    # Quote with very wide slippage (30%) — we just want this thing OFF the wallet
+    sol_out, min_sol = pumpfun.quote_sell_sol(state, actual_tokens, 3000)
+    creator_pk = Pubkey.from_string(creator_str)
+    ix = await pumpfun.build_sell_ix(user, mint_pk, actual_tokens, min_sol, creator_pk, tp, cashback=is_cb)
+    try:
+        sig = await pumpfun.send_versioned_tx(
+            kp, [ix], priority_fee_microlamports=1_500_000, confirm_timeout_s=40.0
+        )
+    except Exception as e:
+        return {"ok": False, "reason": f"sell failed: {e}"}
+
+    # Mark recovered
+    await bot_state.db.trades.update_one(
+        {"id": trade_id},
+        {"$set": {
+            "status": "closed",
+            "exit_time": datetime.now(timezone.utc).isoformat(),
+            "exit_reason": f"manual recovery (sold {actual_tokens} tokens for {sol_out/1e9:.6f} SOL)",
+            "exit_sig": sig,
+            "exit_sol": sol_out / 1e9,
+            "recovered": True,
+        }},
+    )
+    return {
+        "ok": True,
+        "sig": sig,
+        "tokens_sold": actual_tokens,
+        "sol_received_quoted": sol_out / 1e9,
+    }
+
+
 # ---------- Launches & Trades ----------
 @api.get("/launches/recent")
 async def launches_recent(limit: int = 30):

@@ -1509,6 +1509,9 @@ class BotState:
         # For live trades, size the sell by the ACTUAL wallet balance — fees
         # taken at buy time mean our balance is usually a touch lower than
         # entry_tokens, and trying to sell more than we hold reverts the tx.
+        # IMPORTANT: Pump.fun tokens are now Token-2022 — must derive ATA with
+        # the correct token program, else we read the wrong (empty) ATA and
+        # fall back to entry_tokens, which oversells after a partial-TP.
         if trade_doc["mode"] == "live":
             try:
                 user = get_pubkey()
@@ -1517,10 +1520,16 @@ class BotState:
                     ata = pumpswap.get_associated_token_address(user, mint_pk, pumpswap.TOKEN_PROGRAM)
                     actual = await pumpswap.get_token_balance(ata)
                 else:
-                    ata = pumpfun.derive_associated_token(user, mint_pk)
+                    tp = await pumpfun.get_mint_token_program(mint)
+                    ata = pumpfun.derive_associated_token_for_program(user, mint_pk, tp)
                     actual = await pumpswap.get_token_balance(ata)
                 if actual > 0:
                     tokens_in = min(tokens_in, actual)
+                elif actual == 0 and tokens_in > 0:
+                    # We hold zero of this mint — nothing to sell. Mark closed
+                    # with zero PnL to avoid a phantom sell that would revert.
+                    logger.warning(f"sell skipped for {mint}: ATA balance is 0 (already sold or never bought)")
+                    tokens_in = 0
             except Exception as e:
                 logger.warning(f"balance read failed for {mint}, falling back to entry_tokens: {e}")
 
