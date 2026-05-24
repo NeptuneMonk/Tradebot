@@ -163,6 +163,7 @@ class Trade(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=new_id)
     mint: str
+    creator: Optional[str] = None  # required for Pump.fun creator_vault PDA
     name: Optional[str] = None
     symbol: Optional[str] = None
     status: Literal["active", "closed", "failed"] = "active"

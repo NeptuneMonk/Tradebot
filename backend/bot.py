@@ -514,8 +514,10 @@ class BotState:
         entry_price_sol = sol_in_lamports / tokens_out / LAMPORTS_PER_SOL
         mode = "live" if self.config.live_trading else "paper"
         est_entry_fee_sol = estimate_tx_fee_sol(eff_priority, CU_PUMPFUN)
+        creator_str = w.get("creator") or ""
         trade = Trade(
             mint=mint,
+            creator=creator_str or None,
             name=w.get("name"),
             symbol=w.get("symbol"),
             status="active",
@@ -530,13 +532,18 @@ class BotState:
             classifier_action="reentry",
         )
         if mode == "live":
+            if not creator_str:
+                logger.error(f"re-entry skipped {mint}: missing creator (required for creator_vault PDA)")
+                return
             try:
                 kp = get_keypair()
                 user = get_pubkey()
                 mint_pk = Pubkey.from_string(mint)
+                creator_pk = Pubkey.from_string(creator_str)
+                tp = await pumpfun.get_mint_token_program(mint)
                 ixs = [
-                    pumpfun.build_create_ata_ix(user, user, mint_pk),
-                    pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol),
+                    pumpfun.build_create_ata_ix(user, user, mint_pk, tp),
+                    pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol, creator_pk, tp),
                 ]
                 sig = await pumpfun.send_versioned_tx(kp, ixs, eff_priority)
                 trade.entry_sig = sig
@@ -1056,6 +1063,7 @@ class BotState:
 
         trade = Trade(
             mint=launch.mint,
+            creator=launch.creator,
             name=launch.name,
             symbol=launch.symbol,
             status="active",
@@ -1097,9 +1105,13 @@ class BotState:
                         compute_unit_limit=400_000,
                     )
                 else:
+                    if not launch.creator:
+                        raise RuntimeError("missing launch.creator (required for creator_vault PDA)")
+                    creator_pk = Pubkey.from_string(launch.creator)
+                    tp = await pumpfun.get_mint_token_program(launch.mint)
                     ixs = [
-                        pumpfun.build_create_ata_ix(user, user, mint_pk),
-                        pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol),
+                        pumpfun.build_create_ata_ix(user, user, mint_pk, tp),
+                        pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol, creator_pk, tp),
                     ]
                     sig = await pumpfun.send_versioned_tx(
                         kp, ixs, eff_priority
@@ -1369,7 +1381,12 @@ class BotState:
                         kp, ixs, eff_priority, compute_unit_limit=400_000,
                     )
                 else:
-                    ix = pumpfun.build_sell_ix(user, mint_pk, sell_tokens, min_sol)
+                    creator_str = trade_doc.get("creator") or (slot.get("launch") or {}).get("creator") or ""
+                    if not creator_str:
+                        raise RuntimeError("missing creator for partial-sell creator_vault PDA")
+                    creator_pk = Pubkey.from_string(creator_str)
+                    tp = await pumpfun.get_mint_token_program(mint)
+                    ix = pumpfun.build_sell_ix(user, mint_pk, sell_tokens, min_sol, creator_pk, tp)
                     partial_sig = await pumpfun.send_versioned_tx(
                         kp, [ix], eff_priority
                     )
@@ -1508,7 +1525,12 @@ class BotState:
                         compute_unit_limit=400_000,
                     )
                 else:
-                    ix = pumpfun.build_sell_ix(user, mint_pk, tokens_in, min_sol)
+                    creator_str = trade_doc.get("creator") or (slot.get("launch") or {}).get("creator") or ""
+                    if not creator_str:
+                        raise RuntimeError("missing creator for final-sell creator_vault PDA")
+                    creator_pk = Pubkey.from_string(creator_str)
+                    tp = await pumpfun.get_mint_token_program(mint)
+                    ix = pumpfun.build_sell_ix(user, mint_pk, tokens_in, min_sol, creator_pk, tp)
                     exit_sig = await pumpfun.send_versioned_tx(
                         kp, [ix], eff_priority
                     )
