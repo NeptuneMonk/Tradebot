@@ -40,6 +40,13 @@ On-chain `simulateTransaction` against a real live Pump.fun token (`4L4hou…pum
 - `/app/backend/bot.py` (4 call sites updated to pass creator + token_program)
 - `/app/backend/tests/sim_buy_tx.py` (new simulator)
 
+### 2026-05-24 follow-up — Cashback-coin sell path
+- `fetch_bonding_curve_state` now reads byte 82 → `is_cashback` flag.
+- `build_sell_ix(..., cashback=False)` inserts `user_volume_accumulator` before `bonding_curve_v2` when cashback=True (17 accounts) vs 16 for standard.
+- Both partial-sell and final-sell sites in `bot.py` now pass the per-coin cashback flag automatically detected from the already-fetched bonding curve state.
+- Verified across 4 live Pump.fun tokens: 2 cashback (17 accounts), 2 non-cashback (16 accounts). All correctly classified.
+- `/app/backend/tests/sim_sell_shape.py` added for ongoing verification.
+
 ## 2026-02-23 — Auth lockdown (Emergent Google OAuth, single-user)
 - **Backend**:
   - New `/app/backend/auth.py` module with Emergent OAuth session exchange.

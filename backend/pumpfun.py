@@ -172,14 +172,18 @@ def derive_fee_config() -> Pubkey:
 async def fetch_bonding_curve_state(mint_str: str) -> dict | None:
     """
     Fetch the bonding curve account data.
-    Layout (Anchor):
-      8  discriminator
-      8  virtual_token_reserves (u64)
-      8  virtual_sol_reserves (u64)
-      8  real_token_reserves (u64)
-      8  real_sol_reserves (u64)
-      8  token_total_supply (u64)
-      1  complete (bool)
+    Layout (Anchor, post-2026-04-28):
+      0..8    discriminator
+      8..16   virtual_token_reserves (u64)
+      16..24  virtual_sol_reserves (u64)
+      24..32  real_token_reserves (u64)
+      32..40  real_sol_reserves (u64)
+      40..48  token_total_supply (u64)
+      48      complete (bool)
+      49..81  creator (Pubkey)
+      81      reserved (u8)
+      82      cashback_enabled (bool)   ← determines sell IX shape
+      83..    extended fields
     """
     mint = Pubkey.from_string(mint_str)
     bc = derive_bonding_curve(mint)
@@ -196,6 +200,7 @@ async def fetch_bonding_curve_state(mint_str: str) -> dict | None:
         return None
     vtr, vsr, rtr, rsr, tts = struct.unpack_from("<QQQQQ", data, 8)
     complete = bool(data[48])
+    is_cashback = bool(data[82]) if len(data) > 82 else False
     return {
         "virtual_token_reserves": vtr,
         "virtual_sol_reserves": vsr,
@@ -203,6 +208,7 @@ async def fetch_bonding_curve_state(mint_str: str) -> dict | None:
         "real_sol_reserves": rsr,
         "token_total_supply": tts,
         "complete": complete,
+        "is_cashback": is_cashback,
     }
 
 
@@ -302,8 +308,13 @@ def build_sell_ix(
     min_sol_out_lamports: int,
     creator: Pubkey,
     token_program: Pubkey = TOKEN_PROGRAM,
+    cashback: bool = False,
 ) -> Instruction:
-    """Build a Pump.fun sell instruction with the post-2026-04-28 layout."""
+    """Build a Pump.fun sell instruction with the post-2026-04-28 layout.
+
+    Cashback coins require `user_volume_accumulator` inserted before
+    `bonding_curve_v2`. Detect this via byte 82 of the bonding curve account.
+    """
     bonding_curve = derive_bonding_curve(mint)
     associated_bonding_curve = derive_associated_token_for_program(bonding_curve, mint, token_program)
     associated_user = derive_associated_token_for_program(user, mint, token_program)
@@ -318,27 +329,31 @@ def build_sell_ix(
         + struct.pack("<QQ", amount_tokens, min_sol_out_lamports)
         + TRACK_VOLUME_TAIL
     )
+    accounts = [
+        AccountMeta(GLOBAL_PDA, False, False),                  # 0
+        AccountMeta(fee_recipient, False, True),                # 1
+        AccountMeta(mint, False, False),                        # 2
+        AccountMeta(bonding_curve, False, True),                # 3
+        AccountMeta(associated_bonding_curve, False, True),     # 4
+        AccountMeta(associated_user, False, True),              # 5
+        AccountMeta(user, True, True),                          # 6
+        AccountMeta(SYSTEM_PROGRAM_ID, False, False),           # 7
+        AccountMeta(creator_vault, False, True),                # 8
+        AccountMeta(token_program, False, False),               # 9
+        AccountMeta(EVENT_AUTHORITY, False, False),             # 10
+        AccountMeta(PUMP_PROGRAM_ID, False, False),             # 11
+        AccountMeta(fee_config, False, False),                  # 12
+        AccountMeta(FEE_PROGRAM, False, False),                 # 13
+    ]
+    if cashback:
+        user_vol_acc = derive_user_volume_accumulator(user)
+        accounts.append(AccountMeta(user_vol_acc, False, True))  # +1 cashback
+    accounts.append(AccountMeta(bonding_curve_v2, False, False))
+    accounts.append(AccountMeta(breaking_fee, False, True))
     return Instruction(
         program_id=PUMP_PROGRAM_ID,
         data=data,
-        accounts=[
-            AccountMeta(GLOBAL_PDA, False, False),                  # 0
-            AccountMeta(fee_recipient, False, True),                # 1
-            AccountMeta(mint, False, False),                        # 2
-            AccountMeta(bonding_curve, False, True),                # 3
-            AccountMeta(associated_bonding_curve, False, True),     # 4
-            AccountMeta(associated_user, False, True),              # 5
-            AccountMeta(user, True, True),                          # 6
-            AccountMeta(SYSTEM_PROGRAM_ID, False, False),           # 7
-            AccountMeta(creator_vault, False, True),                # 8
-            AccountMeta(token_program, False, False),               # 9
-            AccountMeta(EVENT_AUTHORITY, False, False),             # 10
-            AccountMeta(PUMP_PROGRAM_ID, False, False),             # 11
-            AccountMeta(fee_config, False, False),                  # 12
-            AccountMeta(FEE_PROGRAM, False, False),                 # 13
-            AccountMeta(bonding_curve_v2, False, False),            # 14
-            AccountMeta(breaking_fee, False, True),                 # 15
-        ],
+        accounts=accounts,
     )
 
 

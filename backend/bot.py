@@ -1386,7 +1386,8 @@ class BotState:
                         raise RuntimeError("missing creator for partial-sell creator_vault PDA")
                     creator_pk = Pubkey.from_string(creator_str)
                     tp = await pumpfun.get_mint_token_program(mint)
-                    ix = pumpfun.build_sell_ix(user, mint_pk, sell_tokens, min_sol, creator_pk, tp)
+                    is_cashback = bool((state or {}).get("is_cashback", False))
+                    ix = pumpfun.build_sell_ix(user, mint_pk, sell_tokens, min_sol, creator_pk, tp, cashback=is_cashback)
                     partial_sig = await pumpfun.send_versioned_tx(
                         kp, [ix], eff_priority
                     )
@@ -1530,7 +1531,8 @@ class BotState:
                         raise RuntimeError("missing creator for final-sell creator_vault PDA")
                     creator_pk = Pubkey.from_string(creator_str)
                     tp = await pumpfun.get_mint_token_program(mint)
-                    ix = pumpfun.build_sell_ix(user, mint_pk, tokens_in, min_sol, creator_pk, tp)
+                    is_cashback = bool((state or {}).get("is_cashback", False))
+                    ix = pumpfun.build_sell_ix(user, mint_pk, tokens_in, min_sol, creator_pk, tp, cashback=is_cashback)
                     exit_sig = await pumpfun.send_versioned_tx(
                         kp, [ix], eff_priority
                     )
