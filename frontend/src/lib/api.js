@@ -36,4 +36,9 @@ export const api = {
   authMe: () => client.get("/auth/me").then(r => r.data),
   authSession: (sessionId) => client.post("/auth/session", null, { headers: { "X-Session-ID": sessionId } }).then(r => r.data),
   authLogout: () => client.post("/auth/logout").then(r => r.data),
+  // Stuck-trade recovery
+  stuckTrades: () => client.get("/trades/stuck").then(r => r.data),
+  recoverStuck: (tradeId) => client.post(`/trades/recover/${tradeId}`).then(r => r.data),
+  recoverStuckBatch: (tradeIds) => client.post("/trades/recover-batch", { trade_ids: tradeIds }).then(r => r.data),
+  recoverStuckAll: () => client.post("/trades/recover-all").then(r => r.data),
 };

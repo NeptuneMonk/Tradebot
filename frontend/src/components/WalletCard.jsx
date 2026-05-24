@@ -3,6 +3,7 @@ import { Copy, Wallet as WalletIcon, Check, Send } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { toast } from "sonner";
 import WithdrawDialog from "@/components/WithdrawDialog";
+import StuckPositions from "@/components/StuckPositions";
 import { copyToClipboard } from "@/lib/clipboard";
 
 export default function WalletCard({ wallet }) {
@@ -88,6 +89,8 @@ export default function WalletCard({ wallet }) {
           </div>
         )}
       </div>
+
+      <StuckPositions />
 
       <WithdrawDialog
         open={showWithdraw}

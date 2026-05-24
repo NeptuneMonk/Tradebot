@@ -355,14 +355,89 @@ async def recover_all_stuck():
         "errors": len(results) - recovered - auto_closed,
         "results": results,
     }
+
+
+class RecoverBatchReq(BaseModel):
+    trade_ids: list[str]
+
+
+@api.post("/trades/recover-batch")
+async def recover_batch(req: RecoverBatchReq):
+    """Recover a user-selected subset of stuck trades. Per-trade outcomes returned."""
+    results = []
+    for tid in req.trade_ids:
+        try:
+            res = await recover_stuck_trade(tid)
+        except HTTPException as e:
+            res = {"ok": False, "reason": f"http {e.status_code}: {e.detail}"}
+        except Exception as e:
+            res = {"ok": False, "reason": f"error: {e}"}
+        results.append({"id": tid, **res})
+    recovered = sum(1 for x in results if x.get("ok"))
+    auto_closed = sum(1 for x in results if not x.get("ok") and "auto-closed" in (x.get("reason") or ""))
+    return {
+        "ok": True,
+        "total": len(results),
+        "recovered": recovered,
+        "auto_closed": auto_closed,
+        "errors": len(results) - recovered - auto_closed,
+        "results": results,
+    }
+
+
+@api.get("/trades/stuck")
 async def list_stuck_trades():
-    """List positions where the sell tx failed and tokens are still in wallet."""
+    """List stuck positions enriched with current wallet token balance + USD value."""
+    from solders.pubkey import Pubkey
+    from wallet import get_pubkey
+    import pumpfun
+    import pumpswap as _ps
+    from solana_client import get_sol_usd_price, LAMPORTS_PER_SOL
+
     cursor = bot_state.db.trades.find(
         {"status": "exit_failed_terminal"},
         {"_id": 0, "id": 1, "symbol": 1, "mint": 1, "entry_sol": 1, "entry_usd": 1,
-         "entry_tokens": 1, "exit_reason": 1, "exit_time": 1},
+         "entry_tokens": 1, "exit_reason": 1, "exit_time": 1, "protocol": 1},
     )
-    return {"stuck": [t async for t in cursor]}
+    rows = [t async for t in cursor]
+    user = get_pubkey()
+    sol_price = await get_sol_usd_price() or 100.0
+    out = []
+    for t in rows:
+        mint = t["mint"]
+        mint_pk = Pubkey.from_string(mint)
+        protocol = t.get("protocol") or "pumpfun"
+        try:
+            if protocol == "pumpswap":
+                ata = _ps.get_associated_token_address(user, mint_pk, _ps.TOKEN_PROGRAM)
+            else:
+                tp = await pumpfun.get_mint_token_program(mint)
+                ata = pumpfun.derive_associated_token_for_program(user, mint_pk, tp)
+            balance = await _ps.get_token_balance(ata)
+        except Exception:
+            balance = 0
+        current_sol = 0.0
+        graduated = False
+        if balance > 0 and protocol != "pumpswap":
+            try:
+                state = await pumpfun.fetch_bonding_curve_state(mint)
+                if state and not state.get("complete"):
+                    sol_out, _ = pumpfun.quote_sell_sol(state, balance, 0)
+                    current_sol = sol_out / LAMPORTS_PER_SOL
+                elif state and state.get("complete"):
+                    graduated = True
+            except Exception:
+                pass
+        out.append({
+            **t,
+            "wallet_token_balance": balance,
+            "current_sol": current_sol,
+            "current_usd": current_sol * sol_price,
+            "entry_pct_held": (balance / t["entry_tokens"] * 100) if t.get("entry_tokens") else 0,
+            "graduated": graduated,
+        })
+    out.sort(key=lambda x: -x.get("current_usd", 0))
+    return {"stuck": out, "sol_price_usd": sol_price}
 
 
 @api.post("/trades/recover/{trade_id}")
