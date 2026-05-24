@@ -16,7 +16,6 @@ export default function PLSummaryCard({ pl, status, onReset }) {
     pnl: d.pnl_usd,
   }));
   const positive = daily >= 0;
-  const liveMode = status?.live_trading;
 
   const doReset = async () => {
     setResetting(true);
@@ -41,8 +40,7 @@ export default function PLSummaryCard({ pl, status, onReset }) {
           {positive ? <TrendingUp className="w-3 h-3 text-emerald-500" /> : <TrendingDown className="w-3 h-3 text-red-500" />}
           <button
             onClick={() => setConfirming(true)}
-            disabled={liveMode}
-            title={liveMode ? "Disable LIVE mode first" : "Clear paper P&L and reset kill switch"}
+            title="Clear paper trades + reset 1d/7d view (live trades preserved on-chain)"
             data-testid="reset-paper-btn"
             className="text-[10px] font-mono uppercase tracking-[0.15em] text-neutral-500 hover:text-amber-400 disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center gap-1"
           >
@@ -91,17 +89,18 @@ export default function PLSummaryCard({ pl, status, onReset }) {
               <RotateCcw className="w-3 h-3" /> Reset Paper Mode
             </div>
             <p className="text-sm text-neutral-300 mb-2">
-              This will <span className="text-amber-400">delete all paper trade history</span> and reset:
+              This will <span className="text-amber-400">clear the 1d/7d PnL view</span>:
             </p>
             <ul className="text-xs font-mono text-neutral-400 list-disc list-inside space-y-1 mb-4">
+              <li>Paper trades → <span className="text-red-400">deleted</span></li>
+              <li>Live trade history → <span className="text-neutral-300">hidden from view (preserved on-chain)</span></li>
               <li>Daily P/L → $0.00</li>
-              <li>Kill-switch percentage → 0%</li>
-              <li>Active paper positions → cleared</li>
+              <li>Kill-switch → reset</li>
               <li>Re-entry watchlist → cleared</li>
             </ul>
             <p className="text-[11px] text-neutral-500 mb-4">
-              Launches & creator history are preserved (the scanner still works).
-              Live trades are <span className="text-emerald-400">never</span> touched.
+              Your <span className="text-emerald-400">live trade rows stay in the DB</span> for audit.
+              Active live positions keep running. The counters and 7-day chart simply start fresh from now.
             </p>
             <div className="flex gap-2">
               <button

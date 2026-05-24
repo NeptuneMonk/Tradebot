@@ -233,12 +233,10 @@ async def reset_config_to_defaults():
 @api.post("/paper/reset")
 async def paper_reset():
     """Clear paper-mode trade history + reset daily P&L / kill-switch tracking.
-    Refuses while live trading is enabled (safety)."""
-    if bot_state.config.live_trading:
-        raise HTTPException(
-            400,
-            "Cannot reset while live trading is enabled. Disable LIVE first.",
-        )
+    Also bumps `live_pnl_reset_at = now()` so the 1d/7d charts hide the live
+    history that was already part of the visible counters. Live trade rows
+    are kept on disk for forensics — only the visible counters reset.
+    """
     # Drop in-memory active paper trades
     paper_actives = [m for m, slot in list(bot_state.active_trades.items())
                      if slot.get("trade", {}).get("mode") == "paper"]
@@ -250,6 +248,9 @@ async def paper_reset():
     res = await db.trades.delete_many({"mode": "paper"})
     # Reset kill switch
     bot_state.kill_switch_tripped = False
+    # Wipe LIVE history from view (rows preserved on disk for audit)
+    bot_state.config.live_pnl_reset_at = datetime.now(timezone.utc).isoformat()
+    await bot_state.save_config()
     # Push fresh state
     try:
         status = await bot_status()
@@ -261,6 +262,7 @@ async def paper_reset():
         "ok": True,
         "deleted_trades": res.deleted_count,
         "closed_active_paper_trades": len(paper_actives),
+        "live_pnl_reset_at": bot_state.config.live_pnl_reset_at,
     }
 
 
@@ -651,18 +653,41 @@ async def costs_network():
 @api.get("/pl/summary")
 async def pl_summary(days: int = 7, mode: str | None = None):
     """Cumulative PnL series. Pass `mode=live` or `mode=paper` to filter,
-    or omit for combined. Default returns combined for back-compat."""
+    or omit for combined. Default returns combined for back-compat.
+
+    Honors `live_pnl_reset_at`: LIVE rows closed before the reset timestamp
+    are excluded from the series so the chart matches what the user sees
+    in the daily counter.
+    """
     start = datetime.now(timezone.utc) - timedelta(days=days)
-    query: dict = {"status": "closed", "exit_time": {"$gte": start.isoformat()}}
+    cursor_query: dict = {"status": "closed", "exit_time": {"$gte": start.isoformat()}}
     if mode in ("live", "paper"):
-        query["mode"] = mode
+        cursor_query["mode"] = mode
     cursor = db.trades.find(
-        query,
+        cursor_query,
         {"_id": 0, "pnl_usd": 1, "pnl_sol": 1, "exit_time": 1, "mint": 1, "mode": 1},
     ).sort("exit_time", 1)
+    live_cutoff = None
+    if bot_state.config.live_pnl_reset_at:
+        try:
+            live_cutoff = datetime.fromisoformat(bot_state.config.live_pnl_reset_at)
+            if live_cutoff.tzinfo is None:
+                live_cutoff = live_cutoff.replace(tzinfo=timezone.utc)
+        except Exception:
+            live_cutoff = None
     rows = []
     cum = 0.0
     async for d in cursor:
+        # Drop pre-reset LIVE rows so 7-day chart matches the counter
+        if d.get("mode") == "live" and live_cutoff is not None:
+            try:
+                t = datetime.fromisoformat(d["exit_time"])
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=timezone.utc)
+                if t < live_cutoff:
+                    continue
+            except Exception:
+                pass
         cum += float(d.get("pnl_usd", 0.0))
         rows.append(
             {
