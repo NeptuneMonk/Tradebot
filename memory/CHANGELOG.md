@@ -1,5 +1,35 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-24 (PM) — Sell-path triage: 6022 / 6023 / 6003 root causes + fix
+
+### Root cause (correcting prior misdiagnosis)
+Per the official `pump_fun_idl.json` error enum:
+- **6022 = `SellZeroAmount`** ("Sell zero amount") — NOT slippage.
+- **6023 = `NotEnoughTokensToSell`** — we tried to sell more than we hold.
+- **6003 = `TooLittleSolReceived`** — real slippage (sell side).
+
+We were attempting sells with `tokens_in=0` (after the "balance is 0" guard set it to zero but didn't return), and oversized partial sells (legacy ATA derivation read empty Token-2022 ATA → fell back to full `entry_tokens`).
+
+### Fixes
+**`/app/backend/bot.py`**
+- `_exit_impl`: when on-chain ATA balance is 0, **close the trade with zero PnL and `return`** instead of building a 0-amount sell IX. Added a second guard right before `send_versioned_tx` that does the same if `tokens_in` is still 0.
+- `_partial_exit`: switched from legacy `derive_associated_token` to Token-2022-aware `get_mint_token_program` + `derive_associated_token_for_program`. Returns False on balance==0 instead of attempting the sell.
+- Both paths now apply a **0.5% safety shave** (`int(actual * 0.995)`) on the read balance to absorb on-chain rounding / curve-rebalance races that previously triggered 6023.
+- New `_is_panic_exit(reason)` + `_exit_slip_for(reason, base)` helpers — automatically widen slippage to `panic_exit_slippage_bps` (25%) for reasons matching `stop-loss / hard-stop / classifier / bonding curve completed`. Normal exits (TP, trailing, timeout) keep the 10% baseline.
+
+**`/app/backend/models.py`**
+- `exit_slippage_bps` default: 500 → **1000** (10% normal exit slippage).
+- New field `panic_exit_slippage_bps: int = 2500` (25% panic slippage).
+
+**`/app/backend/server.py`** — `/wallet/recover-mints` + manual recovery: same 0.5% shave on the on-chain balance before building the sell IX (avoids 6023 on stranded-token recovery).
+
+### Verified
+- `tests/test_panic_slip_and_guards.py`: 4 cases (panic classification, zero-amount quote, default slippage values, sell IX shape) — **all pass**.
+- `tests/sim_sell_shape.py`: live on-chain inspection of 4 mints → cashback detection correct, account counts 16 (non-cb) / 17 (cb) — **all pass**.
+- Pending user test: tiny real sell on preview to confirm 6022/6023 no longer reverts.
+
+
+
 ## 2026-05-24 — CRITICAL: Pump.fun program upgrade compatibility (888/891 failed-trade fix)
 
 ### Root cause

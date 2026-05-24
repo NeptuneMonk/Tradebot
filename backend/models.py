@@ -42,7 +42,11 @@ class BotConfig(BaseModel):
     # remainder with a tightened trailing stop.
     partial_tp_pct: float = 50.0          # sell 50% at TP
     partial_tp_trail_tighten_pct: float = 5.0  # tighten trailing to 5% after partial
-    exit_slippage_bps: int = 500     # separate exit slippage ensures exits fill on dumps
+    exit_slippage_bps: int = 1000    # 10% normal exit slippage (TP/trailing/timeout)
+    # Panic-exit slippage: applied on stop-loss, hard-stop, classifier abort,
+    # and bonding-curve-complete exits where landing the sell matters more
+    # than the fill price. 25% lets us escape sharp dumps without 6003 reverts.
+    panic_exit_slippage_bps: int = 2500  # 25% emergency exit slippage
     # Entry filters (applied to scanner_momentum entries; reentry uses its own size logic)
     min_curve_liquidity_sol: float = 12.0  # skip thin/dead launches
     min_buyers_for_entry: int = 3          # require real interest

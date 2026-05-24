@@ -168,6 +168,25 @@ class BotState:
             auto_priority_cache=auto_tuner.current_value,
         )
 
+    def _is_panic_exit(self, reason: str) -> bool:
+        """Return True for exits where landing the sell matters more than the
+        price (stop-loss, hard-stop, classifier abort, bonding-curve complete).
+        These get wider `panic_exit_slippage_bps` to avoid 6003 reverts on dumps.
+        """
+        r = (reason or "").lower()
+        return any(k in r for k in (
+            "stop-loss", "hard-stop", "classifier", "bonding curve completed"
+        ))
+
+    def _exit_slip_for(self, reason: str, base_exit_slip_bps: int) -> int:
+        """Resolve the slippage tier for a given exit. Panic exits widen to
+        `config.panic_exit_slippage_bps` (default 25%); normal exits stay at
+        the resolved exit slippage from speed_mode/config."""
+        if self._is_panic_exit(reason):
+            panic = int(getattr(self.config, "panic_exit_slippage_bps", 2500) or 2500)
+            return max(panic, base_exit_slip_bps)
+        return base_exit_slip_bps
+
     # ---------- Graceful stop ----------
     async def begin_graceful_stop(self):
         """Stop opening new positions immediately, but let active trades ride
@@ -1364,24 +1383,34 @@ class BotState:
         if sell_tokens <= 0:
             return False
 
-        # For live trades, cap by ACTUAL wallet balance
+        # For live trades, cap by ACTUAL wallet balance. Use Token-2022-aware
+        # ATA derivation — most Pump.fun mints post-2026-04-28 are Token-2022,
+        # and the legacy derive_associated_token() reads an empty/non-existent
+        # ATA which leaves sell_tokens at the (possibly oversized) entry value.
         if trade_doc["mode"] == "live":
             try:
                 user = get_pubkey()
                 mint_pk = Pubkey.from_string(mint)
-                ata = (
-                    pumpswap.get_associated_token_address(user, mint_pk, pumpswap.TOKEN_PROGRAM)
-                    if protocol == "pumpswap"
-                    else pumpfun.derive_associated_token(user, mint_pk)
-                )
+                if protocol == "pumpswap":
+                    ata = pumpswap.get_associated_token_address(user, mint_pk, pumpswap.TOKEN_PROGRAM)
+                else:
+                    tp = await pumpfun.get_mint_token_program(mint)
+                    ata = pumpfun.derive_associated_token_for_program(user, mint_pk, tp)
                 actual = await pumpswap.get_token_balance(ata)
                 if actual > 0:
-                    sell_tokens = min(sell_tokens, actual)
+                    # 0.5% shave protects against Custom:6023 (NotEnoughTokensToSell)
+                    # when on-chain reserves shift between read and land.
+                    sell_tokens = min(sell_tokens, int(actual * 0.995))
+                    if sell_tokens <= 0:
+                        sell_tokens = actual
+                elif actual == 0:
+                    logger.warning(f"partial-sell aborted for {mint}: ATA balance is 0")
+                    return False
             except Exception as e:
                 logger.warning(f"partial balance read failed for {mint}: {e}")
 
         eff_priority, _eff_slip, eff_exit_slip = self._resolve_fees()
-        exit_slip = eff_exit_slip
+        exit_slip = self._exit_slip_for(reason, eff_exit_slip)
         if protocol == "pumpswap":
             sol_out, min_sol = pumpswap.quote_sell_sol(pumpswap_state, sell_tokens, exit_slip)
         else:
@@ -1507,13 +1536,16 @@ class BotState:
             return
 
         tokens_in = int(trade_doc["entry_tokens"])
-        # Resolve effective fees from speed_mode for this exit
+        # Resolve effective fees from speed_mode for this exit, then widen
+        # slippage to panic tier when the exit reason demands fast landing
+        # (stop-loss, hard-stop, classifier abort, bonding-curve complete).
         eff_priority, _eff_slip, eff_exit_slip = self._resolve_fees()
-        exit_slip = eff_exit_slip
+        exit_slip = self._exit_slip_for(reason, eff_exit_slip)
 
         # For live trades, size the sell by the ACTUAL wallet balance — fees
         # taken at buy time mean our balance is usually a touch lower than
-        # entry_tokens, and trying to sell more than we hold reverts the tx.
+        # entry_tokens, and trying to sell more than we hold reverts the tx
+        # with Custom:6023 (NotEnoughTokensToSell).
         # IMPORTANT: Pump.fun tokens are now Token-2022 — must derive ATA with
         # the correct token program, else we read the wrong (empty) ATA and
         # fall back to entry_tokens, which oversells after a partial-TP.
@@ -1528,13 +1560,36 @@ class BotState:
                     tp = await pumpfun.get_mint_token_program(mint)
                     ata = pumpfun.derive_associated_token_for_program(user, mint_pk, tp)
                     actual = await pumpswap.get_token_balance(ata)
-                if actual > 0:
-                    tokens_in = min(tokens_in, actual)
-                elif actual == 0 and tokens_in > 0:
-                    # We hold zero of this mint — nothing to sell. Mark closed
-                    # with zero PnL to avoid a phantom sell that would revert.
-                    logger.warning(f"sell skipped for {mint}: ATA balance is 0 (already sold or never bought)")
-                    tokens_in = 0
+                if actual == 0:
+                    # We hold zero of this mint — close the trade WITHOUT
+                    # attempting to sell. Sending a 0-amount sell IX would
+                    # revert with Custom:6022 (SellZeroAmount) and waste gas.
+                    logger.warning(
+                        f"sell skipped for {mint}: ATA balance is 0 "
+                        f"(already sold or never bought) — closing trade"
+                    )
+                    trade_doc["status"] = "closed"
+                    trade_doc["exit_reason"] = f"{reason} | balance was 0 at exit"
+                    trade_doc["exit_time"] = now_utc().isoformat()
+                    trade_doc["exit_sol"] = 0.0
+                    trade_doc["exit_usd"] = 0.0
+                    trade_doc["exit_price_sol"] = 0.0
+                    await self.db.trades.update_one(
+                        {"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
+                    )
+                    await hub.broadcast("trade_exit", {
+                        "id": trade_doc["id"], "mint": mint,
+                        "symbol": trade_doc.get("symbol"),
+                        "reason": trade_doc["exit_reason"],
+                    })
+                    return
+                # Cap at actual and apply 0.5% safety shave to absorb on-chain
+                # rounding / settlement lag — without this we sporadically hit
+                # Custom:6023 (NotEnoughTokensToSell) when the curve rebalances
+                # mid-tx.
+                tokens_in = min(tokens_in, int(actual * 0.995))
+                if tokens_in <= 0:
+                    tokens_in = actual  # very small position: send full balance
             except Exception as e:
                 logger.warning(f"balance read failed for {mint}, falling back to entry_tokens: {e}")
 
@@ -1547,6 +1602,30 @@ class BotState:
 
         exit_sig = None
         if trade_doc["mode"] == "live":
+            # Last-line defence against Custom:6022 (SellZeroAmount): even if
+            # the balance-read path above failed/skipped, refuse to build a
+            # zero-amount sell IX. Booking $0 exit is strictly safer than
+            # burning gas on a reverting tx.
+            if tokens_in <= 0:
+                logger.warning(
+                    f"sell aborted for {mint}: tokens_in resolved to 0 "
+                    f"after balance read — closing trade with zero PnL"
+                )
+                trade_doc["status"] = "closed"
+                trade_doc["exit_reason"] = f"{reason} | zero token amount at exit"
+                trade_doc["exit_time"] = now_utc().isoformat()
+                trade_doc["exit_sol"] = 0.0
+                trade_doc["exit_usd"] = 0.0
+                trade_doc["exit_price_sol"] = 0.0
+                await self.db.trades.update_one(
+                    {"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
+                )
+                await hub.broadcast("trade_exit", {
+                    "id": trade_doc["id"], "mint": mint,
+                    "symbol": trade_doc.get("symbol"),
+                    "reason": trade_doc["exit_reason"],
+                })
+                return
             try:
                 kp = get_keypair()
                 user = get_pubkey()

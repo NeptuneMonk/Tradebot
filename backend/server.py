@@ -497,10 +497,13 @@ async def wallet_recover_mints(req: RecoverMintsReq):
             if not creator_str:
                 return {"mint": mint, "ok": False, "reason": "no creator on curve"}
             is_cb = bool(state.get("is_cashback", False))
-            sol_out_q, min_sol = pumpfun.quote_sell_sol(state, balance, 3000)  # 30% slippage
+            # 0.5% shave guards against Custom:6023 (NotEnoughTokensToSell)
+            # when the curve rebalances between the balance read and tx land.
+            sell_amount = max(int(balance * 0.995), 1)
+            sol_out_q, min_sol = pumpfun.quote_sell_sol(state, sell_amount, 3000)  # 30% slippage
             creator_pk = Pubkey.from_string(creator_str)
             ix = await pumpfun.build_sell_ix(
-                user, mint_pk, balance, min_sol, creator_pk, tp, cashback=is_cb
+                user, mint_pk, sell_amount, min_sol, creator_pk, tp, cashback=is_cb
             )
             sig = await pumpfun.send_versioned_tx(
                 kp, [ix], priority_fee_microlamports=1_500_000, confirm_timeout_s=25.0,
@@ -645,10 +648,12 @@ async def recover_stuck_trade(trade_id: str):
     is_cb = bool(state.get("is_cashback", False))
     tp = await pumpfun.get_mint_token_program(mint)
 
-    # Quote with very wide slippage (30%) — we just want this thing OFF the wallet
-    sol_out, min_sol = pumpfun.quote_sell_sol(state, actual_tokens, 3000)
+    # Quote with very wide slippage (30%) — we just want this thing OFF the wallet.
+    # 0.5% shave avoids Custom:6023 (NotEnoughTokensToSell) on race conditions.
+    sell_amount = max(int(actual_tokens * 0.995), 1)
+    sol_out, min_sol = pumpfun.quote_sell_sol(state, sell_amount, 3000)
     creator_pk = Pubkey.from_string(creator_str)
-    ix = await pumpfun.build_sell_ix(user, mint_pk, actual_tokens, min_sol, creator_pk, tp, cashback=is_cb)
+    ix = await pumpfun.build_sell_ix(user, mint_pk, sell_amount, min_sol, creator_pk, tp, cashback=is_cb)
     try:
         sig = await pumpfun.send_versioned_tx(
             kp, [ix], priority_fee_microlamports=1_500_000, confirm_timeout_s=40.0

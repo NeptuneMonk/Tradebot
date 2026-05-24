@@ -26,7 +26,7 @@ async def main():
             continue
         tp = await pumpfun.get_mint_token_program(m)
         is_cb = state.get("is_cashback", False)
-        sell = pumpfun.build_sell_ix(user, Pubkey.from_string(m), 1000000, 100000,
+        sell = await pumpfun.build_sell_ix(user, Pubkey.from_string(m), 1000000, 100000,
                                      Pubkey.from_string(c), tp, cashback=is_cb)
         print(f"{label:10s}  cashback={is_cb}  tp={'2022' if str(tp).startswith('Tokenz') else 'classic'}  sell_accounts={len(sell.accounts)}")
 

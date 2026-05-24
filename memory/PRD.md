@@ -19,6 +19,16 @@ For learning and experimentation only — no deployment outside preview.
 - **Backend (FastAPI + Python)**: solana-py + solders, Helius RPC (HTTPS + WSS logsSubscribe), Pump.fun Anchor instruction builders (buy/sell/create-ATA), constant-product AMM math for quotes, rule-based classifier, async bot orchestrator with position monitor & kill-switch, MongoDB persistence (trades, launches, config, rules).
 - **Frontend (React + Tailwind + shadcn)**: Single-page "Control Room" dashboard, polling every 3s, IBM Plex Sans/Mono, sharp-edged dark UI, Recharts P/L sparkline, QR deposit address.
 
+
+## Recently fixed (2026-05-24 PM)
+- ✅ **Sell path 6022 / 6023 / 6003 root-causes nailed** (per official IDL): 6022 = SellZeroAmount (not slippage as prior agent claimed), 6023 = NotEnoughTokensToSell, 6003 = real slippage.
+- ✅ Early-return on zero ATA balance in `_exit_impl` and `_partial_exit` (no more 0-amount sell IXs).
+- ✅ Token-2022-aware ATA derivation in partial-exit path (was reading empty legacy ATA → falling back to oversized `entry_tokens` → 6023).
+- ✅ 0.5% safety shave on read balances to absorb on-chain race conditions.
+- ✅ Tiered slippage: 10% normal exit / 25% panic exit (SL, hard-stop, classifier, BC-complete). New `panic_exit_slippage_bps` config (default 2500).
+- ✅ Same 0.5% shave applied to `/wallet/recover-mints` and manual single-mint recovery.
+
+
 ## Implemented (2026-02-22)
 - ✅ Solana wallet auto-generation, persisted to `/app/backend/wallet.json` (preview-only)
 - ✅ Helius WSS logsSubscribe listener — **confirmed streaming real Pump.fun mainnet launches**
