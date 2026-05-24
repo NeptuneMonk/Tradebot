@@ -18,6 +18,10 @@ export default function StuckPositions() {
   // being sold via the row-level "Sell" button. Separate from the bulk
   // `recovering` flag so individual rows can spin independently.
   const [sellingMint, setSellingMint] = useState(null);
+  // Wrapped SOL stuck in the user's WSOL ATA (from sells made before we
+  // wired the close-WSOL instruction). Surfaced + recoverable from the UI.
+  const [wsolBalance, setWsolBalance] = useState({ sol: 0, usd: 0 });
+  const [unwrapping, setUnwrapping] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -41,12 +45,35 @@ export default function StuckPositions() {
     try {
       const d = await api.walletTokenScan();
       setWalletTokens(d.tokens || []);
+      setWsolBalance({ sol: d.wsol_balance_sol || 0, usd: d.wsol_balance_usd || 0 });
     } catch (e) {
       toast.error(`Wallet scan failed: ${e?.response?.data?.detail || e.message}`);
     } finally {
       setWalletLoading(false);
     }
   }, []);
+
+  const unwrapWsol = async () => {
+    if (wsolBalance.sol <= 0) return;
+    const ok = window.confirm(
+      `Unwrap ${wsolBalance.sol.toFixed(6)} wSOL (~$${wsolBalance.usd.toFixed(4)}) back to native SOL?`
+    );
+    if (!ok) return;
+    setUnwrapping(true);
+    try {
+      const res = await api.walletUnwrapWsol();
+      if (res?.ok) {
+        toast.success(`Unwrapped ${res.unwrapped_sol?.toFixed(6)} SOL — sig ${res.sig?.slice(0,8)}…`);
+      } else {
+        toast.error(`Unwrap failed: ${res?.reason || "unknown"}`);
+      }
+    } catch (e) {
+      toast.error(`Unwrap failed: ${e?.response?.data?.detail || e.message}`);
+    } finally {
+      setUnwrapping(false);
+      setTimeout(refreshWallet, 3000);
+    }
+  };
 
   useEffect(() => {
     refresh();
@@ -260,9 +287,27 @@ export default function StuckPositions() {
         </div>
         {hasWalletTokens && (
           <>
-            <div className="text-[10px] font-mono text-neutral-400 mb-2">
-              Total recoverable: <span className="text-blue-300">${walletTotalUsd.toFixed(4)}</span>
+            <div className="text-[10px] font-mono text-neutral-400 mb-2 flex items-center justify-between">
+              <span>Total recoverable: <span className="text-blue-300">${walletTotalUsd.toFixed(4)}</span></span>
             </div>
+            {wsolBalance.sol > 0 && (
+              <div className="border border-emerald-900/60 bg-emerald-950/20 px-2 py-1.5 mb-2 flex items-center justify-between gap-2" data-testid="wsol-stuck-banner">
+                <div className="text-[10px] font-mono">
+                  <span className="text-emerald-300">Wrapped SOL stuck in ATA:</span>{" "}
+                  <span className="text-emerald-200 font-bold">{wsolBalance.sol.toFixed(6)} wSOL</span>{" "}
+                  <span className="text-neutral-500">(${wsolBalance.usd.toFixed(4)})</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={unwrapWsol}
+                  disabled={unwrapping || recovering || !!sellingMint}
+                  data-testid="unwrap-wsol-btn"
+                  className="px-2 py-0.5 text-[9px] uppercase tracking-wider font-mono border border-emerald-700/60 text-emerald-300 hover:bg-emerald-950/40 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1"
+                >
+                  {unwrapping ? <><Loader2 className="w-2.5 h-2.5 animate-spin" /> Unwrapping…</> : <>Unwrap to SOL</>}
+                </button>
+              </div>
+            )}
             <div className="border border-neutral-800 rounded-sm overflow-hidden">
               <div className="grid grid-cols-[1fr_60px_80px_56px] gap-2 px-2 py-1.5 bg-neutral-900/60 text-[9px] uppercase tracking-wider text-neutral-500">
                 <span>Mint</span>

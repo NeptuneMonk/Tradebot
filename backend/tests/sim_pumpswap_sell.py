@@ -135,6 +135,8 @@ async def main():
             min_quote_amount_out=min_sol,
             base_token_program=tp,
         ),
+        # Close WSOL ATA → unwrap to native SOL in the same atomic tx
+        _ps.build_close_wsol_ix(user, wsol_ata),
     ]
 
     print(f"mint:         {mint}")
@@ -162,16 +164,29 @@ async def main():
     sim = await rpc_call(
         "simulateTransaction",
         [tx_b64, {"sigVerify": False, "commitment": "confirmed",
-                  "encoding": "base64", "replaceRecentBlockhash": True}],
+                  "encoding": "base64", "replaceRecentBlockhash": True,
+                  "accounts": {"encoding": "base64",
+                               "addresses": [str(user), str(wsol_ata)]}}],
     )
     result = sim.get("result", {}).get("value", {})
     err = result.get("err")
     logs = result.get("logs") or []
     units = result.get("unitsConsumed")
+    accts = result.get("accounts") or []
 
     print(f"\n=== SIMULATE TRANSACTION RESULT ===")
     print(f"err:           {err}")
     print(f"unitsConsumed: {units}")
+    # Decode post-sim lamports to prove wallet receives native SOL
+    if len(accts) >= 1 and accts[0]:
+        post_user_lamports = int(accts[0].get("lamports") or 0)
+        print(f"wallet (user) post-sim lamports: {post_user_lamports}  ({post_user_lamports/1e9:.6f} SOL)")
+    if len(accts) >= 2:
+        wsol_post = accts[1]
+        if wsol_post is None:
+            print(f"wsol ATA post-sim: CLOSED ✅ (proceeds unwrapped to wallet)")
+        else:
+            print(f"wsol ATA post-sim: still open with {wsol_post.get('lamports')} lamports ❌")
     print(f"logs ({len(logs)} lines):")
     for ln in logs[-20:]:
         print(f"  {ln}")

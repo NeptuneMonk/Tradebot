@@ -486,7 +486,7 @@ async def wallet_token_scan():
     from wallet import get_pubkey
     import pumpfun
     import pumpswap as _ps
-    from solana_client import rpc_call, get_sol_usd_price, LAMPORTS_PER_SOL
+    from solana_client import rpc_call, get_sol_usd_price, LAMPORTS_PER_SOL, get_account_info
 
     wallet = str(get_pubkey())
     sol_price = await get_sol_usd_price() or 100.0
@@ -599,12 +599,69 @@ async def wallet_token_scan():
     results = await _asyncio.gather(*[_price_one(c) for c in candidates])
     results.sort(key=lambda x: -x["current_usd"])
     total_usd = sum(r["current_usd"] for r in results)
+
+    # Also surface any wrapped-SOL balance sitting in the user's WSOL ATA.
+    # Previous versions of the PumpSwap sell flow forgot to close the ATA,
+    # leaving proceeds wrapped — the user sees the sell succeed but no SOL
+    # in their wallet. We now close the ATA on every sell going forward,
+    # and expose this field so the UI can offer a one-shot "Unwrap" button.
+    wsol_balance_sol = 0.0
+    try:
+        wsol_ata = _ps.get_associated_token_address(
+            get_pubkey(), _ps.WSOL, _ps.TOKEN_PROGRAM
+        )
+        info = await get_account_info(str(wsol_ata))
+        if info:
+            wsol_balance_sol = int(info.get("lamports") or 0) / LAMPORTS_PER_SOL
+    except Exception as e:
+        logger.debug(f"wsol balance probe failed: {e}")
+
     return {
         "wallet": wallet,
         "sol_price_usd": sol_price,
         "tokens": results,
         "total_usd": total_usd,
         "count": len(results),
+        "wsol_balance_sol": wsol_balance_sol,
+        "wsol_balance_usd": wsol_balance_sol * sol_price,
+    }
+
+
+@api.post("/wallet/unwrap-wsol")
+async def wallet_unwrap_wsol():
+    """One-shot: close the user's WSOL ATA so any wrapped wSOL inside it
+    unwraps back to native SOL in the main wallet. Also returns the ATA rent
+    (~0.002 SOL). Idempotent — if the ATA doesn't exist, returns ok=False.
+
+    Used to recover proceeds from sells made before we wired
+    `build_close_wsol_ix` into the PumpSwap sell flow (those proceeds sat
+    as wSOL in the ATA, looking like "I sold but didn't get SOL").
+    """
+    from wallet import get_keypair, get_pubkey
+    import pumpfun
+    import pumpswap as _ps
+    from solana_client import get_account_info, LAMPORTS_PER_SOL
+
+    kp = get_keypair()
+    user = get_pubkey()
+    wsol_ata = _ps.get_associated_token_address(user, _ps.WSOL, _ps.TOKEN_PROGRAM)
+    info = await get_account_info(str(wsol_ata))
+    if not info:
+        return {"ok": False, "reason": "WSOL ATA does not exist (nothing to unwrap)"}
+    lamports_before = int(info.get("lamports") or 0)
+    try:
+        ix = _ps.build_close_wsol_ix(user, wsol_ata)
+        sig = await pumpfun.send_versioned_tx(
+            kp, [ix], priority_fee_microlamports=200_000,
+            compute_unit_limit=30_000, confirm_timeout_s=25.0,
+        )
+    except Exception as e:
+        return {"ok": False, "reason": f"unwrap failed: {e}"}
+    return {
+        "ok": True,
+        "sig": sig,
+        "unwrapped_sol": lamports_before / LAMPORTS_PER_SOL,
+        "wsol_ata": str(wsol_ata),
     }
 
 
@@ -678,6 +735,12 @@ async def wallet_recover_mints(req: RecoverMintsReq):
                         min_quote_amount_out=min_sol,
                         base_token_program=tp,
                     ),
+                    # Close the WSOL ATA → unwraps the proceeds to native SOL
+                    # in the user's main wallet. Without this, sell proceeds
+                    # sit as wrapped wSOL in the ATA and the user perceives
+                    # the sell as "didn't return SOL". The ATA's rent
+                    # (~0.002 SOL) is also returned.
+                    _ps.build_close_wsol_ix(user, wsol_ata),
                 ]
                 sig = await pumpfun.send_versioned_tx(
                     kp, ixs, priority_fee_microlamports=1_500_000,
@@ -916,7 +979,9 @@ async def recover_stuck_trade(trade_id: str):
         # PumpSwap SELL: use the deterministic WSOL ATA (NOT a seed-derived temp).
         # The program requires `user_wsol_account` to be exactly the canonical
         # ATA(user, WSOL, SPL) or it reverts with Custom:6053 (seeds mismatch).
-        # Also do NOT close it — keeps for future swaps, ~0.002 SOL recoverable.
+        # We CLOSE the ATA at the end so the wSOL proceeds + the ATA rent
+        # unwrap to native SOL in the user's wallet (otherwise the sell looks
+        # like "no SOL returned" — the proceeds sit as wrapped wSOL).
         wsol_ata, wsol_ixs = _ps.build_wsol_ata_idempotent_ixs(user)
         ixs = [
             _ps.build_create_ata_ix(user, user, mint_pk, tp),
@@ -927,6 +992,7 @@ async def recover_stuck_trade(trade_id: str):
                 min_quote_amount_out=min_sol,
                 base_token_program=tp,
             ),
+            _ps.build_close_wsol_ix(user, wsol_ata),
         ]
         try:
             sig = await pumpfun.send_versioned_tx(

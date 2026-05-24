@@ -1595,6 +1595,9 @@ class BotState:
                             base_amount_in=sell_tokens, min_quote_amount_out=min_sol,
                             base_token_program=base_tp,
                         ),
+                        # Unwrap wSOL → native SOL in the user wallet. Without
+                        # this, partial-tp proceeds get stuck in the WSOL ATA.
+                        pumpswap.build_close_wsol_ix(user, wsol_ata),
                     ]
                     partial_sig = await pumpfun.send_versioned_tx(
                         kp, ixs, eff_priority, compute_unit_limit=400_000,
@@ -1853,6 +1856,8 @@ class BotState:
                             min_quote_amount_out=min_sol,
                             base_token_program=base_tp,
                         ),
+                        # Unwrap wSOL → native SOL in the user wallet.
+                        pumpswap.build_close_wsol_ix(user, wsol_ata),
                     ]
                     exit_sig = await pumpfun.send_versioned_tx(
                         kp, ixs, eff_priority,
