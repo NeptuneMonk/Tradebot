@@ -1480,6 +1480,10 @@ class BotState:
         trade_doc["entry_usd"] = trade_doc["entry_sol"] * sol_price
         slot["partial_done"] = True
         slot["partial_persisted"] = True
+        # Block re-exit for 3s — gives Helius RPC time to propagate the
+        # post-partial wallet balance. Without this, a fast trailing-stop
+        # tick reads the stale pre-partial balance and oversells (6023).
+        slot["exit_blocked_until"] = time.time() + 3.0
 
         await self.db.trades.update_one(
             {"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
@@ -1516,6 +1520,15 @@ class BotState:
 
     async def _exit_impl(self, mint: str, reason: str, slot: dict):
         trade_doc = slot["trade"]
+        # Respect any post-partial RPC-propagation block. Without this, a
+        # trailing-stop tick within 1-2s of a partial sell reads the stale
+        # pre-partial wallet balance and oversells (6023 NotEnoughTokensToSell).
+        blocked_until = float(slot.get("exit_blocked_until") or 0.0)
+        if blocked_until > 0:
+            wait = blocked_until - time.time()
+            if wait > 0:
+                logger.info(f"exit deferred for {mint}: waiting {wait:.1f}s for post-partial RPC sync")
+                await asyncio.sleep(min(wait, 5.0))
         sol_price = await get_sol_usd_price()
         protocol = slot.get("protocol", "pumpfun")
         # Resolve sell quote per protocol
@@ -1583,11 +1596,17 @@ class BotState:
                         "reason": trade_doc["exit_reason"],
                     })
                     return
-                # Cap at actual and apply 0.5% safety shave to absorb on-chain
-                # rounding / settlement lag — without this we sporadically hit
-                # Custom:6023 (NotEnoughTokensToSell) when the curve rebalances
-                # mid-tx.
-                tokens_in = min(tokens_in, int(actual * 0.995))
+                # Post-partial exits need a WIDER shave to absorb RPC
+                # propagation lag. If the partial sell just landed (~1-2s
+                # ago), Helius might still serve the pre-partial balance.
+                # Sending a sell sized to the stale balance reverts with
+                # Custom:6023 (NotEnoughTokensToSell).
+                # Treat the wallet read as authoritative AND apply 5% shave
+                # after a partial; otherwise the standard 0.5% safety.
+                if slot.get("partial_done"):
+                    tokens_in = int(actual * 0.95)
+                else:
+                    tokens_in = min(tokens_in, int(actual * 0.995))
                 if tokens_in <= 0:
                     tokens_in = actual  # very small position: send full balance
             except Exception as e:
