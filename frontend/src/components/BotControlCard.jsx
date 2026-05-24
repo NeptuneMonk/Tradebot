@@ -3,6 +3,7 @@ import { Power, Zap, Settings2, ChevronDown, ChevronRight } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import SpeedModeSlider from "./SpeedModeSlider";
+import ConfigSyncPanel from "./ConfigSyncPanel";
 
 export default function BotControlCard({ status, config, onUpdate, onStart, onStop }) {
   const [local, setLocal] = useState(null);
@@ -391,6 +392,8 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
       >
         Reset to Defaults
       </button>
+
+      <ConfigSyncPanel onApplied={(cfg) => setLocal(cfg)} />
     </div>
   );
 }

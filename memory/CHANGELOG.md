@@ -1,5 +1,35 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-24 (LATE PM3) — UI: ConfigSyncPanel (no more curl required)
+
+### Shipped
+- **New `ConfigSyncPanel.jsx`** component slotted into the BotControlCard, exposing 3 actions:
+  - 🌟 **Apply Recommended Defaults** — one-click applies the 14-key forensics-driven config (amber accent to stand out, requires confirm)
+  - ⬇️ **Export** — downloads the current bot config as `bot-config-YYYY-MM-DD-HH-MM-SS.json`
+  - ⬆️ **Import** — uploads a previously-exported JSON (or any partial overrides), runs server-side clamps, auto-pauses bot
+- `lib/api.js`: added `configExport`, `configImport`, `configApplyRecommended`, `recipientHealth` methods.
+
+### Verified
+- Frontend lint passed for both new and edited components.
+- Webpack compiled successfully.
+- DOM probe confirmed `[data-testid="config-sync-panel"]` rendered post-auth.
+- `GET /api/config/export` returned 53-key snapshot with all expected values.
+- `POST /api/config/apply-recommended` applied: `slippage_bps=1500`, `panic_exit_slippage_bps=2500`, `max_concurrent_positions=3`, `stop_loss_pct=12`, `speed_mode=manual`.
+
+### Workflow for the user
+**Sync prod with preview** (after redeploy):
+1. Sign in to **production**
+2. Open BotControlCard → scroll to "Config Sync" section at the bottom
+3. Click **Apply Recommended Defaults** → confirm
+4. Press Start
+
+**Cross-env copy** (if you've manually tuned preview and want to mirror to prod):
+1. On **preview** → Config Sync → **Export** (downloads JSON to your machine)
+2. On **production** → Config Sync → **Import** → choose the JSON file
+3. Press Start on prod
+
+
+
 ## 2026-05-24 (LATE PM2) — Config sync + structured trade-decision logging
 
 ### Shipped

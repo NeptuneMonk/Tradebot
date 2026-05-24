@@ -47,4 +47,9 @@ export const api = {
   // Wallet-wide token scan (finds ALL pump.fun tokens, even ones not in DB)
   walletTokenScan: () => longClient.get("/wallet/token-scan").then(r => r.data),
   walletRecoverMints: (mints) => longClient.post("/wallet/recover-mints", { mints }, { timeout: 60000 + 30000 * mints.length }).then(r => r.data),
+  // Config sync (preview ↔ production)
+  configExport: () => client.get("/config/export").then(r => r.data),
+  configImport: (config) => client.post("/config/import", { config }).then(r => r.data),
+  configApplyRecommended: () => client.post("/config/apply-recommended").then(r => r.data),
+  recipientHealth: () => client.get("/diagnostics/recipient-health").then(r => r.data),
 };
