@@ -1,5 +1,37 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-24 (LATE PM) — Entry-quality + execution-reliability pass
+
+Following user-pasted suggestion list from external analysis. Curated to 4 high-ROI items, skipped 8 (premature/risky/duplicate). All landed in a single coordinated edit.
+
+### Shipped
+1. **Risk-based position sizing** (`bot.py _enter_impl`): trade USD now scales by classifier risk_score — `≤30: 1.0×`, `31-60: 0.6×`, `>60: 0.3×`. Cap downside on borderline entries without losing the rare winner.
+2. **Stricter pre-entry classifier veto** (`bot.py _enter_impl`): rejects `hold_briefly` action when risk>50, in addition to `abort_trade` and `exit_early`. Targets the 12/50 trades that exited via `classifier abort` at -13% to -25%.
+3. **Dynamic entry slippage by curve depth** (`bot.py _enter_impl`): bonding curves with `virtual_sol_reserves` < 32 SOL auto-widen entry slip to 25%; < 40 → 18%; < 55 → 12%. Direct fix for Custom:6002 (TooMuchSolRequired) reverts on thin/fast curves.
+4. **Weighted breaking-fee recipient selection** (`pumpfun.py`): tracks per-recipient success/failure rate in memory, picks healthier recipients 70% of the time, 30% pure random for exploration. Decays counters every 200 attempts to track moving window. New diagnostic endpoint `GET /api/diagnostics/recipient-health`.
+
+### Skipped (with reasons)
+- **Dynamic percentile thresholds (1.1) / Mid-age band (1.2)**: premature, needs stable dataset
+- **Distribution-vacuum softening (1.3)**: needs data on current false-negative rate
+- **Classifier early-velocity (2.1)**: duplicates existing dead-cat filter
+- **Fast-rug detector (2.2)**: covered by curve-fill + buyer gates
+- **Creator skin-in-game (2.3)**: backlog P2 (separate feature)
+- **Priority fee multiplier (3.2)**: auto-tuner already uses Helius p75 — stacking would overpay
+- **Pre-check token program (4.2)**: already implemented
+- **Parallel confirmation (4.3)**: risky refactor of working code
+- **PumpSwap pool-depth scaling (5.1, 5.2)**: not the current bleed source
+- **Listener dedup + warm-up (6.1, 6.2)**: no evidence of double-entries
+- **Pattern miner enhancements (7.1, 7.2)**: speculative without months of data
+- **Dynamic fee buffer (8.1)**: not the bleed; defer
+- **RPC timeout 10→3s (9.1)**: DANGEROUS — Solana RPCs can take 4-7s in congestion
+- **3s entry velocity check (10.2)**: requires UI + config refactor for marginal gain; defer
+
+### Tests
+- `tests/test_entry_quality.py` (new) — 3/3 pass: risk_sizing_math, depth_slippage_bands, veto_logic
+- Inline weighted-recipient sim — confirms 2.5× preference for healthy over sick recipients across 2000 picks
+
+
+
 ## 2026-05-24 (PM) — Sell-path triage: 6022 / 6023 / 6003 root causes + fix
 
 ### Root cause (correcting prior misdiagnosis)

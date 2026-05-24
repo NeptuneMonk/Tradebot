@@ -310,6 +310,14 @@ async def update_rules(rules: ClassifierRules):
     return rules
 
 
+@api.get("/diagnostics/recipient-health")
+async def recipient_health():
+    """Diagnostic: per breaking-fee-recipient success/failure stats.
+    The picker auto-weights toward healthier recipients (item 4.1)."""
+    import pumpfun
+    return {"recipients": pumpfun.get_recipient_health_snapshot()}
+
+
 @api.post("/pnl/reset-live")
 async def reset_live_pnl():
     """Wipe the LIVE daily PnL counter without deleting trade history.

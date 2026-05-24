@@ -952,7 +952,19 @@ class BotState:
         """The actual entry pipeline. Called from `_enter` after the
         position-count reservation has been taken atomically."""
         sol_price = await get_sol_usd_price()
-        trade_usd = max(self.config.min_trade_usd, self.config.max_trade_usd)
+        # Risk-based position sizing: borderline classifications get smaller
+        # trades. The bleed analysis showed many losers were borderline
+        # entries with risk_score 30-60 that classifier would re-evaluate
+        # as exit_early once curve filled. Halving size on these caps
+        # downside without giving up the rare winner.
+        if risk_score <= 30:
+            size_mult = 1.0           # green light
+        elif risk_score <= 60:
+            size_mult = 0.6           # borderline — half-size
+        else:
+            size_mult = 0.3           # high-risk — third-size
+        base_usd = self.config.max_trade_usd * size_mult
+        trade_usd = max(self.config.min_trade_usd, base_usd)
         trade_sol = trade_usd / sol_price if sol_price > 0 else 0
         sol_in_lamports = int(trade_sol * LAMPORTS_PER_SOL)
         if sol_in_lamports <= 0:
@@ -1018,14 +1030,24 @@ class BotState:
                 "social_score": b.get("social_score", 0),
             }
             verdict = classify(metrics, self.rules.model_dump())
+            # Reject abort/exit_early outright AND reject hold_briefly when
+            # risk_score > 50 — those trades were the bulk of our last 50
+            # exits via `classifier abort` at -13% to -25%, where the
+            # classifier flipped from hold_briefly→exit_early as the curve
+            # filled.
+            veto_reason = None
             if verdict["action"] in ("abort_trade", "exit_early"):
+                veto_reason = verdict["action"]
+            elif verdict["action"] == "hold_briefly" and risk_score > 50:
+                veto_reason = f"hold_briefly + high risk ({risk_score})"
+            if veto_reason:
                 logger.info(
                     f"skip {launch.mint} [{action}]: pre-trade classifier "
-                    f"{verdict['action']} — {verdict['reasons']}"
+                    f"{veto_reason} — {verdict['reasons']}"
                 )
                 await hub.broadcast("scanner_skip", {
                     "mint": launch.mint, "symbol": launch.symbol,
-                    "band": "new", "reason": verdict["action"],
+                    "band": "new", "reason": veto_reason,
                     "details": verdict["reasons"],
                 })
                 return
@@ -1087,6 +1109,19 @@ class BotState:
 
         # Resolve effective fees from speed_mode (e.g. ECO/NORMAL/FAST/AUTO)
         eff_priority, eff_slip, _eff_exit_slip = self._resolve_fees()
+
+        # Dynamic entry slippage by curve depth — thinner curves (early in
+        # the bonding-curve lifecycle) move PRICE much faster, so a static
+        # slippage tolerance was triggering Custom:6002 (TooMuchSolRequired)
+        # reverts. Auto-widen slippage for thin curves.
+        if protocol == "pumpfun":
+            vsr_sol = state.get("virtual_sol_reserves", 0) / LAMPORTS_PER_SOL
+            if vsr_sol < 32:        # very early — first ~2 SOL of buy pressure
+                eff_slip = max(eff_slip, 2500)  # 25%
+            elif vsr_sol < 40:      # early — first ~10 SOL
+                eff_slip = max(eff_slip, 1800)  # 18%
+            elif vsr_sol < 55:      # mid — first ~25 SOL
+                eff_slip = max(eff_slip, 1200)  # 12%
 
         tokens_out, max_sol = (
             pumpswap.quote_buy_tokens(pumpswap_state, sol_in_lamports, eff_slip)

@@ -61,7 +61,87 @@ BREAKING_FEE_RECIPIENTS = [
 
 
 def _pick_breaking_fee_recipient() -> Pubkey:
-    return random.choice(BREAKING_FEE_RECIPIENTS)
+    """Pick a breaking-fee recipient with weighted-by-health selection.
+
+    Each tx attempts to record success/failure via `record_breaking_fee_result`.
+    Recipients with high recent failure rates are deprioritised but never
+    fully excluded — Pump.fun's program will reject txs that consistently
+    use one recipient, so we still spread load.
+
+    Selection: 70% weight by inverse fail-rate, 30% uniform random (fallback
+    for cold recipients with no data yet).
+    """
+    if not _RECIPIENT_STATS:
+        return random.choice(BREAKING_FEE_RECIPIENTS)
+    # 30% pure random for exploration
+    if random.random() < 0.3:
+        return random.choice(BREAKING_FEE_RECIPIENTS)
+    # 70%: weight by (1 - fail_rate). Add 0.1 floor so even bad ones get picked.
+    weights = []
+    for r in BREAKING_FEE_RECIPIENTS:
+        stats = _RECIPIENT_STATS.get(str(r), {"ok": 0, "fail": 0})
+        total = stats["ok"] + stats["fail"]
+        if total < 3:  # too little data → treat as healthy
+            weights.append(1.0)
+        else:
+            fail_rate = stats["fail"] / total
+            weights.append(max(0.1, 1.0 - fail_rate))
+    return random.choices(BREAKING_FEE_RECIPIENTS, weights=weights, k=1)[0]
+
+
+# Per-recipient health stats: {pubkey_str: {"ok": int, "fail": int}}
+# Decays over time so old failures don't poison forever. Reset every 200 txs.
+_RECIPIENT_STATS: dict[str, dict[str, int]] = {}
+_RECIPIENT_DECAY_THRESHOLD = 200
+
+
+def record_breaking_fee_result(recipient: Pubkey, success: bool) -> None:
+    """Called by `bot.py` after a buy/sell tx confirms or fails. Tracks per-
+    recipient health so `_pick_breaking_fee_recipient` can avoid sick ones."""
+    key = str(recipient)
+    stats = _RECIPIENT_STATS.setdefault(key, {"ok": 0, "fail": 0})
+    if success:
+        stats["ok"] += 1
+    else:
+        stats["fail"] += 1
+    # Decay: when any recipient accumulates >threshold attempts, halve all
+    # counters so the window slides instead of growing unbounded.
+    total = stats["ok"] + stats["fail"]
+    if total > _RECIPIENT_DECAY_THRESHOLD:
+        for k in _RECIPIENT_STATS:
+            _RECIPIENT_STATS[k]["ok"] //= 2
+            _RECIPIENT_STATS[k]["fail"] //= 2
+
+
+def get_recipient_health_snapshot() -> dict[str, dict]:
+    """Diagnostic — returns current recipient health for debugging / UI."""
+    out = {}
+    for r in BREAKING_FEE_RECIPIENTS:
+        key = str(r)
+        s = _RECIPIENT_STATS.get(key, {"ok": 0, "fail": 0})
+        total = s["ok"] + s["fail"]
+        fail_rate = s["fail"] / total if total else 0.0
+        out[key[:8] + "…"] = {
+            "ok": s["ok"], "fail": s["fail"],
+            "fail_rate": round(fail_rate, 3),
+        }
+    return out
+
+
+def record_ix_outcome(ix: Instruction, success: bool) -> None:
+    """Extract the breaking-fee recipient (always the LAST AccountMeta in our
+    buy/sell IX layout) from a Pump.fun instruction and record the outcome.
+    Safe to call with any ix — silently no-ops if structure doesn't match."""
+    try:
+        if not ix.accounts:
+            return
+        # Buy IX: breaking_fee is account[17]. Sell IX: account[14 or 15].
+        # Either way, it's the LAST account in our builders.
+        recipient = ix.accounts[-1].pubkey
+        if recipient in BREAKING_FEE_RECIPIENTS:
+            record_breaking_fee_result(recipient, success)
+    except Exception:
+        pass  # diagnostic-only, never block trading
 
 
 # Authorized fee_recipients for account[1] in buy/sell ixs (post-2026-04-28).
@@ -454,11 +534,20 @@ async def send_versioned_tx(
                     last_err = err
                     break
                 if conf in ("confirmed", "finalized"):
+                    # Record per-recipient health (4.1 weighted picker)
+                    for _ix in instructions:
+                        if getattr(_ix, "program_id", None) == PUMP_PROGRAM_ID:
+                            record_ix_outcome(_ix, True)
                     return sig
         except Exception as e:
             last_err = e
         await _asyncio.sleep(poll)
         poll = min(poll * 1.3, 2.0)
+
+    # Record failure for all pump.fun ixs in the payload
+    for _ix in instructions:
+        if getattr(_ix, "program_id", None) == PUMP_PROGRAM_ID:
+            record_ix_outcome(_ix, False)
 
     if last_err is not None:
         raise RuntimeError(f"tx {sig[:16]}… landed but failed: {last_err}")
