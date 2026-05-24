@@ -1,5 +1,21 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-24 (LATE PM2) — Config sync + structured trade-decision logging
+
+### Shipped
+- **Config sync endpoints** for moving config between preview/production envs:
+  - `GET /api/config/export` — full snapshot as portable JSON
+  - `POST /api/config/import` — apply a foreign snapshot (auto-pauses bot first)
+  - `POST /api/config/apply-recommended` — one-click apply the 14-key forensics-driven defaults (also auto-pauses)
+  - `GET /api/diagnostics/recipient-health` — live breaking-fee-recipient success rates
+- **Structured ENTRY_DECISION log line** in `_enter_impl`: captures mint, symbol, action, risk_score, size_multiplier, trade_usd, trade_sol, protocol, virtual_sol_reserves, real_sol_reserves, effective slippage, priority fee, tokens_out, entry_price.
+- **Structured EXIT_DECISION log line** in `_exit_impl`: reason, panic flag, exit_slip_bps, priority, db_entry_tokens vs on_chain balance, shave applied (`partial-5%` or `normal-0.5%`), final sell_tokens.
+
+### Why
+Until now, exit/entry diagnostics were spread across multiple lines. Single-line structured logs make `grep ENTRY_DECISION | jq` style analysis trivial; pattern miner can ingest directly.
+
+
+
 ## 2026-05-24 (LATE PM) — Entry-quality + execution-reliability pass
 
 Following user-pasted suggestion list from external analysis. Curated to 4 high-ROI items, skipped 8 (premature/risky/duplicate). All landed in a single coordinated edit.

@@ -318,6 +318,81 @@ async def recipient_health():
     return {"recipients": pumpfun.get_recipient_health_snapshot()}
 
 
+# ---------- Config sync (preview ↔ production) ----------
+# Forensics-driven defaults landed 2026-05-24 PM after analysing 14 historic
+# real winners vs 86 closed losers. Apply these to either env via the
+# /api/config/apply-recommended POST.
+RECOMMENDED_CONFIG_OVERRIDES = {
+    "speed_mode": "manual",                    # so slippage_bps actually applies
+    "slippage_bps": 1500,                      # 15% entry slip (depth-adaptive on top)
+    "exit_slippage_bps": 1000,                 # 10% normal exit
+    "panic_exit_slippage_bps": 2500,           # 25% panic exit (SL / hard-stop / BC-complete)
+    "priority_fee_microlamports": 1_500_000,   # land in 1-2 slots
+    # Entry filters (NEW band)
+    "min_curve_liquidity_sol_new": 25.0,
+    "scanner_min_growth_pct_new": 50.0,
+    "scanner_min_recent_inflow_sol_new": 3.0,
+    "scanner_min_new_buyers_new": 8,
+    # Risk
+    "max_concurrent_positions": 3,
+    "stop_loss_pct": 12.0,
+    "trailing_arm_pct": 15.0,
+    "trailing_stop_pct": 8.0,
+    "take_profit_pct": 20.0,
+    "hold_max_seconds": 60,
+    # Sizing
+    "max_trade_usd": 1.0,
+}
+
+
+@api.get("/config/export")
+async def config_export():
+    """Export the FULL current bot config as a portable JSON snapshot.
+    Use case: copy preview config to production (or vice versa) after
+    redeploys, since preview and production typically have separate DBs."""
+    return {
+        "schema_version": 1,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "config": bot_state.config.model_dump(),
+    }
+
+
+class _ConfigImportReq(BaseModel):
+    config: dict
+
+
+@api.post("/config/import")
+async def config_import(req: _ConfigImportReq):
+    """Import a config JSON exported from another environment. Runs the same
+    validation/clamps as PUT /bot/config so out-of-range values are sanitised.
+    The bot is auto-paused before applying so partial reloads can't trade."""
+    # SAFETY: always pause trading before applying a foreign config
+    was_enabled = bot_state.config.enabled
+    bot_state.config.enabled = False
+    await bot_state.save_config()
+    try:
+        merged = BotConfig(**{**bot_state.config.model_dump(), **req.config})
+        merged.enabled = False  # never auto-enable on import; user re-starts
+        return await update_config(merged)
+    except Exception as e:
+        # Roll back the pause if import fails so the user isn't stuck
+        bot_state.config.enabled = was_enabled
+        await bot_state.save_config()
+        raise HTTPException(400, f"invalid config payload: {e}")
+
+
+@api.post("/config/apply-recommended")
+async def config_apply_recommended():
+    """Apply the forensics-driven default overrides documented in CHANGELOG
+    2026-05-24 PM. The bot is auto-paused before applying.
+    Returns the new config so the UI can refresh."""
+    bot_state.config.enabled = False
+    merged_dict = {**bot_state.config.model_dump(), **RECOMMENDED_CONFIG_OVERRIDES}
+    merged_dict["enabled"] = False
+    merged = BotConfig(**merged_dict)
+    return await update_config(merged)
+
+
 @api.post("/pnl/reset-live")
 async def reset_live_pnl():
     """Wipe the LIVE daily PnL counter without deleting trade history.

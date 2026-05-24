@@ -1134,6 +1134,22 @@ class BotState:
         entry_price_sol = sol_in_lamports / tokens_out / LAMPORTS_PER_SOL
         mode = "live" if self.config.live_trading else "paper"
 
+        # Structured entry decision log — captures every factor that fed the
+        # buy so post-trade analysis can correlate inputs to outcomes.
+        try:
+            vsr_log = (state or {}).get("virtual_sol_reserves", 0) / LAMPORTS_PER_SOL
+            real_sol_log = (state or {}).get("real_sol_reserves", 0) / LAMPORTS_PER_SOL
+            logger.info(
+                f"ENTRY_DECISION mint={launch.mint[:8]}… sym={launch.symbol!r} "
+                f"action={action} risk={risk_score} size_mult={size_mult:.2f} "
+                f"trade_usd={trade_usd:.3f} trade_sol={trade_sol:.5f} "
+                f"protocol={protocol} vsr_sol={vsr_log:.2f} real_sol={real_sol_log:.2f} "
+                f"eff_slip_bps={eff_slip} eff_priority_uL={eff_priority} "
+                f"tokens_out={tokens_out} entry_price_sol={entry_price_sol:.3e}"
+            )
+        except Exception:
+            pass
+
         cu = CU_PUMPSWAP if protocol == "pumpswap" else CU_PUMPFUN
         est_entry_fee_sol = estimate_tx_fee_sol(eff_priority, cu)
 
@@ -1638,12 +1654,22 @@ class BotState:
                 # Custom:6023 (NotEnoughTokensToSell).
                 # Treat the wallet read as authoritative AND apply 5% shave
                 # after a partial; otherwise the standard 0.5% safety.
+                pre_shave_tokens = tokens_in
                 if slot.get("partial_done"):
                     tokens_in = int(actual * 0.95)
+                    shave_label = "partial-5%"
                 else:
                     tokens_in = min(tokens_in, int(actual * 0.995))
+                    shave_label = "normal-0.5%"
                 if tokens_in <= 0:
                     tokens_in = actual  # very small position: send full balance
+                logger.info(
+                    f"EXIT_DECISION mint={mint[:8]}… sym={trade_doc.get('symbol')!r} "
+                    f"reason={reason!r} panic={self._is_panic_exit(reason)} "
+                    f"exit_slip_bps={exit_slip} eff_priority_uL={eff_priority} "
+                    f"db_entry_tokens={pre_shave_tokens} on_chain={actual} "
+                    f"shave={shave_label} sell_tokens={tokens_in}"
+                )
             except Exception as e:
                 logger.warning(f"balance read failed for {mint}, falling back to entry_tokens: {e}")
 
