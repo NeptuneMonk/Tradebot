@@ -72,6 +72,12 @@ class BotState:
         # Populated by `_exit_impl` when reason starts with "stop-loss hit".
         # Checked inside the entry gate lock so concurrent attempts agree.
         self.sl_cooldown_until: dict[str, float] = {}
+        # Universal post-exit cooldown: mint -> unix timestamp. Prevents the
+        # scanner from re-entering the SAME mint within the cooldown window
+        # after ANY exit (TP, SL, timeout, classifier, hard-stop). Fixes
+        # the bleed pattern where the bot opened 4 positions for the same
+        # mint in 3 minutes, each one's monitor racing the others' sells.
+        self.recent_exit_until: dict[str, float] = {}
         self.scanner = MomentumScanner(self)
         self.discovery = PumpfunDiscovery(self)
         self.pnl_reconciler = PnLReconciler(self)
@@ -283,12 +289,15 @@ class BotState:
             await asyncio.sleep(15.0)
 
     async def _reattach_orphaned_active_rows(self):
-        # Sweep expired SL cooldowns from the in-memory map. Cheap O(N) walk —
-        # the map is naturally bounded by recent SL exits in the cooldown window.
+        # Sweep expired cooldowns from the in-memory maps. Cheap O(N) walk —
+        # the maps are naturally bounded by recent exits in their windows.
         now = time.time()
         for mint in list(self.sl_cooldown_until.keys()):
             if self.sl_cooldown_until[mint] <= now:
                 del self.sl_cooldown_until[mint]
+        for mint in list(self.recent_exit_until.keys()):
+            if self.recent_exit_until[mint] <= now:
+                del self.recent_exit_until[mint]
 
         cursor = self.db.trades.find({"status": "active"}, {"_id": 0})
         reattached = 0
@@ -932,6 +941,13 @@ class BotState:
             cd_until = self.sl_cooldown_until.get(launch.mint, 0.0)
             if cd_until and time.time() < cd_until:
                 return
+            # Universal post-exit cooldown — prevents re-entry on the SAME
+            # mint within the cooldown window after ANY exit. Fixes the
+            # "4 GSD positions in 3 min" pattern where monitors for stale
+            # slots raced against the new position's exits.
+            rx_until = self.recent_exit_until.get(launch.mint, 0.0)
+            if rx_until and time.time() < rx_until:
+                return
             # Re-entry watchlist lockout: if this mint just exited profitably
             # and is being watched for a pullback re-entry, the regular scanner
             # must NOT re-buy it from the front-running side. The re-entry
@@ -1556,6 +1572,13 @@ class BotState:
         slot = self.active_trades.pop(mint, None)
         if not slot:
             return
+        # Reserve the mint while the exit is in flight so the scanner can't
+        # race into a new entry between pop and re-insert. This prevents the
+        # "4 positions in 3 min on same mint" pattern: previously a failing
+        # exit would pop the slot, attempt the sell, fail, then re-insert —
+        # but during the gap, the scanner saw the mint as "free" and opened
+        # another position, orphaning the prior monitor.
+        self._pending_entry_mints.add(mint)
         try:
             await self._exit_impl(mint, reason, slot)
         except Exception as e:
@@ -1568,6 +1591,8 @@ class BotState:
                 f"into active_trades for retry: {e}"
             )
             self.active_trades[mint] = slot
+        finally:
+            self._pending_entry_mints.discard(mint)
 
     async def _exit_impl(self, mint: str, reason: str, slot: dict):
         trade_doc = slot["trade"]
@@ -1597,6 +1622,7 @@ class BotState:
             await self.db.trades.update_one(
                 {"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
             )
+            self.recent_exit_until[mint] = time.time() + 90.0
             return
 
         tokens_in = int(trade_doc["entry_tokens"])
@@ -1646,8 +1672,15 @@ class BotState:
                         "symbol": trade_doc.get("symbol"),
                         "reason": trade_doc["exit_reason"],
                     })
+                    self.recent_exit_until[mint] = time.time() + 90.0
                     return
                 # Post-partial exits need a WIDER shave to absorb RPC
+                # propagation lag. If the partial sell just landed (~1-2s
+                # ago), Helius might still serve the pre-partial balance.
+                # Sending a sell sized to the stale balance reverts with
+                # Custom:6023 (NotEnoughTokensToSell).
+                # Treat the wallet read as authoritative AND apply 5% shave
+                # after a partial; otherwise the standard 0.5% safety.
                 # propagation lag. If the partial sell just landed (~1-2s
                 # ago), Helius might still serve the pre-partial balance.
                 # Sending a sell sized to the stale balance reverts with
@@ -1705,6 +1738,7 @@ class BotState:
                     "symbol": trade_doc.get("symbol"),
                     "reason": trade_doc["exit_reason"],
                 })
+                self.recent_exit_until[mint] = time.time() + 90.0
                 return
             try:
                 kp = get_keypair()
@@ -1775,6 +1809,11 @@ class BotState:
                     {"id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
                 )
                 self.active_trades.pop(mint, None)
+                # Block re-entry on this mint for the cooldown window — even
+                # though the exit failed, the position is now considered
+                # abandoned and the bot must NOT re-buy it (we still hold
+                # stranded tokens that the user needs to recover manually).
+                self.recent_exit_until[mint] = time.time() + 90.0
                 await hub.broadcast("trade_exit_terminal", trade_doc)
                 logger.warning(
                     f"GIVING UP on {mint} after {retries} failed sells — "
@@ -1847,6 +1886,13 @@ class BotState:
         await self.db.trades.update_one(
             {"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
         )
+        # Universal post-exit cooldown — block re-entry on this mint for 90s
+        # regardless of exit reason. This prevents the "4 positions in 3 min"
+        # pattern where the scanner immediately re-bought the mint we just
+        # sold, orphaning the monitor task on the prior slot. The cooldown
+        # gives the in-memory state (and the prior monitor) time to fully
+        # tear down before any new entry can race a stale exit.
+        self.recent_exit_until[mint] = time.time() + 90.0
         # SL cooldown — if this exit was triggered by stop-loss, lock the
         # mint out of new entries for `sl_cooldown_minutes`. The check applies
         # to fresh scanner entries AND the re-entry watcher. Buying back a

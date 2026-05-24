@@ -1,5 +1,40 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-25 (EARLY AM) — Fixed the real bleed: multi-position-per-mint race
+
+### Root cause (from production+preview log analysis)
+Data showed the bot opened **4 separate positions for the same mint (AquNyWTQ / GSD) within 3 minutes**, each one's exit racing against the previous slot's orphaned monitor. Result: a cascade of 7+ failed sells (Custom: 6023 NotEnoughTokensToSell) in 75 seconds while real funds drained.
+
+Mechanism:
+1. `_exit` pops slot from `active_trades[mint]` (Python dict — only ONE key per mint)
+2. Sell tx attempted, fails (6023)
+3. Slot re-inserted into `active_trades[mint]` for retry
+4. **Between pop and re-insert** (and again after retries exhaust), scanner sees the mint as "free" and opens a NEW position
+5. New position overwrites the dict entry, but the old monitor task keeps firing on stale data
+6. Multiple monitor tasks now exist, all trying to sell, racing for the same wallet balance
+
+### Fixes (all in `bot.py`)
+1. **`recent_exit_until` cooldown map** — 90 second block on re-entry for ANY exit reason (TP/SL/timeout/classifier/hard-stop/exit-failed-terminal). Checked inside the entry-gate lock. Plugged into all 4 exit-completion paths plus the failed-sell-terminal path.
+2. **`_pending_entry_mints` reservation during `_exit`** — `add(mint)` before `_exit_impl`, `discard(mint)` in `finally`. Closes the race window between slot-pop and slot-reinsert where the scanner could observe the mint as "free".
+3. **Cooldown sweep in `_reattach_orphaned_active_rows`** — expired entries cleaned every reconciler tick.
+4. Also set cooldown on the state-unavailable and zero-balance early-return paths so those also block re-entry.
+
+### Why this stops the bleed
+With #1 + #2, even if a sell fails 3 times and the position is abandoned as `exit_failed_terminal`, the mint is locked out for 90s. The scanner cannot re-buy a mint we just exited (or failed to exit), eliminating the cascade.
+
+### Verified
+- `tests/test_reentry_cooldown.py` (new) — 3/3 pass: cooldown_blocks_reentry, pending_entry_mints_reservation, cooldown_sweep
+- Structural inspection — all 5 code-path assertions pass (init, _enter check, _exit reservation, _exit_impl cooldown set, sweep)
+- Backend hot-reloaded cleanly; uptime 1h20m, no startup errors
+
+### Open question for user
+Bot is currently paused (`enabled=False`). After redeploying production with this fix, the user should:
+1. Hit "Apply Recommended Defaults" (already in UI from earlier today)
+2. Press Start
+3. Watch the next 10 trades — if a mint is observed in trade rows multiple times within 90s, the cooldown is broken
+
+
+
 ## 2026-05-24 (LATE PM3) — UI: ConfigSyncPanel (no more curl required)
 
 ### Shipped
