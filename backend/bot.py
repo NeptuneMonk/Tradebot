@@ -1149,15 +1149,19 @@ class BotState:
         # Dynamic entry slippage by curve depth — thinner curves (early in
         # the bonding-curve lifecycle) move PRICE much faster, so a static
         # slippage tolerance was triggering Custom:6002 (TooMuchSolRequired)
-        # reverts. Auto-widen slippage for thin curves.
+        # reverts. Auto-widen slippage for thin curves. Even deep curves
+        # need a 8% floor on hot launches because a few sniper buys land
+        # in the same slot and move price >3% before our tx confirms.
         if protocol == "pumpfun":
             vsr_sol = state.get("virtual_sol_reserves", 0) / LAMPORTS_PER_SOL
             if vsr_sol < 32:        # very early — first ~2 SOL of buy pressure
                 eff_slip = max(eff_slip, 2500)  # 25%
             elif vsr_sol < 40:      # early — first ~10 SOL
-                eff_slip = max(eff_slip, 1800)  # 18%
+                eff_slip = max(eff_slip, 2000)  # 20%
             elif vsr_sol < 55:      # mid — first ~25 SOL
-                eff_slip = max(eff_slip, 1200)  # 12%
+                eff_slip = max(eff_slip, 1500)  # 15%
+            else:                   # deep curve — still need a floor
+                eff_slip = max(eff_slip, 1000)  # 10% minimum for any entry
 
         tokens_out, max_sol = (
             pumpswap.quote_buy_tokens(pumpswap_state, sol_in_lamports, eff_slip)
