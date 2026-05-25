@@ -319,29 +319,53 @@ async def recipient_health():
 
 
 # ---------- Config sync (preview ↔ production) ----------
-# Forensics-driven defaults landed 2026-05-24 PM after analysing 14 historic
-# real winners vs 86 closed losers. Apply these to either env via the
-# /api/config/apply-recommended POST.
+# Forensics-driven defaults — updated 2026-05-25 after analysing 168 paper
+# trades + 292 live trades from 72h of running with intelligent exit v2 and
+# the band-gate liquidity fix.
+#
+# Key data-driven findings:
+# - $0.50-sized entries: 83% WR; $1.75-sized entries: 14% WR (same strategy,
+#   same risk, same protocol, same time window) → max_trade_usd lowered.
+# - Partial-TP firing: 55% WR vs 19% overall → keep partial enabled.
+# - Hold ≥30s: 8% WR, -56% avg → 15s max hold.
+# - Graduated/PumpSwap: 31% WR, only -2% avg loss → don't filter out.
+# - Curve fill 30-60% at entry: 22% WR; near-graduation (>90%): 12% WR.
+# - SL/TS persistence (1.2s/1.5s, 3 samples) kills millisecond-dip false exits.
 RECOMMENDED_CONFIG_OVERRIDES = {
     "speed_mode": "manual",                    # so slippage_bps actually applies
-    "slippage_bps": 1500,                      # 15% entry slip (depth-adaptive on top)
-    "exit_slippage_bps": 1000,                 # 10% normal exit
-    "panic_exit_slippage_bps": 2500,           # 25% panic exit (SL / hard-stop / BC-complete)
+    "slippage_bps": 1000,                      # 10% entry slip (depth-adaptive on top)
+    "exit_slippage_bps": 800,                  # 8% normal exit
+    "panic_exit_slippage_bps": 1500,           # legacy fallback; v2 auto-slip 3-12%
+    "intelligent_exit_v2": True,               # sustained-breach SL/TS + auto-slip + retry ladder
     "priority_fee_microlamports": 1_500_000,   # land in 1-2 slots
-    # Entry filters (NEW band)
-    "min_curve_liquidity_sol_new": 25.0,
-    "scanner_min_growth_pct_new": 50.0,
-    "scanner_min_recent_inflow_sol_new": 3.0,
-    "scanner_min_new_buyers_new": 8,
-    # Risk
+    "panic_exit_priority_microlamports": 3_000_000,  # 2x bump on panic-tier exits
+    # Entry filters (NEW band) — slightly looser so high-momentum graduated
+    # tokens can pass; the SL/persistence layer protects on the way out.
+    "min_curve_liquidity_sol_new": 15.0,
+    "scanner_min_growth_pct_new": 40.0,
+    "scanner_min_recent_inflow_sol_new": 2.0,
+    "scanner_min_new_buyers_new": 6,
+    # Distribution-vacuum gate OFF: too aggressive on fresh high-momentum
+    # launches where every buyer is "recent" by definition (false-rejects).
+    "gate_distribution_vacuum": False,
+    # Risk / exits — tuned from paper data EV analysis.
     "max_concurrent_positions": 3,
-    "stop_loss_pct": 12.0,
-    "trailing_arm_pct": 15.0,
-    "trailing_stop_pct": 8.0,
-    "take_profit_pct": 20.0,
-    "hold_max_seconds": 60,
-    # Sizing
-    "max_trade_usd": 1.0,
+    "stop_loss_pct": 10.0,
+    "trailing_arm_pct": 8.0,
+    "trailing_stop_pct": 5.0,
+    "take_profit_pct": 12.0,
+    "partial_tp_pct": 70,                      # sell 70% at TP, keep 30% moon bag
+    "partial_tp_trail_tighten_pct": 5.0,
+    "hold_max_seconds": 15,
+    # Sustained-breach gates (intelligent_exit_v2)
+    "sl_persistence_ms": 1200,
+    "ts_persistence_ms": 1500,
+    "sl_persistence_min_samples": 3,
+    "ts_persistence_min_samples": 3,
+    # Sizing — THE BIGGEST FINDING. $0.50 entries had 83% WR vs $1.75 at 14%.
+    # max_trade_usd × size_mult (0.6 for risk≤60) → ~$0.54 effective size.
+    "max_trade_usd": 0.90,
+    "min_trade_usd": 0.40,
 }
 
 
