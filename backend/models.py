@@ -213,6 +213,18 @@ class BotConfig(BaseModel):
     # the composite score is forced to 0 so they don't surface in the UI.
     creator_greylist_min_fails: int = 5
     creator_greylist_max_fails: int = 80
+    # Greylist Sniper — opens a SECOND entry path alongside the momentum
+    # scanner. Fires on every NEW launch where the creator scored ≥
+    # `greylist_snipe_min_score` on the greylist. Bypasses the momentum
+    # gates (growth/inflow/buyers/velocity) since greylisted creators
+    # rarely pump organically — the WHOLE point of the greylist is to
+    # snipe these creators on the predictable curve regardless of
+    # momentum. Still honors safety gates (kill switch, max_concurrent_positions,
+    # recent_exit cooldown, doctor pause).
+    greylist_snipe_enabled: bool = True
+    greylist_snipe_min_score: float = 45.0   # hybrid threshold by default
+    greylist_snipe_max_per_hour: int = 12    # rate cap (safety)
+    greylist_snipe_settle_seconds: int = 5   # wait after launch for tracking bucket
     wallet_graph_enabled: bool = True          # 2-hop hunter on/off
     # Live PnL reset cutoff: when set, daily_pnl_usd(mode='live') only sums
     # trades closed at-or-after this ISO timestamp instead of today's 00:00 UTC.

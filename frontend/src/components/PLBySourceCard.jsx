@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback } from "react";
-import { Sparkles, Hourglass, Repeat, TrendingUp, TrendingDown, Layers, Archive } from "lucide-react";
+import { Sparkles, Hourglass, Repeat, TrendingUp, TrendingDown, Layers, Archive, Crosshair } from "lucide-react";
 import { api } from "@/lib/api";
 
 const ICONS = {
   new: Sparkles,
   seasoned: Hourglass,
   reentry: Repeat,
+  greylist_snipe: Crosshair,
   legacy: Archive,
 };
 
@@ -13,6 +14,7 @@ const COLORS = {
   new: "text-amber-300 border-amber-900/60 bg-amber-950/30",
   seasoned: "text-cyan-300 border-cyan-900/60 bg-cyan-950/30",
   reentry: "text-fuchsia-300 border-fuchsia-900/60 bg-fuchsia-950/30",
+  greylist_snipe: "text-rose-300 border-rose-900/60 bg-rose-950/30",
   legacy: "text-neutral-400 border-neutral-800 bg-neutral-950/30",
 };
 
@@ -131,7 +133,7 @@ export default function PLBySourceCard({ refreshSignal }) {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
         {sources.length > 0
           ? sources.map((s) => <SourceRow key={s.source} s={s} />)
           : ["new", "seasoned", "reentry", "legacy"].map((src) => (

@@ -339,6 +339,10 @@ async def update_config(cfg: BotConfig):
     cfg.trailing_stop_pct = max(0.0, min(95.0, cfg.trailing_stop_pct))
     if cfg.exit_slippage_bps != 0:
         cfg.exit_slippage_bps = max(50, min(5000, cfg.exit_slippage_bps))
+    # Greylist Sniper clamps
+    cfg.greylist_snipe_min_score = max(0.0, min(100.0, cfg.greylist_snipe_min_score))
+    cfg.greylist_snipe_max_per_hour = max(0, min(200, cfg.greylist_snipe_max_per_hour))
+    cfg.greylist_snipe_settle_seconds = max(0, min(120, cfg.greylist_snipe_settle_seconds))
     bot_state.config = cfg
     await bot_state.save_config()
     return cfg

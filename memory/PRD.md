@@ -989,3 +989,59 @@ User: "(P1) Stage-1 hot-path optimization: short-circuit `update_creator_score` 
 | `greylist_stage1_rejected` | bool — true when full pipeline was skipped |
 | `greylist_stage1_reason` | string — exact stage1 trigger or rejection reason |
 
+
+## 2026-05-25 — Greylist Sniper — dedicated entry path
+
+User context: "Im running it all on preview. How is it supposed to make a buy?" → diagnosed that the bot was in paper mode AND the momentum scanner rarely sees greylist creators (by construction). User picked "Build the Greylist Sniper" — opens a SECOND entry path that fires on every new launch from a greylisted creator regardless of momentum.
+
+### What changed
+- **New config knobs in `BotConfig`**:
+  - `greylist_snipe_enabled: bool = True`
+  - `greylist_snipe_min_score: float = 45.0` (hybrid threshold)
+  - `greylist_snipe_max_per_hour: int = 12` (rate cap)
+  - `greylist_snipe_settle_seconds: int = 5` (wait after launch detect)
+- **New `BotState._attempt_greylist_snipe()` method** — wired into `on_launch` as a background task. Decision flow:
+  1. Master enabled? Sniper enabled? Greylist enabled?
+  2. Per-hour rate cap not blown? (rolling 1h window in `_greylist_snipe_fires`)
+  3. Creator score ≥ `min_score` AND not blacklisted AND not out-of-band?
+  4. Wait `settle_seconds` for tracking bucket to populate.
+  5. Mint not already entered/pending?
+  6. Call `_enter(launch, risk_score=0, action="greylist_snipe")`. Greylist context + overrides resolve normally inside `_enter_impl` (already in place from earlier phases).
+- **Momentum gate bypass in `_enter_impl`** — when `action == "greylist_snipe"`:
+  - Classifier-action whitelist: SKIPPED
+  - Liquidity gate: loosened to 0.1 SOL floor
+  - Min-buyers gate: SKIPPED
+  - Pre-trade classifier veto: SKIPPED
+  - Entry velocity gate: SKIPPED
+  - Socials-required gate: SKIPPED
+  - SAFETY gates (kill switch, max_concurrent_positions, recent_exit cooldown, doctor pause, pool state) all still ENFORCED.
+- **`pl_sources.py`** — added `greylist_snipe` bucket with label `Greylist Sniper`. PnL-by-source card now has 5 lanes (new / seasoned / reentry / greylist_snipe / legacy).
+- **`PLBySourceCard.jsx`** — added rose-pink `Crosshair` icon for `greylist_snipe`, switched grid to `lg:grid-cols-5`.
+- **`BotControlCard.jsx`** — new "Greylist Sniper" section with enable toggle + Min Score / Max-per-hour / Settle Seconds inputs.
+
+### Sniper rate-cap safety
+Rolling 1h list of fire timestamps stored on `BotState._greylist_snipe_fires`. Cleaned implicitly on every sniper invocation (no separate GC needed). Max-per-hour=12 by default — at 0.5 SOL avg trade size + 5 SOL wallet that's a ~30% wallet exposure cap per hour, well below position-cap-driven limit. Operator can drop to 0 to fully disable without uninstalling.
+
+### Live state at delivery
+- 93 sniper-eligible creators on greylist (score≥45, not blacklisted, in F-band 5-79).
+- Top eligible: `bwamJeRsDMPJ…` (score=53, F=50), `EdNcBDUFQaTx…` (score=53, F=8, pattern=predictable_dump_tradeable).
+- New API field exposed at `/api/bot/config`: all 4 sniper knobs present, defaults persist on reload.
+- Bot is still in PAPER mode (`live_trading=false`) — sniper fires will be paper-only until user flips the toggle.
+
+### Tests
+- **NEW `tests/test_greylist_sniper.py`** — 13 cases:
+  - fires above min_score, skips below
+  - skips when sniper disabled, master greylist disabled, bot disabled, stopping_gracefully
+  - skips blacklisted / out-of-band creators
+  - per-hour rate cap enforced AND decays after 1h
+  - skips if mint already active/pending
+  - no creator doc → no fire
+  - pl_sources classifies `greylist_snipe` correctly
+- **129 tests pass** across launch_signatures + creator_greylist + creator_pattern + pattern_analytics + strategy_doctor_pattern_rule + exit_param + stage1_and_links + greylist_sniper.
+
+### How operator validates it's working
+- Watch `/var/log/supervisor/backend.err.log` for `greylist_snipe: firing on X… creator=Y… score=Z pattern=…`
+- `WS` channel `greylist_snipe_fire` broadcasts every fire
+- Every sniper-driven Trade doc gets `pl_source_at_entry = "greylist_snipe"` and `greylist_strategy_at_entry` populated
+- `PLBySourceCard` shows a NEW "Greylist Sniper" lane with its own win-rate / PnL tally
+

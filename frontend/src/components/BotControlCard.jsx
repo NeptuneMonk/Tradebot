@@ -318,6 +318,41 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
           </div>
         </div>
 
+        {/* Greylist Sniper */}
+        <div className="mt-3 border-t border-neutral-800 pt-2.5">
+          <label className="flex items-center justify-between text-[10px] font-mono uppercase tracking-[0.15em] text-neutral-400 cursor-pointer">
+            <span className="flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                data-testid="greylist-snipe-enabled-checkbox"
+                checked={local.greylist_snipe_enabled}
+                onChange={(e) => setLocal({ ...local, greylist_snipe_enabled: e.target.checked })}
+              />
+              Greylist Sniper
+              <HelpHint label="Greylist Sniper">
+                Fires on every NEW launch where the creator scored ≥ Min Score on the greylist. Bypasses momentum gates (growth/inflow/buyers/velocity) since greylisted creators rarely pump organically — the entire point is sniping their predictable curve. Still honors kill switch + max-positions + cooldowns.
+              </HelpHint>
+            </span>
+            <span className="text-neutral-600 normal-case tracking-normal">
+              snipe greylist creators on every launch
+            </span>
+          </label>
+          <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+            <Field label="Min Score" testid="greylist-snipe-min-score-input"
+                   hint="Effective (decayed) greylist score required to fire. 45 = hybrid threshold, 70 = aggressive threshold."
+                   value={local.greylist_snipe_min_score}
+                   onChange={(v) => setLocal({ ...local, greylist_snipe_min_score: parseFloat(v) || 0 })} step="5" />
+            <Field label="Max/hr" testid="greylist-snipe-max-per-hour-input"
+                   hint="Rolling 1h fire cap. Safety net so a wave of greylist launches can't blow through the wallet."
+                   value={local.greylist_snipe_max_per_hour}
+                   onChange={(v) => setLocal({ ...local, greylist_snipe_max_per_hour: parseInt(v, 10) || 0 })} step="1" />
+            <Field label="Settle (s)" testid="greylist-snipe-settle-seconds-input"
+                   hint="Wait this long after launch detection before buying. Lets the tracking bucket populate first-seen price / liquidity."
+                   value={local.greylist_snipe_settle_seconds}
+                   onChange={(v) => setLocal({ ...local, greylist_snipe_settle_seconds: parseInt(v, 10) || 0 })} step="1" />
+          </div>
+        </div>
+
         {/* Per-band gates table */}
         <div className="mt-3">
           <div className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 mb-1">Per-band gates</div>

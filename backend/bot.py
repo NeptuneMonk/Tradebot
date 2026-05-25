@@ -78,6 +78,10 @@ class BotState:
         # the bleed pattern where the bot opened 4 positions for the same
         # mint in 3 minutes, each one's monitor racing the others' sells.
         self.recent_exit_until: dict[str, float] = {}
+        # Greylist Sniper rate cap — rolling per-hour fire counter so a wave
+        # of greylist launches can't blow through the wallet. Cleared by
+        # `_gc_greylist_snipe_counter` every minute.
+        self._greylist_snipe_fires: list[float] = []
         self.scanner = MomentumScanner(self)
         self.discovery = PumpfunDiscovery(self)
         self.pnl_reconciler = PnLReconciler(self)
@@ -839,6 +843,11 @@ class BotState:
         asyncio.create_task(self._fetch_pumpfun_socials(launch.mint))
         asyncio.create_task(self._assess_and_enter(launch, creator_rugs))
         asyncio.create_task(self._tracker_cleanup(launch.mint))
+        # Greylist Sniper — fires for greylisted creators regardless of
+        # momentum (the WHOLE point of the greylist is sniping these
+        # predictable-pattern creators on their curve, NOT waiting for
+        # them to pump organically — which they rarely do).
+        asyncio.create_task(self._attempt_greylist_snipe(launch, creator_doc))
 
     async def on_trade(self, trade_data: dict):
         """A buy/sell event was observed on Pump.fun."""
@@ -1229,6 +1238,98 @@ class BotState:
         except Exception as e:
             logger.exception(f"assess failed for {launch.mint}: {e}")
 
+    async def _attempt_greylist_snipe(self, launch: Launch, creator_doc: dict | None):
+        """Greylist Sniper — opens a position on EVERY new launch from a
+        creator that scored ≥ greylist_snipe_min_score on the greylist.
+        Bypasses momentum gates inside `_enter_impl` (signaled by
+        `action="greylist_snipe"`) since greylisted creators rarely pump
+        organically. Still gated by all safety checks: kill switch,
+        max_concurrent_positions, recent_exit cooldown, doctor pause,
+        per-hour rate cap, paper-vs-live mode.
+
+        Decision flow:
+          1. Master enabled? Else return.
+          2. Bot enabled + not stopping_gracefully?
+          3. Creator on greylist with score ≥ min_score AND not blacklisted?
+          4. Per-hour fire cap not exceeded?
+          5. Settle delay (let tracking bucket populate liquidity/socials).
+          6. Call `_enter(launch, risk_score=0, action="greylist_snipe")`.
+
+        Safety: a wave of N greylist launches in one minute can NOT all
+        fire — the rate cap clamps to `greylist_snipe_max_per_hour`. The
+        existing position cap in `_enter` provides a second safety net.
+        """
+        try:
+            if not self.config.greylist_snipe_enabled:
+                return
+            if not self.config.creator_greylist_enabled:
+                return
+            if not self.config.enabled or self.stopping_gracefully:
+                return
+            if not launch.creator:
+                return
+            # Per-hour fire cap (rolling 1h window).
+            now = time.time()
+            self._greylist_snipe_fires = [
+                t for t in self._greylist_snipe_fires if now - t < 3600
+            ]
+            cap = max(0, int(self.config.greylist_snipe_max_per_hour or 0))
+            if cap > 0 and len(self._greylist_snipe_fires) >= cap:
+                logger.info(
+                    f"greylist_snipe: rate cap {cap}/hr hit, "
+                    f"skipping {launch.mint[:8]}…"
+                )
+                return
+            # Score gate. We use the LIVE (decayed) score, not the raw
+            # persisted value — a creator's predictability fades if they
+            # haven't launched in a while.
+            min_score = float(self.config.greylist_snipe_min_score or 0)
+            # creator_doc passed in is from `record_new_launch` which uses
+            # `creators.find_one_and_update(..., return_document=AFTER)`,
+            # so it has the LATEST tokens_failed but might NOT have the
+            # greylist_score (we refresh it in on_launch after this returns).
+            # Re-read to be safe.
+            gc = await self.db.creators.find_one(
+                {"_id": launch.creator},
+                {"_id": 0, "greylist_score": 1, "greylist_score_updated_at": 1,
+                 "greylist_blacklisted": 1, "greylist_out_of_band": 1,
+                 "greylist_pattern": 1},
+            )
+            if not gc:
+                return
+            if gc.get("greylist_blacklisted") or gc.get("greylist_out_of_band"):
+                return
+            from creator_greylist import apply_decay
+            eff = apply_decay(gc.get("greylist_score"),
+                              gc.get("greylist_score_updated_at"))
+            if eff < min_score:
+                return
+            # Settle wait — give the tracking bucket a moment to populate
+            # liquidity / first price so the entry doesn't fire pre-curve.
+            settle = max(1, int(self.config.greylist_snipe_settle_seconds or 5))
+            await asyncio.sleep(settle)
+            # Re-check enabled state after the sleep (user might have stopped).
+            if not self.config.enabled or self.stopping_gracefully:
+                return
+            if launch.mint in self.active_trades or launch.mint in self._pending_entry_mints:
+                return
+            # Stamp the fire BEFORE _enter so concurrent triggers see the
+            # accurate count (max_per_hour is a SOFT cap; we'll over-fire by
+            # at most a few during contention which is acceptable).
+            self._greylist_snipe_fires.append(time.time())
+            logger.info(
+                f"greylist_snipe: firing on {launch.symbol or launch.mint[:8]}… "
+                f"creator={launch.creator[:8]}… score={eff:.0f} pattern={gc.get('greylist_pattern')}"
+            )
+            await hub.broadcast("greylist_snipe_fire", {
+                "mint": launch.mint, "symbol": launch.symbol,
+                "creator": launch.creator, "score": round(eff, 1),
+                "pattern": gc.get("greylist_pattern"),
+            })
+            await self._enter(launch, risk_score=0, action="greylist_snipe")
+        except Exception as e:
+            logger.exception(f"greylist_snipe failed for {launch.mint}: {e}")
+
     # ---------- Entry / exit (live + paper) ----------
     async def _enter(self, launch: Launch, risk_score: int, action: str):
         # Smart-stop: refuse new entries while we're winding down
@@ -1432,12 +1533,23 @@ class BotState:
         # Resolve band-specific gates: "new" (action=momentum_new) uses tighter
         # thresholds, "seasoned" (action=scanner_momentum) uses base thresholds.
         is_new_band = action == "momentum_new"
+        # Greylist Sniper bypasses MOMENTUM-side gates entirely. The whole
+        # point of the greylist is sniping creators on predictable curves,
+        # so growth/inflow/buyer/velocity gates would defeat the strategy.
+        # SAFETY gates already ran in `_enter()` (kill switch, max_concurrent,
+        # cooldowns, doctor pause). Pool state checks above also already ran.
+        is_greylist_snipe = action == "greylist_snipe"
+        if is_greylist_snipe:
+            logger.info(
+                f"greylist_snipe: bypassing momentum gates for {launch.mint[:8]}… "
+                f"(creator={launch.creator[:8]}…, protocol={protocol})"
+            )
 
         # Classifier-action whitelist gate. When non-empty, only the listed
         # actions are allowed to enter. Strategy Doctor populates this when
         # a clear outperforming bucket emerges (rule_classifier_bucket_focus).
         wl = self.config.classifier_action_whitelist or []
-        if wl and action not in wl:
+        if wl and action not in wl and not is_greylist_snipe:
             logger.info(f"skip {launch.mint} [{action}]: action not in whitelist {wl}")
             await hub.broadcast("scanner_skip", {
                 "mint": launch.mint, "symbol": launch.symbol,
@@ -1450,10 +1562,14 @@ class BotState:
         min_liq = self.config.min_curve_liquidity_sol_new if is_new_band else self.config.min_curve_liquidity_sol
         min_buyers = self.config.min_buyers_for_entry_new if is_new_band else self.config.min_buyers_for_entry
 
-        # Liquidity gate: skip entry if curve has too little real SOL
+        # Liquidity gate: skip entry if curve has too little real SOL.
+        # Greylist snipes use a much looser floor (0.1 SOL) — fresh curves
+        # haven't had time to accumulate liquidity but the snipe is on the
+        # creator pattern, not the curve depth.
         real_sol = state["real_sol_reserves"] / LAMPORTS_PER_SOL
-        if real_sol < min_liq:
-            logger.info(f"skip {launch.mint} [{action}]: liquidity {real_sol:.2f} SOL < min {min_liq}")
+        effective_min_liq = 0.1 if is_greylist_snipe else min_liq
+        if real_sol < effective_min_liq:
+            logger.info(f"skip {launch.mint} [{action}]: liquidity {real_sol:.2f} SOL < min {effective_min_liq}")
             return
 
         # Buyer gate — works for BOTH bands now:
@@ -1464,7 +1580,7 @@ class BotState:
         #   refreshed by discovery polling).
         # Both signal "real interest" but at different time scales — that's OK;
         # `min_buyers_for_entry` should be set higher than `_new` accordingly.
-        if min_buyers > 0:
+        if min_buyers > 0 and not is_greylist_snipe:
             b = self.tracking.get(launch.mint, {})
             if is_new_band:
                 buyers = len(b.get("buyers", set()))
@@ -1485,7 +1601,7 @@ class BotState:
         # abort them). If the classifier would abort/exit_early *immediately*
         # post-entry, refuse to enter — saves entry fees + exit slippage on a
         # certain loser.
-        if is_new_band and protocol == "pumpfun":
+        if is_new_band and protocol == "pumpfun" and not is_greylist_snipe:
             b = self.tracking.get(launch.mint, {})
             metrics = {
                 "elapsed_s": time.time() - b.get("start", time.time()),
@@ -1529,7 +1645,7 @@ class BotState:
         samples = b.get("price_samples")
         vel_window = max(5, int(self.config.scanner_entry_velocity_window_s))
         velocity = velocity_pct_strict(samples, time.time(), vel_window) if samples else None
-        if velocity is not None and velocity < self.config.scanner_entry_velocity_min_pct:
+        if not is_greylist_snipe and velocity is not None and velocity < self.config.scanner_entry_velocity_min_pct:
             logger.info(
                 f"skip {launch.mint} [{action}]: entry velocity "
                 f"{velocity:+.2f}% over {vel_window}s < min "
@@ -1553,7 +1669,7 @@ class BotState:
         # completed yet. If we have no metadata, BLOCK for up to 3s to do
         # a synchronous fetch — better to wait briefly than silently reject
         # every fresh launch.
-        if self.config.gate_socials_required:
+        if self.config.gate_socials_required and not is_greylist_snipe:
             b = self.tracking.get(launch.mint, {})
             reply_count = int(b.get("reply_count") or 0)
             has_social = bool((b.get("twitter") or b.get("telegram") or b.get("website") or "").strip())
