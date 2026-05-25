@@ -176,12 +176,9 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                  value={local.exit_slippage_bps}
                  onChange={(v) => setLocal({ ...local, exit_slippage_bps: parseInt(v, 10) || 0 })} step="50" />
         )}
-        <Field label="Partial TP @gain (%)" testid="partial-tp-input"
+        <Field label="TP Sell Frac (%)" testid="partial-tp-input"
                value={local.partial_tp_pct}
                onChange={(v) => setLocal({ ...local, partial_tp_pct: parseFloat(v) || 0 })} step="5" />
-        <Field label="Partial Sell Frac (0-1)" testid="partial-tp-fraction-input"
-               value={local.partial_tp_fraction}
-               onChange={(v) => setLocal({ ...local, partial_tp_fraction: Math.max(0, Math.min(1, parseFloat(v) || 0)) })} step="0.05" />
         <Field label="Runner Trail (%)" testid="partial-trail-input"
                value={local.partial_tp_trail_tighten_pct}
                onChange={(v) => setLocal({ ...local, partial_tp_trail_tighten_pct: parseFloat(v) || 0 })} step="1" />
