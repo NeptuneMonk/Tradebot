@@ -94,7 +94,15 @@ export default function Dashboard() {
         setLaunches((prev) => [data, ...prev.filter((l) => l.id !== data.id)].slice(0, 50));
         break;
       case "launch_update":
-        setLaunches((prev) => prev.map((l) => (l.id === data.id ? { ...l, ...data } : l)));
+        // Only update if the mint is already in our 50-item window —
+        // events for mints we never displayed shouldn't bloat React state.
+        setLaunches((prev) => {
+          const idx = prev.findIndex((l) => l.id === data.id);
+          if (idx === -1) return prev;
+          const next = prev.slice();
+          next[idx] = { ...next[idx], ...data };
+          return next;
+        });
         break;
       case "trade_enter":
         setActiveTrades((prev) => [data, ...prev.filter((t) => t.id !== data.id)]);

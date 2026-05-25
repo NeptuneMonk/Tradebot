@@ -235,7 +235,7 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                  value={local.scanner_min_age_minutes}
                  onChange={(v) => setLocal({ ...local, scanner_min_age_minutes: parseInt(v, 10) || 0 })} step="15" />
           <Field label="Scan every (s)" testid="scanner-interval-input"
-                 hint="How often the scanner loop re-evaluates all tracked tokens. Lower = faster reactions, more RPC pressure."
+                 hint="How often the scanner loop re-evaluates all tracked tokens. Backend enforces a 5s minimum — values below 5 are clamped to 5 to avoid frontend OOM from rapid metric broadcasts. SL/TP reactions on open positions are NOT controlled by this — they use LaserStream WSS push events."
                  value={local.scanner_interval_s}
                  onChange={(v) => setLocal({ ...local, scanner_interval_s: parseInt(v, 10) || 0 })} step="5" />
           <Field label="Inflow Win (s)" testid="scanner-inflow-window-input"

@@ -995,8 +995,17 @@ class BotState:
             if r.get("id") == b["launch_id"]:
                 r.update(update)
                 break
-        # WS push
-        await hub.broadcast("launch_update", {"id": b["launch_id"], "mint": mint, **update})
+        # WS push — THROTTLED to once per 5s per mint. Without this the
+        # frontend gets ~75 launch_update events/sec when 150+ mints are
+        # tracked (every persist tick fires one), which is enough to OOM
+        # mobile Chrome on a battery-constrained device. The DB write
+        # above still happens at the underlying 2s cadence so the scanner
+        # sees fresh metrics — only the wire broadcast is rate-limited.
+        now_b = time.time()
+        last_bcast = b.get("last_ws_broadcast", 0)
+        if now_b - last_bcast >= 5.0:
+            b["last_ws_broadcast"] = now_b
+            await hub.broadcast("launch_update", {"id": b["launch_id"], "mint": mint, **update})
 
     async def _compute_social(self, mint: str):
         b = self.tracking.get(mint)
