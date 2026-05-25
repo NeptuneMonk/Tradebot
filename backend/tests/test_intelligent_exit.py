@@ -156,3 +156,34 @@ def test_persistence_ts_and_sl_are_independent():
     bs._check_breach_persistence(slot, kind="ts", breached=False, persistence_ms=1500, min_samples=2)
     assert slot["sl_breached_since"] is not None
     assert slot.get("ts_breached_since") is None
+
+
+def test_severity_override_fires_immediately_on_sharp_dump():
+    """v2.1: when price has dropped FAR past the SL trigger (e.g. -10% SL but
+    price is at -16%), persistence is meant to prevent millisecond blips;
+    a sustained sharp dump should fire immediately, not wait another 1.2s.
+    Without this on thin pump.fun pools, the 1.2s wait turns a -10% SL into
+    a -40% actual exit."""
+    bs = _make_bot()
+    slot = {}
+    # First tick of breach, severity 6% beyond SL (over the 5% threshold) → fire NOW
+    fired = bs._check_breach_persistence(
+        slot, kind="sl", breached=True,
+        persistence_ms=1200, min_samples=3,
+        severity_pct=6.0, severity_threshold_pct=5.0,
+    )
+    assert fired is True, "severity override should fire on first tick"
+
+
+def test_severity_below_threshold_still_uses_persistence():
+    """If severity is BELOW the threshold (e.g. only -1% beyond SL), the
+    normal persistence rules still apply — single tick should NOT fire."""
+    bs = _make_bot()
+    slot = {}
+    fired = bs._check_breach_persistence(
+        slot, kind="sl", breached=True,
+        persistence_ms=1200, min_samples=3,
+        severity_pct=1.0, severity_threshold_pct=5.0,
+    )
+    assert fired is False
+    assert slot["sl_breached_since"] is not None  # timer started

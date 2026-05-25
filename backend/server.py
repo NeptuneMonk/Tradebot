@@ -361,11 +361,17 @@ RECOMMENDED_CONFIG_OVERRIDES = {
     "stop_loss_pct": 10.0,
     "trailing_arm_pct": 8.0,
     "trailing_stop_pct": 5.0,
-    "take_profit_pct": 12.0,
-    "partial_tp_pct": 70,                      # sell 70% at TP, keep 30% moon bag
+    "take_profit_pct": 10.0,                   # tightened from 12 (was 16) — locks wins faster
+    # FULL exit at TP (was 70% partial + 30% moon-bag). Data from 86 paper
+    # trades showed TP-triggered exits averaged -1.4% PnL because the 30%
+    # runner consistently dumped after partial — moon-bagging on tiny pump.fun
+    # launches doesn't work; just lock the win.
+    "partial_tp_pct": 100,
     "partial_tp_trail_tighten_pct": 5.0,
     "hold_max_seconds": 15,
-    # Sustained-breach gates (intelligent_exit_v2)
+    # Sustained-breach gates (intelligent_exit_v2). Persistence kills false
+    # exits from millisecond dips, but the severity-override (price ≥
+    # stop_loss + 5% below entry) fires immediately to cap thin-pool dumps.
     "sl_persistence_ms": 1200,
     "ts_persistence_ms": 1500,
     "sl_persistence_min_samples": 3,

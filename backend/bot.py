@@ -260,7 +260,9 @@ class BotState:
         return (state.get("virtual_sol_reserves") or 0) / LAMPORTS_PER_SOL
 
     def _check_breach_persistence(self, slot: dict, *, kind: str, breached: bool,
-                                  persistence_ms: int, min_samples: int) -> bool:
+                                  persistence_ms: int, min_samples: int,
+                                  severity_pct: float = 0.0,
+                                  severity_threshold_pct: float = 0.0) -> bool:
         """Returns True iff an exit condition (`kind` = "sl" or "ts") has been
         continuously breached long enough to fire.
 
@@ -269,6 +271,10 @@ class BotState:
         - Subsequent breaches → increment sample count
         - Recovery (breached=False) → CLEAR the breach state (resets the timer)
         - Returns True only when BOTH age >= persistence_ms AND samples >= min_samples
+        - **Severity override**: if `severity_pct` exceeds `severity_threshold_pct`
+          (e.g. price has fallen 5%+ BEYOND the SL trigger), fire IMMEDIATELY.
+          Persistence is meant to filter millisecond blips; a sustained sharp
+          dump shouldn't be made worse by waiting another 1.2s to confirm.
         """
         key_since = f"{kind}_breached_since"
         key_count = f"{kind}_breached_samples"
@@ -280,6 +286,10 @@ class BotState:
                 slot[key_count] = 0
             return False
         # Still in breach
+        # Severity override: dump is already much worse than the gate trigger
+        # → fire immediately to cap the bleed (no point waiting for confirmation).
+        if severity_threshold_pct > 0 and severity_pct >= severity_threshold_pct:
+            return True
         if slot.get(key_since) is None:
             slot[key_since] = now
             slot[key_count] = 1
@@ -882,12 +892,19 @@ class BotState:
         # Hard stop loss FIRST — protects against rugs that would otherwise
         # be misattributed to trailing-stop with a tiny peak.
         # v2: require sustained breach (kills millisecond dips from MEV/bad RPC quotes).
+        # v2.1: severity override — if price has fallen ≥ stop_loss + 5% beyond the
+        # gate, fire immediately. On thin pump.fun pools price can fall another
+        # 30% during the 1.2s persistence window, turning a -10% SL into a -40%
+        # actual exit. The override caps that bleed.
         if self.config.intelligent_exit_v2:
             sl_breached = pct_change <= -self.config.stop_loss_pct
+            sl_severity = -pct_change - self.config.stop_loss_pct  # positive when worse than SL
             if self._check_breach_persistence(
                 slot, kind="sl", breached=sl_breached,
                 persistence_ms=self.config.sl_persistence_ms,
                 min_samples=self.config.sl_persistence_min_samples,
+                severity_pct=sl_severity,
+                severity_threshold_pct=5.0,
             ):
                 slot["exit_in_progress"] = True
                 try:
@@ -1560,12 +1577,14 @@ class BotState:
                         slot["exit_in_progress"] = False
                 if pct_change <= -self.config.stop_loss_pct:
                     # v2: persistence — only fire if breach has been sustained.
-                    # Monitor poll runs ~every 800ms; require samples + ms gate.
+                    # v2.1: severity override (see _check_exit_conditions_realtime).
                     if self.config.intelligent_exit_v2:
                         fire = self._check_breach_persistence(
                             slot, kind="sl", breached=True,
                             persistence_ms=self.config.sl_persistence_ms,
                             min_samples=self.config.sl_persistence_min_samples,
+                            severity_pct=(-pct_change - self.config.stop_loss_pct),
+                            severity_threshold_pct=5.0,
                         )
                     else:
                         fire = True
