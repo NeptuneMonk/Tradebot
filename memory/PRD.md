@@ -20,6 +20,12 @@ For learning and experimentation only — no deployment outside preview.
 - **Frontend (React + Tailwind + shadcn)**: Single-page "Control Room" dashboard, polling every 3s, IBM Plex Sans/Mono, sharp-edged dark UI, Recharts P/L sparkline, QR deposit address.
 
 
+## Helius Sender (2026-05-25)
+- ✅ **`helius_sender.py`** — dual-routing client (validators + Jito) for ultra-low-latency tx submission. Auto-inserts tip transfer, enforces `skipPreflight=true` + `maxRetries=0` per Helius spec.
+- ✅ **Emergency PumpSwap sell** and **force-recover endpoint** now route through Sender (dual mode, 0.0002 SOL tip) with automatic RPC fallback if Sender errors. Should ~eliminate landing failures on stuck-position recovery.
+- ✅ Operator override via `HELIUS_SENDER_ENDPOINT` env var for regional co-location.
+
+
 ## Production hotfix (2026-05-25)
 - ✅ **Auto-recover on graduation (6005)** — bot now auto-falls-back to PumpSwap AMM in-place when the bonding curve completes mid-sell, instead of dumping to the stuck list.
 - ✅ **Emergency rescue before terminal** — after 3 normal-flow failures, bot attempts one brute-force PumpSwap sell (50% slip, 5M µLamp priority, 60s confirm) before giving up. Most previously-stuck positions are recoverable with this combo.

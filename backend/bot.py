@@ -1995,12 +1995,35 @@ class BotState:
                 ),
                 pumpswap.build_close_wsol_ix(user, wsol_ata),
             ]
+            # Try Helius Sender first (dual routing → validators + Jito,
+            # maximum landing odds; 0.0002 SOL tip overhead). Fall back to
+            # standard RPC submit if Sender errors so we never leave a
+            # position truly stuck for a transient network blip.
+            try:
+                from helius_sender import send_via_sender
+                sig = await send_via_sender(
+                    kp, ixs,
+                    priority_fee_microlamports=5_000_000,
+                    compute_unit_limit=600_000,
+                    mode="dual",
+                    confirm_timeout_s=60.0,
+                )
+                logger.warning(
+                    f"EMERGENCY PUMPSWAP SELL (via Sender) succeeded for {mint[:8]}… — "
+                    f"sig={sig[:12]} sold={sell_amount} sol_out~={sol_out/1e9:.6f}"
+                )
+                return sig, sol_out, pool_state
+            except Exception as sender_err:
+                logger.warning(
+                    f"sender path failed for emergency sell {mint[:8]}…: {sender_err} "
+                    f"— falling back to standard RPC submit"
+                )
             sig = await pumpfun.send_versioned_tx(
                 kp, ixs, priority_fee_microlamports=5_000_000,
                 compute_unit_limit=600_000, confirm_timeout_s=60.0,
             )
             logger.warning(
-                f"EMERGENCY PUMPSWAP SELL succeeded for {mint[:8]}… — "
+                f"EMERGENCY PUMPSWAP SELL (rpc fallback) succeeded for {mint[:8]}… — "
                 f"sig={sig[:12]} sold={sell_amount} sol_out~={sol_out/1e9:.6f}"
             )
             return sig, sol_out, pool_state

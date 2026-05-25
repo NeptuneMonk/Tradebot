@@ -1,5 +1,35 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-25 — Helius Sender wired into emergency/force exits
+
+After ingesting Helius's [Sender docs](https://www.helius.dev/docs/sending-transactions/sender) (free on all plans, no API credits consumed):
+
+### Why Sender, why now
+The bot's existing `send_versioned_tx` posts to a single Helius RPC and relies on the network to gossip the tx. Under volatile blocks (exactly when stuck positions form), that single path becomes the bottleneck. **Sender broadcasts simultaneously to validators AND Jito** via dual routing — landing odds approach 100% on a fee-tipped tx vs the ~70-90% landing of a single-route send.
+
+### New module `helius_sender.py`
+- Endpoint: `https://sender.helius-rpc.com/fast` (global HTTPS, auto-routes). Operator can override with `HELIUS_SENDER_ENDPOINT` to a regional endpoint (slc / ewr / lon / fra / ams / sg / tyo) for ~30ms latency improvements.
+- Two modes:
+  - **dual** (200_000 lamport / 0.0002 SOL tip) — validators + Jito, used for emergency and force-recovery sells
+  - **swqos** (5_000 lamport / 0.000005 SOL tip) — Jito-infra only, cheap enough for normal-flow sells if we ever opt in
+- Auto-inserts SystemProgram.Transfer tip ix to a random one of 10 designated tip accounts
+- Mandatory `skipPreflight=true` + `maxRetries=0` (Sender requirements)
+- Reuses the existing `getTransaction.meta.err` instruction-level verification so the bot still catches Custom:XXXX failures correctly
+
+### Wired into 2 paths (both critical for stuck-position prevention)
+1. `bot.py::_attempt_emergency_pumpswap_sell` — tries Sender (dual mode) first, falls back to standard RPC submit if Sender errors. So the user is never worse off than before.
+2. `server.py::force_recover_stuck_trade` — same pattern. Response includes `via` field (`pumpswap_amm_sender_dual` vs `pumpswap_amm_emergency_rpc`) for observability.
+
+### Tests
+- 4 new tests in `test_helius_sender.py`: tip-ix layout, dual-mode endpoint + body, swqos-mode endpoint + body, error propagation. All 38 backend unit tests pass.
+
+### Operator notes
+- No env changes required — defaults to global HTTPS endpoint.
+- Tip cost on a force-recover: ~$0.04 (0.0002 SOL). For a stuck $0.50 position, that's 8% in tip — but landing the sale = saving the other 92%, vs leaving it at $0.
+- Normal-flow exits still use standard RPC; we did NOT change those because the tip cost would eat micro-stake EV. Add `use_sender_for_exits` config later if you want to opt in.
+
+
+
 ## 2026-05-25 (PROD HOTFIX) — Stop new stuck positions + privkey export
 
 ### Root cause (stuck positions)

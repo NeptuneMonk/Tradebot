@@ -210,13 +210,30 @@ async def force_recover_stuck_trade(trade_id: str):
         ),
         _ps.build_close_wsol_ix(user, wsol_ata),
     ]
+    # Route through Helius Sender (dual routing → validators + Jito).
+    # Falls back to standard RPC submit only if Sender itself errors so we
+    # never make the user worse off than the previous single-path recovery.
+    sig = None
+    via = "pumpswap_amm_sender_dual"
     try:
-        sig = await pumpfun.send_versioned_tx(
-            kp, ixs, priority_fee_microlamports=5_000_000,
-            compute_unit_limit=600_000, confirm_timeout_s=60.0,
+        from helius_sender import send_via_sender
+        sig = await send_via_sender(
+            kp, ixs,
+            priority_fee_microlamports=5_000_000,
+            compute_unit_limit=600_000,
+            mode="dual",
+            confirm_timeout_s=60.0,
         )
     except Exception as e:
-        return {"ok": False, "reason": f"emergency pumpswap sell failed: {e}"}
+        logger.warning(f"force-recover sender path failed: {e} — RPC fallback")
+        try:
+            sig = await pumpfun.send_versioned_tx(
+                kp, ixs, priority_fee_microlamports=5_000_000,
+                compute_unit_limit=600_000, confirm_timeout_s=60.0,
+            )
+            via = "pumpswap_amm_emergency_rpc"
+        except Exception as e2:
+            return {"ok": False, "reason": f"emergency sell failed (sender+rpc): {e2}"}
 
     await bot_state.db.trades.update_one(
         {"id": trade_id},
@@ -235,7 +252,7 @@ async def force_recover_stuck_trade(trade_id: str):
         "sig": sig,
         "sold_tokens": actual_tokens,
         "received_sol": sol_out / 1e9,
-        "via": "pumpswap_amm_emergency",
+        "via": via,
     }
 
 
