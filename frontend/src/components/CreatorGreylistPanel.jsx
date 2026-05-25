@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
-import { Ghost, RefreshCw, ChevronDown, ChevronRight, Zap, FlaskConical, Shield, Play, Ban, TrendingDown, Zap as Bolt, Sparkles } from "lucide-react";
+import { Ghost, RefreshCw, ChevronDown, ChevronRight, Zap, FlaskConical, Shield, Play, Ban, TrendingDown, Zap as Bolt, Sparkles, BarChart3 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 
@@ -430,6 +430,9 @@ function GreylistRow({ row, expanded, onToggle }) {
 export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
   const [items, setItems] = useState([]);
   const [blacklist, setBlacklist] = useState([]);
+  const [analytics, setAnalytics] = useState(null);
+  const [analyticsDays, setAnalyticsDays] = useState(30);
+  const [analyticsMode, setAnalyticsMode] = useState("");  // "" = all
   const [showBlacklist, setShowBlacklist] = useState(false);
   const [loading, setLoading] = useState(false);
   const [sweepRunning, setSweepRunning] = useState(false);
@@ -440,18 +443,22 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [g, b] = await Promise.all([
+      const [g, b, a] = await Promise.all([
         api.creatorGreylist(25, minScore),
         api.creatorBlacklist(50).catch(() => ({ items: [] })),
+        api
+          .creatorPatternAnalytics(analyticsDays, analyticsMode || null)
+          .catch(() => null),
       ]);
       setItems(g?.items || []);
       setBlacklist(b?.items || []);
+      setAnalytics(a);
     } catch (e) {
       toast.error("Failed to load greylist");
     } finally {
       setLoading(false);
     }
-  }, [minScore]);
+  }, [minScore, analyticsDays, analyticsMode]);
 
   useEffect(() => {
     refresh();
@@ -623,6 +630,121 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
           ))}
         </ul>
       )}
+
+      {/* === Pattern PnL Analytics (Phase 2.6) === */}
+      <div
+        className="mt-4 border-t border-neutral-800 pt-3"
+        data-testid="pattern-analytics-section"
+      >
+        <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+          <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-neutral-500">
+            <BarChart3 className="w-3 h-3" />
+            Pattern PnL Analytics
+            <span className="text-neutral-600 normal-case tracking-normal">
+              {analytics?.totals?.n_trades ?? 0} trades · last {analytics?.days ?? analyticsDays}d
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              value={analyticsDays}
+              onChange={(e) => setAnalyticsDays(Number(e.target.value))}
+              data-testid="analytics-days-select"
+              className="px-1.5 py-0.5 bg-neutral-950 border border-neutral-800 text-neutral-200 font-mono text-[10px]"
+            >
+              <option value={1}>1d</option>
+              <option value={7}>7d</option>
+              <option value={30}>30d</option>
+              <option value={90}>90d</option>
+            </select>
+            <select
+              value={analyticsMode}
+              onChange={(e) => setAnalyticsMode(e.target.value)}
+              data-testid="analytics-mode-select"
+              className="px-1.5 py-0.5 bg-neutral-950 border border-neutral-800 text-neutral-200 font-mono text-[10px]"
+            >
+              <option value="">all</option>
+              <option value="live">live</option>
+              <option value="paper">paper</option>
+            </select>
+          </div>
+        </div>
+        {!analytics || analytics.patterns.length === 0 ? (
+          <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-600 py-3 text-center">
+            no closed trades in window
+          </div>
+        ) : (
+          <div className="border border-neutral-800 overflow-hidden">
+            <table className="w-full text-[10px] font-mono">
+              <thead className="bg-neutral-900 text-neutral-500">
+                <tr className="text-left">
+                  <th className="px-2 py-1.5 font-normal uppercase tracking-wider">pattern</th>
+                  <th className="px-2 py-1.5 font-normal uppercase tracking-wider text-right">n</th>
+                  <th className="px-2 py-1.5 font-normal uppercase tracking-wider text-right">win%</th>
+                  <th className="px-2 py-1.5 font-normal uppercase tracking-wider text-right">sl%</th>
+                  <th className="px-2 py-1.5 font-normal uppercase tracking-wider text-right">μ pnl</th>
+                  <th className="px-2 py-1.5 font-normal uppercase tracking-wider text-right hidden md:table-cell">med pnl</th>
+                  <th className="px-2 py-1.5 font-normal uppercase tracking-wider text-right">total $</th>
+                  <th className="px-2 py-1.5 font-normal uppercase tracking-wider text-right hidden lg:table-cell">best / worst</th>
+                </tr>
+              </thead>
+              <tbody>
+                {analytics.patterns.map((p) => {
+                  const pm = PATTERN_META[p.pattern] || PATTERN_META.unknown;
+                  const PI = pm.Icon;
+                  const totalPnlClass =
+                    p.total_pnl_usd > 0
+                      ? "text-emerald-300"
+                      : p.total_pnl_usd < 0
+                      ? "text-rose-300"
+                      : "text-neutral-500";
+                  return (
+                    <tr
+                      key={p.pattern}
+                      data-testid={`analytics-row-${p.pattern}`}
+                      className="border-t border-neutral-800 hover:bg-neutral-900/50"
+                    >
+                      <td className="px-2 py-1.5">
+                        <span
+                          className={`inline-flex items-center gap-1 px-1.5 py-0.5 border text-[9px] uppercase tracking-[0.15em] ${pm.chip}`}
+                        >
+                          {p.pattern !== "unclassified" && <PI className="w-3 h-3" />}
+                          {p.pattern === "unclassified" ? "UNCLASSIFIED" : pm.label}
+                        </span>
+                      </td>
+                      <td className="px-2 py-1.5 text-right tabular-nums text-neutral-200">{p.n_trades}</td>
+                      <td className={`px-2 py-1.5 text-right tabular-nums ${p.win_rate_pct >= 50 ? "text-emerald-300" : "text-neutral-300"}`}>
+                        {p.win_rate_pct.toFixed(0)}%
+                      </td>
+                      <td className={`px-2 py-1.5 text-right tabular-nums ${p.sl_rate_pct >= 25 ? "text-rose-300" : "text-neutral-500"}`}>
+                        {p.sl_rate_pct.toFixed(0)}%
+                      </td>
+                      <td className={`px-2 py-1.5 text-right tabular-nums ${p.mean_pnl_pct >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+                        {p.mean_pnl_pct >= 0 ? "+" : ""}
+                        {p.mean_pnl_pct.toFixed(1)}%
+                      </td>
+                      <td className="px-2 py-1.5 text-right tabular-nums text-neutral-400 hidden md:table-cell">
+                        {p.median_pnl_pct >= 0 ? "+" : ""}
+                        {p.median_pnl_pct.toFixed(1)}%
+                      </td>
+                      <td className={`px-2 py-1.5 text-right tabular-nums ${totalPnlClass}`}>
+                        ${p.total_pnl_usd.toFixed(2)}
+                      </td>
+                      <td className="px-2 py-1.5 text-right tabular-nums text-neutral-500 hidden lg:table-cell">
+                        <span className="text-emerald-400">+{p.best_pnl_pct.toFixed(0)}</span>
+                        {" / "}
+                        <span className="text-rose-400">{p.worst_pnl_pct.toFixed(0)}</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div className="mt-1 text-[9px] font-mono text-neutral-600">
+          sorted by total realized $ desc · "unclassified" = trades entered before pattern classifier was wired or with unknown creator pattern
+        </div>
+      </div>
 
       {/* === Blacklist sub-panel === Creators we've eliminated and WHY. */}
       <div className="mt-4 border-t border-neutral-800 pt-3">

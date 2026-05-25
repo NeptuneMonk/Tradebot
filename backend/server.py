@@ -1860,6 +1860,20 @@ async def creator_blacklist(limit: int = 50):
     return {"items": await top_blacklisted(db, limit=limit)}
 
 
+@api.get("/creator-greylist/pattern-analytics")
+async def creator_pattern_analytics(days: int = 30, mode: str | None = None):
+    """Phase 2.6 — per-pattern PnL stats from CLOSED trades over `days`.
+    Lets the user validate whether `slow_rug` / `predictable_dump` /
+    `fake_hype` patterns actually outperform `unclassified` baselines.
+
+    Query params:
+      days  — lookback window (default 30)
+      mode  — 'live' or 'paper'; omit for both combined
+    """
+    from creator_greylist import pattern_analytics
+    return await pattern_analytics(db, days=days, mode=mode)
+
+
 @api.get("/creator-greylist/{creator}")
 async def creator_greylist_profile(creator: str):
     """Full profile for one creator: score, components, rug-window estimate,

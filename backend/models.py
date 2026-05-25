@@ -302,6 +302,15 @@ class Trade(BaseModel):
     greylist_strategy_at_entry: Optional[str] = None
     greylist_score_at_entry: Optional[float] = None
     greylist_overrides_at_entry: dict = {}
+    # Creator pattern AT ENTRY (one of: slow_rug_tradeable, predictable_dump_tradeable,
+    # fake_hype_tradeable, unknown). Persisted so the analytics endpoint can
+    # group closed trades by pattern. Filled by _enter_impl when greylist
+    # context resolves a non-unknown pattern.
+    greylist_pattern_at_entry: Optional[str] = None
+    # The actual TP/SL the pattern recommended at entry, before being
+    # layered onto the tier overrides. Diagnostic only — the EFFECTIVE
+    # values live in `greylist_overrides_at_entry`.
+    greylist_pattern_suggested_tp_pct: Optional[float] = None
 
 
 class WalletInfo(BaseModel):

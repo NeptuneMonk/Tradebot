@@ -1236,7 +1236,8 @@ class BotState:
         # so the exit logic (TP/SL/trail) can read overrides per-trade.
         # Mode "live" → applies overrides to size/TP/SL/trail.
         # Mode "telemetry" → logs only; standard config values used.
-        greylist_ctx: dict = {"strategy": None, "score": None, "overrides": {}}
+        greylist_ctx: dict = {"strategy": None, "score": None, "overrides": {},
+                              "pattern": None, "pattern_tp_pct": None}
         try:
             if self.config.creator_greylist_enabled and launch.creator:
                 gc = await self.db.creators.find_one(
@@ -1245,9 +1246,12 @@ class BotState:
                      "greylist_score_updated_at": 1,
                      "expected_rug_window_pct": 1,
                      "expected_peak_mc_usd": 1,
-                     "greylist_n_failed": 1},
+                     "greylist_n_failed": 1,
+                     "greylist_pattern": 1,
+                     "greylist_pattern_suggested_exit": 1,
+                     "greylist_blacklisted": 1},
                 )
-                if gc and gc.get("greylist_score"):
+                if gc and gc.get("greylist_score") and not gc.get("greylist_blacklisted"):
                     from creator_greylist import (
                         apply_decay, recommended_strategy, strategy_overrides,
                     )
@@ -1257,14 +1261,45 @@ class BotState:
                     mode = (self.config.creator_greylist_mode or "telemetry").lower()
                     applied = (mode == "live") and (strat != "standard")
                     overrides = strategy_overrides(strat) if applied else {}
+                    # === Pattern-aware TP override (Phase 2.7) ===
+                    # For the two tightly-bounded tradeable patterns
+                    # (slow_rug / predictable_dump), the classifier exports
+                    # a `suggested_exit_pct=(lo, hi)` derived from the
+                    # creator's own rug-window median. Use the LOWER bound
+                    # as the TP — exits just BEFORE the typical rug window
+                    # opens, which is the whole point of pattern-aware
+                    # micro-sniping. Only applied when greylist mode is live
+                    # AND the pattern is one of the precision tradeable
+                    # buckets. `fake_hype_tradeable` deliberately keeps the
+                    # tier override because rug timing there is governed by
+                    # mempool, not curve %.
+                    pattern = gc.get("greylist_pattern")
+                    sug_exit = gc.get("greylist_pattern_suggested_exit")
+                    pattern_tp = None
+                    if (applied and pattern in {"slow_rug_tradeable",
+                                                 "predictable_dump_tradeable"}
+                            and isinstance(sug_exit, (list, tuple))
+                            and len(sug_exit) == 2):
+                        try:
+                            pattern_tp = float(sug_exit[0])  # lower bound
+                            # Sanity: refuse insane values (< 5 or > 60)
+                            if 5.0 <= pattern_tp <= 60.0:
+                                overrides = {**overrides, "tp_pct": pattern_tp}
+                            else:
+                                pattern_tp = None
+                        except (TypeError, ValueError):
+                            pattern_tp = None
                     if strat != "standard":
                         rw = gc.get("expected_rug_window_pct") or {}
                         pmc = gc.get("expected_peak_mc_usd") or {}
+                        pat_info = (f" pattern={pattern} pat_tp={pattern_tp:.1f}%"
+                                    if pattern_tp is not None else
+                                    f" pattern={pattern or 'n/a'}")
                         logger.info(
                             f"GREYLIST {'APPLY' if applied else 'telemetry'}: "
                             f"strategy='{strat}' for {launch.mint[:8]}… "
-                            f"(creator={launch.creator[:8]}…, score={eff:.0f}, "
-                            f"expected_peak_MC=$"
+                            f"(creator={launch.creator[:8]}…, score={eff:.0f},"
+                            f"{pat_info}, expected_peak_MC=$"
                             f"{int(pmc.get('mean_peak_mc_usd', 0)):,} "
                             f"(±${int(pmc.get('stddev_peak_mc_usd', 0)):,}, "
                             f"n_failed={gc.get('greylist_n_failed', 0)}), "
@@ -1276,6 +1311,8 @@ class BotState:
                         "strategy": strat,
                         "score": round(float(eff), 1),
                         "overrides": overrides,
+                        "pattern": pattern,
+                        "pattern_tp_pct": pattern_tp,
                     }
         except Exception as e:
             logger.debug(f"greylist context skipped: {e}")
@@ -1589,6 +1626,8 @@ class BotState:
             greylist_strategy_at_entry=greylist_ctx.get("strategy"),
             greylist_score_at_entry=greylist_ctx.get("score"),
             greylist_overrides_at_entry=greylist_ctx.get("overrides") or {},
+            greylist_pattern_at_entry=greylist_ctx.get("pattern"),
+            greylist_pattern_suggested_tp_pct=greylist_ctx.get("pattern_tp_pct"),
         )
         # Stash protocol on the trade dict (kept in active_trades) so _exit can route
         trade_extras = {

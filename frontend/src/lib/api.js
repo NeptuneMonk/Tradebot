@@ -82,4 +82,6 @@ export const api = {
     longClient.post(`/creator-greylist/failure-sweep/run-now`).then(r => r.data),
   creatorBlacklist: (limit = 50) =>
     client.get(`/creator-greylist/blacklist`, { params: { limit } }).then(r => r.data),
+  creatorPatternAnalytics: (days = 30, mode = null) =>
+    client.get(`/creator-greylist/pattern-analytics`, { params: { days, ...(mode ? { mode } : {}) } }).then(r => r.data),
 };

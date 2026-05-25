@@ -468,6 +468,75 @@ async def top_blacklisted(db, limit: int = 25) -> list[dict]:
     return out
 
 
+async def pattern_analytics(db, days: int = 30, mode: str | None = None) -> dict:
+    """Phase 2.6 — group CLOSED trades by `greylist_pattern_at_entry` and
+    compute per-pattern PnL stats. Used to validate whether the pattern
+    classifier's predictions actually correlate with profitable exits.
+
+    `days` — lookback window over `exit_time`.
+    `mode` — when set ('live' or 'paper'), restricts to that trading mode.
+             Defaults to None = both. Live counts are the real signal; paper
+             counts are useful while you're still in telemetry phase.
+
+    Returns: {patterns: [...], totals: {...}, days, mode}
+    Each pattern row carries:
+      pattern, n_trades, n_wins, win_rate_pct,
+      mean_pnl_pct, median_pnl_pct, total_pnl_usd, best_pnl_pct, worst_pnl_pct
+    Sorted by total_pnl_usd desc so the moneymaker bucket is on top.
+    """
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, days))).isoformat()
+    q: dict = {"status": "closed", "exit_time": {"$gte": cutoff}}
+    if mode in ("live", "paper"):
+        q["mode"] = mode
+    cur = db.trades.find(
+        q,
+        {"_id": 0, "greylist_pattern_at_entry": 1, "greylist_strategy_at_entry": 1,
+         "greylist_pattern_suggested_tp_pct": 1,
+         "pnl_pct": 1, "pnl_usd": 1, "mode": 1, "exit_reason": 1},
+    )
+    buckets: dict[str, list[dict]] = {}
+    async for t in cur:
+        key = t.get("greylist_pattern_at_entry") or "unclassified"
+        buckets.setdefault(key, []).append(t)
+
+    rows: list[dict] = []
+    for pattern, trades in buckets.items():
+        pnl_pcts = [float(t.get("pnl_pct") or 0) for t in trades]
+        pnl_usds = [float(t.get("pnl_usd") or 0) for t in trades]
+        n = len(trades)
+        wins = sum(1 for p in pnl_pcts if p > 0)
+        # SL exits are the canonical "lost the rug race" signal — surfacing
+        # them per-pattern lets the user see e.g. "fake_hype trips SL 40% of
+        # the time, slow_rug only 8%". Keep cheap — string match on reason.
+        sl_exits = sum(
+            1 for t in trades
+            if t.get("exit_reason") and "stop-loss" in str(t["exit_reason"]).lower()
+        )
+        rows.append({
+            "pattern": pattern,
+            "n_trades": n,
+            "n_wins": wins,
+            "n_sl_exits": sl_exits,
+            "win_rate_pct": round(wins / n * 100, 1) if n else 0.0,
+            "sl_rate_pct": round(sl_exits / n * 100, 1) if n else 0.0,
+            "mean_pnl_pct": round(sum(pnl_pcts) / n, 2) if n else 0.0,
+            "median_pnl_pct": round(statistics.median(pnl_pcts), 2) if n else 0.0,
+            "total_pnl_usd": round(sum(pnl_usds), 2),
+            "best_pnl_pct": round(max(pnl_pcts), 2) if pnl_pcts else 0.0,
+            "worst_pnl_pct": round(min(pnl_pcts), 2) if pnl_pcts else 0.0,
+        })
+    rows.sort(key=lambda r: r["total_pnl_usd"], reverse=True)
+    totals = {
+        "n_trades": sum(r["n_trades"] for r in rows),
+        "n_wins": sum(r["n_wins"] for r in rows),
+        "total_pnl_usd": round(sum(r["total_pnl_usd"] for r in rows), 2),
+    }
+    return {"patterns": rows, "totals": totals, "days": days, "mode": mode or "all"}
+
+
+
+
 async def get_creator_profile(db, creator: str) -> dict | None:
     """Full profile for one creator: score, components, rug window, peak MC,
     recent failed mints with their peak MC, recent trades, linked wallets."""

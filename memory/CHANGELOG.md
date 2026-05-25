@@ -1,5 +1,34 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-25 — Phase 2.6 Pattern Analytics + Phase 2.7 Pattern→TP Wiring
+
+### Phase 2.7 — Pattern-aware TP override (bot.py)
+- When a creator's classified pattern is `slow_rug_tradeable` or `predictable_dump_tradeable` AND `creator_greylist_mode=='live'`, `_enter_impl` uses `pattern_suggested_exit_pct[0]` (the LOWER bound of the classifier's recommendation) as the take-profit override instead of the static tier value.
+- Rationale: the classifier derives `suggested_exit` from the creator's own rug-window median minus 1-4% — exiting BEFORE the typical rug opens. Tighter than tier defaults; differs PER CREATOR. Tier override still applies for size/SL/trail.
+- `fake_hype_tradeable` deliberately keeps the tier override (mempool-driven, not curve-%-driven).
+- Sanity gate: pattern TP must fall in `[5.0, 60.0]%`; otherwise falls back to tier override.
+- New persisted audit fields on Trade: `greylist_pattern_at_entry`, `greylist_pattern_suggested_tp_pct`.
+- Blacklisted creators are also skipped at this resolution step (their score is already 0, but defensive double-check).
+
+### Phase 2.6 — `pattern_analytics(db, days, mode)` + `GET /api/creator-greylist/pattern-analytics`
+- Groups CLOSED trades over the lookback window by `greylist_pattern_at_entry`.
+- Per-pattern stats: `n_trades`, `n_wins`, `n_sl_exits`, `win_rate_pct`, `sl_rate_pct`, `mean_pnl_pct`, `median_pnl_pct`, `total_pnl_usd`, `best_pnl_pct`, `worst_pnl_pct`.
+- Sorted by `total_pnl_usd` desc so the moneymaker pattern is on top.
+- Query params: `days` (default 30), `mode` ('live' / 'paper' / omit for both).
+- Trades with NULL/missing `greylist_pattern_at_entry` are bucketed as `unclassified` — useful baseline for comparing classified vs unclassified outcomes.
+
+### UI — `CreatorGreylistPanel` analytics subsection
+- New table between the active greylist and the blacklist showing the 7-column per-pattern PnL breakdown.
+- Color-coded: win-rate ≥ 50% green, SL-rate ≥ 25% red, mean/total PnL signed-coloured.
+- Day selector (1/7/30/90) + mode selector (all/live/paper).
+- Tested live: end-to-end `/api/creator-greylist/pattern-analytics` returns correct stats; UI renders all 3 pattern badges with the right numbers.
+
+### Tests
+- New `tests/test_pattern_analytics.py`: 8 tests covering empty DB, grouping, lookback window, mode filter, sort order, and the Phase 2.7 sanity gate.
+- **51 tests total, 100% pass.**
+
+
+
 ## 2026-05-25 — Pattern Classifier (RUG_PATTERNS.md) — 3 good + 3 bad buckets
 
 User request: "First step is to clean the list — heavy bad-pattern creators get blacklisted from greylist. Then look at which of the 3 good patterns the surviving creators have."
