@@ -1188,6 +1188,21 @@ class BotState:
         # Resolve band-specific gates: "new" (action=momentum_new) uses tighter
         # thresholds, "seasoned" (action=scanner_momentum) uses base thresholds.
         is_new_band = action == "momentum_new"
+
+        # Classifier-action whitelist gate. When non-empty, only the listed
+        # actions are allowed to enter. Strategy Doctor populates this when
+        # a clear outperforming bucket emerges (rule_classifier_bucket_focus).
+        wl = self.config.classifier_action_whitelist or []
+        if wl and action not in wl:
+            logger.info(f"skip {launch.mint} [{action}]: action not in whitelist {wl}")
+            await hub.broadcast("scanner_skip", {
+                "mint": launch.mint, "symbol": launch.symbol,
+                "band": "new" if is_new_band else "seasoned",
+                "reason": "classifier_whitelist",
+                "details": [f"action '{action}' not in whitelist"],
+            })
+            return
+
         min_liq = self.config.min_curve_liquidity_sol_new if is_new_band else self.config.min_curve_liquidity_sol
         min_buyers = self.config.min_buyers_for_entry_new if is_new_band else self.config.min_buyers_for_entry
 
@@ -1355,6 +1370,22 @@ class BotState:
                 eff_slip = max(eff_slip, 1500)  # 15%
             else:                   # deep curve — still need a floor
                 eff_slip = max(eff_slip, 1000)  # 10% minimum for any entry
+        elif protocol == "pumpswap":
+            # PumpSwap AMM pools also need a depth-aware entry-slip floor.
+            # `quote_reserves` (WSOL side) is the real liquidity. Thin pools
+            # move price faster per SOL of order, so the same floor strategy
+            # applies as Pump.fun curves — just based on WSOL reserves
+            # instead of virtual SOL reserves. Without this floor, Custom:6002
+            # (excess slippage) reverts at entry on hot graduated tokens.
+            quote_sol = (pumpswap_state.get("quote_reserves") or 0) / LAMPORTS_PER_SOL
+            if quote_sol < 5:        # ultra-thin AMM pool — rare, but real
+                eff_slip = max(eff_slip, 2500)  # 25%
+            elif quote_sol < 15:     # thin pool — typical fresh-graduate
+                eff_slip = max(eff_slip, 1800)  # 18%
+            elif quote_sol < 40:     # medium depth
+                eff_slip = max(eff_slip, 1200)  # 12%
+            else:                    # deep pool — still need floor for sniper races
+                eff_slip = max(eff_slip, 800)   # 8% minimum
 
         tokens_out, max_sol = (
             pumpswap.quote_buy_tokens(pumpswap_state, sol_in_lamports, eff_slip)

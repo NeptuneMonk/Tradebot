@@ -569,3 +569,24 @@ Autonomous analyst running server-side, **independent of any user session** — 
 - Force-run analyzed 408 trades, produced 3 pending suggestions
 - Apply endpoint merged `gate_distribution_vacuum: True` into config
 - Dismiss endpoint correctly removed suggestion from pending
+
+## 2026-05-25 (later evening) — Backlog cleanup: 3 items
+
+### 1. PumpSwap buy slippage floor (P2)
+Same depth-aware ladder as Pump.fun buy, but using `quote_reserves` (WSOL pool side) instead of `vsr`:
+- <5 SOL pool: 25% floor (ultra-thin)
+- 5-15 SOL: 18%
+- 15-40 SOL: 12%
+- ≥40 SOL: 8% minimum
+Eliminates Custom:6002 reverts on PumpSwap entries.
+
+### 2. `buy_count` column on Scanner UI
+Added to ScannerCandidatesCard for both NEW and SEASONED bands. Each candidate row now shows "buys X" (cumulative count from Pump.fun coin API). Particularly useful for seasoned/PumpSwap entries where the Helius mempool `buyers` set is always 0.
+
+### 3. Per-classifier-action whitelist gate (NEW coded feature)
+- `BotConfig.classifier_action_whitelist: list[str] = []` (empty = all allowed)
+- Wired into `bot.py:_assess_and_enter` — entries skipped + broadcasted as `scanner_skip:classifier_whitelist` when action not in list
+- **Strategy Doctor upgrade**: `_rule_classifier_bucket_focus` now generates actionable suggestions (populates `actions["classifier_action_whitelist"]` with the winning bucket(s) within 10pp of best). Replaces the previous info-only version.
+
+### Test totals
+- 40/40 pass (`tests/test_*.py`). No new test files needed for these changes — pattern coverage already established.

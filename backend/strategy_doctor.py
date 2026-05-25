@@ -422,22 +422,29 @@ class StrategyDoctor:
         best, worst = scored[0], scored[-1]
         # Best beats worst by 20+ pp AND best is a recognized action
         if (best[2] - worst[2]) >= 20 and best[1] >= 10:
+            # Collect actions whose WR is within 10pp of best — multiple
+            # buckets often share the "winners" cohort.
+            keep = sorted(
+                [(k, n, wr, avg) for (k, n, wr, avg) in scored if (best[2] - wr) <= 10 and n >= 8],
+                key=lambda x: -x[2],
+            )
+            whitelist = [k for k, *_ in keep] if keep else [best[0]]
             return [{
                 "category": "classifier",
-                "title": f"Classifier '{best[0]}' significantly outperforming",
+                "title": f"Restrict to '{', '.join(whitelist)}' — outperforming by {best[2] - worst[2]:.0f}pp",
                 "rationale": (
                     f"'{best[0]}' actions: WR {best[2]:.0f}% (avg {best[3]:+.1f}%, n={best[1]}).\n"
                     f"'{worst[0]}' actions: WR {worst[2]:.0f}% (avg {worst[3]:+.1f}%, n={worst[1]}).\n\n"
-                    "I can't yet auto-restrict by classifier — the existing config doesn't have a "
-                    "per-action enable flag. **Manual action:** lower entry-velocity threshold or "
-                    "tighten distribution-vacuum to filter out the worst bucket. Or: ignore this "
-                    "card and let me build a classifier-action whitelist (informational suggestion only)."
+                    f"Applying will set `classifier_action_whitelist` to {whitelist} — "
+                    "bot will skip entries for any classifier action NOT in this list. "
+                    "Dismiss if you'd rather explore than exploit."
                 ),
-                "actions": {},  # informational
+                "actions": {"classifier_action_whitelist": whitelist},
                 "confidence": "high",
                 "metrics": {
                     "best_action": best[0], "best_wr": round(best[2], 1), "best_n": best[1],
                     "worst_action": worst[0], "worst_wr": round(worst[2], 1), "worst_n": worst[1],
+                    "whitelist": whitelist,
                 },
             }]
         return []

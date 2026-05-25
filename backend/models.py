@@ -46,6 +46,13 @@ class BotConfig(BaseModel):
     # Panic-exit slippage: applied on stop-loss, hard-stop, classifier abort,
     # and bonding-curve-complete exits where landing the sell matters more
     # than the fill price. 25% lets us escape sharp dumps without 6003 reverts.
+    # Per-classifier-action whitelist. Empty list = all actions allowed.
+    # When populated, entries are ONLY allowed for these classifier_action
+    # values. Strategy Doctor can suggest tightening this when a clear
+    # outperforming bucket emerges in trade history.
+    # Known actions: momentum_new, scanner_momentum, bonded_dip,
+    # whale_follow, social_breakout (subject to classifier changes).
+    classifier_action_whitelist: list[str] = []
     panic_exit_slippage_bps: int = 2500  # 25% emergency exit slippage
 
     # Intelligent Exit v2 — exchange-style exit logic.
