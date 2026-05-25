@@ -121,15 +121,25 @@ class PumpfunDiscovery:
                             ps_state = await pumpswap.fetch_pool_state(pool)
                             if ps_state:
                                 cur_price = pumpswap.price_sol_per_raw_token(ps_state)
-                                bucket["last_vsr_lamports"] = ps_state["quote_reserves"]
+                                # PumpSwap quote_reserves IS the actual WSOL
+                                # in the pool — no virtual offset like Pump.fun.
+                                # Store as real_sol (not virtual) so the scanner
+                                # band gate sees the correct liquidity.
+                                bucket["last_real_sol_lamports"] = ps_state["quote_reserves"]
+                                bucket["last_vsr_lamports"] = ps_state["quote_reserves"]  # legacy compat
                         except Exception as e:
                             logger.debug(f"refresh pool fetch failed for {mint}: {e}")
                 else:
                     vsr = int(c.get("virtual_sol_reserves") or 0)
                     vtr = int(c.get("virtual_token_reserves") or 0)
+                    real_sol = int(c.get("real_sol_reserves") or 0)
                     if vsr and vtr:
                         cur_price = vsr / vtr / LAMPORTS_PER_SOL
                         bucket["last_vsr_lamports"] = vsr
+                        # Pump.fun returns real_sol_reserves directly in the
+                        # coin doc — prefer it over the legacy vsr-30 estimate.
+                        if real_sol > 0:
+                            bucket["last_real_sol_lamports"] = real_sol
                 # Update bucket
                 bucket["usd_market_cap"] = usd_mc
                 bucket["last_trade_ms"] = last_trade_ms
@@ -296,7 +306,9 @@ class PumpfunDiscovery:
                     logger.debug(f"pumpswap pool fetch failed for {mint}: {e}")
         else:
             cur_price = (vsr / vtr / LAMPORTS_PER_SOL) if (vsr and vtr) else 0.0
-            real_sol_lamports = vsr  # not exact but matches bonding-curve estimate elsewhere
+            # Pump.fun API exposes real_sol_reserves directly; prefer it over
+            # the vsr-based estimate so the band gate sees the true SOL pool.
+            real_sol_lamports = int(coin.get("real_sol_reserves") or 0) or vsr
 
         bucket = {
             "launch_id": f"disc-{mint[:8]}",
@@ -318,6 +330,10 @@ class PumpfunDiscovery:
             # growth_pct reflects true chart growth from launch.
             "first_seen_price_sol": LAUNCH_BASELINE_PRICE_SOL,
             "last_price_sol": cur_price,
+            # Authoritative real-SOL liquidity (no virtual offset). The
+            # scanner band gate reads this directly; falls back to
+            # last_vsr_lamports-30 only if missing.
+            "last_real_sol_lamports": real_sol_lamports,
             "last_vsr_lamports": real_sol_lamports,
             # Throttled price samples for entry-velocity gate. Discovered
             # tokens populate this via the discovery refresh loop (not the

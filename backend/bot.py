@@ -807,7 +807,14 @@ class BotState:
             if bucket["first_seen_price_sol"] <= 0:
                 bucket["first_seen_price_sol"] = cur_price
             bucket["last_price_sol"] = cur_price
-            bucket["last_vsr_lamports"] = vsr  # for real-SOL estimate in scanner snapshot
+            bucket["last_vsr_lamports"] = vsr  # legacy: virtual SOL reserves
+            # Pump.fun bonding curves have a 30 SOL virtual offset baked in,
+            # so real_sol = virtual_sol - 30. Mempool buy events only fire
+            # for non-graduated tokens, so this subtraction is always valid
+            # here (graduated tokens get `last_real_sol_lamports` set directly
+            # in discovery.py).
+            real_sol = max(0, vsr - 30_000_000_000)
+            bucket["last_real_sol_lamports"] = real_sol
             bucket["curve_fill_pct"] = min(
                 100.0, max(0.0, (vsr - 30_000_000_000) / (85_000_000_000) * 100)
             )

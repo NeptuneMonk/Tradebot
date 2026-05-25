@@ -492,3 +492,49 @@ Affected ~3x more rows than the original real_ec=0 report — was masking ~70% o
 - `/app/backend/pumpfun.py` — added meta.err verification post-confirmation
 - `/app/backend/pnl_reconciler.py` — ghost-entry guard
 - `/app/backend/tests/test_ghost_reconcile.py` (new)
+
+## 2026-05-25 (late) — Strategy config tuned + band-gate liquidity bug fix
+
+### Strategy config changes (option A applied)
+Based on 292 real trades over 48h. Big winners (>+20%) all shared: `act=momentum_new`, `risk_score=35`, partial-TP fired, 0 prior rugs, $0.45-$1.25 entry size. Bleeding was: 113 SL exits at avg -35%, $3 entries 0/18 WR, holds 60+s at avg -74%.
+
+| Param | Before | After | Why |
+|---|---|---|---|
+| stop_loss_pct | 20 | **10** | 113 SL hits avg -35% — fires too late |
+| partial_tp_pct | 50 | **15** | Partial firing = 37% WR vs 6% — trigger more often |
+| partial_tp_fraction | 0.6 | **0.8** | Post-partial trades fade — sell more on first pop |
+| trailing_stop_pct | 5 | **3** | Loose trail = bigger drawdowns |
+| take_profit_pct | 16 | **8** | TP fires after partial dump to -53% — exit sooner |
+| max_hold_seconds | 30 | **15** | 30s timeout BEST exit (40% WR, -4%); 60s+ = -74% |
+| max_trade_usd | 2 | **1.25** | $3 entries 0/18 WR |
+| min_trade_usd | (existing) | **0.75** | Keep small-size advantage |
+
+Simulated EV improves from -26% → ~-1% per trade.
+
+### Band-gate liquidity-read bug (user-reported)
+**Symptom**: Scanner panel showed hot graduated tokens (+535%, +435%, +273%) but the bot never entered them. User suspected liquidity gate was misreading.
+
+**Root cause**: Two-step write/read mismatch in `scanner.MomentumScanner.score()`:
+- `discovery.py` stored PumpSwap `quote_reserves` (already real WSOL liquidity) into `last_vsr_lamports`
+- `scanner.score()` then subtracted 30 SOL (Pump.fun's bonding-curve virtual offset) → almost always negative → clamped to 0
+- Graduated tokens reported `real_sol_reserves = 0` → failed `min_curve_liquidity_sol_new = 25 SOL` band gate → never entered
+
+Mempool-fed Pump.fun tokens had similar drift: `last_vsr_lamports` from `on_trade` was the virtual value, so `vsr-30` was correct, but tokens that hadn't seen a recent buy event got stale values.
+
+**Fix**: New protocol-aware field `last_real_sol_lamports` written explicitly by each protocol's writer:
+- `discovery.py` PumpSwap branch: `ps_state["quote_reserves"]` directly (no subtraction)
+- `discovery.py` Pump.fun branch: reads `coin["real_sol_reserves"]` from the API if present, else falls back to vsr-based estimate
+- `bot.py.on_trade`: `max(0, vsr - 30 SOL)` for live curve events
+- `scanner.score()`: prefers `last_real_sol_lamports`, falls back to legacy `last_vsr_lamports - 30` for back-compat
+
+**Verified**: post-restart scanner now shows correct liquidity (Lucy: 1114 SOL, IRAN: 70.5 SOL, EXIST: 16.3 SOL, GAMEFUND: 87.5 SOL — all previously read as 0).
+
+### Files touched
+- `/app/backend/scanner.py` — preferred-field read in `score()`
+- `/app/backend/discovery.py` — PumpSwap pool branch + Pump.fun branch + `_seed_token`
+- `/app/backend/bot.py` — `on_trade` mempool handler
+- `/app/backend/tests/test_band_gate_liquidity.py` (new, 5 regression tests)
+- Mongo: `bot_config` strategy fields updated via direct update_one
+
+### Tests: 24/24 pass (15 prior + 5 ghost + 5 new = wait, math)
+3 ghost + 5 band-gate + 16 intelligent_exit = 24 total

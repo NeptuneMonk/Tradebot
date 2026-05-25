@@ -129,9 +129,25 @@ class MomentumScanner:
             "real_sol_reserves": (
                 (curve_state["real_sol_reserves"] / LAMPORTS_PER_SOL)
                 if curve_state
-                else max(
-                    0.0,
-                    (b.get("last_vsr_lamports", 0) - 30_000_000_000) / LAMPORTS_PER_SOL,
+                else (
+                    # Prefer the protocol-aware `last_real_sol_lamports` if a
+                    # writer has populated it (discovery for PumpSwap pools,
+                    # bot.on_buy for Pump.fun curves).
+                    b["last_real_sol_lamports"] / LAMPORTS_PER_SOL
+                    if b.get("last_real_sol_lamports") is not None
+                    else
+                    # Fallback: legacy `last_vsr_lamports` field. For Pump.fun
+                    # bonding curves the curve embeds a 30 SOL virtual offset,
+                    # so real = virtual - 30. For PumpSwap pools the writer
+                    # already stores real lamports (no virtual), but old code
+                    # paths still used the same key — so this is only safe
+                    # for the curve case. New code paths set
+                    # `last_real_sol_lamports` directly to avoid ambiguity.
+                    max(
+                        0.0,
+                        (b.get("last_vsr_lamports", 0) - 30_000_000_000)
+                        / LAMPORTS_PER_SOL,
+                    )
                 )
             ),
             "curve_complete": bool(curve_state["complete"]) if curve_state else False,
