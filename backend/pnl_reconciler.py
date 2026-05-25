@@ -139,6 +139,13 @@ class PnLReconciler:
         cost_sol = abs(entry_delta) / LAMPORTS_PER_SOL if entry_delta else 0
         real_pnl_pct = (real_pnl_sol / cost_sol * 100) if cost_sol > 0 else 0.0
 
+        # Ghost-position guard: if the BUY tx only debited the signature fee
+        # (|entry_delta| < ~200k lamports = 0.0002 SOL), the on-chain buy
+        # actually failed (Custom:XXXX / IncorrectProgramId / etc.) but the
+        # bot's send_versioned_tx mis-detected it as success. Don't pollute
+        # PnL stats with "-300%" gas-on-gas rows — flag explicitly.
+        # Real entries cost >= ~$0.04 worth of SOL even at $0.50 trade sizes.
+        is_ghost_entry = abs(entry_delta) < 200_000
         update = {
             "real_entry_cost_sol": abs(entry_delta) / LAMPORTS_PER_SOL,
             "real_exit_received_sol": exit_delta / LAMPORTS_PER_SOL,
@@ -153,6 +160,13 @@ class PnLReconciler:
             "pnl_reconciled": True,
             "pnl_reconciled_at": datetime.now(timezone.utc).isoformat(),
         }
+        if is_ghost_entry:
+            update["ghost_entry"] = True
+            update["exit_reason"] = "ghost: buy tx landed but failed on-chain"
+            # Override the misleading negative PnL pct (was -300% etc.)
+            # with a flag that downstream UIs / dashboards can show distinctly.
+            update["pnl_pct"] = 0.0
+            update["real_pnl_pct"] = 0.0
         await self.state.db.trades.update_one(
             {"id": t["id"]}, {"$set": update}
         )

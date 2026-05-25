@@ -455,3 +455,40 @@ cap = 1200 bps (12%)
 ### Files touched
 - `/app/backend/models.py` — 12 new BotConfig fields with sensible defaults
 - `/app/backend/bot.py` — 4 helpers + persistence gates in fast-exit (`_check_exit_conditions_realtime`) + monitor poll loop + auto-slip + retry ladder in `_exit_impl` + `_partial_exit`
+
+## 2026-05-25 — P1: Ghost-position bug + reconciler hardening
+
+### Symptom (user-reported)
+"Reconciler showing `real_ec = 0.000000` for Token-2022 cashback coins"
+
+### Real scope (much larger than first thought)
+Investigation revealed **888 ghost-position rows** in the live trade history. These are trades where:
+- BUY tx landed on-chain BUT failed at the instruction level (`Custom:XXXX` / `IncorrectProgramId` / `AccountNotInitialized`)
+- `getSignatureStatuses` returned `err: null` because the SIGNATURE was valid — only the INSTRUCTIONS failed
+- Bot mis-detected this as successful entry, monitored for 30s+, then "exited" an empty position
+- Each ghost row cost ~$0.01 in gas (entry + exit signature fees) — minor financial impact, MAJOR analytics pollution (showed as -300% PnL rows)
+
+Affected ~3x more rows than the original real_ec=0 report — was masking ~70% of "losses" being fake.
+
+### Root cause
+`pumpfun.send_versioned_tx` polled `getSignatureStatuses` and treated `err: null` + `confirmationStatus: confirmed` as success. But that RPC only exposes tx-level errors (sig verify, blockhash expiry). InstructionErrors live in `getTransaction.meta.err`.
+
+### Fix
+1. **`pumpfun.send_versioned_tx`**: after `getSignatureStatuses` reports confirmed, do a verification `getTransaction` call and check `meta.err`. If non-null, raise (caught by `_enter_impl`/`_exit_impl` as a normal failure → no ghost row created).
+2. **`pnl_reconciler.PnLReconciler._reconcile_one`**: ghost-position guard. If `|entry_delta| < 200k lamports` (well under any real buy size — even $0.50 buys cost ≥1M lamports), set `ghost_entry: True`, override `pnl_pct` to 0.0, and tag the reason. Keeps existing ghost rows out of win-rate/PnL analytics.
+3. **Backfill migration**: ran one-off Mongo update_many to flag all 888 historical ghost rows.
+
+### Real analytics after fix (24h)
+- 292 REAL closed live trades (was misreported as ~400 due to ghosts)
+- Win rate: 12.3% — true picture, was inflated to ~16% by ghosts averaged in
+- Net PnL: -1.40 SOL on 292 trades (strategy is unprofitable, not just executing badly)
+- Ghost trades over same window: 65 (gas burned: 0.0067 SOL — negligible)
+
+### Tests
+- `/app/backend/tests/test_ghost_reconcile.py` — 3 cases covering threshold, pnl_pct zeroing, real-trade preservation
+- Combined with intelligent exit v2 suite: **19 tests pass**
+
+### Files touched
+- `/app/backend/pumpfun.py` — added meta.err verification post-confirmation
+- `/app/backend/pnl_reconciler.py` — ghost-entry guard
+- `/app/backend/tests/test_ghost_reconcile.py` (new)

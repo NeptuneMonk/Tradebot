@@ -534,6 +534,32 @@ async def send_versioned_tx(
                     last_err = err
                     break
                 if conf in ("confirmed", "finalized"):
+                    # CRITICAL: getSignatureStatuses returns the tx-level err
+                    # (signature/blockhash failure) but is BLIND to
+                    # InstructionError (Custom:XXXX, IncorrectProgramId, etc.).
+                    # A tx can "land + confirm" yet still have failed every
+                    # instruction. Verify via getTransaction.meta.err — the
+                    # only RPC field that exposes instruction-level errors.
+                    # Without this check the bot treats failed-on-chain buys
+                    # as successful entries, then "exits" empty positions —
+                    # paying gas twice for a position that never existed.
+                    try:
+                        tx_res = await rpc_call(
+                            "getTransaction",
+                            [sig, {"encoding": "json",
+                                   "commitment": "confirmed",
+                                   "maxSupportedTransactionVersion": 0}],
+                        )
+                        tx_obj = tx_res.get("result")
+                        if tx_obj:
+                            meta_err = ((tx_obj.get("meta") or {}).get("err"))
+                            if meta_err is not None:
+                                last_err = meta_err
+                                break
+                    except Exception:
+                        # If we can't verify, fall back to old behavior
+                        # rather than wrongly mark the tx as failed.
+                        pass
                     # Record per-recipient health (4.1 weighted picker)
                     for _ix in instructions:
                         if getattr(_ix, "program_id", None) == PUMP_PROGRAM_ID:
