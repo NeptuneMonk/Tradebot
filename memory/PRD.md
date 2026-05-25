@@ -20,6 +20,11 @@ For learning and experimentation only — no deployment outside preview.
 - **Frontend (React + Tailwind + shadcn)**: Single-page "Control Room" dashboard, polling every 3s, IBM Plex Sans/Mono, sharp-edged dark UI, Recharts P/L sparkline, QR deposit address.
 
 
+## Helius priority fee + WebSocket roadmap (2026-05-25)
+- ✅ **`getPriorityFeeEstimate` wired** — `speed_modes.PriorityFeeAutoTuner` now polls Helius's context-aware recommendation API (with Pump.fun + PumpSwap as `accountKeys`) instead of the generic network-wide p75. Auto fallback to old p75 path on any error. Live `/api/costs/network` confirms.
+- 🟡 **LaserStream WebSocket upgrade** for position monitoring — deferred to its own session. Plan: `accountSubscribe` per bonding curve / PumpSwap pool, dispatched through a new `account_event_bus.py`. Triggers (not replaces) existing SL/TP/trailing checks; keep 1.5s safety-net poll. Decommission 0.4-0.8s polls after 24h of paper-mode validation.
+
+
 ## Helius Sender (2026-05-25)
 - ✅ **`helius_sender.py`** — dual-routing client (validators + Jito) for ultra-low-latency tx submission. Auto-inserts tip transfer, enforces `skipPreflight=true` + `maxRetries=0` per Helius spec.
 - ✅ **Emergency PumpSwap sell** and **force-recover endpoint** now route through Sender (dual mode, 0.0002 SOL tip) with automatic RPC fallback if Sender errors. Should ~eliminate landing failures on stuck-position recovery.

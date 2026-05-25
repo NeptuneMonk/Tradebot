@@ -122,7 +122,12 @@ class PriorityFeeAutoTuner:
         await asyncio.sleep(8.0)
         while True:
             try:
-                v = await self._fetch_p75_priority_fee()
+                # Prefer Helius's own recommendation API (context-aware for
+                # our Pump.fun + PumpSwap workload); fall back to the
+                # network-wide p75 if Helius errors or returns no value.
+                v = await self._fetch_helius_priority_estimate()
+                if v is None:
+                    v = await self._fetch_p75_priority_fee()
                 if v is not None:
                     # Clamp into the same range as the presets so users don't
                     # get surprised by extreme network outliers.
@@ -134,6 +139,51 @@ class PriorityFeeAutoTuner:
             except Exception as e:
                 logger.debug(f"auto-tuner poll failed: {e}")
             await asyncio.sleep(self.POLL_S)
+
+    async def _fetch_helius_priority_estimate(self) -> Optional[int]:
+        """Helius's `getPriorityFeeEstimate` returns a recommended
+        priority fee tuned for the supplied accountKeys (i.e. the
+        programs our tx will actually write to). This is more accurate
+        than the generic network p75 because it weighs recent fees
+        paid by txs touching the same accounts we will touch.
+
+        Returns microlamports/CU on success, None on any failure
+        (caller falls back to the network-wide p75).
+        """
+        from solana_client import rpc_call
+        # Use HIGH priority level — that's the closest match to "AUTO"
+        # in our preset ladder (between FAST and AGGRESSIVE).
+        try:
+            res = await rpc_call(
+                "getPriorityFeeEstimate",
+                [{
+                    # Programs our trade txs hit. Helius weighs these to compute
+                    # an estimate that actually matches our workload.
+                    "accountKeys": [
+                        "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",  # Pump.fun
+                        "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",  # PumpSwap
+                    ],
+                    "options": {"priorityLevel": "High", "recommended": True},
+                }],
+            )
+        except Exception as e:
+            logger.debug(f"getPriorityFeeEstimate failed: {e}")
+            return None
+        result = res.get("result") or {}
+        # API can return either {"priorityFeeEstimate": <num>} or
+        # {"priorityFeeLevels": {"high": <num>, ...}} depending on options.
+        est = result.get("priorityFeeEstimate")
+        if est is None:
+            levels = result.get("priorityFeeLevels") or {}
+            est = levels.get("high")
+        if est is None:
+            return None
+        v = int(est)
+        # Even when Helius says ~0 (very calm block), keep at NORMAL floor
+        # so we still land cleanly in 1-2 slots.
+        if v < PRESETS["normal"][0]:
+            v = PRESETS["normal"][0]
+        return v
 
     async def _fetch_p75_priority_fee(self) -> Optional[int]:
         """Use Helius's getRecentPrioritizationFees and return the 75th

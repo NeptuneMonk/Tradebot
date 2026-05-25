@@ -1,5 +1,36 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-25 — `getPriorityFeeEstimate` wired into AUTO mode
+
+### Change in `speed_modes.py`
+`PriorityFeeAutoTuner._loop` now prefers Helius's `getPriorityFeeEstimate` (with `priorityLevel: "High"` + `recommended: true` + the Pump.fun + PumpSwap program IDs as `accountKeys`) over the previous generic `getRecentPrioritizationFees` p75.
+
+Why this matters: the previous tuner was computing a NETWORK-WIDE p75 across all recent slots. The new path asks Helius for a recommendation tuned to our actual write footprint (txs that touch Pump.fun + PumpSwap), so:
+- On calm blocks → we get a lower estimate (save fees, still land)
+- On hot blocks → we get a higher estimate (land where the network-wide p75 would have dropped us)
+- Falls back to the network-wide p75 cleanly if Helius errors → never stalls trading.
+
+Parses both API response shapes (`priorityFeeEstimate` scalar or `priorityFeeLevels.high`) so we don't have to pick one.
+
+### Verified live
+`GET /api/costs/network` → `auto_tuner_current=300000` (NORMAL floor was applied because the current Helius estimate is below it). New code path is feeding the AUTO speed-mode resolver successfully.
+
+### Tests
+6 new tests in `test_priority_fee_tuner.py`: both response shapes, NORMAL-floor enforcement, error-fallback, empty-result fallback, accountKeys + options assertion. All 44 backend tests pass.
+
+### LaserStream WebSocket (`transactionSubscribe`, `accountSubscribe`) — explicitly DEFERRED
+The bot already uses `wss://` (`listener.py` → `logsSubscribe` with `processed` commitment for Pump.fun new-mint detection — same backend as LaserStream). The much bigger WebSocket win is **replacing the per-position polling loop** in `bot.py::_monitor_position` (which currently does ~2-3 RPC calls/sec/position via `fetch_bonding_curve_state` / `fetch_pool_state`) with `accountSubscribe` on each curve/pool address. This is:
+- ~200ms faster per Helius's claim
+- ~10x more credit-efficient (push-based, no polling)
+- BUT high regression risk — the monitor loop also runs SL/TP/trailing-stop logic on every poll. Needs its own dedicated session with thorough testing.
+
+Suggested follow-up (next session):
+1. Add `account_event_bus.py` — keep one WSS connection alive, multiplex N `accountSubscribe` calls, dispatch decoded curve state to subscribers.
+2. Subscribe in `_monitor_position` and use the events to TRIGGER (not replace) the existing tick logic — `getNotified(curve_state) → re-run SL/TP/trailing checks`. Keep a 1.5s safety-net poll in case of WSS lag/drops.
+3. Decommission the standalone 0.4-0.8s polling loops once the event-driven path proves stable on paper-mode for 24h.
+
+
+
 ## 2026-05-25 — Helius Sender wired into emergency/force exits
 
 After ingesting Helius's [Sender docs](https://www.helius.dev/docs/sending-transactions/sender) (free on all plans, no API credits consumed):
