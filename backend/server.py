@@ -333,12 +333,20 @@ async def recipient_health():
 # - SL/TS persistence (1.2s/1.5s, 3 samples) kills millisecond-dip false exits.
 RECOMMENDED_CONFIG_OVERRIDES = {
     "speed_mode": "manual",                    # so slippage_bps actually applies
-    "slippage_bps": 1000,                      # 10% entry slip (depth-adaptive on top)
-    "exit_slippage_bps": 800,                  # 8% normal exit
-    "panic_exit_slippage_bps": 1500,           # legacy fallback; v2 auto-slip 3-12%
+    "slippage_bps": 600,                       # 6% entry slip — small trade has near-zero price impact, MEV unprofitable < $0.60
+    "exit_slippage_bps": 500,                  # 5% normal exit (was 8%)
+    "panic_exit_slippage_bps": 1200,           # legacy fallback only; v2 auto-slip used
     "intelligent_exit_v2": True,               # sustained-breach SL/TS + auto-slip + retry ladder
-    "priority_fee_microlamports": 1_500_000,   # land in 1-2 slots
-    "panic_exit_priority_microlamports": 3_000_000,  # 2x bump on panic-tier exits
+    # Auto-exit slippage formula — tighter for sub-$0.60 trades
+    "auto_exit_slip_base_bps": 300,            # 3% base — unchanged
+    "auto_exit_slip_thin_pool_extra_bps": 200, # +2% on thin pools
+    "auto_exit_slip_high_vol_extra_bps": 200,  # +2% on high vol
+    "auto_exit_slip_panic_extra_bps": 200,     # +2% panic (was +4%) — small trade needs less margin
+    "auto_exit_slip_cap_bps": 900,             # 9% hard cap (was 12%)
+    "auto_exit_retry_slip_floors_bps": [600, 1000],  # 6%→10% retry ladder (was 8%→15%)
+    "priority_fee_microlamports": 1_000_000,   # 1M µL entry — saves ~$0.008/tx vs 1.5M, still lands <2 slots
+    "panic_exit_priority_microlamports": 2_000_000,  # 2M µL panic (was 3M) — still 2x normal
+    "panic_exit_cu_price_microlamports": 400_000,  # 400k panic CU price (was 600k)
     # Entry filters (NEW band) — slightly looser so high-momentum graduated
     # tokens can pass; the SL/persistence layer protects on the way out.
     "min_curve_liquidity_sol_new": 15.0,
