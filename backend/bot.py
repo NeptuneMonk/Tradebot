@@ -768,7 +768,9 @@ class BotState:
             "first_seen_price_sol": 0.0,  # filled on first TradeEvent / curve fetch
             "last_price_sol": 0.0,
             # Throttled price-time samples (~1Hz) for the entry-velocity gate
-            "price_samples": deque(maxlen=120),  # 2min @ 1Hz
+            # 1h of history capacity at ~30s spacing (after the first 60s of
+            # dense 1Hz sampling). Used for rolling growth-% and entry-velocity.
+            "price_samples": deque(maxlen=120),  # adaptive: 1Hz first 60s, then 1/30s
             "last_price_sample_ts": 0.0,
             "scanner_eligible": True,
             "scanner_last_attempt": 0.0,
@@ -828,8 +830,13 @@ class BotState:
             bucket["curve_fill_pct"] = min(
                 100.0, max(0.0, (vsr - 30_000_000_000) / (85_000_000_000) * 100)
             )
-            # Throttled price sampling (~1Hz) for the entry-velocity gate
-            if now - bucket.get("last_price_sample_ts", 0) >= 1.0:
+            # Adaptive price sampling — sample at 1Hz for the first 60s of
+            # tracking (entry-velocity gate needs dense data) then drop to one
+            # sample every 30s so the 120-slot deque covers ~1 hour of history
+            # for the rolling growth-pct computation.
+            age = now - bucket.get("start", now)
+            sample_interval = 1.0 if age < 60 else 30.0
+            if now - bucket.get("last_price_sample_ts", 0) >= sample_interval:
                 bucket["last_price_sample_ts"] = now
                 samples = bucket.get("price_samples")
                 if samples is not None:

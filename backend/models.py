@@ -93,6 +93,10 @@ class BotConfig(BaseModel):
     # Momentum scanner — 81% of recent profitable trades came from here
     scanner_enabled: bool = True
     scanner_window_hours: int = 4
+    # Rolling growth-% lookback. Replaces since-launch growth as the gate
+    # signal — an old token with 5000% lifetime growth tells you nothing
+    # about whether it's pumping NOW. 3600s = 1h rolling change.
+    scanner_growth_lookback_s: int = 3600
     # Seasoning floor: only consider tokens older than this many minutes.
     # Filters out fresh-launch volatility the sniper already handles.
     scanner_min_age_minutes: int = 180

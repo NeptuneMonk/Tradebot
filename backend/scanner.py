@@ -109,6 +109,34 @@ class MomentumScanner:
         growth_pct = (
             ((cur_price - first_price) / first_price * 100) if first_price > 0 else 0.0
         )
+        # Rolling momentum: price change over the last `growth_lookback_s`
+        # seconds. Launch-baseline `growth_pct` becomes useless for old
+        # tokens (a +5000% growth from launch tells you nothing about whether
+        # it's still moving NOW). The rolling value isolates recent momentum
+        # so the bot can chase tokens that are heating back up after dormancy.
+        lookback_s = max(60, int(getattr(cfg, "scanner_growth_lookback_s", 3600)))
+        samples = b.get("price_samples") or ()
+        baseline_price = None
+        if samples:
+            cutoff = now - lookback_s
+            for ts, p in samples:
+                if ts >= cutoff and p > 0:
+                    baseline_price = p
+                    break
+            # Fallback: if no sample inside the window (e.g. fresh launch),
+            # use the OLDEST sample we have — still gives a meaningful
+            # "since-we've-been-tracking" number that isn't the launch
+            # baseline.
+            if baseline_price is None:
+                for ts, p in samples:
+                    if p > 0:
+                        baseline_price = p
+                        break
+        growth_pct_rolling = (
+            ((cur_price - baseline_price) / baseline_price * 100)
+            if baseline_price and baseline_price > 0
+            else growth_pct  # No history yet — fall back to launch-baseline
+        )
         cutoff_inflow = now - cfg.scanner_recent_inflow_window_s
         cutoff_velocity = now - cfg.scanner_holder_velocity_window_s
         recent_inflow_lamports = 0
@@ -122,7 +150,9 @@ class MomentumScanner:
             "age_s": age_s,
             "cur_price_sol": cur_price,
             "first_price_sol": first_price,
-            "growth_pct": growth_pct,
+            "growth_pct": growth_pct,                       # legacy: since-launch
+            "growth_pct_rolling": growth_pct_rolling,        # NEW: last `lookback_s`
+            "growth_lookback_s": lookback_s,
             "recent_inflow_sol": recent_inflow_lamports / LAMPORTS_PER_SOL,
             "new_buyers_recent": len(recent_buyers_set),
             "unique_buyers_total": len(b.get("buyers", set())),
@@ -187,15 +217,18 @@ class MomentumScanner:
             if m["band"] == "seasoned":
                 # Seasoned-band gates use API-polled metrics (MC + MC velocity)
                 # since Helius mempool doesn't cover PumpSwap pools.
+                # Gate on `growth_pct_rolling` (last hour) NOT since-launch —
+                # otherwise old tokens with high lifetime growth always pass
+                # while currently-dormant.
                 m["passes"] = (
-                    m["growth_pct"] >= g["min_growth_pct"]
+                    m["growth_pct_rolling"] >= g["min_growth_pct"]
                     and m["real_sol_reserves"] >= g["min_liquidity_sol"]
                     and m["usd_market_cap"] >= cfg.scanner_min_mc_usd_seasoned
                     and m["mc_velocity_5m_pct"] >= cfg.scanner_min_mc_velocity_5m_pct_seasoned
                 )
             else:
                 m["passes"] = (
-                    m["growth_pct"] >= g["min_growth_pct"]
+                    m["growth_pct_rolling"] >= g["min_growth_pct"]
                     and m["recent_inflow_sol"] >= g["min_inflow_sol"]
                     and m["new_buyers_recent"] >= g["min_new_buyers"]
                     and m["real_sol_reserves"] >= g["min_liquidity_sol"]
@@ -274,7 +307,7 @@ class MomentumScanner:
                         continue
                     m = self.score(b, None, now)
                     g = self._gates(cfg, band)
-                    if m["growth_pct"] < g["min_growth_pct"]:
+                    if m["growth_pct_rolling"] < g["min_growth_pct"]:
                         continue
                     if m["real_sol_reserves"] < g["min_liquidity_sol"]:
                         continue
@@ -310,7 +343,7 @@ class MomentumScanner:
                             )
                             continue
                     rank_score = (
-                        m["growth_pct"]
+                        m["growth_pct_rolling"]
                         + m["recent_inflow_sol"] * 5
                         + m["new_buyers_recent"] * 2
                     )
@@ -361,7 +394,7 @@ class MomentumScanner:
                     g = self._gates(cfg, band)
                     if m["real_sol_reserves"] < g["min_liquidity_sol"]:
                         continue
-                    if m["growth_pct"] < g["min_growth_pct"]:
+                    if m["growth_pct_rolling"] < g["min_growth_pct"]:
                         continue
                     if band == "seasoned":
                         mc = float(b.get("usd_market_cap") or 0.0)

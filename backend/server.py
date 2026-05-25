@@ -143,8 +143,8 @@ async def update_config(cfg: BotConfig):
     cfg.min_curve_liquidity_sol_new = max(0.0, min(85.0, cfg.min_curve_liquidity_sol_new))
     cfg.min_buyers_for_entry_new = max(0, min(100, cfg.min_buyers_for_entry_new))
     # Scanner clamps
-    cfg.scanner_window_hours = max(1, min(24, cfg.scanner_window_hours))
-    cfg.scanner_min_age_minutes = max(0, min(24 * 60, cfg.scanner_min_age_minutes))
+    cfg.scanner_window_hours = max(1, min(720, cfg.scanner_window_hours))  # up to 30 days
+    cfg.scanner_min_age_minutes = max(0, min(720 * 60, cfg.scanner_min_age_minutes))
     cfg.scanner_interval_s = max(5, min(600, cfg.scanner_interval_s))
     cfg.scanner_min_growth_pct = max(0.0, min(10000.0, cfg.scanner_min_growth_pct))
     cfg.scanner_recent_inflow_window_s = max(30, min(3600, cfg.scanner_recent_inflow_window_s))
@@ -356,6 +356,10 @@ RECOMMENDED_CONFIG_OVERRIDES = {
     # Distribution-vacuum gate OFF: too aggressive on fresh high-momentum
     # launches where every buyer is "recent" by definition (false-rejects).
     "gate_distribution_vacuum": False,
+    # Wider token universe — 168h (7 days) instead of 24h. Combined with
+    # the rolling growth-% gate, old tokens that re-pump can now be entered.
+    "scanner_window_hours": 168,
+    "scanner_growth_lookback_s": 3600,  # gate on last 1h price change
     # Risk / exits — tuned from paper data EV analysis.
     "max_concurrent_positions": 3,
     "stop_loss_pct": 10.0,
