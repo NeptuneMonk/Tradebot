@@ -137,11 +137,20 @@ class FailureSweeper:
             classified += 1
 
         # Refresh greylist scores for every affected creator (one pass,
-        # not per-launch — cheaper).
+        # not per-launch — cheaper). Honor the live BotConfig F-band so a
+        # sweep-touched creator outside [min_fails, max_fails) gets stats
+        # persisted but composite score zeroed.
+        try:
+            cfg_doc = await self.db.bot_config.find_one({}, {"_id": 0}) or {}
+            min_f = int(cfg_doc.get("creator_greylist_min_fails", 5))
+            max_f = int(cfg_doc.get("creator_greylist_max_fails", 80))
+        except Exception:
+            min_f, max_f = 5, 80
         for creator in creators_touched:
             try:
                 from creator_greylist import update_creator_score
-                await update_creator_score(self.db, creator)
+                await update_creator_score(self.db, creator,
+                                            min_fails=min_f, max_fails=max_f)
             except Exception as e:
                 logger.debug(f"greylist refresh failed for {creator[:8]}…: {e}")
 

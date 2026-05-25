@@ -167,8 +167,14 @@ function CreatorDetail({ creator }) {
 
       {/* Recent failed mints */}
       <div>
-        <div className="text-[9px] uppercase tracking-[0.2em] text-neutral-500 mb-2">
-          Recent Failed Mints ({recentFailed.length})
+        <div className="text-[9px] uppercase tracking-[0.2em] text-neutral-500 mb-2 flex items-center gap-2">
+          <span>Recent Failed Mints ({recentFailed.length})</span>
+          <span
+            className="text-neutral-600"
+            title="Lifetime F count from creator stats / sweep-classified count with peak MC"
+          >
+            · F={profile.tokens_failed ?? "?"} · with-peak={profile.n_failed ?? 0}
+          </span>
         </div>
         {recentFailed.length === 0 ? (
           <div className="text-neutral-600 italic text-[10px]">no failed mints recorded</div>
@@ -301,7 +307,7 @@ function GreylistRow({ row, expanded, onToggle }) {
           </div>
           <div className="text-right">
             <div className="text-neutral-500 uppercase tracking-wider text-[9px]">fails</div>
-            <div className="text-neutral-200 tabular-nums">{row.n_failed}</div>
+            <div className="text-neutral-200 tabular-nums">{row.tokens_failed}</div>
           </div>
           <div className="text-right hidden md:block">
             <div className="text-neutral-500 uppercase tracking-wider text-[9px]">trades</div>
@@ -514,7 +520,9 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
 
       <div className="mt-2 text-[10px] font-mono text-neutral-600">
         scoring: profitability 30% · predictability 20% · peak mc 25% · activity 15% · volume 10% ·
-        decay ~1%/hr · tiers at 45 (hybrid) and 70 (aggressive)
+        decay ~1%/hr · tiers at 45 (hybrid) and 70 (aggressive) ·
+        F-band <span className="text-neutral-400">{config?.creator_greylist_min_fails ?? 5}–{(config?.creator_greylist_max_fails ?? 80) - 1}</span>{" "}
+        (outside band → stats kept, score suppressed)
       </div>
     </div>
   );

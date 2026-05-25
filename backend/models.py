@@ -198,6 +198,15 @@ class BotConfig(BaseModel):
     # the predictions actually correlate with profitable snipes.
     creator_greylist_enabled: bool = True
     creator_greylist_mode: str = "telemetry"   # "telemetry" | "live"
+    # F-band gate: only score creators whose LIFETIME `tokens_failed` count
+    # sits inside this band. Below `min_fails` there's not enough history to
+    # see a pattern; above `max_fails` the creator is spammy/useless to track
+    # (the peak-MC distribution gets diluted by hundreds of dust mints).
+    # Creators OUTSIDE the band still have their stats computed + persisted
+    # (so the moment they cross into the band, the score "wakes up") — only
+    # the composite score is forced to 0 so they don't surface in the UI.
+    creator_greylist_min_fails: int = 5
+    creator_greylist_max_fails: int = 80
     wallet_graph_enabled: bool = True          # 2-hop hunter on/off
     # Live PnL reset cutoff: when set, daily_pnl_usd(mode='live') only sums
     # trades closed at-or-after this ISO timestamp instead of today's 00:00 UTC.

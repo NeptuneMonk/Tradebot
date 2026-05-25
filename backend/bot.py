@@ -1113,7 +1113,11 @@ class BotState:
                     )
                     try:
                         from creator_greylist import update_creator_score
-                        await update_creator_score(self.db, b.get("creator"))
+                        await update_creator_score(
+                            self.db, b.get("creator"),
+                            min_fails=int(self.config.creator_greylist_min_fails),
+                            max_fails=int(self.config.creator_greylist_max_fails),
+                        )
                     except Exception as e:
                         logger.debug(f"greylist post-graduation refresh: {e}")
             except Exception as e:
@@ -2780,7 +2784,11 @@ class BotState:
             logger.debug(f"greylist instrumentation skipped for {mint[:8]}…: {e}")
         try:
             from creator_greylist import update_creator_score
-            await update_creator_score(self.db, trade_doc.get("creator"))
+            await update_creator_score(
+                self.db, trade_doc.get("creator"),
+                min_fails=int(self.config.creator_greylist_min_fails),
+                max_fails=int(self.config.creator_greylist_max_fails),
+            )
         except Exception as e:
             logger.debug(f"greylist update skipped: {e}")
         await hub.broadcast("trade_exit", trade_doc)

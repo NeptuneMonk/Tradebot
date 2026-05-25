@@ -1,5 +1,30 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-25 — Greylist F-band gate (5-80 tokens_failed window)
+
+User feedback: high-volume creators like `FUwB…1mjj` (160C·1G·**13F**) are correctly skipped at entry by `creator_rug_threshold=222`, but the user wanted to confirm they still feed the greylist's pattern recognition. Two changes:
+
+### Confirmed: all launches ARE persisted
+- `record_new_launch()` is called at `bot.py:743` BEFORE any classifier gate. Filtered launches still land in `db.launches` + bump `db.creators.tokens_created/tokens_failed` counters. No code change needed; the user's concern was a misunderstanding.
+
+### NEW: F-band gate on greylist composite score
+- `BotConfig.creator_greylist_min_fails=5`, `creator_greylist_max_fails=80` (inclusive-min / exclusive-max).
+- `update_creator_score(db, creator, min_fails=5, max_fails=80)`: below 5 = "not enough pattern yet"; ≥ 80 = "spam creator, dilutes the peak-MC signal". Outside the band the **component stats are still computed + persisted** (so the moment a creator crosses INTO the band their score wakes up), but the composite is forced to 0 → naturally hidden from the UI by the existing `min_score` filter.
+- Persisted fields: `greylist_score` (band-gated), `greylist_score_raw` (pre-band, diagnostic), `greylist_tokens_failed`, `greylist_out_of_band`, `greylist_band_min`, `greylist_band_max`.
+- `top_greylisted()` explicitly excludes `greylist_out_of_band=True` at the query level so the index scan stays cheap.
+- All call sites (`bot.py` graduation + trade-close, `failure_sweep.run_once()`) read the live band from `BotConfig`.
+
+### UI tweaks
+- Greylist panel "fails" column now shows `tokens_failed` (the lifetime `F` counter that matches the `13F` badge the user sees in Recent Launches), not `n_failed` (which only counts sweep-classified launches with peak MC populated).
+- Expanded detail card shows BOTH counts: `F=13 · with-peak=4` so the user can correlate the badge with the sweep-classified subset.
+- Panel footer advertises the active band: `F-band 5–79 (outside band → stats kept, score suppressed)`.
+
+### Tests
+- 4 new `update_creator_score` tests: below band, inside band, above band, boundary inclusive/exclusive.
+- **29 tests total, 100% pass.** (`pytest tests/test_creator_greylist.py tests/test_exit_param.py`)
+
+
+
 ## 2026-05-25 — Creator Greylist Phase 2 (live execution overrides + frontend panel)
 
 ### `creator_greylist.strategy_overrides()` (NEW)

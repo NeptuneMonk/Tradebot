@@ -293,9 +293,16 @@ def strategy_overrides(strategy: str) -> dict:
     return dict(_STRATEGY_OVERRIDES.get(strategy) or {})
 
 
-async def update_creator_score(db, creator: str) -> dict | None:
+async def update_creator_score(db, creator: str,
+                                min_fails: int = 5, max_fails: int = 80) -> dict | None:
     """Recompute + persist greylist score for one creator. Called on every
-    trade close AND every launch outcome stamp. Cheap — Mongo-only."""
+    trade close AND every launch outcome stamp. Cheap — Mongo-only.
+
+    `min_fails` / `max_fails` are the F-BAND gate (defaults match the
+    user's preferred 5-80 window). Outside the band the COMPONENT stats are
+    still computed + persisted (so the moment a creator crosses into the
+    band their score "wakes up"), but the composite is forced to 0 and an
+    `out_of_band` flag is set so the UI can explain the suppression."""
     if not creator:
         return None
     creator_doc = await db.creators.find_one({"_id": creator})
@@ -316,6 +323,13 @@ async def update_creator_score(db, creator: str) -> dict | None:
          "unique_buyers": 1},
     ).to_list(200)
     score = compute_score(creator_doc, trades, failed)
+    # F-band gate. We use LIFETIME `tokens_failed` (the "F" badge the user
+    # sees in Recent Launches) — not `n_failed_launches` which only counts
+    # sweep-classified ones with peak MC. The lifetime counter is the right
+    # signal for "does this creator have a pattern worth watching yet".
+    tokens_failed = int(creator_doc.get("tokens_failed") or 0)
+    out_of_band = tokens_failed < min_fails or tokens_failed >= max_fails
+    composite = 0.0 if out_of_band else score["score"]
     now_iso = datetime.now(timezone.utc).isoformat()
     # Top 10 recent failed mints (for the profile/UI card)
     recent_failed = sorted(
@@ -326,25 +340,41 @@ async def update_creator_score(db, creator: str) -> dict | None:
     await db.creators.update_one(
         {"_id": creator},
         {"$set": {
-            "greylist_score": score["score"],
+            "greylist_score": composite,
+            "greylist_score_raw": score["score"],  # pre-band score (for diagnostics)
             "greylist_components": score["components"],
             "expected_rug_window_pct": score["expected_rug_window_pct"],
             "expected_peak_mc_usd": score["expected_peak_mc_usd"],
             "greylist_n_trades": score["n_trades"],
             "greylist_n_failed": score["n_failed_launches"],
+            "greylist_tokens_failed": tokens_failed,
+            "greylist_out_of_band": out_of_band,
+            "greylist_band_min": min_fails,
+            "greylist_band_max": max_fails,
             "greylist_recent_failed_mints": recent_failed,
             "greylist_score_updated_at": now_iso,
         }},
     )
-    return score
+    # Return both the original score AND the band-gated composite so callers
+    # can log the suppression decision.
+    return {**score, "score": composite, "raw_score": score["score"],
+            "out_of_band": out_of_band, "tokens_failed": tokens_failed}
 
 
 async def top_greylisted(db, limit: int = 20, min_score: float = 30.0) -> list[dict]:
-    """Return the top N creators by EFFECTIVE (decayed) greylist score."""
+    """Return the top N creators by EFFECTIVE (decayed) greylist score.
+    Creators with `greylist_out_of_band=True` are explicitly excluded — their
+    composite was forced to 0 anyway, but this skips them at the index level
+    so the query is cheap even on a large `creators` collection."""
     cur = db.creators.find(
-        {"greylist_score": {"$gte": min_score}},
+        {"greylist_score": {"$gte": min_score},
+         "$or": [
+             {"greylist_out_of_band": {"$exists": False}},
+             {"greylist_out_of_band": False},
+         ]},
         {"_id": 1, "greylist_score": 1, "greylist_components": 1,
          "greylist_n_trades": 1, "greylist_n_failed": 1,
+         "greylist_tokens_failed": 1, "greylist_out_of_band": 1,
          "expected_rug_window_pct": 1, "expected_peak_mc_usd": 1,
          "greylist_score_updated_at": 1, "tokens_created": 1,
          "tokens_graduated": 1, "tokens_failed": 1, "last_seen": 1},
