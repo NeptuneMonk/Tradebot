@@ -20,6 +20,13 @@ For learning and experimentation only — no deployment outside preview.
 - **Frontend (React + Tailwind + shadcn)**: Single-page "Control Room" dashboard, polling every 3s, IBM Plex Sans/Mono, sharp-edged dark UI, Recharts P/L sparkline, QR deposit address.
 
 
+## LaserStream WebSocket wired (2026-05-25)
+- ✅ **`account_event_bus.py`** — one persistent Helius WSS multiplexing `accountSubscribe` for every open position. Exponential-backoff reconnect + auto re-subscribe.
+- ✅ **`_monitor_position`** now wakes on Helius push within ~50-150ms of a trade landing on the watched curve/pool, vs the previous 0.8s polling floor. Polling cadence retained as safety net (same 0.8s timeout) — zero behavioral regression if WSS drops.
+- ✅ **`GET /api/diagnostics/account-bus`** — health/throughput counters for observability.
+- ✅ **Auto-cleanup** — `_exit` unsubscribes the position's WSS slot so closed trades don't leak Helius credits.
+
+
 ## Helius priority fee + WebSocket roadmap (2026-05-25)
 - ✅ **`getPriorityFeeEstimate` wired** — `speed_modes.PriorityFeeAutoTuner` now polls Helius's context-aware recommendation API (with Pump.fun + PumpSwap as `accountKeys`) instead of the generic network-wide p75. Auto fallback to old p75 path on any error. Live `/api/costs/network` confirms.
 - 🟡 **LaserStream WebSocket upgrade** for position monitoring — deferred to its own session. Plan: `accountSubscribe` per bonding curve / PumpSwap pool, dispatched through a new `account_event_bus.py`. Triggers (not replaces) existing SL/TP/trailing checks; keep 1.5s safety-net poll. Decommission 0.4-0.8s polls after 24h of paper-mode validation.

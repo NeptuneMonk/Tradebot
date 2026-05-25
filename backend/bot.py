@@ -146,6 +146,13 @@ class BotState:
         self.discovery.start()
         # Start priority-fee auto-tuner (only consulted when speed_mode='auto')
         auto_tuner.start()
+        # Start the account-event bus: one persistent Helius WSS that
+        # multiplexes accountSubscribe calls for every open position.
+        # Drives push-based wakes in _monitor_position so SL/TP can react
+        # within one network RTT of a trade landing, vs the previous
+        # 400-800ms polling floor.
+        from account_event_bus import account_event_bus
+        account_event_bus.start()
         # Start on-chain PnL reconciler (overwrites quoted pnl with actual
         # wallet deltas read from getTransaction every 30s)
         self.pnl_reconciler.start()
@@ -1554,6 +1561,22 @@ class BotState:
             slot["monitor_price_samples"] = []
         last_extend_log = 0.0
 
+        # === LaserStream WebSocket wake-up channel ===
+        # Subscribe to the on-chain account that mutates on every buy/sell
+        # for this position. Pump.fun → bonding curve PDA. PumpSwap → pool
+        # account. The Event fires every time Helius pushes new state.
+        # We KEEP polling as a safety net (the .wait_for_change timeout
+        # still expires every 0.8s) — WSS is purely a "wake earlier" path,
+        # so a stale WSS never blocks SL/TP from firing.
+        from account_event_bus import account_event_bus
+        watch_account = (
+            slot.get("pumpswap_pool")
+            if slot.get("protocol") == "pumpswap"
+            else slot.get("bonding_curve")
+        )
+        if watch_account:
+            account_event_bus.subscribe(watch_account)
+
         while True:
             # Liveness heartbeat — refreshed every tick. Reconciler uses this
             # to detect dead monitors and respawn them.
@@ -1622,7 +1645,11 @@ class BotState:
                 # on the same slot and would race for the same wallet balance,
                 # producing Custom:6023 reverts on whichever loses.
                 if slot.get("exit_in_progress"):
-                    await asyncio.sleep(0.4)
+                    # Same wait pattern — push-based wake or 0.4s safety net
+                    if watch_account:
+                        await account_event_bus.wait_for_change(watch_account, timeout=0.4)
+                    else:
+                        await asyncio.sleep(0.4)
                     continue
 
                 # Track price samples for the velocity-aware timeout (cap window ~ 2x velocity window)
@@ -1718,7 +1745,16 @@ class BotState:
                         finally:
                             slot["exit_in_progress"] = False
 
-                await asyncio.sleep(0.8)
+                # Push-based wake: returns instantly if Helius pushes a new
+                # account state for the bonding curve / pool (i.e. a trade
+                # just landed), otherwise falls through after 0.8s — same
+                # cadence as the previous unconditional sleep. SL/TP/trailing
+                # checks above are unchanged; we just react sooner when the
+                # market moves and stay quiet when it doesn't.
+                if watch_account:
+                    await account_event_bus.wait_for_change(watch_account, timeout=0.8)
+                else:
+                    await asyncio.sleep(0.8)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -2040,6 +2076,22 @@ class BotState:
         slot = self.active_trades.pop(mint, None)
         if not slot:
             return
+        # Drop the LaserStream account subscription for this position now
+        # that the slot is being torn down. Safe to call even if the bus
+        # was never started or the account wasn't tracked. Done here (not
+        # in _monitor_position) so EVERY exit path — including reconciler-
+        # driven force-closes — releases the WSS slot cleanly.
+        try:
+            from account_event_bus import account_event_bus
+            watch_account = (
+                slot.get("pumpswap_pool")
+                if slot.get("protocol") == "pumpswap"
+                else slot.get("bonding_curve")
+            )
+            if watch_account:
+                account_event_bus.unsubscribe(watch_account)
+        except Exception:
+            pass
         # Reserve the mint while the exit is in flight so the scanner can't
         # race into a new entry between pop and re-insert. This prevents the
         # "4 positions in 3 min on same mint" pattern: previously a failing

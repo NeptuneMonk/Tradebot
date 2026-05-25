@@ -468,6 +468,26 @@ async def recipient_health():
     return {"recipients": pumpfun.get_recipient_health_snapshot()}
 
 
+@api.get("/diagnostics/account-bus")
+async def account_bus_diagnostics():
+    """LaserStream account-event bus health: counters for received pushes,
+    active subscription count, last-event timestamp, and reconnect count.
+
+    Use to verify the WSS is actually pushing updates in production — a flat
+    `events_received` counter alongside a non-zero `active_subscriptions`
+    indicates the WSS path is silently broken and the safety-net polling is
+    doing all the work."""
+    from account_event_bus import account_event_bus
+    return {
+        "connected": account_event_bus._connected.is_set(),
+        "active_subscriptions": len(account_event_bus._events),
+        "active_wss_sub_ids": len(account_event_bus._wss_sub_ids),
+        "stats": dict(account_event_bus.stats),
+        "tracked_accounts_preview": list(account_event_bus._events.keys())[:5],
+    }
+
+
+
 # ---------- Config sync (preview ↔ production) ----------
 # Forensics-driven defaults — updated 2026-05-25 after analysing 168 paper
 # trades + 292 live trades from 72h of running with intelligent exit v2 and

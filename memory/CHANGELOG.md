@@ -1,5 +1,45 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-25 — LaserStream WebSocket wired into `_monitor_position`
+
+### What changed
+New `account_event_bus.py` — a single persistent Helius WSS connection that multiplexes `accountSubscribe` calls. `_monitor_position` now subscribes to the position's on-chain account (bonding curve PDA for Pump.fun, pool account for PumpSwap) and uses `account_event_bus.wait_for_change(account, timeout=0.8)` in place of the prior unconditional `asyncio.sleep(0.8)`.
+
+### Why
+- **Push-based wakes**: when a buy/sell lands on the tracked curve/pool, Helius pushes new account state within ~50-150ms. SL/TP/trailing react that fast.
+- **No regression risk**: the wait still has a 0.8s timeout (same cadence as the previous polling sleep), so if WSS is degraded, behavior is identical to before. Polling is the safety net, WSS is the speedup.
+- **Credit efficient**: roughly 10x fewer RPC `getAccountInfo` calls per active position-second; pushes are billed per 0.1MB of streamed data.
+
+### Architecture (one-file change)
+- `AccountEventBus` (`account_event_bus.py`) — singleton-style class:
+  - Maintains 1 WSS conn to `wss://mainnet.helius-rpc.com`
+  - `subscribe(account) → asyncio.Event` (idempotent across N callers)
+  - `unsubscribe(account)` (best-effort wire unsub + drops Event)
+  - `wait_for_change(account, timeout) → bool` (drop-in replacement for `asyncio.sleep(timeout)`)
+  - Exponential-backoff reconnect (capped at 30s) + auto re-subscribes all tracked accounts on reconnect (per Helius's recommended pattern)
+- `BotState.async_init` starts the bus in lifespan; `_exit` calls `unsubscribe` so closed positions release their WSS slot.
+- `_monitor_position` — only the sleep lines changed; SL/TP/trailing/classifier/timeout logic untouched.
+
+### Observability
+New endpoint `GET /api/diagnostics/account-bus` returns:
+```
+{"connected": true|false, "active_subscriptions": N, "stats": {
+  "events_received", "subscribes_sent", "reconnects", "last_event_ts",
+  "connected_since"}, "tracked_accounts_preview": [...]}
+```
+Use this to verify WSS pushes are flowing in production: flat `events_received` with non-zero `active_subscriptions` → WSS silently broken, safety-net polling carrying the load.
+
+### Tests
+8 new tests in `test_account_event_bus.py`: subscribe idempotency, wait-for-change push/timeout/no-sub paths, ACK handling, accountNotification dispatch, unsubscribe cleanup, reconnect re-subscribe. 52 backend tests pass.
+
+### Verified live
+On backend restart:
+- `INFO - AccountEventBus connecting to Helius WSS…`
+- `GET /api/diagnostics/account-bus` → `{"connected": true, "active_subscriptions": 0, ...}`
+- Will populate `active_subscriptions` automatically as positions open.
+
+
+
 ## 2026-05-25 — `getPriorityFeeEstimate` wired into AUTO mode
 
 ### Change in `speed_modes.py`
