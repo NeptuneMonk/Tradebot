@@ -323,13 +323,22 @@ async def update_creator_score(db, creator: str,
          "unique_buyers": 1},
     ).to_list(200)
     score = compute_score(creator_doc, trades, failed)
+    # Mechanical pattern classifier (see creator_pattern.py + RUG_PATTERNS.md).
+    # Bad patterns (untradeable_rug / unpredictable_rug / unknown) flip
+    # `blacklisted=True` → composite forced to 0 → creator hidden from UI.
+    # Good patterns (slow_rug / predictable_dump / fake_hype) stay scored
+    # and get a pattern badge in the UI.
+    from creator_pattern import classify_creator, BAD_PATTERNS
+    pattern = classify_creator(creator_doc, failed, trades)
+    pattern_blacklisted = bool(pattern.get("blacklisted")) or pattern["pattern"] in BAD_PATTERNS
     # F-band gate. We use LIFETIME `tokens_failed` (the "F" badge the user
     # sees in Recent Launches) — not `n_failed_launches` which only counts
     # sweep-classified ones with peak MC. The lifetime counter is the right
     # signal for "does this creator have a pattern worth watching yet".
     tokens_failed = int(creator_doc.get("tokens_failed") or 0)
     out_of_band = tokens_failed < min_fails or tokens_failed >= max_fails
-    composite = 0.0 if out_of_band else score["score"]
+    suppressed = out_of_band or pattern_blacklisted
+    composite = 0.0 if suppressed else score["score"]
     now_iso = datetime.now(timezone.utc).isoformat()
     # Top 10 recent failed mints (for the profile/UI card)
     recent_failed = sorted(
@@ -349,6 +358,12 @@ async def update_creator_score(db, creator: str,
             "greylist_n_failed": score["n_failed_launches"],
             "greylist_tokens_failed": tokens_failed,
             "greylist_out_of_band": out_of_band,
+            "greylist_blacklisted": pattern_blacklisted,
+            "greylist_pattern": pattern["pattern"],
+            "greylist_pattern_confidence": pattern.get("confidence", 0),
+            "greylist_pattern_evidence": pattern.get("evidence", []),
+            "greylist_pattern_suggested_entry": pattern.get("suggested_entry_pct"),
+            "greylist_pattern_suggested_exit": pattern.get("suggested_exit_pct"),
             "greylist_band_min": min_fails,
             "greylist_band_max": max_fails,
             "greylist_recent_failed_mints": recent_failed,
@@ -358,23 +373,37 @@ async def update_creator_score(db, creator: str,
     # Return both the original score AND the band-gated composite so callers
     # can log the suppression decision.
     return {**score, "score": composite, "raw_score": score["score"],
-            "out_of_band": out_of_band, "tokens_failed": tokens_failed}
+            "out_of_band": out_of_band, "tokens_failed": tokens_failed,
+            "pattern": pattern["pattern"],
+            "pattern_confidence": pattern.get("confidence", 0),
+            "pattern_blacklisted": pattern_blacklisted}
 
 
 async def top_greylisted(db, limit: int = 20, min_score: float = 30.0) -> list[dict]:
     """Return the top N creators by EFFECTIVE (decayed) greylist score.
-    Creators with `greylist_out_of_band=True` are explicitly excluded — their
-    composite was forced to 0 anyway, but this skips them at the index level
-    so the query is cheap even on a large `creators` collection."""
+    Creators with `greylist_out_of_band=True` OR `greylist_blacklisted=True`
+    are explicitly excluded — their composite was forced to 0 anyway, but
+    this skips them at the index level so the query is cheap even on a
+    large `creators` collection."""
     cur = db.creators.find(
         {"greylist_score": {"$gte": min_score},
          "$or": [
              {"greylist_out_of_band": {"$exists": False}},
              {"greylist_out_of_band": False},
-         ]},
+         ],
+         "$and": [{
+             "$or": [
+                 {"greylist_blacklisted": {"$exists": False}},
+                 {"greylist_blacklisted": False},
+             ]
+         }]},
         {"_id": 1, "greylist_score": 1, "greylist_components": 1,
          "greylist_n_trades": 1, "greylist_n_failed": 1,
          "greylist_tokens_failed": 1, "greylist_out_of_band": 1,
+         "greylist_blacklisted": 1, "greylist_pattern": 1,
+         "greylist_pattern_confidence": 1, "greylist_pattern_evidence": 1,
+         "greylist_pattern_suggested_entry": 1,
+         "greylist_pattern_suggested_exit": 1,
          "expected_rug_window_pct": 1, "expected_peak_mc_usd": 1,
          "greylist_score_updated_at": 1, "tokens_created": 1,
          "tokens_graduated": 1, "tokens_failed": 1, "last_seen": 1},
@@ -397,11 +426,46 @@ async def top_greylisted(db, limit: int = 20, min_score: float = 30.0) -> list[d
             "tokens_created": d.get("tokens_created") or 0,
             "tokens_graduated": d.get("tokens_graduated") or 0,
             "tokens_failed": d.get("tokens_failed") or 0,
+            "pattern": d.get("greylist_pattern") or "unknown",
+            "pattern_confidence": d.get("greylist_pattern_confidence") or 0,
+            "pattern_evidence": d.get("greylist_pattern_evidence") or [],
+            "pattern_suggested_entry": d.get("greylist_pattern_suggested_entry"),
+            "pattern_suggested_exit": d.get("greylist_pattern_suggested_exit"),
             "recommended_strategy": recommended_strategy(eff),
             "last_seen": d.get("last_seen"),
         })
     rows.sort(key=lambda r: r["effective_score"], reverse=True)
     return rows[:limit]
+
+
+async def top_blacklisted(db, limit: int = 25) -> list[dict]:
+    """Top blacklisted creators (untradeable / unpredictable / unknown).
+    Surfaced as a SEPARATE UI panel so the user can see WHO got eliminated
+    and WHY without polluting the greylist. Sorted by tokens_failed desc
+    so the "loudest" offenders come first."""
+    cur = db.creators.find(
+        {"greylist_blacklisted": True},
+        {"_id": 1, "greylist_pattern": 1, "greylist_pattern_confidence": 1,
+         "greylist_pattern_evidence": 1, "tokens_created": 1,
+         "tokens_failed": 1, "tokens_graduated": 1, "last_seen": 1,
+         "expected_peak_mc_usd": 1, "greylist_n_failed": 1,
+         "greylist_score_updated_at": 1},
+    ).sort("tokens_failed", -1).limit(min(200, max(1, limit)))
+    out: list[dict] = []
+    async for d in cur:
+        out.append({
+            "creator": d.get("_id"),
+            "pattern": d.get("greylist_pattern") or "unknown",
+            "confidence": d.get("greylist_pattern_confidence") or 0,
+            "evidence": d.get("greylist_pattern_evidence") or [],
+            "tokens_created": d.get("tokens_created") or 0,
+            "tokens_failed": d.get("tokens_failed") or 0,
+            "tokens_graduated": d.get("tokens_graduated") or 0,
+            "n_failed_with_peak": (d.get("expected_peak_mc_usd") or {}).get("n_failed_with_peak") or 0,
+            "last_seen": d.get("last_seen"),
+            "updated_at": d.get("greylist_score_updated_at"),
+        })
+    return out
 
 
 async def get_creator_profile(db, creator: str) -> dict | None:
@@ -436,4 +500,11 @@ async def get_creator_profile(db, creator: str) -> dict | None:
         "recent_trades": recent,
         "linked_wallets": (linked_doc or {}).get("linked_wallets") or [],
         "recommended_strategy": recommended_strategy(eff),
+        "pattern": d.get("greylist_pattern") or "unknown",
+        "pattern_confidence": d.get("greylist_pattern_confidence") or 0,
+        "pattern_evidence": d.get("greylist_pattern_evidence") or [],
+        "pattern_suggested_entry": d.get("greylist_pattern_suggested_entry"),
+        "pattern_suggested_exit": d.get("greylist_pattern_suggested_exit"),
+        "blacklisted": bool(d.get("greylist_blacklisted")),
+        "out_of_band": bool(d.get("greylist_out_of_band")),
     }

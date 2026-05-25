@@ -1850,6 +1850,16 @@ async def creator_greylist(limit: int = 25, min_score: float = 30.0):
     return {"items": await top_greylisted(db, limit=limit, min_score=min_score)}
 
 
+@api.get("/creator-greylist/blacklist")
+async def creator_blacklist(limit: int = 50):
+    """Top N blacklisted creators (untradeable_rug / unpredictable_rug /
+    unknown). Surfaced separately from the active greylist so the user can
+    see WHO got eliminated and the EVIDENCE without polluting the main
+    panel. Sorted by tokens_failed desc — loudest offenders first."""
+    from creator_greylist import top_blacklisted
+    return {"items": await top_blacklisted(db, limit=limit)}
+
+
 @api.get("/creator-greylist/{creator}")
 async def creator_greylist_profile(creator: str):
     """Full profile for one creator: score, components, rug-window estimate,

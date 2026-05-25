@@ -264,12 +264,22 @@ async def test_update_creator_score_inside_band_keeps_composite():
         "_id": "C2", "tokens_created": 10, "tokens_failed": 10,  # inside band
         "first_seen": _iso(72), "last_seen": _iso(1),
     }
-    db = _FakeDB(creator_doc, launches=[
-        {"outcome": "failed", "final_peak_mc_usd": v}
+    # rug_pct samples in the slow-rug window so the pattern classifier
+    # surfaces "slow_rug_tradeable" (NOT blacklisted) — band-gate alone isn't
+    # enough since the pattern classifier ALSO suppresses unknown patterns.
+    trades = [
+        {"status": "closed", "rug_pct_from_peak": v, "pnl_pct": 10}
+        for v in (21, 23, 19, 22, 24, 20, 21)
+    ]
+    db = _FakeDB(creator_doc, trades=trades, launches=[
+        {"outcome": "failed", "fail_class": "failed_fizzled",
+         "final_peak_mc_usd": v, "symbol": "TKN"}
         for v in (50_000, 52_000, 48_000, 51_000, 49_000)
     ])
     r = await update_creator_score(db, "C2", min_fails=5, max_fails=80)
     assert r["out_of_band"] is False
+    assert r["pattern_blacklisted"] is False
+    assert r["pattern"] == "slow_rug_tradeable"
     assert r["score"] > 0
     assert r["score"] == r["raw_score"]
 

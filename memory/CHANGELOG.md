@@ -1,5 +1,38 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-25 — Pattern Classifier (RUG_PATTERNS.md) — 3 good + 3 bad buckets
+
+User request: "First step is to clean the list — heavy bad-pattern creators get blacklisted from greylist. Then look at which of the 3 good patterns the surviving creators have."
+
+### NEW `creator_pattern.py`
+- `classify_creator(creator_doc, failed_launches, trades)` → mechanical classifier returning one of 6 buckets per RUG_PATTERNS.md:
+  - **Blacklisted**: `untradeable_rug` (≥50% Dead-in-60s), `unpredictable_rug` (rug-σ > 20 on ≥4 samples), `unknown` (no history / not enough data)
+  - **Tradeable**: `slow_rug_tradeable` (rug % median 18-30%, σ < 6), `predictable_dump_tradeable` (12-18%, σ < 6), `fake_hype_tradeable` (hype-keyword name + fast-rug profile)
+- Returns `{pattern, confidence 0-100, evidence: [...], suggested_entry_pct, suggested_exit_pct}`.
+- Hype keywords: `AI, AGI, ELON, MUSK, TRUMP, BIDEN, MOON, GOD, JESUS, PEPE, DOGE, INU, SHIB, WIF, BONK, MEME, BASED, WEN, GME, AMC, TESLA` (single regex, word-boundary so `AIRCRAFT` doesn't match `AI`).
+
+### Wired into `update_creator_score`
+- Pattern classified inside the score update; bad patterns force `greylist_blacklisted=True` AND composite `greylist_score=0`.
+- Persisted fields: `greylist_pattern`, `greylist_pattern_confidence`, `greylist_pattern_evidence` (list), `greylist_pattern_suggested_entry`, `greylist_pattern_suggested_exit`, `greylist_blacklisted`.
+- `top_greylisted()` excludes blacklisted at the query level.
+
+### NEW endpoint + UI panel
+- `GET /api/creator-greylist/blacklist` → top N blacklisted creators sorted by `tokens_failed` desc, with the evidence and lifetime C/F/MC counts.
+- `CreatorGreylistPanel.jsx`:
+  - **Pattern badge** next to the tier badge on every row (`SLOW RUG` / `DUMP` / `HYPE` / `DEAD-60s` / `CHAOS` / `UNKNOWN`, color-coded).
+  - **Pattern detail banner** at the top of each expanded row — evidence bullets + suggested entry/exit % from the classifier.
+  - **NEW collapsible Blacklisted Creators section** at the bottom showing eliminated creators with badge, evidence, lifetime C/F/MC counts. Toggle via `data-testid="blacklist-toggle"`.
+
+### Tests
+- New `tests/test_creator_pattern.py`: 14 tests covering all 6 buckets, the hype-keyword regex, the helpers, and a defensive "always returns documented pattern" sweep.
+- Updated `tests/test_creator_greylist.py` inside-band test to provide rug_pct samples (the inside-band creator now also needs a non-`unknown` pattern to NOT be blacklisted).
+- **43 tests total, 100% pass.**
+
+### End-to-end verified
+- Seeded 3 creators (slow_rug / dead-instant / chaotic) → API correctly returns `slow_rug` in greylist with confidence 92%, the other two in the blacklist panel with their evidence strings. Screenshots confirm.
+
+
+
 ## 2026-05-25 — Greylist F-band gate (5-80 tokens_failed window)
 
 User feedback: high-volume creators like `FUwB…1mjj` (160C·1G·**13F**) are correctly skipped at entry by `creator_rug_threshold=222`, but the user wanted to confirm they still feed the greylist's pattern recognition. Two changes:

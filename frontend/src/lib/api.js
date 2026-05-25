@@ -80,4 +80,6 @@ export const api = {
     client.get(`/creator-greylist/${creator}`).then(r => r.data),
   creatorGreylistRunSweep: () =>
     longClient.post(`/creator-greylist/failure-sweep/run-now`).then(r => r.data),
+  creatorBlacklist: (limit = 50) =>
+    client.get(`/creator-greylist/blacklist`, { params: { limit } }).then(r => r.data),
 };

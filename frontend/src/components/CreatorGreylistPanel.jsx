@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
-import { Ghost, RefreshCw, ChevronDown, ChevronRight, Zap, FlaskConical, Shield, Play } from "lucide-react";
+import { Ghost, RefreshCw, ChevronDown, ChevronRight, Zap, FlaskConical, Shield, Play, Ban, TrendingDown, Zap as Bolt, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 
@@ -27,6 +27,46 @@ const STRATEGY_META = {
     wrap: "text-neutral-300 border-neutral-800 bg-neutral-950/40",
     chip: "text-neutral-400 bg-neutral-900 border-neutral-800",
     desc: "Below 45 score — uses BotConfig defaults.",
+  },
+};
+
+// Pattern badges per RUG_PATTERNS.md classification (creator_pattern.py).
+const PATTERN_META = {
+  slow_rug_tradeable: {
+    label: "SLOW RUG",
+    chip: "text-emerald-200 bg-emerald-900/40 border-emerald-700/60",
+    Icon: TrendingDown,
+    title: "Rugs at 18-30% from peak, low variance. Long entry window, predictable exit.",
+  },
+  predictable_dump_tradeable: {
+    label: "DUMP",
+    chip: "text-cyan-200 bg-cyan-900/40 border-cyan-700/60",
+    Icon: Bolt,
+    title: "Pump→dump→pump→rug at 12-18%. Enter on the second pump.",
+  },
+  fake_hype_tradeable: {
+    label: "HYPE",
+    chip: "text-fuchsia-200 bg-fuchsia-900/40 border-fuchsia-700/60",
+    Icon: Sparkles,
+    title: "Hype-keyword name + fast rug. Tradeable if you time the spike.",
+  },
+  untradeable_rug: {
+    label: "DEAD-60s",
+    chip: "text-neutral-400 bg-neutral-900 border-neutral-700",
+    Icon: Ban,
+    title: "Dominated by Dead-in-60s rugs. Blacklisted.",
+  },
+  unpredictable_rug: {
+    label: "CHAOS",
+    chip: "text-neutral-400 bg-neutral-900 border-neutral-700",
+    Icon: Ban,
+    title: "Rug variance > 20%. No reliable pattern. Blacklisted.",
+  },
+  unknown: {
+    label: "UNKNOWN",
+    chip: "text-neutral-500 bg-neutral-950 border-neutral-800",
+    Icon: Shield,
+    title: "Not enough data yet. Standard logic applies.",
   },
 };
 
@@ -111,9 +151,55 @@ function CreatorDetail({ creator }) {
 
   return (
     <div
-      className="px-3 py-3 border-t border-neutral-800 bg-neutral-950/60 grid grid-cols-1 lg:grid-cols-3 gap-3 text-[11px] font-mono"
+      className="px-3 py-3 border-t border-neutral-800 bg-neutral-950/60 text-[11px] font-mono"
       data-testid={`greylist-detail-${creator}`}
     >
+      {/* Pattern classification banner — what bucket the creator falls into
+          and the evidence the classifier used. Mounted ABOVE the 3-col grid
+          so the user sees the "why" before the "what". */}
+      {profile.pattern && (() => {
+        const pm = PATTERN_META[profile.pattern] || PATTERN_META.unknown;
+        const PI = pm.Icon;
+        const entry = profile.pattern_suggested_entry;
+        const exit = profile.pattern_suggested_exit;
+        return (
+          <div
+            className="mb-3 border border-neutral-800 px-3 py-2 bg-neutral-950"
+            data-testid={`greylist-pattern-detail-${creator}`}
+          >
+            <div className="flex items-center gap-2 flex-wrap mb-1.5">
+              <span
+                className={`flex items-center gap-1 text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border ${pm.chip}`}
+              >
+                <PI className="w-3 h-3" />
+                {pm.label}
+              </span>
+              <span className="text-neutral-500 text-[10px]">
+                confidence {(profile.pattern_confidence || 0).toFixed(0)}%
+              </span>
+              {entry && (
+                <span className="text-emerald-400 text-[10px] ml-auto">
+                  entry {entry[0]?.toFixed?.(0)}–{entry[1]?.toFixed?.(0)}%
+                </span>
+              )}
+              {exit && (
+                <span className="text-rose-400 text-[10px]">
+                  exit {exit[0]?.toFixed?.(0)}–{exit[1]?.toFixed?.(0)}%
+                </span>
+              )}
+            </div>
+            {(profile.pattern_evidence || []).length > 0 && (
+              <ul className="text-[10px] text-neutral-400 space-y-0.5 list-disc list-inside">
+                {(profile.pattern_evidence || []).map((e, i) => (
+                  <li key={i}>{e}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        );
+      })()}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
       {/* Score components */}
       <div>
         <div className="text-[9px] uppercase tracking-[0.2em] text-neutral-500 mb-2">
@@ -245,6 +331,7 @@ function CreatorDetail({ creator }) {
           </ul>
         )}
       </div>
+      </div>
     </div>
   );
 }
@@ -285,6 +372,19 @@ function GreylistRow({ row, expanded, onToggle }) {
             <Icon className="w-3 h-3" />
             {meta.label}
           </span>
+          {row.pattern && row.pattern !== "unknown" && PATTERN_META[row.pattern] && (
+            <span
+              className={`flex items-center gap-1 text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border ${PATTERN_META[row.pattern].chip}`}
+              title={PATTERN_META[row.pattern].title}
+              data-testid={`greylist-pattern-${row.creator}`}
+            >
+              {(() => {
+                const PI = PATTERN_META[row.pattern].Icon;
+                return <PI className="w-3 h-3" />;
+              })()}
+              {PATTERN_META[row.pattern].label}
+            </span>
+          )}
           <span className="text-sm font-mono font-semibold text-neutral-100 tabular-nums">
             {row.effective_score.toFixed(0)}
           </span>
@@ -329,6 +429,8 @@ function GreylistRow({ row, expanded, onToggle }) {
 // ---------------------------------------------------------------------------
 export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
   const [items, setItems] = useState([]);
+  const [blacklist, setBlacklist] = useState([]);
+  const [showBlacklist, setShowBlacklist] = useState(false);
   const [loading, setLoading] = useState(false);
   const [sweepRunning, setSweepRunning] = useState(false);
   const [modeToggling, setModeToggling] = useState(false);
@@ -338,8 +440,12 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await api.creatorGreylist(25, minScore);
-      setItems(r?.items || []);
+      const [g, b] = await Promise.all([
+        api.creatorGreylist(25, minScore),
+        api.creatorBlacklist(50).catch(() => ({ items: [] })),
+      ]);
+      setItems(g?.items || []);
+      setBlacklist(b?.items || []);
     } catch (e) {
       toast.error("Failed to load greylist");
     } finally {
@@ -517,6 +623,74 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
           ))}
         </ul>
       )}
+
+      {/* === Blacklist sub-panel === Creators we've eliminated and WHY. */}
+      <div className="mt-4 border-t border-neutral-800 pt-3">
+        <button
+          type="button"
+          onClick={() => setShowBlacklist((v) => !v)}
+          data-testid="blacklist-toggle"
+          className="w-full flex items-center justify-between gap-2 text-[10px] uppercase tracking-[0.2em] text-neutral-500 hover:text-neutral-300 transition"
+        >
+          <span className="flex items-center gap-2">
+            <Ban className="w-3 h-3" /> Blacklisted creators ({blacklist.length})
+          </span>
+          <span className="text-neutral-600 font-mono normal-case tracking-normal">
+            untradeable · unpredictable · unknown — {showBlacklist ? "hide" : "show"}
+          </span>
+        </button>
+        {showBlacklist && (
+          <div className="mt-2" data-testid="blacklist-content">
+            {blacklist.length === 0 ? (
+              <div className="text-center py-4 text-[10px] uppercase tracking-[0.2em] text-neutral-600">
+                no creators blacklisted yet
+              </div>
+            ) : (
+              <ul className="space-y-1">
+                {blacklist.slice(0, 25).map((b) => {
+                  const pm = PATTERN_META[b.pattern] || PATTERN_META.unknown;
+                  const PI = pm.Icon;
+                  return (
+                    <li
+                      key={b.creator}
+                      data-testid={`blacklist-row-${b.creator}`}
+                      className="border border-neutral-800 px-3 py-2 flex items-center justify-between gap-3 bg-neutral-950/60"
+                    >
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <span
+                          className={`flex items-center gap-1 text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border ${pm.chip}`}
+                          title={pm.title}
+                        >
+                          <PI className="w-3 h-3" />
+                          {pm.label}
+                        </span>
+                        <span className="text-[10px] font-mono text-neutral-400 truncate">
+                          {short(b.creator)}
+                        </span>
+                        <span className="text-[10px] font-mono text-neutral-600 truncate hidden md:inline">
+                          {(b.evidence || []).slice(0, 1).join(" · ")}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-4 text-[10px] font-mono text-neutral-500 shrink-0">
+                        <span className="tabular-nums" title="Lifetime tokens created">
+                          C <span className="text-neutral-300">{b.tokens_created}</span>
+                        </span>
+                        <span className="tabular-nums" title="Lifetime tokens failed">
+                          F <span className="text-neutral-300">{b.tokens_failed}</span>
+                        </span>
+                        <span className="tabular-nums" title="Failures with peak MC populated">
+                          MC <span className="text-neutral-300">{b.n_failed_with_peak}</span>
+                        </span>
+                        <span className="hidden lg:inline">{fmtTime(b.last_seen)}</span>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
 
       <div className="mt-2 text-[10px] font-mono text-neutral-600">
         scoring: profitability 30% · predictability 20% · peak mc 25% · activity 15% · volume 10% ·
