@@ -239,11 +239,13 @@ def _probe_band(winners, losers):
         return "legacy"
     counts = {}
     for t in winners:
-        s = src(t); counts.setdefault(s, [0, 0])[0] += 1
+        s = src(t)
+        counts.setdefault(s, [0, 0])[0] += 1
     for t in losers:
-        s = src(t); counts.setdefault(s, [0, 0])[1] += 1
+        s = src(t)
+        counts.setdefault(s, [0, 0])[1] += 1
     # Find the biggest win-rate spread
-    rates = {s: (w / (w + l)) if (w + l) >= 4 else None for s, (w, l) in counts.items()}
+    rates = {s: (w / (w + lo)) if (w + lo) >= 4 else None for s, (w, lo) in counts.items()}
     rates = {s: r for s, r in rates.items() if r is not None}
     if len(rates) < 2:
         return None

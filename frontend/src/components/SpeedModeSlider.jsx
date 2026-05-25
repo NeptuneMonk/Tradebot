@@ -1,4 +1,5 @@
 import { Zap, Leaf, Gauge, Rocket, Flame, Activity } from "lucide-react";
+import HelpHint from "./HelpHint";
 
 /**
  * Speed Mode slider — 6-tier preset bundle:
@@ -10,12 +11,18 @@ import { Zap, Leaf, Gauge, Rocket, Flame, Activity } from "lucide-react";
  */
 
 const MODES = [
-  { id: "eco",        label: "ECO",        sub: "100k · 3%",  color: "text-emerald-300", border: "border-emerald-700", icon: Leaf },
-  { id: "normal",     label: "NORMAL",     sub: "300k · 4%",  color: "text-cyan-300",    border: "border-cyan-700",    icon: Gauge },
-  { id: "fast",       label: "FAST",       sub: "700k · 5%",  color: "text-blue-300",    border: "border-blue-700",    icon: Zap },
-  { id: "aggressive", label: "AGGRESSIVE", sub: "1.5M · 7%",  color: "text-amber-300",   border: "border-amber-700",   icon: Rocket },
-  { id: "turbo",      label: "TURBO",      sub: "3M · 10%",   color: "text-red-300",     border: "border-red-700",     icon: Flame },
-  { id: "auto",       label: "AUTO",       sub: "live tune",  color: "text-fuchsia-300", border: "border-fuchsia-700", icon: Activity },
+  { id: "eco",        label: "ECO",        sub: "100k · 3%",  color: "text-emerald-300", border: "border-emerald-700", icon: Leaf,
+    hint: "Lowest fees, lowest landing odds. Good for paper-mode or extremely cold market conditions when you can afford to miss fills." },
+  { id: "normal",     label: "NORMAL",     sub: "300k · 4%",  color: "text-cyan-300",    border: "border-cyan-700",    icon: Gauge,
+    hint: "Default balanced preset. Reasonable landing odds on calm-to-medium blocks, fees stay well below EV on micro stakes." },
+  { id: "fast",       label: "FAST",       sub: "700k · 5%",  color: "text-blue-300",    border: "border-blue-700",    icon: Zap,
+    hint: "Pays up for landing. Use when blocks are noticeably busy and you've been seeing 'tx dropped' or slow confirmations." },
+  { id: "aggressive", label: "AGGRESSIVE", sub: "1.5M · 7%",  color: "text-amber-300",   border: "border-amber-700",   icon: Rocket,
+    hint: "High priority fee + wide slippage. For chasing genuinely fast-moving launches where speed beats execution price." },
+  { id: "turbo",      label: "TURBO",      sub: "3M · 10%",   color: "text-red-300",     border: "border-red-700",     icon: Flame,
+    hint: "Last resort. Burns fees and accepts brutal slippage. Only use when you've already missed once and the move is still going." },
+  { id: "auto",       label: "AUTO",       sub: "live tune",  color: "text-fuchsia-300", border: "border-fuchsia-700", icon: Activity,
+    hint: "Dynamic — bot polls a recent-fee percentile every few seconds and adjusts priority fee live. Best for unpredictable network conditions." },
 ];
 
 export default function SpeedModeSlider({ value, onChange }) {
@@ -26,10 +33,16 @@ export default function SpeedModeSlider({ value, onChange }) {
   return (
     <div className="border border-neutral-800 bg-neutral-950/60 p-3" data-testid="speed-mode-slider">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">Speed Mode</span>
+        <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500 inline-flex items-center gap-1">
+          Speed Mode
+          <HelpHint label="Speed Mode">
+            Bundles priority fee + slippage into a single dial. Higher tiers improve landing odds in busy blocks but eat into per-trade EV. AUTO adapts to live network conditions every few seconds.
+          </HelpHint>
+        </span>
         <div className={`flex items-center gap-1.5 ${current.color} text-[11px] font-mono uppercase tracking-[0.15em]`}>
           <Icon className="w-3 h-3" />
           {current.label} · <span className="text-neutral-500 normal-case">{current.sub}</span>
+          <HelpHint label={`${current.label} mode`} side="left">{current.hint}</HelpHint>
         </div>
       </div>
 

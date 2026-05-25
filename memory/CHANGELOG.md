@@ -1,5 +1,34 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-25 — P2 cleanup: lint hygiene + UI tooltips
+
+### Lint cleanup (backend)
+All 20 ruff warnings fixed:
+- `bot.py`: split `to_remove.append(mint); continue` semicolon-statements into separate lines (4 sites)
+- `creator_history.py`: removed unnecessary f-string with no placeholders
+- `listener.py`: renamed ambiguous loop var `l` → `log`
+- `pattern_miner.py`: split semicolon-statements, renamed `l` → `lo`
+- `pnl_reconciler.py`: removed forward reference to undefined `BotState`
+- `suggestions.py`: split all `if x: y` colon-statements (10 sites), split inline `peak < 5: ... elif peak >= 20: ...`
+
+Backend now lints clean (`ruff /app/backend` → All checks passed).
+All 34 unit tests still pass.
+
+### UI tooltips (frontend) — Shadcn `Tooltip` on dense metrics
+- Created `/app/frontend/src/components/HelpHint.jsx` — small (?) icon with Radix-Tooltip popover, max 280px, mono font, console aesthetic.
+- Wrapped `Dashboard` with `TooltipProvider` so every child can use hints.
+- Added explanations to ~50 metrics across:
+  - **BotControlCard**: every Field (Min/Max Trade, TP, SL, Trailing Stop, Max Hold, Partial-TP, Runner Trail, Priority µLamp, Slippage, Exit Slip, Kill Switch, Max Positions, all 8 scanner-timing fields, all 4 re-entry fields). Plus the LIVE/PAPER toggle, Distribution-Vacuum + Socials gate toggles, and every per-band gate row (Min Growth, Min Liquidity, Min Inflow, Min new buyers, Min Total Holders, Min MC, Min MC vel).
+  - **SpeedModeSlider**: header tooltip + per-mode hint (ECO/NORMAL/FAST/AGGRESSIVE/TURBO/AUTO) on the active-mode badge.
+  - **ScannerCandidatesCard**: header hint + per-metric hints (inflow(5m), new buyers(1m), holders, buys, MC vel(5m), MC, last trade).
+  - **StrategyDoctorPanel**: header hint, category labels (sizing/sl/tp/partial/hold/gate/scanner/classifier/timing/needs_more_data), confidence dot (Tooltip on the dot directly), and the "applies:" row.
+  - **DailyLossMeter**: header, kill-switch threshold, LIVE today, PAPER today.
+  - **CostTrackerCard**: every Stat (Trades, Fees Total, Avg/Trade, Fee/Notional) + Live-network Pair (prio µLamp, slip bps, auto p75).
+
+Frontend lints clean, app smoke-test passed (verified Strategy Doctor tooltip render on the dashboard via authenticated screenshot).
+
+
+
 ## 2026-05-25 (LATE PM) — Full PumpSwap recovery now working
 
 ### Final root cause of `Custom: 6053`

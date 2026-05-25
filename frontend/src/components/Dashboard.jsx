@@ -17,6 +17,7 @@ import ScannerCandidatesCard from "@/components/ScannerCandidatesCard";
 import StrategyDoctorPanel from "@/components/StrategyDoctorPanel";
 import PLBySourceCard from "@/components/PLBySourceCard";
 import CostTrackerCard from "@/components/CostTrackerCard";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { Activity, LogOut } from "lucide-react";
 
 export default function Dashboard() {
@@ -130,6 +131,7 @@ export default function Dashboard() {
   }, []));
 
   return (
+    <TooltipProvider delayDuration={150} skipDelayDuration={50}>
     <div className="min-h-screen bg-neutral-950 text-neutral-50" data-testid="dashboard">
       <header className="border-b border-neutral-800 px-6 py-3 flex items-center justify-between bg-neutral-950 sticky top-0 z-20">
         <div className="flex items-center gap-3">
@@ -211,5 +213,6 @@ export default function Dashboard() {
         </footer>
       </main>
     </div>
+    </TooltipProvider>
   );
 }

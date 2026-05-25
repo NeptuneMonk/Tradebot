@@ -20,6 +20,11 @@ For learning and experimentation only — no deployment outside preview.
 - **Frontend (React + Tailwind + shadcn)**: Single-page "Control Room" dashboard, polling every 3s, IBM Plex Sans/Mono, sharp-edged dark UI, Recharts P/L sparkline, QR deposit address.
 
 
+## Recently completed (2026-05-25 — P2 cleanup)
+- ✅ **Backend lint clean** — fixed all 20 ruff warnings (E702/E701 semicolon/colon stacks, F541 empty f-string, E741 ambiguous `l`, F821 forward-ref). 34 unit tests still green.
+- ✅ **UI Help tooltips** — new `HelpHint` component (Shadcn Tooltip) wired across ~50 dense metrics in BotControlCard, ScannerCandidatesCard, StrategyDoctorPanel, SpeedModeSlider, DailyLossMeter, CostTrackerCard. `TooltipProvider` mounted at Dashboard root. Smoke-tested live: Strategy Doctor hint renders correctly.
+
+
 ## Recently fixed (2026-05-25)
 - ✅ **P1: Ghost-position bug** — BUY txs that landed on-chain but failed at the INSTRUCTION level (Custom:XXXX, IncorrectProgramId) were misdetected as successful entries because `getSignatureStatuses` only exposes tx-level errors. Bot monitored empty positions for 30s+, then "exited" them, paying gas twice. **888 ghost rows** found in history (was the real cause of "reconciler showing real_ec = 0"). Fix: post-confirmation `getTransaction` to verify `meta.err is None` before treating tx as success; reconciler ghost-guard flags any `|entry_delta| < 200k lamports` as `ghost_entry=True` with `pnl_pct=0.0` so analytics aren't polluted with fake -300% rows.
 - ✅ **Intelligent Exit v2** — sustained-breach SL/TS, auto-slip formula, retry ladder, priority-fee bump. SL/TS now require `1200/1500ms` continuous breach + 3 samples; replaces flat 25% panic slip with depth-aware 3-12% formula; auto-retries on Custom:6003 with 8%/15% floors; panic exits bump priority fee to 3M µL for faster landing. Protocol-agnostic — wired into both pumpfun and pumpswap paths. Master toggle `intelligent_exit_v2: bool = True`. 16 unit tests pass. (`bot.py`, `models.py`, `tests/test_intelligent_exit.py`)

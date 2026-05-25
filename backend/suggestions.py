@@ -33,14 +33,22 @@ async def generate_suggestions(db, config: BotConfig) -> dict:
     reasons = Counter()
     for t in trades:
         r = (t.get("exit_reason") or "").lower()
-        if "take-profit" in r: reasons["tp"] += 1
-        elif "trailing-stop" in r: reasons["trail"] += 1
-        elif "stop-loss" in r: reasons["sl"] += 1
-        elif "timeout" in r: reasons["timeout"] += 1
-        elif "classifier exit_early" in r: reasons["cls_exit"] += 1
-        elif "classifier abort" in r: reasons["cls_abort"] += 1
-        elif "manual" in r: reasons["manual"] += 1
-        else: reasons["other"] += 1
+        if "take-profit" in r:
+            reasons["tp"] += 1
+        elif "trailing-stop" in r:
+            reasons["trail"] += 1
+        elif "stop-loss" in r:
+            reasons["sl"] += 1
+        elif "timeout" in r:
+            reasons["timeout"] += 1
+        elif "classifier exit_early" in r:
+            reasons["cls_exit"] += 1
+        elif "classifier abort" in r:
+            reasons["cls_abort"] += 1
+        elif "manual" in r:
+            reasons["manual"] += 1
+        else:
+            reasons["other"] += 1
 
     suggestions: list[dict] = []
     win_rate = len(wins) / n if n else 0
@@ -108,8 +116,10 @@ async def generate_suggestions(db, config: BotConfig) -> dict:
             if m:
                 try:
                     peak = float(m.group(1))
-                    if peak < 5: small_peak_count += 1
-                    elif peak >= 20: big_peak_count += 1
+                    if peak < 5:
+                        small_peak_count += 1
+                    elif peak >= 20:
+                        big_peak_count += 1
                 except ValueError:
                     pass
         if small_peak_count >= len(trail_trades) * 0.5:

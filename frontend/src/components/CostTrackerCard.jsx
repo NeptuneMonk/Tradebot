@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Receipt, Activity } from "lucide-react";
+import HelpHint from "./HelpHint";
 
 const fmtUsd = (v, d = 4) => `$${Number(v || 0).toFixed(d)}`;
 const fmtSol = (v, d = 6) => `${Number(v || 0).toFixed(d)} SOL`;
@@ -71,13 +72,17 @@ export default function CostTrackerCard({ apiBase }) {
 
       {/* Top stats */}
       <div className="grid grid-cols-2 gap-2 mb-3">
-        <Stat label="Trades" value={data.trades} />
-        <Stat label="Fees Total" value={fmtUsd(data.fee_usd_total, 4)} accent="text-amber-300" testid="stat-fee-usd" />
-        <Stat label="Avg / Trade" value={fmtUsd(data.avg_fee_usd_per_trade, 4)} />
+        <Stat label="Trades" value={data.trades}
+              hint="Number of completed trades inside the selected window." />
+        <Stat label="Fees Total" value={fmtUsd(data.fee_usd_total, 4)} accent="text-amber-300" testid="stat-fee-usd"
+              hint="Sum of base network fee + priority fee paid across all trades in the window." />
+        <Stat label="Avg / Trade" value={fmtUsd(data.avg_fee_usd_per_trade, 4)}
+              hint="Average fee per trade. Should stay well below your average winner to keep EV positive." />
         <Stat
           label="Fee / Notional"
           value={`${(data.fee_as_pct_of_notional || 0).toFixed(2)}%`}
           accent="text-neutral-300"
+          hint="Fees as a % of total trade notional. A key health metric — if this approaches your avg winner %, fees are eating the strategy."
         />
       </div>
 
@@ -104,19 +109,27 @@ export default function CostTrackerCard({ apiBase }) {
       {/* Live network state */}
       <div className="border-t border-neutral-800 pt-2">
         <div className="flex items-center justify-between mb-1.5">
-          <span className="text-[10px] uppercase tracking-[0.15em] text-neutral-500">Live network</span>
+          <span className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 inline-flex items-center gap-1">
+            Live network
+            <HelpHint label="Live network">
+              The actual priority fee + slippage the bot will use right now, computed from your current Speed Mode (or AUTO live tuner).
+            </HelpHint>
+          </span>
           <span className="flex items-center gap-1 text-[10px] font-mono uppercase text-emerald-400">
             <Activity className="w-3 h-3" /> {speedMode}
           </span>
         </div>
         <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
-          <Pair label="prio µLamp" value={effPriority.toLocaleString()} />
-          <Pair label="slip bps" value={effSlipBps} />
+          <Pair label="prio µLamp" value={effPriority.toLocaleString()}
+                hint="Effective compute-unit price (micro-lamports) used on the next transaction." />
+          <Pair label="slip bps" value={effSlipBps}
+                hint="Effective slippage tolerance for entries (basis points; 100 = 1%)." />
           {speedMode === "auto" && (
             <Pair
               label="auto p75"
               value={autoCur != null ? autoCur.toLocaleString() : "polling…"}
               accent="text-fuchsia-300"
+              hint="75th-percentile priority fee from a recent block sample — the live target for AUTO mode."
             />
           )}
         </div>
@@ -125,19 +138,25 @@ export default function CostTrackerCard({ apiBase }) {
   );
 }
 
-function Stat({ label, value, accent = "text-neutral-200", testid }) {
+function Stat({ label, value, accent = "text-neutral-200", testid, hint }) {
   return (
     <div className="border border-neutral-800 px-2 py-1.5" data-testid={testid}>
-      <div className="text-[9px] uppercase tracking-[0.15em] text-neutral-500">{label}</div>
+      <div className="text-[9px] uppercase tracking-[0.15em] text-neutral-500 inline-flex items-center gap-1">
+        {label}
+        {hint && <HelpHint label={`help: ${label}`}>{hint}</HelpHint>}
+      </div>
       <div className={`font-mono text-sm ${accent}`}>{value}</div>
     </div>
   );
 }
 
-function Pair({ label, value, accent = "text-neutral-200" }) {
+function Pair({ label, value, accent = "text-neutral-200", hint }) {
   return (
     <div className="flex justify-between border border-neutral-900 px-2 py-1">
-      <span className="text-neutral-500 text-[10px] uppercase tracking-[0.1em]">{label}</span>
+      <span className="text-neutral-500 text-[10px] uppercase tracking-[0.1em] inline-flex items-center gap-1">
+        {label}
+        {hint && <HelpHint label={`help: ${label}`}>{hint}</HelpHint>}
+      </span>
       <span className={accent}>{value}</span>
     </div>
   );

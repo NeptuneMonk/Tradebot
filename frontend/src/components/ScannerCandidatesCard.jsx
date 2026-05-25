@@ -1,4 +1,5 @@
 import { Telescope, TrendingUp, Sparkles, Hourglass } from "lucide-react";
+import HelpHint from "./HelpHint";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const fmtAge = (s) => {
@@ -69,6 +70,9 @@ export default function ScannerCandidatesCard({ candidates, config }) {
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-neutral-500">
           <Telescope className="w-3 h-3" /> Momentum Scanner ({candidates.length})
+          <HelpHint label="Momentum Scanner">
+            Live feed of tokens passing your per-band gates. Tokens split into two bands by age: <span className="text-amber-300">New</span> (live mempool signals) and <span className="text-cyan-300">Seasoned</span> (Pump.fun API signals). Only "Passing" rows are eligible for entry.
+          </HelpHint>
         </div>
         <span className="text-[10px] font-mono text-neutral-600">
           window {minAgeLabel} · {winH}h · {totalPassing} passing
@@ -146,31 +150,49 @@ function CandidateRow({ c, passing }) {
       <div className="flex items-center gap-x-3 gap-y-0.5 mt-1.5 text-[10px] font-mono text-neutral-400 flex-wrap">
         {c.band === "new" ? (
           <>
-            <span>inflow(5m) <span className="text-neutral-200">{(c.recent_inflow_sol ?? 0).toFixed(2)}</span> SOL</span>
-            <span>new buyers(1m) <span className="text-neutral-200">{c.new_buyers_recent ?? 0}</span></span>
-            <span>holders <span className="text-neutral-200">{c.unique_buyers_total ?? 0}</span></span>
-            <span title="Cumulative buy count from Pump.fun coin API">
+            <span className="inline-flex items-center gap-1">
+              inflow(5m) <span className="text-neutral-200">{(c.recent_inflow_sol ?? 0).toFixed(2)}</span> SOL
+              <HelpHint label="inflow(5m)">Net SOL flowing into the bonding curve over the configured inflow window. Strong actual demand — not just price wiggle.</HelpHint>
+            </span>
+            <span className="inline-flex items-center gap-1">
+              new buyers(1m) <span className="text-neutral-200">{c.new_buyers_recent ?? 0}</span>
+              <HelpHint label="new buyers(1m)">Distinct new wallets that bought in the last 60s. Filters fake pumps from a single wallet round-tripping.</HelpHint>
+            </span>
+            <span className="inline-flex items-center gap-1">
+              holders <span className="text-neutral-200">{c.unique_buyers_total ?? 0}</span>
+              <HelpHint label="holders">Total unique buyers seen on this token since the listener started tracking it.</HelpHint>
+            </span>
+            <span className="inline-flex items-center gap-1">
               buys <span className="text-neutral-200">{c.buy_count ?? 0}</span>
+              <HelpHint label="buys">Cumulative buy count from the Pump.fun coin API.</HelpHint>
             </span>
           </>
         ) : (
           <>
-            <span title="MC change over last 5 minutes (polled from Pump.fun API)">
+            <span className="inline-flex items-center gap-1">
               MC vel(5m){" "}
               <span className={`${(c.mc_velocity_5m_pct ?? 0) >= 0 ? "text-emerald-300" : "text-red-300"}`}>
                 {(c.mc_velocity_5m_pct ?? 0) >= 0 ? "+" : ""}{(c.mc_velocity_5m_pct ?? 0).toFixed(1)}%
               </span>
+              <HelpHint label="MC vel(5m)">% change in market cap over the last 5 minutes (polled from Pump.fun API). Primary Seasoned-band momentum signal.</HelpHint>
             </span>
-            <span title="Cumulative buy count from Pump.fun coin API">
+            <span className="inline-flex items-center gap-1">
               buys <span className="text-neutral-200">{c.buy_count ?? 0}</span>
+              <HelpHint label="buys">Cumulative buy count from the Pump.fun coin API.</HelpHint>
             </span>
           </>
         )}
         {c.usd_market_cap > 0 && (
-          <span>MC <span className="text-neutral-200">{fmtUsd(c.usd_market_cap)}</span></span>
+          <span className="inline-flex items-center gap-1">
+            MC <span className="text-neutral-200">{fmtUsd(c.usd_market_cap)}</span>
+            <HelpHint label="MC">Current USD market cap (Pump.fun API).</HelpHint>
+          </span>
         )}
         {c.last_trade_age_s != null && (
-          <span>last trade <span className="text-neutral-200">{fmtAge(c.last_trade_age_s)} ago</span></span>
+          <span className="inline-flex items-center gap-1">
+            last trade <span className="text-neutral-200">{fmtAge(c.last_trade_age_s)} ago</span>
+            <HelpHint label="last trade">How long since the most recent trade landed on this token. Stale tokens get pruned from the scanner.</HelpHint>
+          </span>
         )}
       </div>
     </li>

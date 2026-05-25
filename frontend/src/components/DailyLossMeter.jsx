@@ -2,6 +2,7 @@ import { ShieldAlert, RotateCcw } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import HelpHint from "./HelpHint";
 
 export default function DailyLossMeter({ status, onReset }) {
   const loss = status?.daily_loss_usd ?? 0;
@@ -37,6 +38,9 @@ export default function DailyLossMeter({ status, onReset }) {
       <div className="flex items-center justify-between">
         <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500 flex items-center gap-1.5">
           <ShieldAlert className="w-3 h-3" /> Daily Loss Meter
+          <HelpHint label="Daily Loss Meter">
+            Tracks LIVE PnL drawdown today and trips a kill switch once it crosses the configured threshold. Counter resets at UTC midnight or via the reset button.
+          </HelpHint>
         </span>
         <span className="text-[10px] font-mono text-neutral-500">{pct.toFixed(0)}%</span>
       </div>
@@ -44,8 +48,11 @@ export default function DailyLossMeter({ status, onReset }) {
         <div className="text-2xl font-mono font-semibold text-red-400" data-testid="daily-loss-value">
           -${loss.toFixed(2)}
         </div>
-        <div className="text-xs font-mono text-neutral-500">
+        <div className="text-xs font-mono text-neutral-500 inline-flex items-center gap-1">
           live loss vs <span className="text-neutral-300">${limit.toFixed(2)}</span> kill switch
+          <HelpHint label="kill switch">
+            If LIVE daily loss exceeds this $ figure, the bot auto-disables and stops opening new positions. You can adjust the threshold in Bot Control.
+          </HelpHint>
         </div>
       </div>
       <div className="h-2 bg-neutral-900 border border-neutral-800 overflow-hidden">
@@ -55,7 +62,12 @@ export default function DailyLossMeter({ status, onReset }) {
       <div className="grid grid-cols-2 gap-2 text-xs font-mono">
         <div className="border border-neutral-800 px-2 py-1 flex items-center justify-between gap-2" data-testid="pnl-live-cell">
           <div>
-            <div className="text-[9px] uppercase tracking-[0.15em] text-neutral-500">LIVE today</div>
+            <div className="text-[9px] uppercase tracking-[0.15em] text-neutral-500 inline-flex items-center gap-1">
+              LIVE today
+              <HelpHint label="LIVE today">
+                Realized PnL today from on-chain trades only. Updated when each trade closes (TP/SL/timeout/manual exit).
+              </HelpHint>
+            </div>
             <div className={pnlClass(livePnl)}>{pnlSign(livePnl)}${livePnl.toFixed(2)}</div>
           </div>
           <button
@@ -70,7 +82,12 @@ export default function DailyLossMeter({ status, onReset }) {
           </button>
         </div>
         <div className="border border-neutral-800 px-2 py-1" data-testid="pnl-paper-cell">
-          <div className="text-[9px] uppercase tracking-[0.15em] text-neutral-500">PAPER today</div>
+          <div className="text-[9px] uppercase tracking-[0.15em] text-neutral-500 inline-flex items-center gap-1">
+            PAPER today
+            <HelpHint label="PAPER today">
+              Simulated PnL today from signals that fired while LIVE was off. Useful for comparing strategy variants without risking SOL.
+            </HelpHint>
+          </div>
           <div className={pnlClass(paperPnl)}>{pnlSign(paperPnl)}${paperPnl.toFixed(2)}</div>
         </div>
       </div>

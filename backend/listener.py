@@ -159,7 +159,7 @@ class PumpFunListener:
         if value.get("err") is not None:
             return
 
-        has_create = any("Instruction: Create" in l for l in logs)
+        has_create = any("Instruction: Create" in log for log in logs)
 
         # Walk all Program data payloads; classify by discriminator
         for line in logs:

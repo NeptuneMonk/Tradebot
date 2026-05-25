@@ -39,7 +39,7 @@ MAX_TRADES_PER_PASS = 25
 
 
 class PnLReconciler:
-    def __init__(self, state: "BotState"):
+    def __init__(self, state):
         self.state = state
         self._task: asyncio.Task | None = None
 

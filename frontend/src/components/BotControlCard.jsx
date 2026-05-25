@@ -4,6 +4,7 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import SpeedModeSlider from "./SpeedModeSlider";
 import ConfigSyncPanel from "./ConfigSyncPanel";
+import HelpHint from "./HelpHint";
 
 export default function BotControlCard({ status, config, onUpdate, onStart, onStop }) {
   const [local, setLocal] = useState(null);
@@ -57,6 +58,9 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
             checked={local.live_trading}
             onCheckedChange={(v) => setLocal({ ...local, live_trading: v })}
           />
+          <HelpHint label="LIVE toggle" side="left">
+            <span className="block"><span className="text-red-300 font-semibold">LIVE</span> = sends real on-chain transactions with the local wallet's SOL. <span className="text-emerald-300 font-semibold">OFF</span> = paper-trade mode; signals fire and PnL is tracked but no funds are touched.</span>
+          </HelpHint>
         </div>
       </div>
 
@@ -141,45 +145,57 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
 
       <div className="grid grid-cols-2 gap-2 text-xs">
         <Field label="Min Trade ($)" testid="min-trade-input"
+               hint="Floor on USD size per buy. Trades smaller than this are skipped to avoid fee‑drag eating the entire EV on micro positions."
                value={local.min_trade_usd}
                onChange={(v) => setLocal({ ...local, min_trade_usd: parseFloat(v) || 0 })} step="0.1" />
         <Field label="Max Trade ($)" testid="max-trade-input"
+               hint="Hard cap on USD size per buy. The bot scales position by liquidity/score but never exceeds this."
                value={local.max_trade_usd}
                onChange={(v) => setLocal({ ...local, max_trade_usd: parseFloat(v) || 0 })} step="0.1" />
         {showAdvancedFees && (
           <Field label="Slippage (bps)" testid="slippage-input"
+                 hint="Entry slippage tolerance in basis points (100 = 1%). Speed Mode normally sets this; only override if you know why."
                  value={local.slippage_bps}
                  onChange={(v) => setLocal({ ...local, slippage_bps: parseInt(v, 10) || 0 })} step="50" />
         )}
         <Field label="Kill Switch ($)" testid="killswitch-input"
+               hint="If LIVE PnL drops by this much in a single day, the bot auto-disables. Manual reset required."
                value={local.daily_kill_switch_usd}
                onChange={(v) => setLocal({ ...local, daily_kill_switch_usd: parseFloat(v) || 0 })} step="1" />
         <Field label="TP (%)" testid="tp-input"
+               hint="Take-Profit target. When unrealized PnL hits +TP%, the bot exits (or sells the TP fraction below if partials are on)."
                value={local.take_profit_pct}
                onChange={(v) => setLocal({ ...local, take_profit_pct: parseFloat(v) || 0 })} step="1" />
         <Field label="SL (%)" testid="sl-input"
+               hint="Stop-Loss. When unrealized PnL drops to -SL%, the bot exits the full position with the configured exit slippage."
                value={local.stop_loss_pct}
                onChange={(v) => setLocal({ ...local, stop_loss_pct: parseFloat(v) || 0 })} step="1" />
         <Field label="Max Hold (s)" testid="hold-input"
+               hint="Hard time cap on a position. If neither TP nor SL fires within this window, the bot exits as 'timeout'."
                value={local.hold_max_seconds}
                onChange={(v) => setLocal({ ...local, hold_max_seconds: parseInt(v, 10) || 0 })} step="1" />
         {showAdvancedFees && (
           <Field label="Priority µLamp" testid="prio-input"
+                 hint="Compute-unit price in micro-lamports. Higher = better landing odds, higher fee. Speed Mode handles this; manual override only."
                  value={local.priority_fee_microlamports}
                  onChange={(v) => setLocal({ ...local, priority_fee_microlamports: parseInt(v, 10) || 0 })} step="100000" />
         )}
         <Field label="Trailing Stop (%)" testid="trailing-input"
+               hint="Once price moves favorably, trail by this %. Locks in gains if the move reverses before TP. Set 0 to disable."
                value={local.trailing_stop_pct}
                onChange={(v) => setLocal({ ...local, trailing_stop_pct: parseFloat(v) || 0 })} step="1" />
         {showAdvancedFees && (
           <Field label="Exit Slip (bps)" testid="exit-slip-input"
+                 hint="Slippage tolerance for sells. Higher = better landing in fast dumps; lower = preserves more value on the way out."
                  value={local.exit_slippage_bps}
                  onChange={(v) => setLocal({ ...local, exit_slippage_bps: parseInt(v, 10) || 0 })} step="50" />
         )}
         <Field label="TP Sell Frac (%)" testid="partial-tp-input"
+               hint="When TP hits, sell only this % of the position. Set 100 to disable partial-TP. The remainder rides with a tightened trailing stop ('runner')."
                value={local.partial_tp_pct}
                onChange={(v) => setLocal({ ...local, partial_tp_pct: parseFloat(v) || 0 })} step="5" />
         <Field label="Runner Trail (%)" testid="partial-trail-input"
+               hint="Tighter trailing stop applied to the leftover 'runner' position after a partial TP fires. Locks in the rest of the move."
                value={local.partial_tp_trail_tighten_pct}
                onChange={(v) => setLocal({ ...local, partial_tp_trail_tighten_pct: parseFloat(v) || 0 })} step="1" />
       </div>
@@ -189,6 +205,7 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
         <div className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 mb-2">Portfolio</div>
         <div className="grid grid-cols-2 gap-2 text-xs">
           <Field label="Max Positions" testid="max-positions-input"
+                 hint="Maximum concurrent open positions. The bot won't enter a new buy while at this limit."
                  value={local.max_concurrent_positions}
                  onChange={(v) => setLocal({ ...local, max_concurrent_positions: parseInt(v, 10) || 0 })} step="1" />
         </div>
@@ -210,27 +227,35 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
         </div>
         <div className="grid grid-cols-2 gap-2 text-xs">
           <Field label="Window (h)" testid="scanner-window-input"
+                 hint="Upper bound on token age for the Seasoned band. Tokens older than this fall off the scanner entirely."
                  value={local.scanner_window_hours}
                  onChange={(v) => setLocal({ ...local, scanner_window_hours: parseInt(v, 10) || 0 })} step="1" />
           <Field label="Min Age (min)" testid="scanner-min-age-input"
+                 hint="Boundary between New and Seasoned bands. Below this = New (live mempool signals). Above = Seasoned (Pump.fun API signals)."
                  value={local.scanner_min_age_minutes}
                  onChange={(v) => setLocal({ ...local, scanner_min_age_minutes: parseInt(v, 10) || 0 })} step="15" />
           <Field label="Scan every (s)" testid="scanner-interval-input"
+                 hint="How often the scanner loop re-evaluates all tracked tokens. Lower = faster reactions, more RPC pressure."
                  value={local.scanner_interval_s}
                  onChange={(v) => setLocal({ ...local, scanner_interval_s: parseInt(v, 10) || 0 })} step="5" />
           <Field label="Inflow Win (s)" testid="scanner-inflow-window-input"
+                 hint="Rolling window used to sum SOL inflow into the bonding curve. Compared against 'Min Inflow' gate."
                  value={local.scanner_recent_inflow_window_s}
                  onChange={(v) => setLocal({ ...local, scanner_recent_inflow_window_s: parseInt(v, 10) || 0 })} step="30" />
           <Field label="Max Idle (min)" testid="scanner-max-idle-input"
+                 hint="Drop a discovered token from the scanner if no trades land within this idle window. Saves cycles on dead tokens."
                  value={local.scanner_discovery_max_idle_minutes}
                  onChange={(v) => setLocal({ ...local, scanner_discovery_max_idle_minutes: parseInt(v, 10) || 0 })} step="1" />
           <Field label="Entry Vel Win (s)" testid="scanner-entry-vel-window-input"
+                 hint="Window used to compute the just-before-entry price velocity. Filters out stale momentum that's already faded."
                  value={local.scanner_entry_velocity_window_s}
                  onChange={(v) => setLocal({ ...local, scanner_entry_velocity_window_s: parseInt(v, 10) || 0 })} step="5" />
           <Field label="Min Entry Vel (%)" testid="scanner-entry-vel-min-input"
+                 hint="Minimum % price move within the entry-velocity window for a buy to fire. Keeps the bot on the rising edge."
                  value={local.scanner_entry_velocity_min_pct}
                  onChange={(v) => setLocal({ ...local, scanner_entry_velocity_min_pct: parseFloat(v) || 0 })} step="0.5" />
           <Field label="SL Cooldown (min)" testid="sl-cooldown-input"
+                 hint="After a stop-loss exit on a token, ignore that mint for this many minutes. Prevents re-buying into a continuing dump."
                  value={local.sl_cooldown_minutes}
                  onChange={(v) => setLocal({ ...local, sl_cooldown_minutes: parseFloat(v) || 0 })} step="0.5" />
         </div>
@@ -246,6 +271,9 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                 onChange={(e) => setLocal({ ...local, gate_distribution_vacuum: e.target.checked })}
               />
               Distribution vacuum filter
+              <HelpHint label="Distribution vacuum filter">
+                Blocks entries where every holder appeared inside the same recent window — a classic pattern for a single insider seeding wallets before the dump.
+              </HelpHint>
             </span>
             <span className="text-neutral-600 normal-case tracking-normal">
               reject if all holders appeared in last window
@@ -253,6 +281,7 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
           </label>
           <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
             <Field label="Min Holders" testid="gate-distribution-min-input"
+                   hint="Token must have at least this many unique holders before the vacuum check applies."
                    value={local.gate_distribution_min_holders}
                    onChange={(v) => setLocal({ ...local, gate_distribution_min_holders: parseInt(v, 10) || 0 })} step="1" />
           </div>
@@ -269,6 +298,9 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                 onChange={(e) => setLocal({ ...local, gate_socials_required: e.target.checked })}
               />
               Socials required for entry
+              <HelpHint label="Socials gate">
+                Requires the token to have at least one social link (twitter/telegram/website) AND a Pump.fun reply count ≥ the threshold below. Filters out totally faceless launches.
+              </HelpHint>
             </span>
             <span className="text-neutral-600 normal-case tracking-normal">
               twitter / telegram / website + reply_count
@@ -276,6 +308,7 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
           </label>
           <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
             <Field label="Min Reply Count" testid="gate-min-replies-input"
+                   hint="Pump.fun comment-thread reply count required. Pure spam tokens usually have 0–2 replies."
                    value={local.gate_min_reply_count}
                    onChange={(v) => setLocal({ ...local, gate_min_reply_count: parseInt(v, 10) || 0 })} step="5" />
           </div>
@@ -291,6 +324,7 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
               <div className="px-2 py-1.5 text-cyan-300">Seasoned (≥ seasoning)</div>
             </div>
             <GateRow label="Min Growth (%)"
+                     hint="Minimum price growth (from first-seen price) to pass the band. Higher = momentum has to be more obvious before entry."
                      newTestid="scanner-growth-new-input"
                      newValue={local.scanner_min_growth_pct_new}
                      onNewChange={(v) => setLocal({ ...local, scanner_min_growth_pct_new: parseFloat(v) || 0 })}
@@ -299,6 +333,7 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                      onSeasonedChange={(v) => setLocal({ ...local, scanner_min_growth_pct: parseFloat(v) || 0 })}
                      step="5" />
             <GateRow label="Min Liquidity (SOL)"
+                     hint="Minimum SOL liquidity on the bonding curve / pool. Filters out micro-cap noise where your own buy moves the price too much."
                      newTestid="min-liq-new-input"
                      newValue={local.min_curve_liquidity_sol_new}
                      onNewChange={(v) => setLocal({ ...local, min_curve_liquidity_sol_new: parseFloat(v) || 0 })}
@@ -308,27 +343,32 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                      step="0.5" />
             {/* New-only: live mempool signals from Helius */}
             <GateRow label="Min Inflow (SOL/win)" newOnly
+                     hint="Total SOL flowing into the bonding curve over the 'Inflow Win'. Real cash demand — not just price spikes."
                      newTestid="scanner-inflow-new-input"
                      newValue={local.scanner_min_recent_inflow_sol_new}
                      onNewChange={(v) => setLocal({ ...local, scanner_min_recent_inflow_sol_new: parseFloat(v) || 0 })}
                      step="0.5" />
             <GateRow label="Min new buyers (1m)" newOnly
+                     hint="Distinct new wallets that bought in the last 60s. Filters fake pumps driven by one wallet round-tripping."
                      newTestid="scanner-newbuyers-new-input"
                      newValue={local.scanner_min_new_buyers_new}
                      onNewChange={(v) => setLocal({ ...local, scanner_min_new_buyers_new: parseInt(v, 10) || 0 })}
                      step="1" />
             <GateRow label="Min Total Holders" newOnly
+                     hint="Minimum unique buyer count on the token. Low holder counts = high rug / one-wallet risk."
                      newTestid="min-buyers-new-input"
                      newValue={local.min_buyers_for_entry_new}
                      onNewChange={(v) => setLocal({ ...local, min_buyers_for_entry_new: parseInt(v, 10) || 0 })}
                      step="1" />
             {/* Seasoned-only: Pump.fun API polled signals */}
             <GateRow label="Min MC ($)" seasonedOnly
+                     hint="Minimum USD market cap (from Pump.fun API). Bigger = lower rug risk, lower upside ceiling."
                      seasonedTestid="scanner-mc-seasoned-input"
                      seasonedValue={local.scanner_min_mc_usd_seasoned}
                      onSeasonedChange={(v) => setLocal({ ...local, scanner_min_mc_usd_seasoned: parseFloat(v) || 0 })}
                      step="1000" />
             <GateRow label="Min MC vel (5m %)" seasonedOnly last
+                     hint="Minimum % market-cap velocity over the last 5 minutes. Catches Seasoned tokens that are still actively pumping."
                      seasonedTestid="scanner-mcvel-seasoned-input"
                      seasonedValue={local.scanner_min_mc_velocity_5m_pct_seasoned}
                      onSeasonedChange={(v) => setLocal({ ...local, scanner_min_mc_velocity_5m_pct_seasoned: parseFloat(v) || 0 })}
@@ -353,15 +393,19 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
         </div>
         <div className="grid grid-cols-2 gap-2 text-xs">
           <Field label="Max attempts" testid="reentry-max-input"
+                 hint="Maximum number of re-entry buys allowed on a single token after the original exit."
                  value={local.reentry_max_attempts}
                  onChange={(v) => setLocal({ ...local, reentry_max_attempts: parseInt(v, 10) || 0 })} step="1" />
           <Field label="Pullback (%)" testid="reentry-pullback-input"
+                 hint="Required pullback (from post-exit local peak) before the bot re-enters. Bigger = wait for deeper dip."
                  value={local.reentry_pullback_pct}
                  onChange={(v) => setLocal({ ...local, reentry_pullback_pct: parseFloat(v) || 0 })} step="1" />
           <Field label="Window (s)" testid="reentry-window-input"
+                 hint="Time window after exit during which re-entry is considered. After this, the token falls off the watchlist."
                  value={local.reentry_window_seconds}
                  onChange={(v) => setLocal({ ...local, reentry_window_seconds: parseInt(v, 10) || 0 })} step="30" />
           <Field label="Size ×" testid="reentry-size-input"
+                 hint="Position size multiplier for re-entries (e.g., 0.5 = half size). Risk control on a token you already exited once."
                  value={local.reentry_size_multiplier}
                  onChange={(v) => setLocal({ ...local, reentry_size_multiplier: parseFloat(v) || 0 })} step="0.1" />
         </div>
@@ -398,10 +442,13 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
   );
 }
 
-function Field({ label, value, onChange, step, testid }) {
+function Field({ label, value, onChange, step, testid, hint }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-[10px] uppercase tracking-[0.15em] text-neutral-500">{label}</span>
+      <span className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 inline-flex items-center gap-1">
+        {label}
+        {hint && <HelpHint label={`help: ${label}`}>{hint}</HelpHint>}
+      </span>
       <input
         data-testid={testid}
         type="number"
@@ -414,12 +461,15 @@ function Field({ label, value, onChange, step, testid }) {
   );
 }
 
-function GateRow({ label, newTestid, newValue, onNewChange, seasonedTestid, seasonedValue, onSeasonedChange, step, last, newOnly, seasonedOnly }) {
+function GateRow({ label, hint, newTestid, newValue, onNewChange, seasonedTestid, seasonedValue, onSeasonedChange, step, last, newOnly, seasonedOnly }) {
   const cell = "px-2 py-1 border-l border-neutral-800";
   const dim = "px-2 py-1 border-l border-neutral-800 text-[10px] font-mono text-neutral-700 italic text-center self-center";
   return (
     <div className={`grid grid-cols-[1.4fr_1fr_1fr] ${last ? "" : "border-b border-neutral-800"}`}>
-      <div className="px-2 py-1 text-[10px] uppercase tracking-[0.1em] text-neutral-400 font-mono self-center">{label}</div>
+      <div className="px-2 py-1 text-[10px] uppercase tracking-[0.1em] text-neutral-400 font-mono self-center inline-flex items-center gap-1">
+        {label}
+        {hint && <HelpHint label={`help: ${label}`}>{hint}</HelpHint>}
+      </div>
       {seasonedOnly ? (
         <div className={dim}>n/a</div>
       ) : (

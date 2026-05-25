@@ -24,7 +24,7 @@ HELIUS_RPC = os.environ.get("HELIUS_RPC_URL", "")
 _API_KEY = ""
 if "api-key=" in HELIUS_RPC:
     _API_KEY = HELIUS_RPC.split("api-key=", 1)[1].split("&")[0]
-HELIUS_ENHANCED = f"https://api.helius.xyz/v0/addresses/{{addr}}/transactions"
+HELIUS_ENHANCED = "https://api.helius.xyz/v0/addresses/{addr}/transactions"
 
 PUMP_PROGRAM_ID = os.environ.get("PUMP_PROGRAM_ID", "")
 

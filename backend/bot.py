@@ -581,11 +581,14 @@ class BotState:
                 to_remove: list[str] = []
                 for mint, w in list(self.reentry_watch.items()):
                     if not self.config.reentry_enabled:
-                        to_remove.append(mint); continue
+                        to_remove.append(mint)
+                        continue
                     if now - w["exit_time"] > w["window_s"]:
-                        to_remove.append(mint); continue
+                        to_remove.append(mint)
+                        continue
                     if w["attempts"] >= w["max_attempts"]:
-                        to_remove.append(mint); continue
+                        to_remove.append(mint)
+                        continue
                     if mint in self.active_trades:
                         continue  # already re-entered; wait for that to close
                     if not self.config.enabled or self.kill_switch_tripped:
@@ -595,7 +598,8 @@ class BotState:
 
                     state = await pumpfun.fetch_bonding_curve_state(mint)
                     if not state or state["complete"]:
-                        to_remove.append(mint); continue
+                        to_remove.append(mint)
+                        continue
                     cur_price = state["virtual_sol_reserves"] / state["virtual_token_reserves"] / LAMPORTS_PER_SOL
                     # Track peak after exit so we measure pullback from local high
                     if cur_price > w["peak_price_after_exit"]:

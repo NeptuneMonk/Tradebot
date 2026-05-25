@@ -2,6 +2,21 @@ import React, { useEffect, useState, useCallback } from "react";
 import { Loader2, Sparkles, X, CheckCircle2, RefreshCw, Stethoscope } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import HelpHint from "./HelpHint";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
+
+const CATEGORY_LABEL = {
+  sizing: "Position size — how much capital is committed per buy",
+  sl: "Stop-loss tuning — exits when PnL goes against you",
+  tp: "Take-profit tuning — exits when PnL hits the target",
+  partial: "Partial-TP tuning — selling a fraction at TP, riding the rest",
+  hold: "Max-hold tuning — time cap on a position",
+  gate: "Entry gates — what tokens are allowed through to a buy",
+  scanner: "Scanner timing / bands — what tokens get tracked",
+  classifier: "Classifier rules — abort/exit-early on real-time signals",
+  timing: "Re-entry & cooldown — handling exits and re-buys",
+  needs_more_data: "Doctor needs more trades before it can suggest changes",
+};
 
 const CATEGORY_TINT = {
   sizing: "border-amber-700/60 text-amber-300",
@@ -90,6 +105,9 @@ export default function StrategyDoctorPanel({ onApplied }) {
         <div className="flex items-center gap-2">
           <Stethoscope className="w-4 h-4 text-emerald-300" />
           <h2 className="text-sm uppercase tracking-widest font-mono text-emerald-300">Strategy Doctor</h2>
+          <HelpHint label="Strategy Doctor">
+            A background analyzer that reviews your last 24–72h of trades every 30 min and proposes tuning changes (TP, SL, slippage, gates, max hold, etc.). Each suggestion is one click to apply. Runs even when you're logged out.
+          </HelpHint>
           {items.length > 0 && (
             <span className="text-[10px] font-mono px-1.5 py-0.5 border border-neutral-800 bg-neutral-900 text-neutral-400">
               {items.length} pending
@@ -155,11 +173,28 @@ function SuggestionCard({ s, busy, onApply, onDismiss }) {
       className={`border ${tint} bg-neutral-900/40 rounded-sm p-2.5`}
     >
       <div className="flex items-start gap-2">
-        <div className={`w-1.5 h-1.5 rounded-full mt-1.5 ${cdot}`} title={`${s.confidence} confidence`} />
+        <Tooltip delayDuration={120}>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label={`${s.confidence} confidence`}
+              className={`w-1.5 h-1.5 rounded-full mt-1.5 ${cdot} cursor-help`}
+            />
+          </TooltipTrigger>
+          <TooltipContent
+            side="right"
+            className="max-w-[260px] bg-neutral-900 border border-neutral-700 text-neutral-200 font-mono text-[11px] leading-relaxed px-2.5 py-1.5"
+          >
+            <span className="font-semibold uppercase">{s.confidence}</span> confidence — derived from sample size, effect strength, and recency of the underlying trades.
+          </TooltipContent>
+        </Tooltip>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
-            <span className="text-[9px] uppercase tracking-wider font-mono opacity-80">
+            <span className="text-[9px] uppercase tracking-wider font-mono opacity-80 inline-flex items-center gap-1">
               {s.category}
+              <HelpHint label={`category: ${s.category}`}>
+                {CATEGORY_LABEL[s.category] || "Doctor suggestion category."}
+              </HelpHint>
             </span>
             {isInfo && (
               <span className="text-[9px] uppercase tracking-wider font-mono text-neutral-600 border border-neutral-800 px-1">
@@ -172,8 +207,13 @@ function SuggestionCard({ s, busy, onApply, onDismiss }) {
             {s.rationale}
           </div>
           {hasActions && (
-            <div className="mt-2 text-[10px] font-mono text-neutral-500">
-              <span className="text-neutral-400">applies:</span>{" "}
+            <div className="mt-2 text-[10px] font-mono text-neutral-500 inline-flex items-center gap-1 flex-wrap">
+              <span className="text-neutral-400 inline-flex items-center gap-1">
+                applies:
+                <HelpHint label="applies">
+                  Exact config fields that "Apply" will overwrite. You can always revert by editing the value in Bot Control and saving.
+                </HelpHint>
+              </span>{" "}
               {Object.entries(s.actions).map(([k, v]) => (
                 <span key={k} className="inline-block mr-2 text-neutral-300">
                   {k}={JSON.stringify(v)}
