@@ -385,6 +385,15 @@ function GreylistRow({ row, expanded, onToggle }) {
               {PATTERN_META[row.pattern].label}
             </span>
           )}
+          {row.signatures?.dominant_accel && row.signatures?.dominant_flow && (row.signatures?.signature_repeatability ?? 0) >= 50 && (
+            <span
+              className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-indigo-800/70 text-indigo-300 bg-indigo-950/30"
+              title={`Behavior fingerprint — ${(row.signatures.signature_repeatability || 0).toFixed(0)}% of launches share this profile`}
+              data-testid={`greylist-signature-${row.creator}`}
+            >
+              {row.signatures.dominant_accel}·{row.signatures.dominant_flow}
+            </span>
+          )}
           <span className="text-sm font-mono font-semibold text-neutral-100 tabular-nums">
             {row.effective_score.toFixed(0)}
           </span>

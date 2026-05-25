@@ -162,8 +162,15 @@ def classify_creator(
     failed_launches: list[dict] | None = None,
     trades: list[dict] | None = None,
     tp_buffer: float = 2.0,
+    all_launches: list[dict] | None = None,
 ) -> dict:
     """Mechanically classify a creator into one of the 6 buckets.
+
+    `all_launches` (optional) supplies per-launch behavioral signatures
+    (accel_class / flow_class / rug_speed_class) for the repeatability
+    bonus per Bing reference. When provided, the classifier adds an
+    `signatures` summary to the result with dominant accel/flow + a
+    repeatability % that the scorer uses for the +15 Bing bonus.
 
     `tp_buffer` is the % subtracted from the observed median rug to compute
     the LOWER bound of `suggested_exit_pct` (which Phase 2.7 uses as the TP
@@ -179,9 +186,22 @@ def classify_creator(
       6. Median 12-18 + σ<6 + n≥4                    → "predictable_dump_tradeable"
       7. Fallback                                     → "unknown"
     """
+    # === Original classify_creator return value ===
+    # We don't inject signatures here — call sites that need them use the
+    # wrapper at the bottom of this module (`classify_with_signatures`).
     creator_doc = creator_doc or {}
     failed_launches = failed_launches or []
     trades = trades or []
+
+    # Compute behavioral signature aggregate (Bing reference: acceleration
+    # pattern repeatability gives +15 to creators whose launches share a
+    # dominant accel + flow signature). Uses `all_launches` when provided
+    # (includes both failed AND graduated mints — the signature is about
+    # creator behavior across ALL launches), falling back to failed_launches.
+    from launch_signatures import aggregate_signatures
+    sig_source = all_launches if all_launches is not None else failed_launches
+    signatures = aggregate_signatures(sig_source) if sig_source else {}
+    _ = signatures  # consumed by post-processor below; kept here for context
 
     tokens_created = int(creator_doc.get("tokens_created") or 0)
     tokens_failed = int(creator_doc.get("tokens_failed") or 0)
@@ -437,3 +457,49 @@ def classify_creator(
         "mc_stats": mc_stats,
         "blacklisted": not has_fail_history,
     }
+
+
+
+def classify_with_signatures(
+    creator_doc: dict | None,
+    failed_launches: list[dict] | None = None,
+    trades: list[dict] | None = None,
+    tp_buffer: float = 2.0,
+    all_launches: list[dict] | None = None,
+) -> dict:
+    """Wrapper around `classify_creator` that ALSO returns the per-creator
+    behavioral signatures (Bing reference inputs) — accel/flow/rug_speed
+    distributions + repeatability %. Used by `update_creator_score` so the
+    UI can surface "creator launches consistently arrive with high SOL
+    inflow and broad participation — repeatability 87%".
+
+    The repeatability % feeds the Bing-formula +15 bonus (proportional to
+    consistency) on top of the base pattern score.
+    """
+    from launch_signatures import aggregate_signatures
+    sig_source = all_launches if all_launches is not None else (failed_launches or [])
+    signatures = aggregate_signatures(sig_source) if sig_source else {}
+
+    result = classify_creator(creator_doc, failed_launches, trades,
+                              tp_buffer=tp_buffer, all_launches=all_launches)
+    result["signatures"] = signatures
+
+    # Add the dominant signature to the evidence trail when we have enough
+    # data — surfaces the "behavioral fingerprint" alongside the rug pattern.
+    if signatures.get("dominant_accel") and signatures.get("dominant_flow"):
+        rep = signatures.get("signature_repeatability", 0.0)
+        if rep >= 60:
+            evidence_msg = (
+                f"behavior: {signatures['dominant_accel']} accel / "
+                f"{signatures['dominant_flow']} flow "
+                f"(repeatability {rep:.0f}%)"
+            )
+            result.setdefault("evidence", []).append(evidence_msg)
+        # Boost confidence on already-classified patterns when signatures
+        # are repeatable — directly maps to Bing's +15 acceleration bonus
+        # (scaled down to 0-15 by repeatability %).
+        if result.get("pattern") in GOOD_PATTERNS and rep >= 60:
+            sig_bonus = (rep - 60) / 40 * 15  # 60%=0, 100%=15
+            result["confidence"] = min(100.0, (result.get("confidence", 0) + sig_bonus))
+            result["signature_bonus"] = round(sig_bonus, 1)
+    return result

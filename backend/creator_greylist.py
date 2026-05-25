@@ -341,8 +341,22 @@ async def update_creator_score(db, creator: str,
     # `blacklisted=True` → composite forced to 0 → creator hidden from UI.
     # Good patterns (slow_rug / predictable_dump / fake_hype) stay scored
     # and get a pattern badge in the UI.
-    from creator_pattern import classify_creator
-    pattern = classify_creator(creator_doc, failed_meaningful, trades, tp_buffer=tp_buffer)
+    # Pull ALL launches (graduated + failed + dormant) for behavioral
+    # signature aggregation — the Bing-style accel/flow signatures aren't
+    # outcome-dependent; they describe how a creator's launches BEHAVE in
+    # their first minutes regardless of how they ended.
+    all_launches = await db.launches.find(
+        {"creator": creator},
+        {"_id": 0, "sol_inflow": 1, "buy_count": 1, "unique_buyers": 1,
+         "outcome": 1, "outcome_at": 1, "detected_at": 1,
+         "accel_class": 1, "flow_class": 1, "rug_speed_class": 1,
+         "rug_seconds_from_launch": 1},
+    ).to_list(300)
+    from creator_pattern import classify_with_signatures
+    pattern = classify_with_signatures(
+        creator_doc, failed_meaningful, trades,
+        tp_buffer=tp_buffer, all_launches=all_launches,
+    )
     # Trust the classifier's per-result `blacklisted` flag — it knows whether
     # an "unknown" pattern is a hard reject vs a watchable candidate. Don't
     # re-blacklist based on the pattern name alone.
@@ -381,6 +395,8 @@ async def update_creator_score(db, creator: str,
             "greylist_pattern_evidence": pattern.get("evidence", []),
             "greylist_pattern_suggested_entry": pattern.get("suggested_entry_pct"),
             "greylist_pattern_suggested_exit": pattern.get("suggested_exit_pct"),
+            "greylist_signatures": pattern.get("signatures") or {},
+            "greylist_signature_bonus": pattern.get("signature_bonus", 0),
             "greylist_band_min": min_fails,
             "greylist_band_max": max_fails,
             "greylist_recent_failed_mints": recent_failed,
@@ -421,6 +437,7 @@ async def top_greylisted(db, limit: int = 20, min_score: float = 30.0) -> list[d
          "greylist_pattern_confidence": 1, "greylist_pattern_evidence": 1,
          "greylist_pattern_suggested_entry": 1,
          "greylist_pattern_suggested_exit": 1,
+         "greylist_signatures": 1, "greylist_signature_bonus": 1,
          "expected_rug_window_pct": 1, "expected_peak_mc_usd": 1,
          "greylist_score_updated_at": 1, "tokens_created": 1,
          "tokens_graduated": 1, "tokens_failed": 1, "last_seen": 1},
@@ -448,6 +465,8 @@ async def top_greylisted(db, limit: int = 20, min_score: float = 30.0) -> list[d
             "pattern_evidence": d.get("greylist_pattern_evidence") or [],
             "pattern_suggested_entry": d.get("greylist_pattern_suggested_entry"),
             "pattern_suggested_exit": d.get("greylist_pattern_suggested_exit"),
+            "signatures": d.get("greylist_signatures") or {},
+            "signature_bonus": d.get("greylist_signature_bonus", 0),
             "recommended_strategy": recommended_strategy(eff),
             "last_seen": d.get("last_seen"),
         })
@@ -591,6 +610,8 @@ async def get_creator_profile(db, creator: str) -> dict | None:
         "pattern_evidence": d.get("greylist_pattern_evidence") or [],
         "pattern_suggested_entry": d.get("greylist_pattern_suggested_entry"),
         "pattern_suggested_exit": d.get("greylist_pattern_suggested_exit"),
+        "signatures": d.get("greylist_signatures") or {},
+        "signature_bonus": d.get("greylist_signature_bonus", 0),
         "blacklisted": bool(d.get("greylist_blacklisted")),
         "out_of_band": bool(d.get("greylist_out_of_band")),
     }
