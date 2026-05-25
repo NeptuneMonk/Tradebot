@@ -146,6 +146,12 @@ class PumpFunListener:
         self.connected = False
 
     async def _handle_message(self, raw):
+        # Track Helius credit consumption per inbound bytes
+        try:
+            from helius_budget import record_ws_message
+            record_ws_message(len(raw) if isinstance(raw, (str, bytes)) else 0)
+        except Exception:
+            pass
         try:
             msg = json.loads(raw)
         except Exception:

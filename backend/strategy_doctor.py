@@ -62,10 +62,17 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _hash_signature(category: str, action_keys: list[str]) -> str:
-    """Stable signature for a (category, action-set) combo. Used to detect
-    "same suggestion as last cycle" so we don't duplicate-spam."""
+def _hash_signature(category: str, action_keys: list[str], action_values: dict | None = None) -> str:
+    """Stable signature for a (category, action-set) combo. When action_values
+    is supplied, includes the proposed VALUES so the doctor doesn't re-suggest
+    a fix that's already in force (e.g. "set TP=8" when TP is already 8 — the
+    rule keeps detecting a frequent-TP pattern from old trades and re-firing).
+    Backward-compatible: older code paths that pass only keys get a value-less
+    signature."""
     raw = f"{category}|{','.join(sorted(action_keys))}"
+    if action_values:
+        vals = ",".join(f"{k}={action_values[k]}" for k in sorted(action_values))
+        raw = f"{raw}|{vals}"
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 
@@ -115,7 +122,13 @@ class StrategyDoctor:
 
         existing_pending = await self._existing_pending_signatures()
         existing_dismissed = await self._existing_recently_dismissed_signatures()
-        skip = existing_pending | existing_dismissed
+        # NEW: also dedup against recently-applied suggestions whose actions
+        # are still in force in bot_config. Without this, a rule that detects
+        # "frequent TP hits" keeps re-suggesting `take_profit_pct=8` every
+        # cycle for the next 24h even after you applied it, because the OLD
+        # trades that triggered the rule are still in the lookback window.
+        existing_applied = await self._existing_applied_active_signatures(cfg_doc)
+        skip = existing_pending | existing_dismissed | existing_applied
 
         suggestions: list[dict] = []
 
@@ -157,7 +170,13 @@ class StrategyDoctor:
         # Deduplicate against pending + dismissed signatures
         fresh = []
         for s in suggestions:
-            sig = _hash_signature(s["category"], list(s.get("actions") or {}.keys()))
+            # Value-aware signature so "set X=N" doesn't dedup against
+            # "set X=M" — different proposals deserve separate evaluation.
+            sig = _hash_signature(
+                s["category"],
+                list((s.get("actions") or {}).keys()),
+                s.get("actions") or {},
+            )
             s["signature"] = sig
             if sig in skip:
                 continue

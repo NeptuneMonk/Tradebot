@@ -3,6 +3,7 @@ import { Loader2, Sparkles, X, CheckCircle2, RefreshCw, Stethoscope } from "luci
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import HelpHint from "./HelpHint";
+import DoctorLivePanels from "./DoctorLivePanels";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
 const CATEGORY_LABEL = {
@@ -157,6 +158,9 @@ export default function StrategyDoctorPanel({ onApplied }) {
         <span>Doctor runs autonomously — keeps working when you're logged out.</span>
         {lastRun && <span>last poll: {lastRun.toLocaleTimeString()}</span>}
       </div>
+
+      {/* Doctor Live: trailing-stop circuit breaker, helius budget, applied history */}
+      <DoctorLivePanels />
     </div>
   );
 }

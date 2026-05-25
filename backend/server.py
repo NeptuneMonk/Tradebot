@@ -52,6 +52,10 @@ async def lifespan(app: FastAPI):
     listener.start()
     logger.info(f"Wallet address: {wallet.get_pubkey_str()}")
     broadcaster = asyncio.create_task(_status_broadcaster())
+    # Helius budget tracker — attach DB + hydrate persisted counters
+    from helius_budget import attach_db as hb_attach, hydrate_from_mongo as hb_hydrate
+    hb_attach(db)
+    await hb_hydrate()
     # Strategy Doctor — runs continuously, independent of any user session.
     # Persists suggestions to Mongo so the user can wake up to a set of
     # auto-generated, pre-validated config tweaks.
@@ -59,7 +63,31 @@ async def lifespan(app: FastAPI):
     doctor = StrategyDoctor(db=db, hub=hub)
     set_doctor(doctor)
     await doctor.start()
+    # Live Doctor — real-time archetype scorer + trailing-stop circuit
+    # breaker. Same lifecycle as Strategy Doctor; persists snapshots to
+    # `live_doctor_state` and trail state to `doctor_trail_state`.
+    from live_doctor import LiveDoctor
+    live_doc = LiveDoctor(db=db, bot_state=bot_state, hub=hub)
+    app.state.live_doctor = live_doc
+    await live_doc.start()
+    # Wallet-graph hunter — background 1-2 hop traversal of greylisted-but-
+    # failing creators. Builds DB only; doesn't influence live trading.
+    # On/off via `wallet_graph_enabled`; daily cap protects Helius budget.
+    from wallet_graph import WalletGraphHunter, set_hunter
+    hunter = WalletGraphHunter(db=db)
+    set_hunter(hunter)
+    hunter.start()
+    # Failure sweep — every 6h, classify dormant launches as fizzled vs
+    # instant-rug vs chaotic. Feeds the peak-MC component of greylist
+    # scoring without burning Helius credits.
+    from failure_sweep import FailureSweeper
+    sweeper = FailureSweeper(db=db)
+    app.state.failure_sweeper = sweeper
+    sweeper.start()
     yield
+    sweeper.stop()
+    hunter.stop()
+    await live_doc.stop()
     await doctor.stop()
     broadcaster.cancel()
     listener.stop()
@@ -1615,23 +1643,94 @@ async def doctor_run_now():
 @api.post("/doctor/suggestions/{sid}/apply")
 async def doctor_apply_suggestion(sid: str):
     """Apply the suggestion's `actions` dict to bot_config. Idempotent —
-    re-applying a suggestion is a no-op but still records the timestamp."""
+    re-applying a suggestion is a no-op but still records the timestamp.
+
+    Persists a `before` snapshot of every changed key so the Applied History
+    UI can show what actually changed and let the user revert."""
     s = await db.strategy_suggestions.find_one({"id": sid}, {"_id": 0})
     if not s:
         raise HTTPException(404, "suggestion not found")
     actions = s.get("actions") or {}
+    before = {}
     if actions:
+        cfg_before = await db.bot_config.find_one({}, {"_id": 0}) or {}
+        before = {k: cfg_before.get(k) for k in actions.keys()}
         await db.bot_config.update_one({}, {"$set": actions})
         await bot_state.load()  # reload config into the running bot
     await db.strategy_suggestions.update_one(
         {"id": sid},
-        {"$set": {"status": "applied", "applied_at": datetime.now(timezone.utc).isoformat()}},
+        {"$set": {
+            "status": "applied",
+            "applied_at": datetime.now(timezone.utc).isoformat(),
+            "applied_before": before,  # snapshot for audit / revert
+        }},
     )
     try:
-        await hub.broadcast("doctor_applied", {"id": sid, "actions": actions})
+        await hub.broadcast("doctor_applied", {"id": sid, "actions": actions, "before": before})
     except Exception:
         pass
-    return {"ok": True, "applied": actions}
+    return {"ok": True, "applied": actions, "before": before}
+
+
+@api.get("/doctor/applied-history")
+async def doctor_applied_history(limit: int = 25):
+    """Audit trail: every Doctor suggestion ever applied, newest first.
+    Shows the exact before/after pair so the user can see what actually
+    changed (vs just the proposed actions on the suggestion card)."""
+    cur = db.strategy_suggestions.find(
+        {"status": "applied"}, {"_id": 0},
+    ).sort("applied_at", -1).limit(max(1, min(200, int(limit))))
+    rows = await cur.to_list(200)
+    out = []
+    for r in rows:
+        out.append({
+            "id": r.get("id"),
+            "title": r.get("title"),
+            "category": r.get("category"),
+            "applied_at": r.get("applied_at"),
+            "actions": r.get("actions") or {},
+            "before": r.get("applied_before") or {},
+            # Flag fields where the user has since edited the value back.
+            # The doctor uses this on its next cycle to allow re-suggesting.
+            "still_active_keys": [],  # filled in below
+        })
+    if out:
+        cfg = await db.bot_config.find_one({}, {"_id": 0}) or {}
+        for row in out:
+            row["still_active_keys"] = [
+                k for k, v in (row["actions"] or {}).items()
+                if cfg.get(k) == v
+            ]
+    return {"items": out, "count": len(out)}
+
+
+@api.post("/doctor/applied-history/{sid}/revert")
+async def doctor_revert_applied(sid: str):
+    """Revert a previously-applied suggestion: restores the `applied_before`
+    snapshot back into bot_config and marks the row as reverted (no longer
+    counts as 'in force' for the dedup signature, so the rule is free to
+    re-suggest if the underlying problem persists)."""
+    s = await db.strategy_suggestions.find_one(
+        {"id": sid, "status": "applied"}, {"_id": 0},
+    )
+    if not s:
+        raise HTTPException(404, "applied suggestion not found")
+    before = s.get("applied_before") or {}
+    if before:
+        await db.bot_config.update_one({}, {"$set": before})
+        await bot_state.load()
+    await db.strategy_suggestions.update_one(
+        {"id": sid},
+        {"$set": {
+            "status": "reverted",
+            "reverted_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    try:
+        await hub.broadcast("doctor_reverted", {"id": sid, "restored": before})
+    except Exception:
+        pass
+    return {"ok": True, "restored": before}
 
 
 @api.post("/doctor/suggestions/{sid}/dismiss")
@@ -1647,6 +1746,121 @@ async def doctor_dismiss_suggestion(sid: str):
 
 
 app.include_router(auth_router)
+@api.get("/doctor/live")
+async def doctor_live_snapshot():
+    """Latest Doctor Live snapshot: archetypes, scored candidates, insights,
+    and the trailing-stop circuit-breaker state. Cheap O(1) read from
+    `live_doctor_state` singleton — no recompute."""
+    live = getattr(app.state, "live_doctor", None)
+    snap = await live.get_snapshot() if live else {}
+    trail = await db.doctor_trail_state.find_one({"_id": "trail"}, {"_id": 0}) or {}
+    cfg = await db.bot_config.find_one({}, {"_id": 0}) or {}
+    return {
+        **snap,
+        "trail": trail,
+        "trail_config": {
+            "enabled": cfg.get("doctor_circuit_breaker_enabled", True),
+            "drawdown_pct": cfg.get("doctor_trail_drawdown_pct", 40.0),
+            "recovery_pct": cfg.get("doctor_trail_recovery_pct", 70.0),
+            "lookback_minutes": cfg.get("doctor_trail_lookback_minutes", 240),
+            "min_score_floor": cfg.get("doctor_trail_min_score", 30.0),
+        },
+        "pause_state": {
+            "paused": bool(float(cfg.get("doctor_pause_until_ts") or 0) > time.time()),
+            "paused_until_ts": float(cfg.get("doctor_pause_until_ts") or 0),
+            "reason": cfg.get("doctor_pause_reason") or "",
+        },
+    }
+
+
+@api.post("/doctor/live/run-now")
+async def doctor_live_run_now():
+    """Force an immediate Doctor Live cycle (re-mines archetypes + re-scores
+    passing field + re-evaluates trailing stop). Bounded to the same work
+    a normal background cycle does."""
+    live = getattr(app.state, "live_doctor", None)
+    if not live:
+        raise HTTPException(503, "live doctor not initialized")
+    snap = await live.run_once()
+    return {"ok": True, "updated_at": snap.get("updated_at")}
+
+
+@api.post("/doctor/trail/resume")
+async def doctor_trail_resume():
+    """Manual override: clear the pause, reset trail state. Equivalent to
+    the user saying 'I disagree with the doctor's pause — let the bot trade'.
+    Doesn't disable the breaker — next cycle can re-trip if conditions
+    haven't actually improved."""
+    await db.bot_config.update_one(
+        {}, {"$set": {"doctor_pause_until_ts": 0, "doctor_pause_reason": ""}},
+    )
+    await bot_state.load()
+    await db.doctor_trail_state.update_one(
+        {"_id": "trail"},
+        {"$set": {"paused": False, "paused_peak": 0,
+                  "manually_resumed_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    try:
+        await hub.broadcast("doctor_trail_resumed", {})
+    except Exception:
+        pass
+    return {"ok": True}
+
+
+@api.get("/diagnostics/helius-budget")
+async def helius_budget():
+    """Helius API consumption tally: RPC calls + WebSocket bytes/messages.
+    Surfaces estimated credits used, daily burn rate, 30-day projection,
+    and a severity flag (green/yellow/red)."""
+    from helius_budget import snapshot
+    cfg = await db.bot_config.find_one({}, {"_id": 0}) or {}
+    limit = int(cfg.get("helius_monthly_credit_limit") or 10_000_000)
+    return snapshot(monthly_limit=limit)
+
+
+@api.post("/diagnostics/helius-budget/reset")
+async def helius_budget_reset():
+    """Reset the Helius credit counter and start a new tracking window.
+    Use when your Helius billing cycle resets."""
+    from helius_budget import reset_period
+    await reset_period()
+    return {"ok": True}
+
+
+@api.post("/creator-greylist/failure-sweep/run-now")
+async def trigger_failure_sweep():
+    """Force a failure-sweep cycle. Classifies all launches older than 24h
+    that didn't graduate as failed_instant / failed_fizzled / failed_chaotic,
+    then refreshes greylist scores for every affected creator. Use after
+    importing trade history or to fast-forward the first cycle on a new
+    install (normally runs every 6h)."""
+    sweeper = getattr(app.state, "failure_sweeper", None)
+    if not sweeper:
+        raise HTTPException(503, "failure sweeper not initialized")
+    return await sweeper.run_once()
+
+
+@api.get("/creator-greylist")
+async def creator_greylist(limit: int = 25, min_score: float = 30.0):
+    """Top N creators by EFFECTIVE (decayed) greylist score. Score combines
+    profitability + predictability + activity + volume. Phase 1 — read-only;
+    Phase 2 will use `recommended_strategy` to flip live trading behavior."""
+    from creator_greylist import top_greylisted
+    return {"items": await top_greylisted(db, limit=limit, min_score=min_score)}
+
+
+@api.get("/creator-greylist/{creator}")
+async def creator_greylist_profile(creator: str):
+    """Full profile for one creator: score, components, rug-window estimate,
+    recent trades, and linked wallets (from wallet_graph hunter)."""
+    from creator_greylist import get_creator_profile
+    out = await get_creator_profile(db, creator)
+    if not out:
+        raise HTTPException(404, "creator not found")
+    return out
+
+
 app.include_router(api)
 
 _cors_env = os.environ.get("CORS_ORIGINS", "*").strip()

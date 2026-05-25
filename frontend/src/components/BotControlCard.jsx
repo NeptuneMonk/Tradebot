@@ -8,36 +8,40 @@ import HelpHint from "./HelpHint";
 
 export default function BotControlCard({ status, config, onUpdate, onStart, onStop }) {
   const [local, setLocal] = useState(null);
+  // Baseline = last clean snapshot of config we've seen. The form is "dirty"
+  // ONLY when `local !== baseline`. This lets backend-side changes (Doctor
+  // Apply, ConfigSync, /api/config/apply-recommended) overwrite the form
+  // when the user has no pending edits, instead of being silently rejected
+  // because `config !== local`.
+  const [baseline, setBaseline] = useState(null);
   const [showAdvancedFees, setShowAdvancedFees] = useState(false);
 
-  // Seed `local` from `config` only when:
-  //   (a) we haven't initialized yet (first load), OR
-  //   (b) the form is clean (no unsaved edits) — so background config refreshes
-  //       (Dashboard's 20s poll, WS-driven refreshAll on every trade event)
-  //       can't wipe in-progress edits. Once the user starts typing, this
-  //       effect becomes a no-op until they Save (which round-trips and re-cleans
-  //       the form) or hit Reset.
-  // Without this dirty-guard, every trade triggered a refetch which called
-  // setLocal(config) and erased anything the user had typed but not saved —
-  // making it look like "saved values revert after trades" when in fact the
-  // backend was fine and the user's in-flight edits were being clobbered.
   useEffect(() => {
     if (!config) return;
     setLocal((prev) => {
-      if (prev === null) return config;
-      const isDirty = JSON.stringify(prev) !== JSON.stringify(config);
-      return isDirty ? prev : config;
+      // First load
+      if (prev === null) {
+        setBaseline(config);
+        return config;
+      }
+      // User has unsaved edits — KEEP them (don't clobber via background poll)
+      const userIsDirty = JSON.stringify(prev) !== JSON.stringify(baseline);
+      if (userIsDirty) return prev;
+      // Form is clean → accept the incoming config (Doctor Apply etc.)
+      setBaseline(config);
+      return config;
     });
-  }, [config]);
+  }, [config, baseline]);
 
   if (!local) return <div className="control-card text-neutral-500 text-sm">Loading...</div>;
 
-  const dirty = JSON.stringify(local) !== JSON.stringify(config);
+  const dirty = JSON.stringify(local) !== JSON.stringify(baseline);
   const running = status?.enabled;
 
   const save = async () => {
     try {
       await onUpdate(local);
+      setBaseline(local);  // promote current edit to baseline
       toast.success("Config saved");
     } catch (e) {
       toast.error("Save failed");

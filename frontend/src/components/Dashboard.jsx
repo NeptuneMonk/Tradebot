@@ -15,6 +15,7 @@ import ClassifierRulesEditor from "@/components/ClassifierRulesEditor";
 import ReentryWatchCard from "@/components/ReentryWatchCard";
 import ScannerCandidatesCard from "@/components/ScannerCandidatesCard";
 import StrategyDoctorPanel from "@/components/StrategyDoctorPanel";
+import CreatorGreylistPanel from "@/components/CreatorGreylistPanel";
 import PLBySourceCard from "@/components/PLBySourceCard";
 import CostTrackerCard from "@/components/CostTrackerCard";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -210,6 +211,11 @@ export default function Dashboard() {
         <ScannerCandidatesCard candidates={scanner} config={config} />
 
         <StrategyDoctorPanel onApplied={() => api.config().then(setConfig).catch(() => {})} />
+
+        <CreatorGreylistPanel
+          config={config}
+          onConfigUpdate={(cfg) => setConfig(cfg)}
+        />
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
           <TradeHistoryTable history={history} />

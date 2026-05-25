@@ -35,6 +35,11 @@ async def rpc_call(method: str, params: list, timeout: float = 10.0,
                     )
                 else:
                     r.raise_for_status()
+                    try:
+                        from helius_budget import record_rpc_call
+                        record_rpc_call()
+                    except Exception:
+                        pass
                     return r.json()
         except (httpx.ConnectTimeout, httpx.ReadTimeout,
                 httpx.ConnectError, httpx.RemoteProtocolError) as e:

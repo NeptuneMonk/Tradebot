@@ -1,5 +1,45 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-25 — Doctor Live + trailing-stop breaker + budget tracker + bug fixes
+
+### Three pre-existing UX bugs fixed
+- **Doctor "Apply" appeared broken**: BotControlCard's dirty-guard treated Doctor-applied config diffs as "user pending edits" and refused to update the form. Fix: explicit baseline tracking — `dirty = local !== baseline`, baseline gets bumped to `config` whenever form is clean OR user saves. Backend writes were always working.
+- **Doctor re-suggested same fix repeatedly**: dedup logic only checked pending + dismissed signatures, not recently-applied ones. Fix: new `_existing_applied_active_signatures()` cross-references each applied suggestion's actions against current `bot_config`; suggestion is "in force" if values still match. Doctor skips proposing it again. Old trades in lookback window can no longer re-trigger rules already addressed.
+- **No applied-changes audit trail**: applied suggestions had no `before` snapshot. Fix: apply endpoint now captures `applied_before` dict + new `GET /api/doctor/applied-history` + `POST /api/doctor/applied-history/{id}/revert`. New "Applied History" UI section shows the actual before→after, flags overwritten changes, one-click revert.
+
+### Doctor Live — archetype scorer (`live_doctor.py`)
+- Mines TWO archetypes from last 24h of closed trades joined with launches + creators:
+  - **Winner** = any positive pnl_pct (per user spec — even small wins are wins)
+  - **Exit-liquidity** = pnl_pct ≤ -10% (we were the bag-holder)
+- 7-feature distribution: unique_buyers, sol_inflow, curve_fill_pct, social_score, creator_bond_rate (graduated/created), creator_tokens_created (tradeable-history signal — rugs OK if creator produces volume), entry_usd.
+- Scores every passing mint in `bot_state.tracking` against both archetypes → `winner_likeness_pct`, `exit_liquidity_likeness_pct`, top red flags.
+- Auto-runs every 15 min; persists snapshot to `live_doctor_state` for O(1) reads.
+- Strategy-level insights: top divergence features, current-field summary ("84/90 mints look ≥60% like winners"), creator bond-rate gap.
+
+### Trailing-stop circuit breaker
+- Regime score 0-100 = 60% rolling 4h win-rate + 40% avg winner-likeness of passing pool.
+- Maintains rolling peak over `doctor_trail_lookback_minutes` (default 240).
+- **Trips** when score falls `doctor_trail_drawdown_pct` (40%) from peak AND below `doctor_trail_min_score` floor (30). Sets `doctor_pause_until_ts = now + 24h` so the bot's existing `_enter` guard refuses new entries.
+- **Auto-resumes** when score recovers to `doctor_trail_recovery_pct` (70%) of the pre-pause peak.
+- Doctor tunes the drawdown/recovery thresholds dynamically through normal Doctor suggestions (just config keys).
+- Manual override: `POST /api/doctor/trail/resume` — clears pause immediately. Breaker can re-trip on the next cycle if conditions don't actually improve.
+- Existing positions continue normal SL/TP/trailing monitoring — only NEW entries are blocked.
+
+### Helius credit budget tracker (`helius_budget.py`)
+- Hooks into `solana_client.rpc_call` (1 credit/call), `account_event_bus._handle_message` and `listener._handle_message` (2 credits per 100KB streamed, fractional accumulation — no over-counting of small notifications).
+- Persists counters to Mongo singleton every 60s so restarts don't lose data.
+- `GET /api/diagnostics/helius-budget` returns: rpc_calls, ws_messages/bytes, estimated_credits_used, projected_30d_burn, severity (green/yellow/red). Warmup guard suppresses projection until 30 min of data.
+- `POST /api/diagnostics/helius-budget/reset` for billing-cycle reset.
+- UI card shows live burn rate with severity color + 1-click reset.
+
+### Reverted from earlier in session: `auto_bank.py` (per user direction — bank manually).
+
+### Tests / verification
+- All 52 backend tests pass after every change.
+- Backend restarts clean, live UI verified: trail-stop card shows real score/peak/insights with named candidates (WATA, JANI, 401k at 84%+), Applied History shows 2 real prior applies with revert buttons, Budget shows warmup state then live numbers.
+
+
+
 ## 2026-05-25 — Post-test fixes (WSS bus subscribe bug + Chrome OOM)
 
 ### Bug 1: WSS bus showed 0 subs while 6 trades were active

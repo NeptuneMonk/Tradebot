@@ -1,0 +1,46 @@
+{
+  "summary": "Phase 2 Creator Greylist Tracking Module — full backend + frontend verification. All 25 unit tests pass (18 creator_greylist + 7 _exit_param). All 4 API endpoints work correctly. Frontend Creator Greylist panel mounts on dashboard, renders 3 seeded creators with correct tier scoring, row expansion shows detail breakdown, min-score filter works, sweep button fires API + shows toast, mode toggle (TELEMETRY↔LIVE) triggers native confirm() dialog and persists to backend. After testing, backend creator_greylist_mode confirmed restored to 'telemetry'.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/creator-greylist/failure-sweep/run-now", "issue": "Response JSON key is 'creators_touched' instead of 'creators_refreshed' specified in review request. Functional but spec/contract drift — frontend currently treats it correctly via the toast generator, but external consumers expecting 'creators_refreshed' would break."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Creator Greylist Panel — mode toggle", "issues": ["Confirmation uses native window.confirm() which (a) cannot be styled to match the rest of the dark dashboard, (b) is auto-dismissed by some headless automation tools, (c) shows browser-chrome 'OK/Cancel' rather than a dedicated 'Enable LIVE / Cancel' pair. Consider replacing with the existing shadcn AlertDialog used elsewhere in the app for consistency."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_creator_greylist.py",
+    "/app/backend/tests/test_exit_param.py",
+    "/app/test_reports/pytest/greylist_exit_param.xml"
+  ],
+  "action_items": [
+    "Optional: rename failure-sweep response key 'creators_touched' → 'creators_refreshed' to match the documented contract (or update docs to say creators_touched). Frontend already handles both via the toast string.",
+    "Optional UX: replace window.confirm() in CreatorGreylistPanel.toggleMode with the shadcn AlertDialog used elsewhere so the dark theme is preserved and the confirm button can read 'Enable LIVE'."
+  ],
+  "critical_code_review_comments": [
+    "creator_greylist.strategy_overrides() correctly returns a fresh dict copy each call (test_strategy_overrides_returns_copy_not_shared_dict passes) — prevents module-level template poisoning under concurrent entries.",
+    "BotState._exit_param correctly isolates overrides per slot — test_exit_param_independent_per_slot proves three open positions on different tiers each get their own TP/SL with no cross-talk. This is the core safety invariant for Phase 2 live mode.",
+    "_exit_param handles None slot, empty overrides, missing key, and None-valued overrides — all four malformed-input paths covered. Good defensive coding.",
+    "Trade model carries greylist_strategy_at_entry / greylist_score_at_entry / greylist_overrides_at_entry — confirmed via Pydantic field reflection. These are the audit fields needed to post-hoc evaluate whether the live overrides outperformed the standard config; recommend adding a small analytics endpoint (Phase 2.5) that groups closed trades by greylist_strategy_at_entry and reports mean PnL%.",
+    "CreatorGreylistPanel uses a single API call /api/creator-greylist on mount + after sweep + after mode toggle — no polling loop. Acceptable for now; if user keeps the panel open during a long session, stale scores will silently age. Consider auto-refresh every 60s OR a subtle 'last loaded N min ago' label.",
+    "Live-mode warning chip ('⚠ LIVE: overrides active on entry') is rendered only when mode=='live' AND items.length>0. If items=0 the user could be in live mode without any on-screen indicator beyond the small button text. Minor.",
+    "Greylist endpoint returns mongo docs but the API layer correctly excludes _id (verified in API JSON output — no _id leak). Good."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend_unit_tests": "100% (25/25)",
+    "backend_api_endpoints": "100% (4/4 endpoints working, 1 minor key-name discrepancy)",
+    "frontend": "100% (panel mount + 3 rows + expansion + filter + sweep + mode toggle all working)"
+  },
+  "test_credentials": "session_token=test_session_1779729296615 (Bearer or Cookie). Email allow-listed: nbobby79@gmail.com.",
+  "seed_data_creation": "No new seed data created by testing agent. Used the 3 pre-seeded creators (AggroCreator9999999999Greylist, TestCreator1234567890Greylist, HybridCreatorXXXXXXXXXGreylist). NOT cleaned up — user/main-agent can run the cleanup snippet from the request: `mongosh pump_bot_db --eval 'db.creators.deleteMany({_id: /Greylist$/}); db.launches.deleteMany({creator: /Greylist$/})'`. After test run, BotConfig.creator_greylist_mode was flipped live→telemetry→live→telemetry and FINAL state confirmed = 'telemetry' so the user's bot does not retain live overrides.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase 2 (strategy_overrides + frontend panel) is verified end-to-end. The only deltas to spec were: (1) sweep endpoint returns 'creators_touched' not 'creators_refreshed' — cosmetic, (2) mode-toggle uses native window.confirm() — works but Playwright tests MUST register a page.on('dialog') handler with d.accept() or the click silently no-ops. Frontend rows show 3 seeded creators; if you lower min_score to 0 you may see up to 5 (2 additional from live RPC ingestion). Cleanup the seeded creators after E1 finishes Phase 2.5 (wallet_graph).",
+  "rca of the issue": "n/a — feature addition, not a bug fix. No issue to RCA."
+}

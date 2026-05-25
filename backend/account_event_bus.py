@@ -133,6 +133,11 @@ class AccountEventBus:
         self._next_id += 1
         self._pending_acks[req_id] = account
         self.stats["subscribes_sent"] += 1
+        try:
+            from helius_budget import record_ws_subscribe
+            record_ws_subscribe()
+        except Exception:
+            pass
         await self._ws_send_safe({
             "jsonrpc": "2.0",
             "id": req_id,
@@ -188,6 +193,13 @@ class AccountEventBus:
             backoff = min(backoff * 2, 30)
 
     async def _handle_message(self, raw):
+        # Bill the inbound message before any parsing — even if it's something
+        # we ignore, Helius charged us for the bytes.
+        try:
+            from helius_budget import record_ws_message
+            record_ws_message(len(raw) if isinstance(raw, (str, bytes)) else 0)
+        except Exception:
+            pass
         try:
             msg = json.loads(raw)
         except Exception:

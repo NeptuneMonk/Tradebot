@@ -116,6 +116,12 @@ class BotState:
                 "trade": t,
                 "protocol": t.get("protocol", "pumpfun"),
                 "pumpswap_pool": t.get("pumpswap_pool") or "",
+                # Restore per-trade greylist overrides for resumed positions.
+                # Without this, a backend restart mid-trade would silently
+                # revert that position to BotConfig defaults — breaking the
+                # "the position keeps the params it opened with" contract.
+                "greylist_overrides": t.get("greylist_overrides_at_entry") or {},
+                "greylist_strategy": t.get("greylist_strategy_at_entry"),
             }
         # Sweep duplicate active rows in DB. Concurrent _enter races (now fixed
         # via the entry_gate_lock) could have created multiple `status=active`
@@ -857,6 +863,21 @@ class BotState:
             bucket["last_persist"] = now
             await self._persist_metrics(mint)
 
+    def _exit_param(self, slot: dict, key: str, default: float) -> float:
+        """Read an exit-side parameter for a position, preferring the trade's
+        per-position greylist override (when present) over BotConfig.
+        Used so an open greylist-tier position keeps the override it was
+        opened with even if BotConfig changes mid-flight, AND so two
+        concurrent positions on different tiers each get their own values.
+        `key` is one of: tp_pct, sl_pct, trail_pct, trail_arm_pct."""
+        try:
+            ov = (slot or {}).get("greylist_overrides") or {}
+            if key in ov and ov[key] is not None:
+                return float(ov[key])
+        except Exception:
+            pass
+        return float(default)
+
     async def _check_fast_exit(self, mint: str, cur_price_sol: float):
         """Real-time TP/SL/trailing-stop check fired by on_trade.
         Idempotent: only acts once per mint."""
@@ -883,10 +904,16 @@ class BotState:
 
         pct_change = (cur_price_sol - entry_p) / entry_p * 100
 
+        # Per-position thresholds — greylist overrides win when present.
+        tp_pct = self._exit_param(slot, "tp_pct", self.config.take_profit_pct)
+        sl_pct = self._exit_param(slot, "sl_pct", self.config.stop_loss_pct)
+        trail_pct_cfg = self._exit_param(slot, "trail_pct", self.config.trailing_stop_pct)
+        trail_arm_pct_cfg = self._exit_param(slot, "trail_arm_pct", self.config.trailing_arm_pct)
+
         # Take profit — either full exit or partial-then-tighten-trailing.
         # NOTE: after a successful partial, we skip the TP check entirely — the
         # runner is governed by the tightened trailing stop only.
-        if pct_change >= self.config.take_profit_pct and not slot.get("partial_done"):
+        if pct_change >= tp_pct and not slot.get("partial_done"):
             slot["exit_in_progress"] = True
             try:
                 ptp = self.config.partial_tp_pct
@@ -915,8 +942,8 @@ class BotState:
         # 30% during the 1.2s persistence window, turning a -10% SL into a -40%
         # actual exit. The override caps that bleed.
         if self.config.intelligent_exit_v2:
-            sl_breached = pct_change <= -self.config.stop_loss_pct
-            sl_severity = -pct_change - self.config.stop_loss_pct  # positive when worse than SL
+            sl_breached = pct_change <= -sl_pct
+            sl_severity = -pct_change - sl_pct  # positive when worse than SL
             if self._check_breach_persistence(
                 slot, kind="sl", breached=sl_breached,
                 persistence_ms=self.config.sl_persistence_ms,
@@ -930,7 +957,7 @@ class BotState:
                     return
                 finally:
                     slot["exit_in_progress"] = False
-        elif pct_change <= -self.config.stop_loss_pct:
+        elif pct_change <= -sl_pct:
             slot["exit_in_progress"] = True
             try:
                 await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%) [fast]")
@@ -944,11 +971,11 @@ class BotState:
         trail_pct = (
             self.config.partial_tp_trail_tighten_pct
             if slot.get("partial_done") and self.config.partial_tp_trail_tighten_pct > 0
-            else self.config.trailing_stop_pct
+            else trail_pct_cfg
         )
         # peak_pct in % terms relative to entry
         peak_pct = (peak - entry_p) / entry_p * 100 if entry_p > 0 else 0.0
-        arm_pct = self.config.trailing_arm_pct if not slot.get("partial_done") else 0.0
+        arm_pct = trail_arm_pct_cfg if not slot.get("partial_done") else 0.0
         if trail_pct > 0 and peak > entry_p and peak_pct >= arm_pct:
             trail_drop = (peak - cur_price_sol) / peak * 100
             ts_breached = trail_drop >= trail_pct
@@ -982,6 +1009,13 @@ class BotState:
         b = self.tracking.get(mint)
         if not b:
             return
+        # Track peak MC across the lifetime of this launch. This is the
+        # signal Greylist Phase 1 needs: "what's the highest MC this creator's
+        # past mints reached before failing?" — averaged per creator.
+        cur_mc = float(b.get("usd_market_cap") or 0.0)
+        prev_peak = float(b.get("peak_mc_usd") or 0.0)
+        if cur_mc > prev_peak:
+            b["peak_mc_usd"] = cur_mc
         update = {
             "unique_buyers": len(b["buyers"]),
             "sol_inflow": b["sol_inflow_lamports"] / LAMPORTS_PER_SOL,
@@ -989,6 +1023,7 @@ class BotState:
             "curve_fill_pct": b["curve_fill_pct"],
             "social_score": b["social_score"],
             "social_sources": b["social_sources"],
+            "peak_mc_usd": b.get("peak_mc_usd", 0.0),
         }
         await self.db.launches.update_one({"_id": b["launch_id"]}, {"$set": update})
         for r in self.recent_launches:
@@ -1056,17 +1091,31 @@ class BotState:
         await asyncio.sleep(TRACK_DURATION_S)
         # Final metric flush for the heavy-tracking window
         await self._persist_metrics(mint)
-        # Determine launch outcome at the 60s mark (good signal vs the 4h scanner window)
+        # Determine launch outcome at the 60s mark — ONLY mark "graduated".
+        # We deliberately do NOT mark instant-rug failures here: per the
+        # rug-patterns spec (memory/RUG_PATTERNS.md), "Dead in 60s" launches
+        # are the USELESS pattern we don't want to greylist. The fizzled-out
+        # tokens we DO want to capture take days to surface, so we delegate
+        # failure detection to the background sweep below.
         b = self.tracking.get(mint)
         if b:
             try:
                 state = await pumpfun.fetch_bonding_curve_state(mint)
-                if state:
-                    real_sol = state["real_sol_reserves"] / LAMPORTS_PER_SOL
-                    if state["complete"]:
-                        await mark_outcome(self.db, b["creator"], "graduated")
-                    elif real_sol < 0.5 and b["sol_inflow_lamports"] / LAMPORTS_PER_SOL < 1.0:
-                        await mark_outcome(self.db, b["creator"], "failed")
+                if state and state["complete"]:
+                    await mark_outcome(self.db, b["creator"], "graduated")
+                    await self.db.launches.update_one(
+                        {"_id": b["launch_id"]},
+                        {"$set": {
+                            "outcome": "graduated",
+                            "outcome_at": now_utc().isoformat(),
+                            "final_peak_mc_usd": float(b.get("peak_mc_usd") or 0.0),
+                        }},
+                    )
+                    try:
+                        from creator_greylist import update_creator_score
+                        await update_creator_score(self.db, b.get("creator"))
+                    except Exception as e:
+                        logger.debug(f"greylist post-graduation refresh: {e}")
             except Exception as e:
                 logger.debug(f"outcome check failed for {mint}: {e}")
         # Schedule final removal at cfg.scanner_window_hours (honors live config)
@@ -1119,6 +1168,21 @@ class BotState:
         # Smart-stop: refuse new entries while we're winding down
         if self.stopping_gracefully:
             return
+        # Doctor circuit-breaker: refuse new entries while the Doctor (or the
+        # user manually via the UI) has paused trading. Existing positions
+        # continue to be monitored normally — only NEW entries are blocked.
+        pause_until = float(getattr(self.config, "doctor_pause_until_ts", 0) or 0)
+        if pause_until and time.time() < pause_until:
+            logger.debug(
+                f"doctor pause: skipping entry for {launch.mint[:8]}… "
+                f"({int(pause_until - time.time())}s remaining)"
+            )
+            return
+        # === Creator-greylist telemetry (Phase 1 — logs only) ===
+        # The actual fetch + override resolution happens in `_enter_impl`
+        # (where size_mult and TP/SL slots live). This stub stays here as a
+        # placeholder so the gate-time codepath is obvious during review.
+        pass
         # Reservation gate — serialized so concurrent scanner attempts can't
         # all race past max_concurrent_positions. Holds the lock only for the
         # gate check + reservation (microseconds), not the tx.
@@ -1163,6 +1227,55 @@ class BotState:
     async def _enter_impl(self, launch: Launch, risk_score: int, action: str):
         """The actual entry pipeline. Called from `_enter` after the
         position-count reservation has been taken atomically."""
+        # === Creator-greylist (Phase 2: apply OR log strategy overrides) ===
+        # Resolved once at entry, then carried through sizing + slot extras
+        # so the exit logic (TP/SL/trail) can read overrides per-trade.
+        # Mode "live" → applies overrides to size/TP/SL/trail.
+        # Mode "telemetry" → logs only; standard config values used.
+        greylist_ctx: dict = {"strategy": None, "score": None, "overrides": {}}
+        try:
+            if self.config.creator_greylist_enabled and launch.creator:
+                gc = await self.db.creators.find_one(
+                    {"_id": launch.creator},
+                    {"_id": 0, "greylist_score": 1,
+                     "greylist_score_updated_at": 1,
+                     "expected_rug_window_pct": 1,
+                     "expected_peak_mc_usd": 1,
+                     "greylist_n_failed": 1},
+                )
+                if gc and gc.get("greylist_score"):
+                    from creator_greylist import (
+                        apply_decay, recommended_strategy, strategy_overrides,
+                    )
+                    eff = apply_decay(gc.get("greylist_score"),
+                                      gc.get("greylist_score_updated_at"))
+                    strat = recommended_strategy(eff)
+                    mode = (self.config.creator_greylist_mode or "telemetry").lower()
+                    applied = (mode == "live") and (strat != "standard")
+                    overrides = strategy_overrides(strat) if applied else {}
+                    if strat != "standard":
+                        rw = gc.get("expected_rug_window_pct") or {}
+                        pmc = gc.get("expected_peak_mc_usd") or {}
+                        logger.info(
+                            f"GREYLIST {'APPLY' if applied else 'telemetry'}: "
+                            f"strategy='{strat}' for {launch.mint[:8]}… "
+                            f"(creator={launch.creator[:8]}…, score={eff:.0f}, "
+                            f"expected_peak_MC=$"
+                            f"{int(pmc.get('mean_peak_mc_usd', 0)):,} "
+                            f"(±${int(pmc.get('stddev_peak_mc_usd', 0)):,}, "
+                            f"n_failed={gc.get('greylist_n_failed', 0)}), "
+                            f"expected_rug=~{rw.get('median_rug_pct', '?')}%). "
+                            f"Mode={mode}; "
+                            f"{'applying overrides=' + str(overrides) if applied else 'executing standard logic.'}"
+                        )
+                    greylist_ctx = {
+                        "strategy": strat,
+                        "score": round(float(eff), 1),
+                        "overrides": overrides,
+                    }
+        except Exception as e:
+            logger.debug(f"greylist context skipped: {e}")
+
         sol_price = await get_sol_usd_price()
         # Risk-based position sizing: borderline classifications get smaller
         # trades. The bleed analysis showed many losers were borderline
@@ -1175,6 +1288,14 @@ class BotState:
             size_mult = 0.6           # borderline — half-size
         else:
             size_mult = 0.3           # high-risk — third-size
+        # Greylist size override (Phase 2 live mode only). Layered multiplicatively
+        # on top of the risk bucket. Capped at 2× the configured max_trade_usd
+        # so a hot creator can't blow the risk envelope (a 1.5× override on a
+        # 1.0× risk bucket lands at 1.5×, still inside the 2× ceiling).
+        gl_size_mult = float((greylist_ctx.get("overrides") or {}).get("size_mult") or 1.0)
+        if gl_size_mult != 1.0:
+            size_mult *= gl_size_mult
+        size_mult = min(size_mult, 2.0)
         base_usd = self.config.max_trade_usd * size_mult
         trade_usd = max(self.config.min_trade_usd, base_usd)
         trade_sol = trade_usd / sol_price if sol_price > 0 else 0
@@ -1461,9 +1582,20 @@ class BotState:
             classifier_action=action,
             protocol=protocol,
             pumpswap_pool=bucket.get("pumpswap_pool") or None,
+            greylist_strategy_at_entry=greylist_ctx.get("strategy"),
+            greylist_score_at_entry=greylist_ctx.get("score"),
+            greylist_overrides_at_entry=greylist_ctx.get("overrides") or {},
         )
         # Stash protocol on the trade dict (kept in active_trades) so _exit can route
-        trade_extras = {"protocol": protocol, "pumpswap_pool": bucket.get("pumpswap_pool", "")}
+        trade_extras = {
+            "protocol": protocol,
+            "pumpswap_pool": bucket.get("pumpswap_pool", ""),
+            # Per-trade greylist override slot — exit logic reads `greylist_overrides`
+            # via `_exit_param()` helper so each position respects ITS own creator's
+            # tier (a hot greylist + a standard mint can be open concurrently).
+            "greylist_overrides": greylist_ctx.get("overrides") or {},
+            "greylist_strategy": greylist_ctx.get("strategy"),
+        }
 
         if mode == "live":
             try:
@@ -1686,7 +1818,11 @@ class BotState:
                     while samples and samples[0][0] < cutoff:
                         samples.pop(0)
 
-                if pct_change >= self.config.take_profit_pct and not slot.get("partial_done"):
+                # Per-position thresholds — greylist overrides win when present.
+                m_tp_pct = self._exit_param(slot, "tp_pct", self.config.take_profit_pct)
+                m_sl_pct = self._exit_param(slot, "sl_pct", self.config.stop_loss_pct)
+
+                if pct_change >= m_tp_pct and not slot.get("partial_done"):
                     slot["exit_in_progress"] = True
                     try:
                         ptp = self.config.partial_tp_pct
@@ -1705,7 +1841,7 @@ class BotState:
                         return
                     finally:
                         slot["exit_in_progress"] = False
-                if pct_change <= -self.config.stop_loss_pct:
+                if pct_change <= -m_sl_pct:
                     # v2: persistence — only fire if breach has been sustained.
                     # v2.1: severity override (see _check_exit_conditions_realtime).
                     if self.config.intelligent_exit_v2:
@@ -1713,7 +1849,7 @@ class BotState:
                             slot, kind="sl", breached=True,
                             persistence_ms=self.config.sl_persistence_ms,
                             min_samples=self.config.sl_persistence_min_samples,
-                            severity_pct=(-pct_change - self.config.stop_loss_pct),
+                            severity_pct=(-pct_change - m_sl_pct),
                             severity_threshold_pct=5.0,
                         )
                     else:
@@ -2611,6 +2747,42 @@ class BotState:
                     f"SL cooldown set for {trade_doc.get('symbol','?')} "
                     f"({mint[:8]}…) — locked out for {cd_min:.1f} min"
                 )
+        # === Creator-greylist instrumentation ===
+        # Compute rug metrics at close time so the greylist scorer has the
+        # data it needs WITHOUT a separate analytics pipeline. Only meaningful
+        # for losing trades (positive PnL = winner archetype, not rug-snipe).
+        try:
+            entry_p = float(trade_doc.get("entry_price_sol") or 0)
+            exit_p = float(trade_doc.get("exit_price_sol") or 0)
+            peak_sol = float(slot.get("peak_price_sol") or entry_p)
+            if entry_p > 0 and peak_sol > entry_p:
+                peak_pct_pre_rug = (peak_sol - entry_p) / entry_p * 100.0
+                trade_doc["peak_pct_pre_rug"] = round(peak_pct_pre_rug, 2)
+                if exit_p > 0 and exit_p < peak_sol:
+                    rug_pct = (peak_sol - exit_p) / peak_sol * 100.0
+                    trade_doc["rug_pct_from_peak"] = round(rug_pct, 2)
+            entry_ts_iso = trade_doc.get("entry_time")
+            launch_doc = await self.db.launches.find_one(
+                {"mint": mint}, {"_id": 0, "first_seen": 1},
+            )
+            if entry_ts_iso and launch_doc and launch_doc.get("first_seen"):
+                from datetime import datetime as _dt
+                t_entry = _dt.fromisoformat(entry_ts_iso.replace("Z", "+00:00")).timestamp()
+                t_first = _dt.fromisoformat(launch_doc["first_seen"].replace("Z", "+00:00")).timestamp()
+                trade_doc["rug_seconds_from_launch"] = max(0, int(t_entry - t_first))
+            await self.db.trades.update_one(
+                {"id": trade_doc["id"]},
+                {"$set": {k: trade_doc[k] for k in
+                          ("peak_pct_pre_rug", "rug_pct_from_peak", "rug_seconds_from_launch")
+                          if k in trade_doc}},
+            )
+        except Exception as e:
+            logger.debug(f"greylist instrumentation skipped for {mint[:8]}…: {e}")
+        try:
+            from creator_greylist import update_creator_score
+            await update_creator_score(self.db, trade_doc.get("creator"))
+        except Exception as e:
+            logger.debug(f"greylist update skipped: {e}")
         await hub.broadcast("trade_exit", trade_doc)
         # Re-entry watchlist: if we exited profitably and curve hasn't graduated, watch for a pullback.
         # During a graceful stop we don't queue any new re-entries — the user

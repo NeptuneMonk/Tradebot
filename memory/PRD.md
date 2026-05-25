@@ -20,6 +20,16 @@ For learning and experimentation only — no deployment outside preview.
 - **Frontend (React + Tailwind + shadcn)**: Single-page "Control Room" dashboard, polling every 3s, IBM Plex Sans/Mono, sharp-edged dark UI, Recharts P/L sparkline, QR deposit address.
 
 
+## Doctor Live + breaker + budget (2026-05-25)
+- ✅ **Apply bug fixed** (dirty-guard baseline) — Doctor Apply now updates the UI form correctly. Backend was always writing.
+- ✅ **Dedup against in-force applies** — Doctor no longer re-suggests fixes that are already applied AND still active in bot_config.
+- ✅ **Applied-history audit trail** — `/api/doctor/applied-history` + UI section with before→after + Revert button per row.
+- ✅ **`live_doctor.py`** — real-time winner / exit-liquidity archetype scorer, scores every passing mint, surfaces insights and named candidates.
+- ✅ **Trailing-stop circuit breaker** — peak/drawdown on a regime score. Pauses new entries when score collapses, auto-resumes on recovery. Doctor-tunable thresholds. Force-resume endpoint for manual override.
+- ✅ **Helius budget tracker** — RPC + WS credit consumption tally, 30-day projection with warmup guard, green/yellow/red severity. UI card with reset.
+- ⏪ Auto-bank reverted — user banks manually.
+
+
 ## Post-test fixes (2026-05-25)
 - ✅ **WSS subscribe bug fixed** — monitor now resolves the watched account from any of {slot, launch dict, trade dict, derived PDA} so the bus subscribes correctly for both fresh entries AND restored-after-restart positions.
 - ✅ **Chrome OOM fixed** — `_persist_metrics` broadcast throttled to 5s/mint (was 2s × N mints = ~75 events/sec at scale). Frontend additionally ignores `launch_update` for mints outside the displayed window.

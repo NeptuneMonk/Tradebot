@@ -59,9 +59,25 @@ export const api = {
   doctorRunNow: () => longClient.post("/doctor/run-now").then(r => r.data),
   doctorApply: (id) => client.post(`/doctor/suggestions/${id}/apply`).then(r => r.data),
   doctorDismiss: (id) => client.post(`/doctor/suggestions/${id}/dismiss`).then(r => r.data),
+  // Doctor Live (archetype scorer + trailing-stop circuit breaker)
+  doctorLive: () => client.get("/doctor/live").then(r => r.data),
+  doctorLiveRunNow: () => longClient.post("/doctor/live/run-now").then(r => r.data),
+  doctorTrailResume: () => client.post("/doctor/trail/resume").then(r => r.data),
+  doctorAppliedHistory: () => client.get("/doctor/applied-history").then(r => r.data),
+  doctorRevertApplied: (id) => client.post(`/doctor/applied-history/${id}/revert`).then(r => r.data),
+  // Helius credit budget
+  heliusBudget: () => client.get("/diagnostics/helius-budget").then(r => r.data),
+  heliusBudgetReset: () => client.post("/diagnostics/helius-budget/reset").then(r => r.data),
   // Config sync (preview ↔ production)
   configExport: () => client.get("/config/export").then(r => r.data),
   configImport: (config) => client.post("/config/import", { config }).then(r => r.data),
   configApplyRecommended: () => client.post("/config/apply-recommended").then(r => r.data),
   recipientHealth: () => client.get("/diagnostics/recipient-health").then(r => r.data),
+  // Creator greylist (Phase 2 — telemetry-now / live-soon)
+  creatorGreylist: (limit = 25, minScore = 30.0) =>
+    client.get(`/creator-greylist`, { params: { limit, min_score: minScore } }).then(r => r.data),
+  creatorGreylistProfile: (creator) =>
+    client.get(`/creator-greylist/${creator}`).then(r => r.data),
+  creatorGreylistRunSweep: () =>
+    longClient.post(`/creator-greylist/failure-sweep/run-now`).then(r => r.data),
 };

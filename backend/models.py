@@ -169,6 +169,36 @@ class BotConfig(BaseModel):
     reentry_pullback_pct: float = 25.0
     reentry_window_seconds: int = 300
     reentry_size_multiplier: float = 0.5
+    # === Doctor circuit breaker (trailing-stop on bot performance) ===
+    # Doctor tracks a "regime score" (0-100, from rolling 4h win-rate +
+    # current passing-field winner-likeness). It maintains a rolling peak
+    # over `doctor_trail_lookback_minutes` and trips the breaker when the
+    # current score falls by `doctor_trail_drawdown_pct` from peak.
+    # Trading auto-resumes when the score recovers to
+    # `doctor_trail_recovery_pct`% of the pre-pause peak.
+    #
+    # Doctor can ALSO propose adjustments to these thresholds as the market's
+    # observed volatility changes (calm markets → tight trail; choppy → wide).
+    # Scanner & _enter check `doctor_pause_until_ts` on every cycle — non-zero
+    # means no new entries. Existing positions keep being monitored normally.
+    doctor_circuit_breaker_enabled: bool = True
+    doctor_trail_drawdown_pct: float = 40.0     # pause if score drops this far from peak
+    doctor_trail_recovery_pct: float = 70.0     # resume when score recovers to this fraction of pre-pause peak
+    doctor_trail_lookback_minutes: int = 240    # peak rolls over this many minutes
+    doctor_trail_min_score: float = 30.0        # baseline floor — never auto-pause when score is "fine"
+    doctor_pause_until_ts: float = 0.0          # epoch seconds; 0 = not paused. Set by breaker.
+    doctor_pause_reason: str = ""
+    # Helius monthly credit cap (Developer plan = 10M/month). Doctor surfaces
+    # burn-rate warnings + can throttle scanner_interval when approaching limit.
+    helius_monthly_credit_limit: int = 10_000_000
+    # === Creator greylist (Phase 1 — telemetry only) ===
+    # Greylist scores creators by predictability of rug patterns. Phase 1
+    # ONLY logs "would use X strategy" — actual entry/exit logic unchanged.
+    # Set `creator_greylist_mode=live` ONLY after 24-48h of telemetry shows
+    # the predictions actually correlate with profitable snipes.
+    creator_greylist_enabled: bool = True
+    creator_greylist_mode: str = "telemetry"   # "telemetry" | "live"
+    wallet_graph_enabled: bool = True          # 2-hop hunter on/off
     # Live PnL reset cutoff: when set, daily_pnl_usd(mode='live') only sums
     # trades closed at-or-after this ISO timestamp instead of today's 00:00 UTC.
     # Used by /api/pnl/reset-live to wipe poisoned counters (e.g., pre-fix
@@ -255,6 +285,14 @@ class Trade(BaseModel):
     # Classifier snapshot
     risk_score: int = 50
     classifier_action: Optional[str] = None
+    # Creator greylist (Phase 2) — strategy tier & score AT THE TIME OF ENTRY.
+    # Stored per-trade so analytics can correlate live overrides to outcomes.
+    # `greylist_strategy_at_entry`: "aggressive" | "hybrid" | "standard" | None.
+    # `greylist_overrides_at_entry`: the actual TP/SL/trail values used (empty
+    # dict when standard or telemetry-mode).
+    greylist_strategy_at_entry: Optional[str] = None
+    greylist_score_at_entry: Optional[float] = None
+    greylist_overrides_at_entry: dict = {}
 
 
 class WalletInfo(BaseModel):
