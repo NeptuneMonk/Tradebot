@@ -326,3 +326,67 @@ async def test_update_creator_score_band_boundary_inclusive_min_exclusive_max():
                                         min_fails=5, max_fails=80)
         assert r["out_of_band"] is expect_out, f"tokens_failed={tf}"
 
+
+
+@pytest.mark.asyncio
+async def test_update_creator_score_stage1_short_circuits():
+    """Stage-1 hot-path optimization: tokens_failed=0 with no other signal
+    → skip trades + all_launches fetch, persist minimal stage1_rejected doc."""
+    from creator_greylist import update_creator_score
+    creator_doc = {
+        "_id": "Cnew", "tokens_created": 1, "tokens_failed": 0,
+        "first_seen": _iso(2), "last_seen": _iso(1),
+    }
+    db = _FakeDB(creator_doc, launches=[])
+    r = await update_creator_score(db, "Cnew", min_fails=5, max_fails=80)
+    assert r["stage1_rejected"] is True
+    assert "no stage1 trigger" in r["stage1_reason"]
+    assert r["score"] == 0.0
+    persisted = db.creators.updated["$set"]
+    assert persisted["greylist_stage1_rejected"] is True
+    assert persisted["greylist_score"] == 0.0
+    assert persisted["greylist_pattern"] == "unknown"
+    # short-circuit doc MUST NOT carry the heavy fields the full pipeline writes
+    assert "greylist_components" not in persisted
+    assert "expected_peak_mc_usd" not in persisted
+    assert "greylist_recent_failed_mints" not in persisted
+
+
+@pytest.mark.asyncio
+async def test_update_creator_score_stage1_passes_runs_full_pipeline():
+    """When stage1 passes (tokens_failed >= 2), the full pipeline runs and
+    persists `greylist_stage1_rejected=False` plus all heavy fields."""
+    from creator_greylist import update_creator_score
+    creator_doc = {
+        "_id": "Cmid", "tokens_created": 5, "tokens_failed": 3,
+        "first_seen": _iso(72), "last_seen": _iso(1),
+    }
+    db = _FakeDB(creator_doc, launches=[
+        {"outcome": "failed", "final_peak_mc_usd": 50_000,
+         "sol_inflow": 5.0, "buy_count": 20},
+        {"outcome": "failed", "final_peak_mc_usd": 52_000,
+         "sol_inflow": 5.0, "buy_count": 20},
+        {"outcome": "failed", "final_peak_mc_usd": 48_000,
+         "sol_inflow": 5.0, "buy_count": 20},
+    ])
+    r = await update_creator_score(db, "Cmid", min_fails=5, max_fails=80)
+    assert r["stage1_rejected"] is False
+    assert "fails (3)" in r["stage1_reason"]
+    persisted = db.creators.updated["$set"]
+    assert persisted["greylist_stage1_rejected"] is False
+    # Heavy pipeline fields present
+    assert "greylist_components" in persisted
+    assert "expected_peak_mc_usd" in persisted
+    assert "greylist_recent_failed_mints" in persisted
+
+
+@pytest.mark.asyncio
+async def test_update_creator_score_stage1_short_circuit_avoids_classifier():
+    """Confirm the short-circuit path doesn't crash even when trades dict
+    is empty / launches collection is sparse — proves we skipped them."""
+    from creator_greylist import update_creator_score
+    creator_doc = {"_id": "Cmin", "tokens_failed": 1}
+    db = _FakeDB(creator_doc, trades=None, launches=None)
+    r = await update_creator_score(db, "Cmin", min_fails=5, max_fails=80)
+    assert r["stage1_rejected"] is True
+    assert r["score"] == 0.0

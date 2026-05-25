@@ -426,30 +426,33 @@ async def update_creator_score(db, creator: str,
     `out_of_band` flag is set so the UI can explain the suppression.
 
     `tp_buffer` is the % subtracted from the median observed rug to derive
-    `pattern_suggested_exit_pct[0]` (the TP override Phase 2.7 uses)."""
+    `pattern_suggested_exit_pct[0]` (the TP override Phase 2.7 uses).
+
+    Hot-path optimization: we fetch the cheap inputs (creator_doc, failed
+    launches, wallet_graph) FIRST and run `stage1_filter()`. If the creator
+    fails Stage-1 we persist a minimal `stage1_rejected=True` placeholder
+    and SKIP the expensive `trades` (≤500 docs) + `all_launches` (≤300
+    docs) fetches + classifier run. Cuts Mongo load roughly 80% for fresh
+    or quiet creators where the composite would have been 0 anyway."""
     if not creator:
         return None
     creator_doc = await db.creators.find_one({"_id": creator})
     if not creator_doc:
         return None
-    trades = await db.trades.find(
-        {"creator": creator, "status": "closed"}, {"_id": 0},
-    ).to_list(500)
+    # === CHEAP INPUTS (needed for Stage-1) =================================
     # Failed launches with their peak MC — drives the "average peak MC of
     # past failures" component (user's primary asked-for signal). The
     # peak_mc scorer explicitly skips fail_class='failed_instant' so the
     # "Dead in 60s" cohort can't drag down a creator whose other launches
-    # had real volume.
+    # had real volume. Also: stage1 checks rug_seconds + accel_signature_v2
+    # on this set so the projection includes those fields.
     failed = await db.launches.find(
         {"creator": creator, "outcome": "failed"},
         {"_id": 0, "mint": 1, "symbol": 1, "outcome": 1, "fail_class": 1,
          "outcome_at": 1, "final_peak_mc_usd": 1, "buy_count": 1,
-         "unique_buyers": 1, "sol_inflow": 1},
+         "unique_buyers": 1, "sol_inflow": 1,
+         "rug_seconds_from_launch": 1, "accel_signature_v2": 1},
     ).to_list(200)
-    # Filter spam/test launches BEFORE pattern classification — keeps the
-    # creator's lifetime tokens_failed counter accurate (it's already
-    # incremented at record/sweep time) but prevents 0.00001-SOL test
-    # mints from drowning out the real rug signal.
     failed_meaningful = [
         f for f in failed
         if (float(f.get("sol_inflow") or 0) >= 0.1
@@ -464,6 +467,50 @@ async def update_creator_score(db, creator: str,
     # check needs this set; without it linked_wallets contributes only the
     # base "you have N linked funders" bonus.
     blacklisted = await _get_blacklisted_creators(db)
+    # Pre-compute links evidence so stage1 can see linked_to_rug_cluster.
+    _, links_evidence_preview = _links_component(linked_wallets, blacklisted)
+    # === STAGE-1 GATE =====================================================
+    s1_pass, s1_reason = stage1_filter(
+        creator_doc, failed_meaningful,
+        linked_wallets=linked_wallets,
+        links_evidence=links_evidence_preview,
+    )
+    tokens_failed = int(creator_doc.get("tokens_failed") or 0)
+    out_of_band = tokens_failed < min_fails or tokens_failed >= max_fails
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if not s1_pass:
+        # SHORT-CIRCUIT: skip the expensive trades + all_launches fetches
+        # + the classifier run. Composite would have been 0 anyway (no
+        # signal to score). Persist minimal placeholder so the next call
+        # re-evaluates from scratch as soon as new data arrives.
+        await db.creators.update_one(
+            {"_id": creator},
+            {"$set": {
+                "greylist_score": 0.0,
+                "greylist_score_raw": 0.0,
+                "greylist_tokens_failed": tokens_failed,
+                "greylist_out_of_band": out_of_band,
+                "greylist_blacklisted": False,
+                "greylist_pattern": "unknown",
+                "greylist_pattern_confidence": 0,
+                "greylist_pattern_evidence": [f"stage1: {s1_reason}"],
+                "greylist_stage1_rejected": True,
+                "greylist_stage1_reason": s1_reason,
+                "greylist_links_evidence": links_evidence_preview,
+                "greylist_band_min": min_fails,
+                "greylist_band_max": max_fails,
+                "greylist_score_updated_at": now_iso,
+            }},
+        )
+        return {"score": 0.0, "raw_score": 0.0,
+                "stage1_rejected": True, "stage1_reason": s1_reason,
+                "out_of_band": out_of_band, "tokens_failed": tokens_failed,
+                "pattern": "unknown", "pattern_confidence": 0,
+                "pattern_blacklisted": False}
+    # === EXPENSIVE PIPELINE (Stage-1 passed) ==============================
+    trades = await db.trades.find(
+        {"creator": creator, "status": "closed"}, {"_id": 0},
+    ).to_list(500)
     score = compute_score(creator_doc, trades, failed_meaningful,
                           linked_wallets=linked_wallets,
                           blacklisted_creators=blacklisted)
@@ -497,11 +544,8 @@ async def update_creator_score(db, creator: str,
     # sees in Recent Launches) — not `n_failed_launches` which only counts
     # sweep-classified ones with peak MC. The lifetime counter is the right
     # signal for "does this creator have a pattern worth watching yet".
-    tokens_failed = int(creator_doc.get("tokens_failed") or 0)
-    out_of_band = tokens_failed < min_fails or tokens_failed >= max_fails
     suppressed = out_of_band or pattern_blacklisted
     composite = 0.0 if suppressed else score["score"]
-    now_iso = datetime.now(timezone.utc).isoformat()
     # Top 10 recent meaningful failed mints (for the profile/UI card —
     # spam launches like 0.00001-SOL tests are dropped).
     recent_failed = sorted(
@@ -530,6 +574,8 @@ async def update_creator_score(db, creator: str,
             "greylist_signatures": pattern.get("signatures") or {},
             "greylist_signature_bonus": pattern.get("signature_bonus", 0),
             "greylist_links_evidence": score.get("links_evidence") or {},
+            "greylist_stage1_rejected": False,
+            "greylist_stage1_reason": s1_reason,
             "greylist_band_min": min_fails,
             "greylist_band_max": max_fails,
             "greylist_recent_failed_mints": recent_failed,
@@ -539,6 +585,7 @@ async def update_creator_score(db, creator: str,
     # Return both the original score AND the band-gated composite so callers
     # can log the suppression decision.
     return {**score, "score": composite, "raw_score": score["score"],
+            "stage1_rejected": False, "stage1_reason": s1_reason,
             "out_of_band": out_of_band, "tokens_failed": tokens_failed,
             "pattern": pattern["pattern"],
             "pattern_confidence": pattern.get("confidence", 0),

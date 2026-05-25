@@ -954,3 +954,38 @@ User picked all 4: linked-wallets scoring + Stage-1 cheap filter + delta-based a
 | 7 | Pattern classifier | 🟢 6 buckets + tradeable subset |
 | 8 | Mongo schema | 🟢 `links_evidence`, `signatures`, `peak_mc_usd_at`, `accel_signature_v2` all persisted |
 | 9 | Integration patch | 🟢 |
+
+## 2026-05-25 — Stage-1 hot-path optimization (P1)
+
+User: "(P1) Stage-1 hot-path optimization: short-circuit `update_creator_score` to skip the all_launches fetch when Stage-1 rejects."
+
+### What changed
+- **`update_creator_score()` reordered**: cheap inputs (creator_doc, failed_launches+rug_seconds+accel_v2 projection, wallet_graph, blacklisted-set cache) fetched FIRST.
+- After computing `links_evidence`, runs `stage1_filter()`.
+- **If Stage-1 REJECTS** → persists minimal placeholder doc (14 fields: score=0, stage1_rejected=True, stage1_reason, pattern=unknown, links_evidence) and returns early. **Skips `trades.find().to_list(500)` + `launches.find(creator).to_list(300)` + the full classifier run.** Saves ~800 doc fetches + classifier latency per rejected creator.
+- **If Stage-1 PASSES** → continues full pipeline as before. Persists `greylist_stage1_rejected=False` + `greylist_stage1_reason=<trigger>` for telemetry.
+- `failed_launches` projection extended to include `rug_seconds_from_launch` + `accel_signature_v2` so stage1 can see them on the same fetch.
+
+### Live verification
+- 1,329 in-band creators backfilled in 60s — all pass stage1 (F-band membership guarantees it).
+- Quiet test creator (tokens_failed=1, no other signal): rejected in **34.5ms** vs in-band creator full pipeline **42.6ms** in this DB. In production where creators have populated trades + launches collections, the savings scale linearly with that data volume.
+- Persisted doc for rejected creators contains only 14 fields (vs ~25 for full pipeline) — `greylist_components`, `expected_peak_mc_usd`, `greylist_recent_failed_mints` correctly omitted.
+
+### Where the savings land
+- `failure_sweep.run_once()` — every newly-classified-failed creator that's still <5 fails (the common first-rug case) now short-circuits.
+- `bot.py _exit` — trade-close on a creator with sparse history short-circuits.
+- `bot.py _listen_pump_launches` — already pre-gates on tokens_failed≥min_fails so doesn't benefit (the entry condition guarantees stage1 pass).
+
+### Tests
+- 3 new pytest cases in `test_creator_greylist.py`:
+  - `test_update_creator_score_stage1_short_circuits` — quiet creator persists minimal doc, no heavy fields written
+  - `test_update_creator_score_stage1_passes_runs_full_pipeline` — tokens_failed=3 triggers ≥2-fails branch and full pipeline runs
+  - `test_update_creator_score_stage1_short_circuit_avoids_classifier` — null trades/launches don't crash the short-circuit path
+- **116 tests pass** across launch_signatures + creator_greylist + creator_pattern + pattern_analytics + strategy_doctor_pattern_rule + exit_param + stage1_and_links.
+
+### New persisted fields
+| field | meaning |
+|---|---|
+| `greylist_stage1_rejected` | bool — true when full pipeline was skipped |
+| `greylist_stage1_reason` | string — exact stage1 trigger or rejection reason |
+
