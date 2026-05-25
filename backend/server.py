@@ -349,10 +349,15 @@ RECOMMENDED_CONFIG_OVERRIDES = {
     "panic_exit_cu_price_microlamports": 400_000,  # 400k panic CU price (was 600k)
     # Entry filters (NEW band) — slightly looser so high-momentum graduated
     # tokens can pass; the SL/persistence layer protects on the way out.
+    # Liquidity gates — applied at the bot.py entry layer for BOTH bands.
+    "min_curve_liquidity_sol": 8.0,            # seasoned/PumpSwap floor
     "min_curve_liquidity_sol_new": 15.0,
     "scanner_min_growth_pct_new": 40.0,
     "scanner_min_recent_inflow_sol_new": 2.0,
     "scanner_min_new_buyers_new": 6,
+    # Buyer gate — NOW applied to seasoned band too (uses `unique_buyer_count`
+    # from the Pump.fun coin endpoint, polled by discovery refresh).
+    "min_buyers_for_entry": 5,                 # seasoned floor (was silently ignored)
     # Distribution-vacuum gate OFF: too aggressive on fresh high-momentum
     # launches where every buyer is "recent" by definition (false-rejects).
     "gate_distribution_vacuum": False,

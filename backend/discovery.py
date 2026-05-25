@@ -149,6 +149,12 @@ class PumpfunDiscovery:
                 bucket["twitter"] = (c.get("twitter") or "").strip()
                 bucket["telegram"] = (c.get("telegram") or "").strip()
                 bucket["website"] = (c.get("website") or "").strip()
+                # Cumulative buyer count from the Pump.fun coin endpoint.
+                # PumpSwap pools don't generate Helius mempool events, so the
+                # in-memory `buyers` set stays empty — `buy_count` is the only
+                # signal we have for "how many people are buying this thing"
+                # on seasoned/graduated tokens. Used by min_buyers_for_entry.
+                bucket["buy_count"] = int(c.get("buy_count") or 0)
                 if cur_price > 0:
                     bucket["last_price_sol"] = cur_price
                 # Append rolling MC sample
@@ -317,7 +323,9 @@ class PumpfunDiscovery:
             "buyers": set(),
             "buy_events": deque(maxlen=500),
             "sol_inflow_lamports": 0,
-            "buy_count": 0,
+            # Initial cumulative buy count from Pump.fun API. Refreshed every
+            # discovery poll. Used by `min_buyers_for_entry` seasoned-band gate.
+            "buy_count": int(coin.get("buy_count") or 0),
             "curve_fill_pct": (100.0 if is_pumpswap else
                                (min(100.0, max(0.0, (vsr - 30_000_000_000) / 85_000_000_000 * 100)) if vsr else 0.0)),
             "social_score": 0,

@@ -1197,13 +1197,28 @@ class BotState:
             logger.info(f"skip {launch.mint} [{action}]: liquidity {real_sol:.2f} SOL < min {min_liq}")
             return
 
-        # Buyer gate (NEW band only — seasoned tokens don't flow through the
-        # Helius mempool listener so buyers set is always empty)
-        if is_new_band and min_buyers > 0:
+        # Buyer gate — works for BOTH bands now:
+        # - NEW band: Helius mempool buy events populate `buyers` set (live count
+        #   of unique wallets that bought this in the tracking window).
+        # - SEASONED band: Helius doesn't cover PumpSwap, so use `buy_count`
+        #   from Pump.fun's `/coins/{mint}` endpoint (cumulative since launch,
+        #   refreshed by discovery polling).
+        # Both signal "real interest" but at different time scales — that's OK;
+        # `min_buyers_for_entry` should be set higher than `_new` accordingly.
+        if min_buyers > 0:
             b = self.tracking.get(launch.mint, {})
-            buyers = len(b.get("buyers", set()))
+            if is_new_band:
+                buyers = len(b.get("buyers", set()))
+            else:
+                buyers = int(b.get("buy_count") or 0)
             if buyers < min_buyers:
                 logger.info(f"skip {launch.mint} [{action}]: only {buyers} buyers < min {min_buyers}")
+                await hub.broadcast("scanner_skip", {
+                    "mint": launch.mint, "symbol": launch.symbol,
+                    "band": "new" if is_new_band else "seasoned",
+                    "reason": "buyers",
+                    "details": [f"{buyers} < min {min_buyers}"],
+                })
                 return
 
         # Pre-trade classifier gate (NEW band PumpFun only — seasoned/PumpSwap
@@ -1274,12 +1289,34 @@ class BotState:
 
         # On-chain social-proof gate. When enabled, require at least one
         # social link (twitter / telegram / website) AND reply_count >= min.
-        # If we have no Pump.fun metadata yet (fresh launch not yet indexed),
-        # treat it as a fail — fees protection trumps timeliness.
+        # Discovery refresh and `_fetch_pumpfun_socials` both populate these
+        # fields, but on a brand-new launch the first fetch may not have
+        # completed yet. If we have no metadata, BLOCK for up to 3s to do
+        # a synchronous fetch — better to wait briefly than silently reject
+        # every fresh launch.
         if self.config.gate_socials_required:
             b = self.tracking.get(launch.mint, {})
             reply_count = int(b.get("reply_count") or 0)
             has_social = bool((b.get("twitter") or b.get("telegram") or b.get("website") or "").strip())
+            # No metadata yet → block-fetch once (max 3s).
+            if reply_count == 0 and not has_social:
+                try:
+                    import httpx
+                    async with httpx.AsyncClient(timeout=3.0) as client:
+                        r = await client.get(
+                            f"https://frontend-api-v3.pump.fun/coins/{launch.mint}",
+                            headers={"accept": "application/json"},
+                        )
+                        if r.status_code == 200:
+                            c = r.json() or {}
+                            b["reply_count"] = int(c.get("reply_count") or 0)
+                            b["twitter"] = (c.get("twitter") or "").strip()
+                            b["telegram"] = (c.get("telegram") or "").strip()
+                            b["website"] = (c.get("website") or "").strip()
+                            reply_count = b["reply_count"]
+                            has_social = bool((b["twitter"] or b["telegram"] or b["website"]).strip())
+                except Exception as e:
+                    logger.debug(f"socials prefetch failed for {launch.mint}: {e}")
             min_replies = max(0, int(self.config.gate_min_reply_count))
             if not has_social or reply_count < min_replies:
                 logger.info(

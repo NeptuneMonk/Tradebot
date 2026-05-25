@@ -156,6 +156,10 @@ class MomentumScanner:
             "recent_inflow_sol": recent_inflow_lamports / LAMPORTS_PER_SOL,
             "new_buyers_recent": len(recent_buyers_set),
             "unique_buyers_total": len(b.get("buyers", set())),
+            # Cumulative buyer count from the Pump.fun coin API (refreshed by
+            # discovery polling). Seasoned-band `min_buyers_for_entry` gate
+            # reads this — `buyers` set is always empty for PumpSwap pools.
+            "buy_count": int(b.get("buy_count") or 0),
             "real_sol_reserves": (
                 (curve_state["real_sol_reserves"] / LAMPORTS_PER_SOL)
                 if curve_state

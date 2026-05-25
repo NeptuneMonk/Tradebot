@@ -146,6 +146,17 @@ class PnLReconciler:
         # PnL stats with "-300%" gas-on-gas rows — flag explicitly.
         # Real entries cost >= ~$0.04 worth of SOL even at $0.50 trade sizes.
         is_ghost_entry = abs(entry_delta) < 200_000
+
+        # Recompute `entry_price_sol` from REAL on-chain cost. The original
+        # value stored at entry uses quoted sol_in/tokens_out (audit #3) —
+        # off by ~0.5-2% due to priority fee + slippage drift. Backfilling
+        # here means any downstream UI / dashboard read sees the price the
+        # wallet actually paid, not the optimistic pre-trade quote.
+        entry_tokens = int(t.get("entry_tokens") or 0)
+        real_entry_price = None
+        if entry_tokens > 0 and not is_ghost_entry:
+            real_entry_price = (abs(entry_delta) / LAMPORTS_PER_SOL) / entry_tokens
+
         update = {
             "real_entry_cost_sol": abs(entry_delta) / LAMPORTS_PER_SOL,
             "real_exit_received_sol": exit_delta / LAMPORTS_PER_SOL,
@@ -160,6 +171,9 @@ class PnLReconciler:
             "pnl_reconciled": True,
             "pnl_reconciled_at": datetime.now(timezone.utc).isoformat(),
         }
+        if real_entry_price is not None:
+            update["real_entry_price_sol"] = real_entry_price
+            update["entry_price_sol"] = real_entry_price  # update displayed
         if is_ghost_entry:
             update["ghost_entry"] = True
             update["exit_reason"] = "ghost: buy tx landed but failed on-chain"
