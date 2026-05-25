@@ -213,6 +213,81 @@ class BotState:
             return max(panic, base_exit_slip_bps)
         return base_exit_slip_bps
 
+    # ---------- Intelligent Exit v2 helpers ----------
+    def _compute_auto_exit_slip_bps(self, *, panic: bool, pool_depth_sol: float,
+                                    recent_vol_pct: float | None) -> int:
+        """Exchange-style exit slippage: base 3% + thin-pool/vol/panic adders,
+        hard-capped. Replaces the flat panic_exit_slippage_bps=2500 (25%).
+
+        Same formula for pumpfun AND pumpswap — both protocols expose pool depth
+        in SOL (vsr for pumpfun, quote_reserves for pumpswap).
+        """
+        cfg = self.config
+        bps = int(cfg.auto_exit_slip_base_bps)
+        if pool_depth_sol > 0 and pool_depth_sol < cfg.auto_exit_slip_thin_pool_sol:
+            bps += int(cfg.auto_exit_slip_thin_pool_extra_bps)
+        if recent_vol_pct is not None and recent_vol_pct >= cfg.auto_exit_slip_vol_threshold_pct:
+            bps += int(cfg.auto_exit_slip_high_vol_extra_bps)
+        if panic:
+            bps += int(cfg.auto_exit_slip_panic_extra_bps)
+        return min(bps, int(cfg.auto_exit_slip_cap_bps))
+
+    def _recent_vol_pct(self, samples: list[tuple[float, float]],
+                        window_s: int) -> float | None:
+        """Std-dev / mean × 100 over the last `window_s` seconds of price
+        samples. None if insufficient data."""
+        if not samples or len(samples) < 4:
+            return None
+        now = time.time()
+        recent = [p for (ts, p) in samples if now - ts <= window_s]
+        if len(recent) < 4:
+            return None
+        mean = sum(recent) / len(recent)
+        if mean <= 0:
+            return None
+        var = sum((p - mean) ** 2 for p in recent) / len(recent)
+        std = var ** 0.5
+        return (std / mean) * 100.0
+
+    def _pool_depth_sol(self, state: dict, protocol: str) -> float:
+        """Effective SOL liquidity depth, protocol-agnostic.
+        - pumpfun: virtual SOL reserves of the bonding curve
+        - pumpswap: WSOL reserves of the AMM pool"""
+        if not state:
+            return 0.0
+        if protocol == "pumpswap":
+            return (state.get("quote_reserves") or 0) / LAMPORTS_PER_SOL
+        return (state.get("virtual_sol_reserves") or 0) / LAMPORTS_PER_SOL
+
+    def _check_breach_persistence(self, slot: dict, *, kind: str, breached: bool,
+                                  persistence_ms: int, min_samples: int) -> bool:
+        """Returns True iff an exit condition (`kind` = "sl" or "ts") has been
+        continuously breached long enough to fire.
+
+        Logic:
+        - First breach → record start timestamp + sample count = 1
+        - Subsequent breaches → increment sample count
+        - Recovery (breached=False) → CLEAR the breach state (resets the timer)
+        - Returns True only when BOTH age >= persistence_ms AND samples >= min_samples
+        """
+        key_since = f"{kind}_breached_since"
+        key_count = f"{kind}_breached_samples"
+        now = time.time()
+        if not breached:
+            # Price recovered — reset
+            if slot.get(key_since) is not None:
+                slot[key_since] = None
+                slot[key_count] = 0
+            return False
+        # Still in breach
+        if slot.get(key_since) is None:
+            slot[key_since] = now
+            slot[key_count] = 1
+            return False
+        slot[key_count] = (slot.get(key_count) or 0) + 1
+        age_ms = (now - slot[key_since]) * 1000.0
+        return age_ms >= persistence_ms and slot[key_count] >= min_samples
+
     # ---------- Graceful stop ----------
     async def begin_graceful_stop(self):
         """Stop opening new positions immediately, but let active trades ride
@@ -799,7 +874,21 @@ class BotState:
                 slot["exit_in_progress"] = False
         # Hard stop loss FIRST — protects against rugs that would otherwise
         # be misattributed to trailing-stop with a tiny peak.
-        if pct_change <= -self.config.stop_loss_pct:
+        # v2: require sustained breach (kills millisecond dips from MEV/bad RPC quotes).
+        if self.config.intelligent_exit_v2:
+            sl_breached = pct_change <= -self.config.stop_loss_pct
+            if self._check_breach_persistence(
+                slot, kind="sl", breached=sl_breached,
+                persistence_ms=self.config.sl_persistence_ms,
+                min_samples=self.config.sl_persistence_min_samples,
+            ):
+                slot["exit_in_progress"] = True
+                try:
+                    await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%) [fast]")
+                    return
+                finally:
+                    slot["exit_in_progress"] = False
+        elif pct_change <= -self.config.stop_loss_pct:
             slot["exit_in_progress"] = True
             try:
                 await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%) [fast]")
@@ -820,7 +909,18 @@ class BotState:
         arm_pct = self.config.trailing_arm_pct if not slot.get("partial_done") else 0.0
         if trail_pct > 0 and peak > entry_p and peak_pct >= arm_pct:
             trail_drop = (peak - cur_price_sol) / peak * 100
-            if trail_drop >= trail_pct:
+            ts_breached = trail_drop >= trail_pct
+            # v2: require sustained breach for trailing stop too
+            should_fire = False
+            if self.config.intelligent_exit_v2:
+                should_fire = self._check_breach_persistence(
+                    slot, kind="ts", breached=ts_breached,
+                    persistence_ms=self.config.ts_persistence_ms,
+                    min_samples=self.config.ts_persistence_min_samples,
+                )
+            else:
+                should_fire = ts_breached
+            if should_fire:
                 slot["exit_in_progress"] = True
                 try:
                     await self._exit(
@@ -830,6 +930,11 @@ class BotState:
                 finally:
                     slot["exit_in_progress"] = False
                 return
+        else:
+            # Trail not armed yet → clear any pending TS breach state
+            if slot.get("ts_breached_since") is not None:
+                slot["ts_breached_since"] = None
+                slot["ts_breached_samples"] = 0
 
     async def _persist_metrics(self, mint: str):
         b = self.tracking.get(mint)
@@ -1447,12 +1552,30 @@ class BotState:
                     finally:
                         slot["exit_in_progress"] = False
                 if pct_change <= -self.config.stop_loss_pct:
-                    slot["exit_in_progress"] = True
-                    try:
-                        await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%)")
-                        return
-                    finally:
-                        slot["exit_in_progress"] = False
+                    # v2: persistence — only fire if breach has been sustained.
+                    # Monitor poll runs ~every 800ms; require samples + ms gate.
+                    if self.config.intelligent_exit_v2:
+                        fire = self._check_breach_persistence(
+                            slot, kind="sl", breached=True,
+                            persistence_ms=self.config.sl_persistence_ms,
+                            min_samples=self.config.sl_persistence_min_samples,
+                        )
+                    else:
+                        fire = True
+                    if fire:
+                        slot["exit_in_progress"] = True
+                        try:
+                            await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%)")
+                            return
+                        finally:
+                            slot["exit_in_progress"] = False
+                elif self.config.intelligent_exit_v2:
+                    # Recovered above SL → clear breach state
+                    self._check_breach_persistence(
+                        slot, kind="sl", breached=False,
+                        persistence_ms=self.config.sl_persistence_ms,
+                        min_samples=self.config.sl_persistence_min_samples,
+                    )
 
                 # Classifier monitoring applies only to NEW band entries (fresh
                 # mempool launches). Seasoned/PumpSwap trades skip it because
@@ -1564,7 +1687,22 @@ class BotState:
                 logger.warning(f"partial balance read failed for {mint}: {e}")
 
         eff_priority, _eff_slip, eff_exit_slip = self._resolve_fees()
-        exit_slip = self._exit_slip_for(reason, eff_exit_slip)
+        is_panic_partial = self._is_panic_exit(reason)
+        # Intelligent Exit v2: partial-TP usually fires on positive news, so
+        # auto-slip stays at base 3% unless pool depth is thin.
+        if self.config.intelligent_exit_v2:
+            depth_sol = self._pool_depth_sol(state, protocol)
+            vol_pct = self._recent_vol_pct(
+                slot.get("monitor_price_samples") or [],
+                int(self.config.auto_exit_slip_vol_window_s),
+            )
+            exit_slip = self._compute_auto_exit_slip_bps(
+                panic=is_panic_partial, pool_depth_sol=depth_sol, recent_vol_pct=vol_pct,
+            )
+            if is_panic_partial:
+                eff_priority = max(eff_priority, int(self.config.panic_exit_priority_microlamports))
+        else:
+            exit_slip = self._exit_slip_for(reason, eff_exit_slip)
         if protocol == "pumpswap":
             sol_out, min_sol = pumpswap.quote_sell_sol(pumpswap_state, sell_tokens, exit_slip)
         else:
@@ -1579,43 +1717,78 @@ class BotState:
                 kp = get_keypair()
                 user = get_pubkey()
                 mint_pk = Pubkey.from_string(mint)
-                if protocol == "pumpswap":
-                    # Token-2022 pools (e.g. ETB) require explicit base_token_program;
-                    # default classic SPL is wrong and reverts with IncorrectProgramId.
-                    # ALSO: PumpSwap sell requires the canonical user WSOL ATA, not
-                    # a seed-derived temp account, or reverts with Custom:6053.
-                    base_tp = await pumpfun.get_mint_token_program(mint)
-                    user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
-                    wsol_ata, wsol_ixs = pumpswap.build_wsol_ata_idempotent_ixs(user)
-                    ixs = [
-                        pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp),
-                        *wsol_ixs,
-                        pumpswap.build_sell_ix(
-                            user, pumpswap_state, user_token_ata, wsol_ata,
-                            base_amount_in=sell_tokens, min_quote_amount_out=min_sol,
-                            base_token_program=base_tp,
-                        ),
-                        # Unwrap wSOL → native SOL in the user wallet. Without
-                        # this, partial-tp proceeds get stuck in the WSOL ATA.
-                        pumpswap.build_close_wsol_ix(user, wsol_ata),
-                    ]
-                    partial_sig = await pumpfun.send_versioned_tx(
-                        kp, ixs, eff_priority, compute_unit_limit=400_000,
-                    )
+                # Slip-escalation ladder for the partial (same pattern as full-exit)
+                slip_ladder = [exit_slip]
+                if self.config.intelligent_exit_v2:
+                    for floor_bps in (self.config.auto_exit_retry_slip_floors_bps or []):
+                        if int(floor_bps) > slip_ladder[-1]:
+                            slip_ladder.append(int(floor_bps))
+                last_err: Exception | None = None
+                for attempt_idx, attempt_slip in enumerate(slip_ladder):
+                    if protocol == "pumpswap":
+                        _, attempt_min_sol = pumpswap.quote_sell_sol(pumpswap_state, sell_tokens, attempt_slip)
+                    else:
+                        _, attempt_min_sol = pumpfun.quote_sell_sol(state, sell_tokens, attempt_slip)
+                    if protocol == "pumpswap":
+                        # Token-2022 pools require explicit base_token_program;
+                        # default classic SPL is wrong and reverts with IncorrectProgramId.
+                        # ALSO: PumpSwap sell requires the canonical user WSOL ATA, not
+                        # a seed-derived temp account, or reverts with Custom:6053.
+                        base_tp = await pumpfun.get_mint_token_program(mint)
+                        user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
+                        wsol_ata, wsol_ixs = pumpswap.build_wsol_ata_idempotent_ixs(user)
+                        ixs = [
+                            pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp),
+                            *wsol_ixs,
+                            pumpswap.build_sell_ix(
+                                user, pumpswap_state, user_token_ata, wsol_ata,
+                                base_amount_in=sell_tokens, min_quote_amount_out=attempt_min_sol,
+                                base_token_program=base_tp,
+                            ),
+                            pumpswap.build_close_wsol_ix(user, wsol_ata),
+                        ]
+                        try:
+                            partial_sig = await pumpfun.send_versioned_tx(
+                                kp, ixs, eff_priority, compute_unit_limit=400_000,
+                            )
+                        except Exception as _se:
+                            last_err = _se
+                            if "Custom': 6003" in str(_se) and attempt_idx + 1 < len(slip_ladder):
+                                logger.info(
+                                    f"partial slip-retry {attempt_idx + 1}/{len(slip_ladder) - 1} "
+                                    f"for {mint[:8]} after {attempt_slip}bps: escalating"
+                                )
+                                continue
+                            raise
+                    else:
+                        creator_str = trade_doc.get("creator") or (slot.get("launch") or {}).get("creator") or ""
+                        if state and state.get("creator"):
+                            creator_str = state["creator"]
+                        if not creator_str:
+                            raise RuntimeError("missing creator for partial-sell creator_vault PDA")
+                        creator_pk = Pubkey.from_string(creator_str)
+                        tp = await pumpfun.get_mint_token_program(mint)
+                        is_cashback = bool((state or {}).get("is_cashback", False))
+                        ix = await pumpfun.build_sell_ix(user, mint_pk, sell_tokens, attempt_min_sol, creator_pk, tp, cashback=is_cashback)
+                        try:
+                            partial_sig = await pumpfun.send_versioned_tx(
+                                kp, [ix], eff_priority
+                            )
+                        except Exception as _se:
+                            last_err = _se
+                            if "Custom': 6003" in str(_se) and attempt_idx + 1 < len(slip_ladder):
+                                logger.info(
+                                    f"partial slip-retry {attempt_idx + 1}/{len(slip_ladder) - 1} "
+                                    f"for {mint[:8]} after {attempt_slip}bps: escalating"
+                                )
+                                continue
+                            raise
+                    # Landed — record actual slip used
+                    exit_slip = attempt_slip
+                    break
                 else:
-                    creator_str = trade_doc.get("creator") or (slot.get("launch") or {}).get("creator") or ""
-                    # Re-pull from curve in case the stored creator is stale
-                    if state and state.get("creator"):
-                        creator_str = state["creator"]
-                    if not creator_str:
-                        raise RuntimeError("missing creator for partial-sell creator_vault PDA")
-                    creator_pk = Pubkey.from_string(creator_str)
-                    tp = await pumpfun.get_mint_token_program(mint)
-                    is_cashback = bool((state or {}).get("is_cashback", False))
-                    ix = await pumpfun.build_sell_ix(user, mint_pk, sell_tokens, min_sol, creator_pk, tp, cashback=is_cashback)
-                    partial_sig = await pumpfun.send_versioned_tx(
-                        kp, [ix], eff_priority
-                    )
+                    if last_err:
+                        raise last_err
             except Exception as e:
                 logger.exception(f"partial sell failed for {mint}: {e}")
                 return False
@@ -1726,7 +1899,26 @@ class BotState:
         # slippage to panic tier when the exit reason demands fast landing
         # (stop-loss, hard-stop, classifier abort, bonding-curve complete).
         eff_priority, _eff_slip, eff_exit_slip = self._resolve_fees()
-        exit_slip = self._exit_slip_for(reason, eff_exit_slip)
+        is_panic = self._is_panic_exit(reason)
+
+        # Intelligent Exit v2: auto-slip from pool depth + volatility +
+        # panic tier. Replaces flat panic_exit_slippage_bps=2500 (25%).
+        # Same formula for pumpfun and pumpswap — depth comes from state.
+        if self.config.intelligent_exit_v2:
+            depth_sol = self._pool_depth_sol(state, protocol)
+            vol_pct = self._recent_vol_pct(
+                slot.get("monitor_price_samples") or [],
+                int(self.config.auto_exit_slip_vol_window_s),
+            )
+            exit_slip = self._compute_auto_exit_slip_bps(
+                panic=is_panic, pool_depth_sol=depth_sol, recent_vol_pct=vol_pct,
+            )
+            # Priority-fee bump for panic-tier exits — real front-run defense
+            # (faster landing) without the MEV-sandwich invitation of wide slip.
+            if is_panic:
+                eff_priority = max(eff_priority, int(self.config.panic_exit_priority_microlamports))
+        else:
+            exit_slip = self._exit_slip_for(reason, eff_exit_slip)
 
         # For live trades, size the sell by the ACTUAL wallet balance — fees
         # taken at buy time mean our balance is usually a touch lower than
@@ -1840,42 +2032,85 @@ class BotState:
                 kp = get_keypair()
                 user = get_pubkey()
                 mint_pk = Pubkey.from_string(mint)
-                if protocol == "pumpswap":
-                    # Token-2022 pools require explicit base_token_program +
-                    # canonical user WSOL ATA (not seed-derived temp). Sells
-                    # with a temp WSOL revert with Custom:6053 (seeds mismatch).
-                    base_tp = await pumpfun.get_mint_token_program(mint)
-                    user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
-                    wsol_ata, wsol_ixs = pumpswap.build_wsol_ata_idempotent_ixs(user)
-                    ixs = [
-                        pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp),
-                        *wsol_ixs,
-                        pumpswap.build_sell_ix(
-                            user, pumpswap_state, user_token_ata, wsol_ata,
-                            base_amount_in=tokens_in,
-                            min_quote_amount_out=min_sol,
-                            base_token_program=base_tp,
-                        ),
-                        # Unwrap wSOL → native SOL in the user wallet.
-                        pumpswap.build_close_wsol_ix(user, wsol_ata),
-                    ]
-                    exit_sig = await pumpfun.send_versioned_tx(
-                        kp, ixs, eff_priority,
-                        compute_unit_limit=400_000,
-                    )
+                # Build slip-escalation ladder. Attempt 0 = current exit_slip.
+                # Attempts 1..N escalate to auto_exit_retry_slip_floors_bps if
+                # the on-chain tx reverts with Custom:6003 (slippage).
+                slip_ladder = [exit_slip]
+                if self.config.intelligent_exit_v2:
+                    for floor_bps in (self.config.auto_exit_retry_slip_floors_bps or []):
+                        if int(floor_bps) > slip_ladder[-1]:
+                            slip_ladder.append(int(floor_bps))
+                last_err: Exception | None = None
+                exit_sig = None
+                for attempt_idx, attempt_slip in enumerate(slip_ladder):
+                    # Recompute min_sol for THIS attempt's slip — both protocols
+                    if protocol == "pumpswap":
+                        _, attempt_min_sol = pumpswap.quote_sell_sol(pumpswap_state, tokens_in, attempt_slip)
+                    else:
+                        _, attempt_min_sol = pumpfun.quote_sell_sol(state, tokens_in, attempt_slip)
+                    if protocol == "pumpswap":
+                        # Token-2022 pools require explicit base_token_program +
+                        # canonical user WSOL ATA (not seed-derived temp). Sells
+                        # with a temp WSOL revert with Custom:6053 (seeds mismatch).
+                        base_tp = await pumpfun.get_mint_token_program(mint)
+                        user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
+                        wsol_ata, wsol_ixs = pumpswap.build_wsol_ata_idempotent_ixs(user)
+                        ixs = [
+                            pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp),
+                            *wsol_ixs,
+                            pumpswap.build_sell_ix(
+                                user, pumpswap_state, user_token_ata, wsol_ata,
+                                base_amount_in=tokens_in,
+                                min_quote_amount_out=attempt_min_sol,
+                                base_token_program=base_tp,
+                            ),
+                            # Unwrap wSOL → native SOL in the user wallet.
+                            pumpswap.build_close_wsol_ix(user, wsol_ata),
+                        ]
+                        try:
+                            exit_sig = await pumpfun.send_versioned_tx(
+                                kp, ixs, eff_priority,
+                                compute_unit_limit=400_000,
+                            )
+                        except Exception as _se:
+                            last_err = _se
+                            if "Custom': 6003" in str(_se) and attempt_idx + 1 < len(slip_ladder):
+                                logger.info(
+                                    f"sell slip-retry {attempt_idx + 1}/{len(slip_ladder) - 1} "
+                                    f"for {mint[:8]} after {attempt_slip}bps: escalating"
+                                )
+                                continue
+                            raise
+                    else:
+                        creator_str = trade_doc.get("creator") or (slot.get("launch") or {}).get("creator") or ""
+                        if state and state.get("creator"):
+                            creator_str = state["creator"]
+                        if not creator_str:
+                            raise RuntimeError("missing creator for final-sell creator_vault PDA")
+                        creator_pk = Pubkey.from_string(creator_str)
+                        tp = await pumpfun.get_mint_token_program(mint)
+                        is_cashback = bool((state or {}).get("is_cashback", False))
+                        ix = await pumpfun.build_sell_ix(user, mint_pk, tokens_in, attempt_min_sol, creator_pk, tp, cashback=is_cashback)
+                        try:
+                            exit_sig = await pumpfun.send_versioned_tx(
+                                kp, [ix], eff_priority
+                            )
+                        except Exception as _se:
+                            last_err = _se
+                            if "Custom': 6003" in str(_se) and attempt_idx + 1 < len(slip_ladder):
+                                logger.info(
+                                    f"sell slip-retry {attempt_idx + 1}/{len(slip_ladder) - 1} "
+                                    f"for {mint[:8]} after {attempt_slip}bps: escalating"
+                                )
+                                continue
+                            raise
+                    # Success — record the slip that actually landed and bail
+                    exit_slip = attempt_slip
+                    break
                 else:
-                    creator_str = trade_doc.get("creator") or (slot.get("launch") or {}).get("creator") or ""
-                    if state and state.get("creator"):
-                        creator_str = state["creator"]
-                    if not creator_str:
-                        raise RuntimeError("missing creator for final-sell creator_vault PDA")
-                    creator_pk = Pubkey.from_string(creator_str)
-                    tp = await pumpfun.get_mint_token_program(mint)
-                    is_cashback = bool((state or {}).get("is_cashback", False))
-                    ix = await pumpfun.build_sell_ix(user, mint_pk, tokens_in, min_sol, creator_pk, tp, cashback=is_cashback)
-                    exit_sig = await pumpfun.send_versioned_tx(
-                        kp, [ix], eff_priority
-                    )
+                    # ladder exhausted — re-raise the final error
+                    if last_err:
+                        raise last_err
             except Exception as e:
                 err_str = str(e)
                 logger.exception(f"Live sell failed: {e}")

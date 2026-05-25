@@ -47,6 +47,41 @@ class BotConfig(BaseModel):
     # and bonding-curve-complete exits where landing the sell matters more
     # than the fill price. 25% lets us escape sharp dumps without 6003 reverts.
     panic_exit_slippage_bps: int = 2500  # 25% emergency exit slippage
+
+    # Intelligent Exit v2 — exchange-style exit logic.
+    # When enabled: SL / TS only fire after a sustained breach (not on single
+    # millisecond dips); exit slippage is auto-computed per-trade from depth +
+    # volatility (3-12% range) instead of a flat 25% panic floor; Solana
+    # priority fee is auto-bumped on panic-tier exits for faster landing.
+    intelligent_exit_v2: bool = True
+    # SL/TS persistence — exit only fires after this many ms of CONTINUOUS
+    # breach (cleared on any recovery, restart on next breach). Kills false
+    # exits from millisecond dips during volatile microstructure.
+    sl_persistence_ms: int = 1200
+    ts_persistence_ms: int = 1500
+    # Defense-in-depth: require N price samples during persistence window
+    # before firing, so a single bad RPC quote can't single-handedly cause exit.
+    sl_persistence_min_samples: int = 3
+    ts_persistence_min_samples: int = 3
+    # Auto-slip formula (when intelligent_exit_v2 is on, replaces panic_exit_slippage_bps
+    # for exit-side sells; entry-side already has its own depth-aware ladder)
+    auto_exit_slip_base_bps: int = 300            # 3% baseline
+    auto_exit_slip_thin_pool_extra_bps: int = 200 # +2% if pool depth < 8 SOL
+    auto_exit_slip_high_vol_extra_bps: int = 200  # +2% if 5s std > 8%
+    auto_exit_slip_panic_extra_bps: int = 400     # +4% on SL/hard-stop/classifier
+    auto_exit_slip_cap_bps: int = 1200            # 12% hard cap
+    # Volatility window for the high-vol bump (seconds and threshold %).
+    auto_exit_slip_vol_window_s: int = 5
+    auto_exit_slip_vol_threshold_pct: float = 8.0
+    # Pool-depth threshold (in SOL) below which we widen by thin_pool_extra
+    auto_exit_slip_thin_pool_sol: float = 8.0
+    # Retry-on-Custom:6003 escalation. If initial attempt reverts on slippage,
+    # retry with progressively wider slip floors before giving up.
+    auto_exit_retry_slip_floors_bps: list[int] = [800, 1500]  # 8% then 15%
+    # Priority-fee bump on panic-tier exits. Real front-run defense (faster
+    # landing) without the MEV-sandwich invitation that wide slippage creates.
+    panic_exit_priority_microlamports: int = 3_000_000
+    panic_exit_cu_price_microlamports: int = 600_000
     # Entry filters (applied to scanner_momentum entries; reentry uses its own size logic)
     min_curve_liquidity_sol: float = 12.0  # skip thin/dead launches
     min_buyers_for_entry: int = 3          # require real interest

@@ -400,3 +400,58 @@ User reported `/api/wallet/token-scan` still timing out intermittently even afte
 
 ### Verified
 5 consecutive runs: **7.05s / 6.85s / 6.20s / 6.74s / 6.81s** (down from 12-51s). All 200 OK, count=155, $2.38 recoverable.
+
+## 2026-05-25 — Intelligent Exit v2 (sustained-breach SL/TS + auto-slip + priority bump)
+
+### What changed
+Implemented exchange-style exit logic that addresses three user-observed issues:
+
+1. **SL/TS firing on millisecond dips** — Real-time on_trade WS events can be 50ms apart; a single bad RPC quote or jit-sandwich could spike to -70% briefly, triggering exit before recovery.
+2. **Flat 25% panic slippage** — invited MEV sandwiching and pre-priced large losses on every panic exit. User correctly noted they manually trade at "a few %".
+3. **No fast-landing mechanism on dumps** — wide slippage doesn't help land first; priority fee does.
+
+### Implementation
+**Sustained-breach gating** (`_check_breach_persistence` in bot.py):
+- SL/TS exits only fire after `sl_persistence_ms=1200` / `ts_persistence_ms=1500` of CONTINUOUS breach
+- Plus `sl_persistence_min_samples=3` defense-in-depth (one bad RPC quote can't single-handedly cause exit)
+- Recovery at any point CLEARS the timer (true "sustained" semantics)
+- Wired into BOTH fast-exit (on_trade WS) and monitor poll loop, BOTH SL and TS paths
+- Protocol-agnostic — pumpfun and pumpswap inherit equally
+
+**Auto-slip formula** (`_compute_auto_exit_slip_bps`):
+```
+base = 300 bps (3%)
++ 200 bps if pool depth < 8 SOL (thin)
++ 200 bps if 5s std/mean > 8% (high vol)
++ 400 bps if panic exit (SL/hard-stop/classifier/BC-complete)
+cap = 1200 bps (12%)
+```
+- Replaces `panic_exit_slippage_bps=2500` for exit-side sells when `intelligent_exit_v2=True`
+- Same formula both protocols — depth read via `_pool_depth_sol()` (vsr for pumpfun, quote_reserves for pumpswap)
+
+**Retry-on-Custom:6003 escalation ladder** (`auto_exit_retry_slip_floors_bps = [800, 1500]`):
+- Initial attempt: computed slip (avg ~5%)
+- If reverts on slippage: retry with 8% floor
+- If still reverts: retry with 15% floor
+- Wired into both full-exit AND partial-exit live-sell blocks, both protocols
+- Adds ~2-3s on rare retries; saves an average ~18% of exit value vs. flat 25% panic
+
+**Priority-fee bump for panic exits** (`panic_exit_priority_microlamports=3M`):
+- Auto-applied on SL/hard-stop/classifier/BC-complete exits
+- Real front-run defense (lands first) without wide slippage's MEV invitation
+
+### Backward compatibility
+- Master toggle: `intelligent_exit_v2: bool = True` in BotConfig
+- Old code paths preserved behind `else` branches; flipping the flag instantly reverts to flat-slip / no-persistence behavior
+- Old `panic_exit_slippage_bps` field still honored when v2 is off
+
+### Tests
+- `/app/backend/tests/test_intelligent_exit.py` — 16 cases, all pass:
+  - 5x auto-slip formula edge cases
+  - 3x volatility window edge cases
+  - 3x depth read both protocols
+  - 5x breach persistence (timer reset on recovery, min-samples gate, SL/TS independence, etc.)
+
+### Files touched
+- `/app/backend/models.py` — 12 new BotConfig fields with sensible defaults
+- `/app/backend/bot.py` — 4 helpers + persistence gates in fast-exit (`_check_exit_conditions_realtime`) + monitor poll loop + auto-slip + retry ladder in `_exit_impl` + `_partial_exit`

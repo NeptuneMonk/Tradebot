@@ -20,17 +20,13 @@ For learning and experimentation only — no deployment outside preview.
 - **Frontend (React + Tailwind + shadcn)**: Single-page "Control Room" dashboard, polling every 3s, IBM Plex Sans/Mono, sharp-edged dark UI, Recharts P/L sparkline, QR deposit address.
 
 
-## Recently fixed (2026-05-24 PM)
-- ✅ **PumpSwap sell `Custom:6053` (BuybackFeeRecipientNotAuthorized) FIXED** — `BREAKING_FEE_RECIPIENTS_PS` in `pumpswap.py` now correctly populated with the 8 PumpSwap-specific recipients (was cloned from `pumpfun.py`). Verified via live `simulateTransaction` against a real graduated mint (WEALTH, pool `FJy7o9…`): `err=None, unitsConsumed=107292`. Test: `/app/backend/tests/sim_pumpswap_sell.py`.
-- ✅ **PumpSwap sell WSOL ATA shape FIXED** — PumpSwap sell requires the canonical `ATA(user, WSOL, SPL)` (NOT a seed-derived temp account, which produced a separate Custom:6053 seeds-mismatch). New `build_wsol_ata_idempotent_ixs()` in `pumpswap.py`; both bot exit paths + recovery endpoints rewired.
+## Recently fixed (2026-05-25)
+- ✅ **Intelligent Exit v2** — sustained-breach SL/TS, auto-slip formula, retry ladder, priority-fee bump. SL/TS now require `1200/1500ms` continuous breach + 3 samples; replaces flat 25% panic slip with depth-aware 3-12% formula; auto-retries on Custom:6003 with 8%/15% floors; panic exits bump priority fee to 3M µL for faster landing. Protocol-agnostic — wired into both pumpfun and pumpswap paths. Master toggle `intelligent_exit_v2: bool = True`. 16 unit tests pass. (`bot.py`, `models.py`, `tests/test_intelligent_exit.py`)
+- ✅ **Atomic native SOL on every PumpSwap sell** — `createWsolATA → sell → closeWsolATA` in one tx; sale proceeds + ATA rent unwrap to native SOL automatically. New `/api/wallet/unwrap-wsol` endpoint + UI banner to recover any pre-fix stuck wSOL.
+- ✅ **Per-mint Sell button** in Wallet Token Scan panel (in addition to existing bulk "Sell all").
 - ✅ **/wallet/token-scan 502 FIXED** — wallet has 155 non-zero token accounts; sequential per-mint pricing was exceeding the 60s cluster-ingress timeout. Now: parallelized with `asyncio.gather` + semaphore(10), Mongo-backed pool-address cache (`pumpswap_pool_cache` collection), and per-mint hard timeouts (4-6s). Latency drops from 12-51s (intermittent 502) to **consistently 6-7s** across 5 runs.
-- ✅ **Helius RPC transient retry** — `solana_client.rpc_call` now retries on ConnectTimeout / ReadTimeout / 5xx / 429 with 0.25→1.0s backoff (3 attempts). Centralized fix — prevents single transient Helius hiccup from 500-ing any API endpoint.
-- ✅ **Sell path 6022 / 6023 / 6003 root-causes nailed** (per official IDL): 6022 = SellZeroAmount (not slippage as prior agent claimed), 6023 = NotEnoughTokensToSell, 6003 = real slippage.
-- ✅ Early-return on zero ATA balance in `_exit_impl` and `_partial_exit` (no more 0-amount sell IXs).
-- ✅ Token-2022-aware ATA derivation in partial-exit path (was reading empty legacy ATA → falling back to oversized `entry_tokens` → 6023).
-- ✅ 0.5% safety shave on read balances to absorb on-chain race conditions.
-- ✅ Tiered slippage: 10% normal exit / 25% panic exit (SL, hard-stop, classifier, BC-complete). New `panic_exit_slippage_bps` config (default 2500).
-- ✅ Same 0.5% shave applied to `/wallet/recover-mints` and manual single-mint recovery.
+- ✅ **PumpSwap sell `Custom:6053` (BuybackFeeRecipientNotAuthorized) FIXED** — `BREAKING_FEE_RECIPIENTS_PS` corrected; `build_wsol_ata_idempotent_ixs()` for canonical WSOL ATA shape. Verified via live `simulateTransaction`: `err=None, unitsConsumed=107292`.
+- ✅ **Helius RPC transient retry** — `solana_client.rpc_call` retries ConnectTimeout/ReadTimeout/5xx/429 with 0.25→1.0s backoff.
 
 
 ## Implemented (2026-02-22)
