@@ -1,5 +1,36 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-25 — Phase 2.9 — Greylist Mint Pinning in Scanner Feeds
+
+Reframed per user feedback: instead of a separate "post-exit observation loop", leverage the scanner's existing data flow by **pinning** greylisted-creator mints in the Recent Launches feed.
+
+### Backend
+- **`Launch` model** gained: `pinned`, `pinned_at`, `pin_reason`, `pin_creator_pattern`, `pin_strategy`, `pin_exited`, `pin_exited_at`.
+- **Entry hook** (`bot.py:_enter`): when the bot opens a position on a greylisted creator (strategy ≠ standard), the launch doc gets pinned with the captured pattern + tier.
+- **Exit hook** (`bot.py:_exit`): flips `pin_exited=True` (does NOT remove the pin — only the user can manually unpin).
+- **`recent_launches` aging**: changed from `[:50]` to `pinned[:200] + unpinned[:50]` so pinned cards survive the normal 50-item cap indefinitely.
+- **`GET /api/launches/recent`**: returns pinned-first (active pins before exited pins by `pin_exited` sort), then most recent unpinned. Pinned items don't count against `limit`.
+- **`POST /api/launches/{launch_id}/unpin`**: clears `pinned` + unsets pin_exited fields; card falls back to normal scanner lifecycle. Idempotent.
+
+### Frontend (`RecentLaunchesFeed.jsx`)
+- Pinned cards render with **fuchsia border + tinted bg** and a `PINNED` badge showing tier + pattern in the tooltip.
+- After exit they grey out (`opacity-60`, neutral border, `EXITED` badge) but stay at the top.
+- Header shows `N pinned` count when any are present.
+- Each pinned card has an `×` button → `/api/launches/{id}/unpin` → card falls back to natural scanner aging.
+- Dashboard WS handlers updated: `launch` event preserves pinned items across the cap; `trade_enter` + `trade_exit` re-fetch `/api/launches/recent` so the new pin badge / exited state appears immediately.
+
+### What this gives you
+- Zero new RPC traffic — uses existing scanner subscriptions.
+- The Doctor's `_rule_pattern_tp_calibration` naturally gets richer `peak_pct_pre_rug` data because pinned mints keep streaming ticks past our exit, so the post-exit peak is captured by the in-memory tracker (already wired).
+- Visual feedback: "still pinned but greyed = we left this party early, here's what happened after."
+
+### Verified end-to-end
+- Seeded 2 pinned launches (1 active, 1 exited) + 1 normal → API returns active-pinned, exited-pinned, normal in that order.
+- `POST /api/launches/PinTest1/unpin` → `{"ok":true}`, DB shows `pinned=false, pin_exited=<unset>`.
+- Screenshot confirms fuchsia active card + greyed exited card stuck to top of feed with regular launches below.
+
+
+
 ## 2026-05-25 — Phase 2.8 — Pattern TP Buffer Calibration (Doctor learning loop)
 
 ### New: configurable `pattern_tp_buffer_pct = 2.0` (BotConfig)

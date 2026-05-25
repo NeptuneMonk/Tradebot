@@ -84,4 +84,6 @@ export const api = {
     client.get(`/creator-greylist/blacklist`, { params: { limit } }).then(r => r.data),
   creatorPatternAnalytics: (days = 30, mode = null) =>
     client.get(`/creator-greylist/pattern-analytics`, { params: { days, ...(mode ? { mode } : {}) } }).then(r => r.data),
+  unpinLaunch: (launchId) =>
+    client.post(`/launches/${launchId}/unpin`).then(r => r.data),
 };

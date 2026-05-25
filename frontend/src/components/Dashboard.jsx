@@ -91,9 +91,18 @@ export default function Dashboard() {
       case "wallet":
         setWallet(data);
         break;
-      case "launch":
-        setLaunches((prev) => [data, ...prev.filter((l) => l.id !== data.id)].slice(0, 50));
+      case "launch": {
+        // Pinned launches survive the 50-item cap (Phase 2.9). The backend
+        // already returns pinned-first on the /launches/recent endpoint;
+        // here we just ensure WS-driven inserts don't bump them off.
+        setLaunches((prev) => {
+          const merged = [data, ...prev.filter((l) => l.id !== data.id)];
+          const pinned = merged.filter((l) => l.pinned);
+          const unpinned = merged.filter((l) => !l.pinned);
+          return [...pinned.slice(0, 200), ...unpinned.slice(0, 50)];
+        });
         break;
+      }
       case "launch_update":
         // Only update if the mint is already in our 50-item window —
         // events for mints we never displayed shouldn't bloat React state.
@@ -107,6 +116,9 @@ export default function Dashboard() {
         break;
       case "trade_enter":
         setActiveTrades((prev) => [data, ...prev.filter((t) => t.id !== data.id)]);
+        // Re-fetch launches so the new pinned card appears at the top
+        // immediately, with pin_strategy / pin_creator_pattern populated.
+        api.launches().then(setLaunches).catch(() => {});
         break;
       case "trade_update":
         setActiveTrades((prev) => prev.map((t) => (t.id === data.id ? { ...t, ...data } : t)));
@@ -114,6 +126,8 @@ export default function Dashboard() {
       case "trade_exit":
         setActiveTrades((prev) => prev.filter((t) => t.id !== data.id));
         setHistory((prev) => [data, ...prev]);
+        // Refresh launches so the exited card flips to grey/dimmed state
+        api.launches().then(setLaunches).catch(() => {});
         api.plSummary(7).then(setPl).catch(() => {});
         setPlSourceRefresh((n) => n + 1);
         // Refresh reentry watchlist (may have a new entry)
@@ -199,7 +213,18 @@ export default function Dashboard() {
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
           <ActiveTradesTable trades={activeTrades} onExit={async (id) => { await api.exitTrade(id); refreshAll(); }} />
-          <RecentLaunchesFeed launches={launches} />
+          <RecentLaunchesFeed
+            launches={launches}
+            onUnpin={(launchId) =>
+              setLaunches((prev) =>
+                prev.map((l) =>
+                  l.id === launchId
+                    ? { ...l, pinned: false, pin_exited: undefined }
+                    : l
+                )
+              )
+            }
+          />
         </div>
 
         <ReentryWatchCard watchlist={reentry} onRefresh={() => api.reentryWatchlist().then(setReentry).catch(() => {})} />

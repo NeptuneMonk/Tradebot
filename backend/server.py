@@ -1312,7 +1312,45 @@ async def recover_stuck_trade(trade_id: str):
 # ---------- Launches & Trades ----------
 @api.get("/launches/recent")
 async def launches_recent(limit: int = 30):
-    return await db.launches.find({}, {"_id": 0}).sort("detected_at", -1).to_list(limit)
+    """Recent launches. Pinned-first (Phase 2.9: greylist-creator mints stay
+    pinned at the top of whichever feed they belong to until manually
+    unpinned), then by detection time desc. Pinned items don't count
+    against `limit` so a noisy 50-launches-per-minute feed never pushes
+    the user's tracked mints off-screen."""
+    pinned_cur = db.launches.find(
+        {"pinned": True}, {"_id": 0},
+    ).sort([("pin_exited", 1), ("pinned_at", -1)])
+    pinned = await pinned_cur.to_list(200)
+    pinned_mints = {p["mint"] for p in pinned}
+    unpinned = await db.launches.find(
+        {"mint": {"$nin": list(pinned_mints)}}, {"_id": 0},
+    ).sort("detected_at", -1).to_list(limit)
+    return pinned + unpinned
+
+
+@api.post("/launches/{launch_id}/unpin")
+async def launches_unpin(launch_id: str):
+    """Manual unpin (Phase 2.9). Removes the pin flag; card falls back to
+    normal scanner aging logic (will eventually age out of the in-memory
+    recent_launches cap). Does NOT delete the launch — historical data
+    stays for analytics."""
+    doc = await db.launches.find_one({"_id": launch_id}, {"_id": 0, "mint": 1, "pinned": 1})
+    if not doc:
+        raise HTTPException(404, "Launch not found")
+    if not doc.get("pinned"):
+        return {"ok": True, "already_unpinned": True}
+    await db.launches.update_one(
+        {"_id": launch_id},
+        {"$set": {"pinned": False}, "$unset": {"pin_exited": "", "pin_exited_at": ""}},
+    )
+    # In-memory mirror
+    for r in bot_state.recent_launches:
+        if r.get("id") == launch_id:
+            r["pinned"] = False
+            r.pop("pin_exited", None)
+            r.pop("pin_exited_at", None)
+            break
+    return {"ok": True}
 
 
 @api.get("/trades/active")

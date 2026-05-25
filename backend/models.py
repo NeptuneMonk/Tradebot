@@ -256,6 +256,18 @@ class Launch(BaseModel):
     social_score: int = 0
     social_sources: dict = {}
     entered: bool = False  # did the bot enter this trade?
+    # Greylist pinning (Phase 2.9) — when the bot enters on a greylisted
+    # creator the mint card stays pinned at the top of its scanner feed
+    # (`new` / `seasoned`) so the user can watch what happens AFTER our
+    # exit. Survives the normal scanner aging logic; only a manual unpin
+    # or a full launch outcome removes it.
+    pinned: bool = False
+    pinned_at: Optional[datetime] = None
+    pin_reason: Optional[str] = None           # e.g. "greylist_entry"
+    pin_creator_pattern: Optional[str] = None  # captured for the badge
+    pin_strategy: Optional[str] = None         # tier at entry time
+    pin_exited: bool = False                   # True after our trade exits
+    pin_exited_at: Optional[datetime] = None
 
 
 class Trade(BaseModel):

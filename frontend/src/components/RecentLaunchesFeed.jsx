@@ -1,4 +1,6 @@
-import { Radio, Users, Droplets, Flame } from "lucide-react";
+import { Radio, Users, Droplets, Flame, Pin, PinOff, X } from "lucide-react";
+import { toast } from "sonner";
+import { api } from "@/lib/api";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const timeAgo = (iso) => {
@@ -9,12 +11,22 @@ const timeAgo = (iso) => {
   return `${Math.floor(sec / 3600)}h ago`;
 };
 
-export default function RecentLaunchesFeed({ launches }) {
+export default function RecentLaunchesFeed({ launches, onUnpin }) {
+  const pinnedCount = launches.filter((l) => l.pinned).length;
   return (
     <div className="control-card flex flex-col" data-testid="recent-launches-card">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-neutral-500">
           <Radio className="w-3 h-3" /> Recent Launches ({launches.length})
+          {pinnedCount > 0 && (
+            <span
+              className="ml-1 px-1.5 py-0.5 border border-fuchsia-700 text-fuchsia-300 bg-fuchsia-950/40 text-[9px] font-mono uppercase tracking-wider inline-flex items-center gap-1"
+              data-testid="launches-pinned-count"
+              title="Mints from greylisted creators stay pinned at top until manually unpinned"
+            >
+              <Pin className="w-2.5 h-2.5" /> {pinnedCount} pinned
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.2em] text-emerald-500">
           <span className="pulse-dot"></span> LIVE
@@ -27,11 +39,34 @@ export default function RecentLaunchesFeed({ launches }) {
           </div>
         )}
         <ul className="space-y-1">
-          {launches.map((l) => (
-            <li key={l.id} data-testid={`launch-row-${l.mint}`} className="border border-neutral-800 px-3 py-2 hover:bg-neutral-900/60 transition-colors duration-100">
+          {launches.map((l) => {
+            const isPinned = !!l.pinned;
+            const isPinExited = !!l.pin_exited;
+            return (
+            <li
+              key={l.id}
+              data-testid={`launch-row-${l.mint}`}
+              className={[
+                "border px-3 py-2 transition-colors duration-100 relative",
+                isPinned
+                  ? (isPinExited
+                      ? "border-neutral-700 bg-neutral-900/60 opacity-60 hover:opacity-90"
+                      : "border-fuchsia-800/60 bg-fuchsia-950/20 hover:bg-fuchsia-950/30")
+                  : "border-neutral-800 hover:bg-neutral-900/60",
+              ].join(" ")}
+            >
+              {isPinned && (
+                <div
+                  className="absolute top-0 left-0 w-0.5 h-full"
+                  style={{ background: isPinExited ? "#525252" : "#a21caf" }}
+                />
+              )}
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {isPinned && (
+                      <PinBadge l={l} exited={isPinExited} onUnpin={onUnpin} />
+                    )}
                     <span className="font-mono font-semibold text-sm truncate">
                       {l.symbol || "?"}
                     </span>
@@ -59,10 +94,53 @@ export default function RecentLaunchesFeed({ launches }) {
                 </div>
               </div>
             </li>
-          ))}
+            );
+          })}
         </ul>
       </div>
     </div>
+  );
+}
+
+function PinBadge({ l, exited, onUnpin }) {
+  const tier = l.pin_strategy || "tier";
+  const pattern = l.pin_creator_pattern;
+  const tip = exited
+    ? "Trade exited — still pinned. Click the X to unpin."
+    : `Greylist ${tier}${pattern ? " · " + pattern.replace(/_/g, " ") : ""}. Stays at top until you unpin.`;
+  const click = async (e) => {
+    e.stopPropagation();
+    try {
+      await api.unpinLaunch(l.id);
+      toast.success(`Unpinned ${l.symbol || "mint"}`);
+      onUnpin && onUnpin(l.id);
+    } catch (err) {
+      toast.error("Unpin failed: " + (err?.response?.data?.detail || err.message));
+    }
+  };
+  return (
+    <span
+      data-testid={`launch-pin-badge-${l.mint}`}
+      title={tip}
+      className={[
+        "inline-flex items-center gap-1 px-1.5 py-0.5 border text-[9px] font-mono uppercase tracking-wider",
+        exited
+          ? "border-neutral-700 text-neutral-400 bg-neutral-900"
+          : "border-fuchsia-700 text-fuchsia-300 bg-fuchsia-950/40",
+      ].join(" ")}
+    >
+      {exited ? <PinOff className="w-2.5 h-2.5" /> : <Pin className="w-2.5 h-2.5" />}
+      {exited ? "EXITED" : "PINNED"}
+      <button
+        type="button"
+        onClick={click}
+        data-testid={`launch-unpin-btn-${l.mint}`}
+        className="ml-0.5 hover:text-rose-300"
+        title="Unpin"
+      >
+        <X className="w-2.5 h-2.5" />
+      </button>
+    </span>
   );
 }
 
