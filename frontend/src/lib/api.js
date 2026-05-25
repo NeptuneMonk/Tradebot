@@ -48,6 +48,12 @@ export const api = {
   walletTokenScan: () => longClient.get("/wallet/token-scan").then(r => r.data),
   walletRecoverMints: (mints) => longClient.post("/wallet/recover-mints", { mints }, { timeout: 60000 + 30000 * mints.length }).then(r => r.data),
   walletUnwrapWsol: () => longClient.post("/wallet/unwrap-wsol").then(r => r.data),
+  // Brute-force recovery: 50% slippage + 5M µLamp priority via PumpSwap AMM.
+  // Run when normal recovery times out or 504s on the gateway.
+  forceRecoverStuck: (tradeId) => longClient.post(`/trades/${tradeId}/force-recover`, null, { timeout: 90000 }).then(r => r.data),
+  // Export the bot wallet's private key (b58 + JSON array). Use to import
+  // the wallet into Phantom / Solflare / a CLI signer for manual recovery.
+  walletExportPrivateKey: () => client.get("/wallet/export-private-key").then(r => r.data),
   // Strategy Doctor
   doctorList: (status = "pending") => client.get("/doctor/suggestions", { params: { status } }).then(r => r.data),
   doctorRunNow: () => longClient.post("/doctor/run-now").then(r => r.data),

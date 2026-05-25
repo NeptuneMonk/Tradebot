@@ -114,6 +114,131 @@ async def wallet_send(req: WithdrawRequest):
         raise HTTPException(500, f"send failed: {e}")
 
 
+@api.get("/wallet/export-private-key")
+async def wallet_export_private_key():
+    """Return the bot wallet's private key (base58 + JSON-array forms).
+
+    Preview-only diagnostic — gated behind session auth via the APIRouter.
+    Provided so the user can import the wallet into Phantom / Solflare /
+    a CLI signer to manually recover stranded tokens when the in-bot
+    recovery path can't land a tx (graduated mid-sell, RPC-down, etc.).
+    """
+    from wallet import get_secret_b58, get_keypair, get_pubkey_str
+    kp = get_keypair()
+    # JSON-array form is what `solana-keygen` and most CLI tools expect
+    secret_array = list(bytes(kp))
+    return {
+        "public_key": get_pubkey_str(),
+        "secret_key_b58": get_secret_b58(),
+        "secret_key_json_array": secret_array,
+        "warning": (
+            "ANYONE WITH THIS KEY CAN DRAIN YOUR WALLET. Never share, never paste "
+            "into chat, never commit. Preview-only diagnostic."
+        ),
+    }
+
+
+@api.post("/trades/{trade_id}/force-recover")
+async def force_recover_stuck_trade(trade_id: str):
+    """Brute-force PumpSwap sell of a stuck position with maximum slip (50%)
+    and priority fee (5M µLamp). Used when the normal `/trades/recover/{id}`
+    endpoint either times out (504) or returns a slippage/timing error.
+
+    Identical logic to the bot's `_attempt_emergency_pumpswap_sell` — kept
+    in sync so manual recovery uses the same brute-force settings the bot
+    falls back to internally.
+    """
+    from solders.pubkey import Pubkey
+    from wallet import get_keypair, get_pubkey
+    import pumpfun
+    import pumpswap as _ps
+
+    trade = await bot_state.db.trades.find_one(
+        {"id": trade_id, "status": "exit_failed_terminal"}, {"_id": 0}
+    )
+    if not trade:
+        raise HTTPException(status_code=404, detail="stuck trade not found")
+
+    mint = trade["mint"]
+    mint_pk = Pubkey.from_string(mint)
+    kp = get_keypair()
+    user = get_pubkey()
+
+    # Read actual wallet balance with both-token-program fallback
+    tp = await pumpfun.get_mint_token_program(mint)
+    ata = _ps.get_associated_token_address(user, mint_pk, tp)
+    actual_tokens = await _ps.get_token_balance(ata)
+    if actual_tokens <= 0:
+        TOKEN_2022 = Pubkey.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+        alt_tp = TOKEN_2022 if str(tp) != str(TOKEN_2022) else _ps.TOKEN_PROGRAM
+        ata_alt = _ps.get_associated_token_address(user, mint_pk, alt_tp)
+        bal_alt = await _ps.get_token_balance(ata_alt)
+        if bal_alt > 0:
+            ata = ata_alt
+            tp = alt_tp
+            actual_tokens = bal_alt
+    if actual_tokens <= 0:
+        await bot_state.db.trades.update_one(
+            {"id": trade_id},
+            {"$set": {
+                "status": "closed",
+                "exit_reason": (trade.get("exit_reason") or "") + " | auto-closed: wallet balance is 0",
+                "recovered": False,
+                "pnl_sol": 0.0, "pnl_usd": 0.0, "pnl_pct": 0.0,
+            }},
+        )
+        return {"ok": False, "reason": "wallet balance is 0 — nothing to recover (auto-closed)"}
+
+    pool = await _ps.find_pool_for_mint(mint)
+    if not pool:
+        return {"ok": False, "reason": "no PumpSwap pool — token not on PumpSwap AMM yet"}
+    pool_state = await _ps.fetch_pool_state(pool)
+    if not pool_state:
+        return {"ok": False, "reason": f"pool state unavailable (pool={pool})"}
+
+    sell_amount = max(int(actual_tokens * 0.995), 1)
+    sol_out, min_sol = _ps.quote_sell_sol(pool_state, sell_amount, 5000)  # 50% slippage
+    wsol_ata, wsol_ixs = _ps.build_wsol_ata_idempotent_ixs(user)
+    ixs = [
+        _ps.build_create_ata_ix(user, user, mint_pk, tp),
+        *wsol_ixs,
+        _ps.build_sell_ix(
+            user, pool_state, ata, wsol_ata,
+            base_amount_in=sell_amount,
+            min_quote_amount_out=min_sol,
+            base_token_program=tp,
+        ),
+        _ps.build_close_wsol_ix(user, wsol_ata),
+    ]
+    try:
+        sig = await pumpfun.send_versioned_tx(
+            kp, ixs, priority_fee_microlamports=5_000_000,
+            compute_unit_limit=600_000, confirm_timeout_s=60.0,
+        )
+    except Exception as e:
+        return {"ok": False, "reason": f"emergency pumpswap sell failed: {e}"}
+
+    await bot_state.db.trades.update_one(
+        {"id": trade_id},
+        {"$set": {
+            "status": "closed",
+            "exit_time": datetime.now(timezone.utc).isoformat(),
+            "exit_reason": f"FORCE RECOVER via PumpSwap brute-force (sold {actual_tokens} tokens for {sol_out/1e9:.6f} SOL)",
+            "exit_sig": sig,
+            "exit_sol": sol_out / 1e9,
+            "recovered": True,
+            "protocol": "pumpswap",
+        }},
+    )
+    return {
+        "ok": True,
+        "sig": sig,
+        "sold_tokens": actual_tokens,
+        "received_sol": sol_out / 1e9,
+        "via": "pumpswap_amm_emergency",
+    }
+
+
 # ---------- Bot config / status ----------
 @api.get("/bot/config", response_model=BotConfig)
 async def get_config():

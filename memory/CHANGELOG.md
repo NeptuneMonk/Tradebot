@@ -1,5 +1,35 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-25 (PROD HOTFIX) — Stop new stuck positions + privkey export
+
+### Root cause (stuck positions)
+- Bonding-curve sell hitting `Custom: 6005 BondingCurveComplete` (token graduated mid-sell) was marked **terminal immediately** — the bot never tried PumpSwap AMM as a fallback, forcing the user to run manual recovery (which 504s when the gateway is slow).
+- After 3 retries on the normal exit ladder, the bot gave up and dumped to `exit_failed_terminal` without one final brute-force attempt.
+
+### Fix in `bot.py`
+New method `BotState._attempt_emergency_pumpswap_sell()` — last-resort brute-force PumpSwap sell with **50% slippage + 5M µLamp priority + 60s confirm timeout**. Wired in two places:
+1. **6005 graduation auto-fallback**: when the bonding curve completes mid-sell, the bot now auto-switches to PumpSwap in-place. PnL is booked on the actual proceeds. Position only becomes "terminal" if BOTH curve and pumpswap fail.
+2. **3-retry rescue**: after 3 normal-flow failures, the bot tries the emergency PumpSwap sell BEFORE marking the position terminal. Most "stuck" positions are recoverable with this combo — the bot now exits cleanly instead of dumping into the stuck list.
+
+### New endpoints (`server.py`)
+- `GET /api/wallet/export-private-key` — returns the wallet's base58 string + JSON-array (solana-keygen-compatible) secret key, gated by session auth. For manual recovery via Phantom/Solflare/CLI when the bot can't unstick something on its own.
+- `POST /api/trades/{trade_id}/force-recover` — same 50%/5M brute-force PumpSwap sell, callable from the UI on any `exit_failed_terminal` row. Used when normal `/recover` 504s or returns a slippage error.
+
+### New UI components
+- `RevealPrivateKey.jsx` — two-step danger-gated dialog under the wallet card. Window-confirm → fetch → key masked by default with eye/copy toggles for both b58 and JSON-array forms. Imports straight into Phantom (b58 paste) or CLI (`~/.config/solana/id.json`).
+- `StuckPositions.jsx` — new "Force" column per row that calls `force-recover`. Distinct red-tinted button, 90s timeout, independent spinner from bulk recover.
+
+### Sanity tests
+- `curl /api/wallet/export-private-key` → public_key match, b58 length 88, JSON-array length 64.
+- All 34 backend unit tests still pass.
+- Frontend renders correctly, dialog opens with security warning.
+
+### Production impact
+- Net-new positions will rarely become "stuck" — 6005 graduations + retry exhaustions now both auto-recover via PumpSwap brute-force.
+- Existing stuck positions: user can either click "Force" per row, or export the privkey and recover with Phantom/Solflare manually.
+
+
+
 ## 2026-05-25 — P2 cleanup: lint hygiene + UI tooltips
 
 ### Lint cleanup (backend)

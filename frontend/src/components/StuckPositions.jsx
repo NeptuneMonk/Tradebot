@@ -22,6 +22,11 @@ export default function StuckPositions() {
   // wired the close-WSOL instruction). Surfaced + recoverable from the UI.
   const [wsolBalance, setWsolBalance] = useState({ sol: 0, usd: 0 });
   const [unwrapping, setUnwrapping] = useState(false);
+  // Per-row force-recover state (50% slip / 5M µLamp brute-force).
+  // Surfaced for positions where the normal recovery returns 504 or fails
+  // on slippage. Distinct from the bulk `recovering` flag so individual
+  // rows can spin independently.
+  const [forcingId, setForcingId] = useState(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -139,6 +144,36 @@ export default function StuckPositions() {
     }
   };
 
+  const forceRecoverOne = async (row) => {
+    const label = row.symbol || shortMint(row.mint);
+    const ok = window.confirm(
+      `FORCE RECOVER ${label}?\n\n` +
+        `Uses 50% slippage and 5M µLamp priority fee on PumpSwap AMM.\n` +
+        `Accepts whatever the pool gives — used when normal recovery 504s or fails.\n\n` +
+        `Continue?`,
+    );
+    if (!ok) return;
+    setForcingId(row.id);
+    try {
+      const res = await api.forceRecoverStuck(row.id);
+      if (res?.ok) {
+        toast.success(`Force-recovered ${label} — received ${res.received_sol?.toFixed(6)} SOL`);
+      } else {
+        toast.error(`Force recover failed: ${res?.reason || "unknown"}`);
+      }
+    } catch (e) {
+      const code = e?.response?.status;
+      if (code === 520 || code === 524 || e?.code === "ECONNABORTED") {
+        toast.info("Tx is still landing — refresh in 60s to verify.");
+      } else {
+        toast.error(`Force recover failed: ${e?.response?.data?.detail || e.message}`);
+      }
+    } finally {
+      setForcingId(null);
+      setTimeout(refresh, 5000);
+    }
+  };
+
   const recoverWalletOne = async (token) => {
     if (!token?.mint || token.current_usd <= 0) return;
     const label = token.symbol || shortMint(token.mint);
@@ -241,26 +276,40 @@ export default function StuckPositions() {
             Total: <span className="text-amber-300">${totalUsd.toFixed(4)}</span>
           </div>
           <div className="border border-neutral-800 rounded-sm overflow-hidden">
-            <div className="grid grid-cols-[24px_1fr_70px_80px] gap-2 px-2 py-1.5 bg-neutral-900/60 text-[9px] uppercase tracking-wider text-neutral-500">
+            <div className="grid grid-cols-[24px_1fr_60px_70px_56px] gap-2 px-2 py-1.5 bg-neutral-900/60 text-[9px] uppercase tracking-wider text-neutral-500">
               <input type="checkbox" checked={allSelected} onChange={toggleAll} data-testid="stuck-select-all" className="w-3 h-3 accent-amber-500" />
               <span>Token / Mint</span>
               <span className="text-right">% held</span>
               <span className="text-right">Value</span>
+              <span className="text-right">Force</span>
             </div>
             <div className="max-h-40 overflow-y-auto divide-y divide-neutral-800/60">
               {stuck.map((p) => {
                 const isSelected = selected.has(p.id);
                 const isZero = (p.current_usd || 0) <= 0;
+                const isForcing = forcingId === p.id;
                 return (
-                  <label key={p.id} className={`grid grid-cols-[24px_1fr_70px_80px] gap-2 px-2 py-1.5 text-[11px] font-mono cursor-pointer hover:bg-neutral-900/40 ${isSelected ? "bg-amber-950/20" : ""}`} data-testid={`stuck-row-${p.id}`}>
-                    <input type="checkbox" checked={isSelected} onChange={() => toggleOne(p.id)} className="w-3 h-3 accent-amber-500" data-testid={`stuck-checkbox-${p.id}`} />
+                  <div key={p.id} className={`grid grid-cols-[24px_1fr_60px_70px_56px] gap-2 px-2 py-1.5 text-[11px] font-mono hover:bg-neutral-900/40 ${isSelected ? "bg-amber-950/20" : ""}`} data-testid={`stuck-row-${p.id}`}>
+                    <input type="checkbox" checked={isSelected} onChange={() => toggleOne(p.id)} className="w-3 h-3 accent-amber-500 self-center" data-testid={`stuck-checkbox-${p.id}`} />
                     <div className="min-w-0">
                       <div className="text-neutral-200 truncate" title={p.mint}>{p.symbol || shortMint(p.mint)}</div>
                       <div className="text-[9px] text-neutral-600 truncate">{shortMint(p.mint)} {p.graduated && <span className="ml-1 text-blue-400">grad</span>}</div>
                     </div>
                     <div className="text-right text-neutral-400 self-center">{p.entry_pct_held ? `${p.entry_pct_held.toFixed(0)}%` : "—"}</div>
                     <div className={`text-right self-center ${isZero ? "text-neutral-600" : "text-amber-300"}`}>${(p.current_usd || 0).toFixed(4)}</div>
-                  </label>
+                    <div className="text-right self-center">
+                      <button
+                        type="button"
+                        onClick={() => forceRecoverOne(p)}
+                        disabled={isZero || isForcing || recovering || !!forcingId}
+                        data-testid={`stuck-force-${p.id}`}
+                        title="Brute-force PumpSwap sell (50% slip / 5M µL priority)"
+                        className="px-1.5 py-0.5 text-[9px] uppercase tracking-wider font-mono border border-red-800/60 text-red-300 hover:bg-red-950/40 disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center gap-1"
+                      >
+                        {isForcing ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : "Force"}
+                      </button>
+                    </div>
+                  </div>
                 );
               })}
             </div>

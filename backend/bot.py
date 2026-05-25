@@ -1939,6 +1939,77 @@ class BotState:
         )
         return True
 
+    async def _attempt_emergency_pumpswap_sell(
+        self,
+        *,
+        mint: str,
+        kp,
+        user,
+        mint_pk,
+        tokens_in: int,
+    ) -> tuple[str, int, dict] | None:
+        """Last-resort sell via PumpSwap AMM. Used to auto-recover from:
+          - Bonding-curve 6005 (BondingCurveComplete) mid-sell — token just
+            graduated; classic curve sell will never work again.
+          - Normal-flow sell-ladder exhaustion (3 retries) on either protocol —
+            one final brute-force attempt before we give up and dump the
+            position into the stuck list.
+
+        Brute-force settings:
+          * 50% slippage (5000 bps) — accept whatever the pool gives us
+          * 5M µLamp priority fee — maximum landing odds
+          * 600k compute-unit limit — wide budget for the 4-ix combo
+          * 60s confirmation timeout — give Helius plenty of room
+
+        Returns (sig, sol_out_lamports, pool_state) on success, None if no
+        pool exists or the tx never lands. Never raises — failures are
+        logged and the caller decides whether to mark the position terminal.
+        """
+        try:
+            pool = await pumpswap.find_pool_for_mint(mint)
+            if not pool:
+                logger.warning(
+                    f"emergency sell aborted for {mint[:8]}…: no PumpSwap pool"
+                )
+                return None
+            pool_state = await pumpswap.fetch_pool_state(pool)
+            if not pool_state:
+                logger.warning(
+                    f"emergency sell aborted for {mint[:8]}…: pool state unavailable"
+                )
+                return None
+            # 0.5% shave guards against late-landing balance drift
+            sell_amount = max(int(tokens_in * 0.995), 1)
+            sol_out, min_sol = pumpswap.quote_sell_sol(pool_state, sell_amount, 5000)
+            base_tp = await pumpfun.get_mint_token_program(mint)
+            user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
+            wsol_ata, wsol_ixs = pumpswap.build_wsol_ata_idempotent_ixs(user)
+            ixs = [
+                pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp),
+                *wsol_ixs,
+                pumpswap.build_sell_ix(
+                    user, pool_state, user_token_ata, wsol_ata,
+                    base_amount_in=sell_amount,
+                    min_quote_amount_out=min_sol,
+                    base_token_program=base_tp,
+                ),
+                pumpswap.build_close_wsol_ix(user, wsol_ata),
+            ]
+            sig = await pumpfun.send_versioned_tx(
+                kp, ixs, priority_fee_microlamports=5_000_000,
+                compute_unit_limit=600_000, confirm_timeout_s=60.0,
+            )
+            logger.warning(
+                f"EMERGENCY PUMPSWAP SELL succeeded for {mint[:8]}… — "
+                f"sig={sig[:12]} sold={sell_amount} sol_out~={sol_out/1e9:.6f}"
+            )
+            return sig, sol_out, pool_state
+        except Exception as e:
+            logger.warning(
+                f"emergency pumpswap sell failed for {mint[:8]}…: {e}"
+            )
+            return None
+
     async def _exit(self, mint: str, reason: str):
         # Atomically pop the slot so concurrent monitors don't both try to exit
         # the same position. If anything below raises before we've persisted a
@@ -2221,31 +2292,50 @@ class BotState:
                 logger.exception(f"Live sell failed: {e}")
                 trade_doc["exit_reason"] = f"{reason} | sell failed: {e}"
                 # Custom:6005 (BondingCurveComplete) — the token graduated to
-                # Raydium/PumpSwap mid-sell. Further retries on the bonding
-                # curve will burn gas forever. Skip the 3-retry window and go
-                # straight to terminal: user must recover via StuckPositions
-                # (which routes through PumpSwap AMM).
+                # Raydium/PumpSwap mid-sell. Auto-fallback to PumpSwap AMM
+                # right here so the user doesn't have to manually recover.
                 if "Custom': 6005" in err_str or "'Custom': 6005" in err_str:
-                    trade_doc["status"] = "exit_failed_terminal"
-                    trade_doc["exit_time"] = now_utc().isoformat()
-                    trade_doc["exit_reason"] = (
-                        f"{reason} | bonding curve completed mid-sell — "
-                        f"recover via StuckPositions (token now on PumpSwap AMM)"
-                    )
-                    trade_doc["pnl_sol"] = 0.0
-                    trade_doc["pnl_usd"] = 0.0
-                    trade_doc["pnl_pct"] = 0.0
-                    await self.db.trades.update_one(
-                        {"id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
-                    )
-                    self.active_trades.pop(mint, None)
-                    self.recent_exit_until[mint] = time.time() + 90.0
-                    await hub.broadcast("trade_exit_terminal", trade_doc)
                     logger.warning(
-                        f"GRADUATED mint {mint[:8]}… — curve complete during sell. "
-                        f"Position marked terminal, recover on PumpSwap via StuckPositions."
+                        f"6005 BondingCurveComplete on {mint[:8]}… — attempting "
+                        f"emergency PumpSwap fallback in-place"
                     )
-                    return
+                    emergency = await self._attempt_emergency_pumpswap_sell(
+                        mint=mint, kp=kp, user=user, mint_pk=mint_pk,
+                        tokens_in=tokens_in,
+                    )
+                    if emergency is not None:
+                        # Successful fallback — patch state so the rest of
+                        # _exit_impl books PnL on the PumpSwap proceeds.
+                        exit_sig, sol_out, pumpswap_state = emergency
+                        protocol = "pumpswap"
+                        exit_sol = sol_out / LAMPORTS_PER_SOL
+                        exit_price_sol = sol_out / tokens_in / LAMPORTS_PER_SOL if tokens_in > 0 else 0
+                        exit_slip = 5000  # for accounting
+                        # Bump effective priority so the fee accounting is honest
+                        eff_priority = max(eff_priority, 5_000_000)
+                    else:
+                        trade_doc["status"] = "exit_failed_terminal"
+                        trade_doc["exit_time"] = now_utc().isoformat()
+                        trade_doc["exit_reason"] = (
+                            f"{reason} | bonding curve completed mid-sell AND "
+                            f"emergency PumpSwap fallback failed — manual "
+                            f"recovery needed (export privkey to recover)"
+                        )
+                        trade_doc["pnl_sol"] = 0.0
+                        trade_doc["pnl_usd"] = 0.0
+                        trade_doc["pnl_pct"] = 0.0
+                        await self.db.trades.update_one(
+                            {"id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
+                        )
+                        self.active_trades.pop(mint, None)
+                        self.recent_exit_until[mint] = time.time() + 90.0
+                        await hub.broadcast("trade_exit_terminal", trade_doc)
+                        logger.warning(
+                            f"GRADUATED+UNRECOVERABLE mint {mint[:8]}… — curve "
+                            f"complete and PumpSwap fallback failed. Position "
+                            f"terminal; user must recover with exported privkey."
+                        )
+                        return
 
         cu = CU_PUMPSWAP if protocol == "pumpswap" else CU_PUMPFUN
         exit_fee_sol = estimate_tx_fee_sol(eff_priority, cu)
@@ -2265,13 +2355,59 @@ class BotState:
             trade_doc["exit_fee_sol_failed_attempts"] = (
                 float(trade_doc.get("exit_fee_sol_failed_attempts") or 0.0) + exit_fee_sol
             )
-            # If we've burned too many tries on this position, give up and
-            # mark it as a terminal failure so it stops eating gas. The user
-            # will need to recover the tokens manually.
+            # If we've burned too many tries on this position, attempt one
+            # emergency brute-force PumpSwap sell BEFORE giving up. Most
+            # "stuck" positions are recoverable on PumpSwap with 50% slip
+            # and a 5M µL priority fee — we just never tried that combo in
+            # the slip-ladder. This is the difference between "stuck position
+            # the user has to babysit" and "system always exits".
             if retries >= 3:
+                kp_em = get_keypair()
+                user_em = get_pubkey()
+                mint_pk_em = Pubkey.from_string(mint)
+                emergency = await self._attempt_emergency_pumpswap_sell(
+                    mint=mint, kp=kp_em, user=user_em, mint_pk=mint_pk_em,
+                    tokens_in=tokens_in,
+                )
+                if emergency is not None:
+                    sig_em, sol_out_em, _ = emergency
+                    # Book the emergency exit as a successful close
+                    exit_sol_final = sol_out_em / LAMPORTS_PER_SOL
+                    trade_doc["status"] = "closed"
+                    trade_doc["exit_time"] = now_utc().isoformat()
+                    trade_doc["exit_sig"] = sig_em
+                    trade_doc["exit_sol"] = exit_sol_final
+                    trade_doc["exit_usd"] = exit_sol_final * (sol_price or 100.0)
+                    trade_doc["exit_price_sol"] = sol_out_em / tokens_in / LAMPORTS_PER_SOL if tokens_in > 0 else 0
+                    trade_doc["exit_reason"] = (
+                        f"{reason} | EMERGENCY pumpswap fallback after {retries} "
+                        f"failed sells — recovered {exit_sol_final:.6f} SOL"
+                    )
+                    trade_doc["protocol"] = "pumpswap"
+                    pnl_sol_em = exit_sol_final - trade_doc["entry_sol"]
+                    partial_realized_sol = float(trade_doc.get("partial_realized_sol") or 0.0)
+                    partial_realized_usd = float(trade_doc.get("partial_realized_usd") or 0.0)
+                    trade_doc["pnl_sol"] = pnl_sol_em + partial_realized_sol
+                    trade_doc["pnl_usd"] = trade_doc["pnl_sol"] * (sol_price or 100.0)
+                    trade_doc["pnl_pct"] = (
+                        (trade_doc["pnl_sol"] / trade_doc["entry_sol"]) * 100.0
+                        if trade_doc.get("entry_sol") else 0.0
+                    )
+                    await self.db.trades.update_one(
+                        {"id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
+                    )
+                    self.active_trades.pop(mint, None)
+                    self.recent_exit_until[mint] = time.time() + 90.0
+                    await hub.broadcast("trade_exit", trade_doc)
+                    logger.warning(
+                        f"RESCUED {mint[:8]}… via emergency pumpswap sell after "
+                        f"{retries} normal-flow failures — pnl_sol={pnl_sol_em:+.6f}"
+                    )
+                    return
+                # Emergency also failed — mark terminal as before
                 trade_doc["status"] = "exit_failed_terminal"
                 trade_doc["exit_time"] = now_utc().isoformat()
-                trade_doc["exit_reason"] = f"GAVE UP after {retries} sell retries — manual recovery needed: {reason}"
+                trade_doc["exit_reason"] = f"GAVE UP after {retries} sell retries + emergency pumpswap failed — export privkey to recover manually: {reason}"
                 trade_doc["pnl_sol"] = 0.0
                 trade_doc["pnl_usd"] = 0.0
                 trade_doc["pnl_pct"] = 0.0
@@ -2286,8 +2422,8 @@ class BotState:
                 self.recent_exit_until[mint] = time.time() + 90.0
                 await hub.broadcast("trade_exit_terminal", trade_doc)
                 logger.warning(
-                    f"GIVING UP on {mint} after {retries} failed sells — "
-                    f"position abandoned, manual recovery required"
+                    f"GIVING UP on {mint} after {retries} failed sells + "
+                    f"emergency pumpswap fallback — manual recovery required"
                 )
             else:
                 # Persist retry counter but keep position open

@@ -4,6 +4,7 @@ import { QRCodeSVG } from "qrcode.react";
 import { toast } from "sonner";
 import WithdrawDialog from "@/components/WithdrawDialog";
 import StuckPositions from "@/components/StuckPositions";
+import RevealPrivateKey from "@/components/RevealPrivateKey";
 import { copyToClipboard } from "@/lib/clipboard";
 
 export default function WalletCard({ wallet }) {
@@ -91,6 +92,10 @@ export default function WalletCard({ wallet }) {
       </div>
 
       <StuckPositions />
+
+      <div className="border-t border-neutral-800 pt-3">
+        <RevealPrivateKey />
+      </div>
 
       <WithdrawDialog
         open={showWithdraw}

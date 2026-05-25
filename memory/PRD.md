@@ -20,6 +20,13 @@ For learning and experimentation only — no deployment outside preview.
 - **Frontend (React + Tailwind + shadcn)**: Single-page "Control Room" dashboard, polling every 3s, IBM Plex Sans/Mono, sharp-edged dark UI, Recharts P/L sparkline, QR deposit address.
 
 
+## Production hotfix (2026-05-25)
+- ✅ **Auto-recover on graduation (6005)** — bot now auto-falls-back to PumpSwap AMM in-place when the bonding curve completes mid-sell, instead of dumping to the stuck list.
+- ✅ **Emergency rescue before terminal** — after 3 normal-flow failures, bot attempts one brute-force PumpSwap sell (50% slip, 5M µLamp priority, 60s confirm) before giving up. Most previously-stuck positions are recoverable with this combo.
+- ✅ **Manual recovery escape hatch** — `GET /api/wallet/export-private-key` returns b58 + JSON-array secret. `RevealPrivateKey` UI dialog under the wallet card; user imports into Phantom/Solflare/CLI for any position the bot can't unstick.
+- ✅ **Per-row Force button** — `POST /api/trades/{id}/force-recover` + a red "Force" column in StuckPositions. Same 50%/5M brute force, runnable on any existing stuck row.
+
+
 ## Recently completed (2026-05-25 — P2 cleanup)
 - ✅ **Backend lint clean** — fixed all 20 ruff warnings (E702/E701 semicolon/colon stacks, F541 empty f-string, E741 ambiguous `l`, F821 forward-ref). 34 unit tests still green.
 - ✅ **UI Help tooltips** — new `HelpHint` component (Shadcn Tooltip) wired across ~50 dense metrics in BotControlCard, ScannerCandidatesCard, StrategyDoctorPanel, SpeedModeSlider, DailyLossMeter, CostTrackerCard. `TooltipProvider` mounted at Dashboard root. Smoke-tested live: Strategy Doctor hint renders correctly.
