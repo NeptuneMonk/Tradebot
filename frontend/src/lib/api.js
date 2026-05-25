@@ -48,6 +48,11 @@ export const api = {
   walletTokenScan: () => longClient.get("/wallet/token-scan").then(r => r.data),
   walletRecoverMints: (mints) => longClient.post("/wallet/recover-mints", { mints }, { timeout: 60000 + 30000 * mints.length }).then(r => r.data),
   walletUnwrapWsol: () => longClient.post("/wallet/unwrap-wsol").then(r => r.data),
+  // Strategy Doctor
+  doctorList: (status = "pending") => client.get("/doctor/suggestions", { params: { status } }).then(r => r.data),
+  doctorRunNow: () => longClient.post("/doctor/run-now").then(r => r.data),
+  doctorApply: (id) => client.post(`/doctor/suggestions/${id}/apply`).then(r => r.data),
+  doctorDismiss: (id) => client.post(`/doctor/suggestions/${id}/dismiss`).then(r => r.data),
   // Config sync (preview ↔ production)
   configExport: () => client.get("/config/export").then(r => r.data),
   configImport: (config) => client.post("/config/import", { config }).then(r => r.data),

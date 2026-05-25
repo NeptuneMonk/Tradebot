@@ -538,3 +538,34 @@ Mempool-fed Pump.fun tokens had similar drift: `last_vsr_lamports` from `on_trad
 
 ### Tests: 24/24 pass (15 prior + 5 ghost + 5 new = wait, math)
 3 ghost + 5 band-gate + 16 intelligent_exit = 24 total
+
+## 2026-05-25 (evening) — Strategy Doctor + gating audit
+
+### Strategy Doctor (new feature, replaces InsightsCard + SuggestionsCard)
+Autonomous analyst running server-side, **independent of any user session** — keeps producing suggestions while user is logged out / asleep.
+
+**Architecture**:
+- `backend/strategy_doctor.py`: rule engine + 30-min background loop
+- 9 production rules covering: sizing advantage, SL severity, TP frequency, partial-TP correlation, hold time, distribution-vacuum gate, classifier-action focus, time-of-day pattern, protocol-band focus
+- Each suggestion has: id, category, title, multi-line rationale with raw stats, `actions` dict (bot_config keys → new values), confidence (high/med/low), and a stable signature for dedup
+- Suggestions persist in `strategy_suggestions` Mongo collection with TTL (72h) and dismissal cooldown (24h)
+- "needs_more_data" suggestion appears when sample < 30 trades
+
+**API endpoints** (all auth-gated):
+- `GET /api/doctor/suggestions?status=pending|applied|dismissed|expired`
+- `POST /api/doctor/run-now` — force a cycle (debug + UI button)
+- `POST /api/doctor/suggestions/{id}/apply` — merges actions into bot_config + reloads bot state
+- `POST /api/doctor/suggestions/{id}/dismiss`
+
+**Frontend**:
+- New `StrategyDoctorPanel.jsx` — list of suggestion cards with Apply/Dismiss buttons
+- Real-time WS broadcast `doctor_new_suggestions` lets the UI badge update
+- Suggestion cards show: category tint, confidence dot, multi-line rationale, the exact `actions` dict that'll be applied, and Info-only badge when no actions
+- Replaced `SuggestionsCard` + `InsightsCard` in `Dashboard.jsx`
+
+**Tests**: 5 new (`tests/test_strategy_doctor.py`) — rule firing on synthetic data + signature stability. **40/40 tests total pass.**
+
+**End-to-end verified**:
+- Force-run analyzed 408 trades, produced 3 pending suggestions
+- Apply endpoint merged `gate_distribution_vacuum: True` into config
+- Dismiss endpoint correctly removed suggestion from pending

@@ -52,7 +52,15 @@ async def lifespan(app: FastAPI):
     listener.start()
     logger.info(f"Wallet address: {wallet.get_pubkey_str()}")
     broadcaster = asyncio.create_task(_status_broadcaster())
+    # Strategy Doctor — runs continuously, independent of any user session.
+    # Persists suggestions to Mongo so the user can wake up to a set of
+    # auto-generated, pre-validated config tweaks.
+    from strategy_doctor import StrategyDoctor, set_doctor
+    doctor = StrategyDoctor(db=db, hub=hub)
+    set_doctor(doctor)
+    await doctor.start()
     yield
+    await doctor.stop()
     broadcaster.cancel()
     listener.stop()
     mongo_client.close()
@@ -1414,6 +1422,66 @@ async def _status_broadcaster():
         except Exception as e:
             logger.debug(f"status broadcaster: {e}")
         await asyncio.sleep(3)
+
+
+# ---------- Strategy Doctor ----------
+# Autonomous analyst that watches trade history and emits one-click
+# implementable config suggestions. Runs every 30 min in the background,
+# also force-runnable via /doctor/run-now.
+
+@api.get("/doctor/suggestions")
+async def doctor_list_suggestions(status: str = "pending"):
+    """List doctor suggestions by status (pending|applied|dismissed|expired)."""
+    cur = db.strategy_suggestions.find(
+        {"status": status}, {"_id": 0},
+    ).sort("created_at", -1).limit(100)
+    items = await cur.to_list(100)
+    return {"items": items, "count": len(items)}
+
+
+@api.post("/doctor/run-now")
+async def doctor_run_now():
+    """Force a doctor analysis cycle right now (skips the 30-min interval)."""
+    from strategy_doctor import get_doctor
+    d = get_doctor()
+    if not d:
+        raise HTTPException(503, "strategy doctor not running")
+    fresh = await d.run_once()
+    return {"new_suggestions": len(fresh)}
+
+
+@api.post("/doctor/suggestions/{sid}/apply")
+async def doctor_apply_suggestion(sid: str):
+    """Apply the suggestion's `actions` dict to bot_config. Idempotent —
+    re-applying a suggestion is a no-op but still records the timestamp."""
+    s = await db.strategy_suggestions.find_one({"id": sid}, {"_id": 0})
+    if not s:
+        raise HTTPException(404, "suggestion not found")
+    actions = s.get("actions") or {}
+    if actions:
+        await db.bot_config.update_one({}, {"$set": actions})
+        await bot_state.load()  # reload config into the running bot
+    await db.strategy_suggestions.update_one(
+        {"id": sid},
+        {"$set": {"status": "applied", "applied_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    try:
+        await hub.broadcast("doctor_applied", {"id": sid, "actions": actions})
+    except Exception:
+        pass
+    return {"ok": True, "applied": actions}
+
+
+@api.post("/doctor/suggestions/{sid}/dismiss")
+async def doctor_dismiss_suggestion(sid: str):
+    """Dismiss a suggestion (hidden for DISMISS_COOLDOWN_HOURS before re-eval)."""
+    res = await db.strategy_suggestions.update_one(
+        {"id": sid},
+        {"$set": {"status": "dismissed", "dismissed_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "suggestion not found")
+    return {"ok": True}
 
 
 app.include_router(auth_router)

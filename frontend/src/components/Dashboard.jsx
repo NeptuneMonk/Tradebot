@@ -14,8 +14,7 @@ import TradeHistoryTable from "@/components/TradeHistoryTable";
 import ClassifierRulesEditor from "@/components/ClassifierRulesEditor";
 import ReentryWatchCard from "@/components/ReentryWatchCard";
 import ScannerCandidatesCard from "@/components/ScannerCandidatesCard";
-import SuggestionsCard from "@/components/SuggestionsCard";
-import InsightsCard from "@/components/InsightsCard";
+import StrategyDoctorPanel from "@/components/StrategyDoctorPanel";
 import PLBySourceCard from "@/components/PLBySourceCard";
 import CostTrackerCard from "@/components/CostTrackerCard";
 import { Activity, LogOut } from "lucide-react";
@@ -200,9 +199,7 @@ export default function Dashboard() {
 
         <ScannerCandidatesCard candidates={scanner} config={config} />
 
-        <SuggestionsCard onApplied={() => api.config().then(setConfig).catch(() => {})} />
-
-        <InsightsCard />
+        <StrategyDoctorPanel onApplied={() => api.config().then(setConfig).catch(() => {})} />
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
           <TradeHistoryTable history={history} />
