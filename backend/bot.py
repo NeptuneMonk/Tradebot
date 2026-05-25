@@ -1117,6 +1117,7 @@ class BotState:
                             self.db, b.get("creator"),
                             min_fails=int(self.config.creator_greylist_min_fails),
                             max_fails=int(self.config.creator_greylist_max_fails),
+                            tp_buffer=float(self.config.pattern_tp_buffer_pct),
                         )
                     except Exception as e:
                         logger.debug(f"greylist post-graduation refresh: {e}")
@@ -2827,6 +2828,7 @@ class BotState:
                 self.db, trade_doc.get("creator"),
                 min_fails=int(self.config.creator_greylist_min_fails),
                 max_fails=int(self.config.creator_greylist_max_fails),
+                tp_buffer=float(self.config.pattern_tp_buffer_pct),
             )
         except Exception as e:
             logger.debug(f"greylist update skipped: {e}")

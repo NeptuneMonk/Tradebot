@@ -159,6 +159,7 @@ class StrategyDoctor:
                 self._rule_classifier_bucket_focus,
                 self._rule_time_of_day,
                 self._rule_protocol_focus,
+                self._rule_pattern_tp_calibration,
             ):
                 try:
                     rule_out = rule(trades, cfg_doc)
@@ -535,6 +536,139 @@ class StrategyDoctor:
             "metrics": {"ps_n": len(ps), "ps_wr": round(wr_ps, 1),
                         "pf_n": len(pf), "pf_wr": round(wr_pf, 1)},
         }]
+
+    def _rule_pattern_tp_calibration(self, trades, cfg):
+        """Per-pattern TP buffer calibration (Phase 2.8).
+
+        For each tradeable pattern (slow_rug / predictable_dump), compare
+        the observed `peak_pct_pre_rug` (how far the WINNERS actually ran
+        before reversing) against the configured `pattern_tp_buffer_pct`.
+        If the winners are routinely getting a lot higher than current TP,
+        suggest LOOSENING the buffer (capture more upside). If they're
+        getting cut SHORT and dumping AT TP, suggest TIGHTENING. Surfaces
+        as a concrete one-click `pattern_tp_buffer_pct` change.
+
+        Bot.py reads pattern_tp_buffer_pct on next score-update (every
+        trade close), so the new value propagates within minutes of apply.
+        """
+        # Group winning trades by pattern_at_entry. Use ONLY trades that had
+        # a pattern classified — unclassified trades have no exit suggestion
+        # so they can't inform calibration.
+        from collections import defaultdict
+        bucket: dict[str, list[dict]] = defaultdict(list)
+        for t in trades:
+            pat = t.get("greylist_pattern_at_entry")
+            if pat not in ("slow_rug_tradeable", "predictable_dump_tradeable"):
+                continue
+            if t.get("pnl_pct") is None:
+                continue
+            bucket[pat].append(t)
+
+        suggestions: list[dict] = []
+        cur_buffer = float(cfg.get("pattern_tp_buffer_pct", 2.0))
+
+        for pat, ts in bucket.items():
+            if len(ts) < 6:  # need ≥6 closed pattern trades per bucket
+                continue
+            # WINNERS only — losers (SL hits) have peak data that doesn't tell
+            # us "winners ran past TP". For SL-rate signal we count separately.
+            winners = [t for t in ts if (t.get("pnl_pct") or 0) > 0]
+            sl_exits = [
+                t for t in ts
+                if "stop-loss" in (t.get("exit_reason") or "").lower()
+            ]
+            sl_rate = len(sl_exits) / len(ts) * 100
+            short_pat = "slow rug" if pat == "slow_rug_tradeable" else "predictable dump"
+
+            # PRIORITY 1: SL-rate too high → loosen (check FIRST so a pattern
+            # with mostly-losing trades doesn't ALSO trigger a "tighten" via
+            # the gap math, since loser PnLs make the gap look artificially big).
+            if sl_rate >= 35 and cur_buffer <= 3.5:
+                # Need at least SOME winner sample to estimate peak — if the
+                # pattern is 100% SL, can't trust the loosen direction either.
+                winner_peak = (
+                    statistics.mean([
+                        float(w["peak_pct_pre_rug"]) for w in winners
+                        if w.get("peak_pct_pre_rug") is not None
+                    ]) if winners else 0.0
+                )
+                new_buffer = min(5.0, round(cur_buffer + 1.0, 1))
+                suggestions.append({
+                    "category": "tp",
+                    "title": (
+                        f"{short_pat}: SL hit on {sl_rate:.0f}% of trades — "
+                        f"loosen buffer to {new_buffer:.1f}%"
+                    ),
+                    "rationale": (
+                        f"Over the last {len(ts)} closed `{pat}` trades, **{sl_rate:.0f}%** "
+                        f"hit stop-loss instead of TP. The TP override is sitting too close "
+                        f"to the rug edge — trades reverse and trip SL before reaching it "
+                        f"(winners' avg peak: +{winner_peak:.1f}%).\n\n"
+                        f"Raising `pattern_tp_buffer_pct` from {cur_buffer:.1f}% to "
+                        f"{new_buffer:.1f}% moves the TP override further BELOW each "
+                        f"creator's median rug, locking wins earlier. Applied on next "
+                        f"score-update."
+                    ),
+                    "actions": {"pattern_tp_buffer_pct": new_buffer},
+                    "confidence": "high" if len(ts) >= 12 else "med",
+                    "metrics": {
+                        "pattern": pat, "n": len(ts),
+                        "winner_peak_pct": round(winner_peak, 1),
+                        "sl_rate_pct": round(sl_rate, 1),
+                        "current_buffer": cur_buffer,
+                        "proposed_buffer": new_buffer,
+                    },
+                })
+                continue  # don't ALSO consider tighten for this pattern
+
+            # PRIORITY 2: winners running past TP → tighten buffer.
+            # Need ≥4 winners with peak data and a healthy win-rate, otherwise
+            # we'd amplify a small sample of lucky runners.
+            if len(winners) < 4 or (len(winners) / len(ts)) < 0.4:
+                continue
+            peaks = [
+                float(w["peak_pct_pre_rug"]) for w in winners
+                if w.get("peak_pct_pre_rug") is not None
+            ]
+            if len(peaks) < 4:
+                continue
+            mean_peak = statistics.mean(peaks)
+            mean_pnl = statistics.mean([float(w["pnl_pct"]) for w in winners])
+            gap = mean_peak - mean_pnl
+
+            if gap >= 4.0 and cur_buffer >= 1.5:
+                new_buffer = max(0.5, round(cur_buffer - 1.0, 1))
+                suggestions.append({
+                    "category": "tp",
+                    "title": (
+                        f"{short_pat}: winners ran {gap:.1f}pp past TP — "
+                        f"tighten buffer to {new_buffer:.1f}%"
+                    ),
+                    "rationale": (
+                        f"Over the last {len(winners)} **winning** `{pat}` trades "
+                        f"(of {len(ts)} total), the average peak reached "
+                        f"**+{mean_peak:.1f}%** before reversing, but the realized "
+                        f"mean PnL was only **+{mean_pnl:.1f}%** — leaving "
+                        f"**{gap:.1f}pp** on the table.\n\n"
+                        f"Lowering `pattern_tp_buffer_pct` from {cur_buffer:.1f}% to "
+                        f"{new_buffer:.1f}% moves the TP override closer to each "
+                        f"creator's observed median rug, capturing more upside before "
+                        f"reversal. Applied on next score-update."
+                    ),
+                    "actions": {"pattern_tp_buffer_pct": new_buffer},
+                    "confidence": "high" if len(winners) >= 8 else "med",
+                    "metrics": {
+                        "pattern": pat, "n": len(ts), "n_winners": len(winners),
+                        "mean_peak_pct": round(mean_peak, 1),
+                        "mean_pnl_pct": round(mean_pnl, 1),
+                        "gap_pp": round(gap, 1),
+                        "sl_rate_pct": round(sl_rate, 1),
+                        "current_buffer": cur_buffer,
+                        "proposed_buffer": new_buffer,
+                    },
+                })
+
+        return suggestions
 
 
 # Singleton holder — set on app startup

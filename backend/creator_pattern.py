@@ -100,8 +100,14 @@ def classify_creator(
     creator_doc: dict | None,
     failed_launches: list[dict] | None = None,
     trades: list[dict] | None = None,
+    tp_buffer: float = 2.0,
 ) -> dict:
     """Mechanically classify a creator into one of the 6 buckets.
+
+    `tp_buffer` is the % subtracted from the observed median rug to compute
+    the LOWER bound of `suggested_exit_pct` (which Phase 2.7 uses as the TP
+    override). e.g. median rug 20% + buffer 2% → exit lo=18%. Smaller buffer
+    = more upside captured but tighter to the actual rug edge.
 
     Decision order (first match wins):
       1. No data            → "unknown"
@@ -189,6 +195,8 @@ def classify_creator(
     ):
         med = float(rug_stats["median"])
         if 18.0 <= med <= 30.0:
+            lo = max(0.0, med - tp_buffer)
+            hi = max(0.0, med - min(1.0, tp_buffer / 2))
             evidence.append(
                 f"rug_pct median {med:.1f}% in slow-rug window (18-30%)"
             )
@@ -202,9 +210,11 @@ def classify_creator(
                 "rug_stats": rug_stats,
                 "blacklisted": False,
                 "suggested_entry_pct": (10.0, 15.0),
-                "suggested_exit_pct": (max(0.0, med - 4.0), max(0.0, med - 1.0)),
+                "suggested_exit_pct": (lo, hi),
             }
         if 12.0 <= med < 18.0:
+            lo = max(0.0, med - tp_buffer)
+            hi = max(0.0, med - min(1.0, tp_buffer / 2))
             evidence.append(
                 f"rug_pct median {med:.1f}% in predictable-dump window (12-18%)"
             )
@@ -218,7 +228,7 @@ def classify_creator(
                 "rug_stats": rug_stats,
                 "blacklisted": False,
                 "suggested_entry_pct": (8.0, 10.0),
-                "suggested_exit_pct": (max(0.0, med - 3.0), max(0.0, med - 1.0)),
+                "suggested_exit_pct": (lo, hi),
             }
 
     # --- fallback: not enough signal yet ---

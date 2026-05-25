@@ -198,6 +198,12 @@ class BotConfig(BaseModel):
     # the predictions actually correlate with profitable snipes.
     creator_greylist_enabled: bool = True
     creator_greylist_mode: str = "telemetry"   # "telemetry" | "live"
+    # Buffer (% below median observed rug) used when the classifier emits a
+    # `suggested_exit_pct` for slow_rug / predictable_dump creators. Smaller
+    # buffer = exit closer to the actual rug point = more upside captured
+    # but more SL risk if the creator's behavior drifts. User-tunable.
+    # Used by `creator_pattern.classify_creator(...,tp_buffer=...)`.
+    pattern_tp_buffer_pct: float = 2.0
     # F-band gate: only score creators whose LIFETIME `tokens_failed` count
     # sits inside this band. Below `min_fails` there's not enough history to
     # see a pattern; above `max_fails` the creator is spammy/useless to track

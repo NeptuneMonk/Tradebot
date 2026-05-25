@@ -1,5 +1,38 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-25 — Phase 2.8 — Pattern TP Buffer Calibration (Doctor learning loop)
+
+### New: configurable `pattern_tp_buffer_pct = 2.0` (BotConfig)
+- Replaces hardcoded `-4.0` / `-3.0` buffers in `creator_pattern.classify_creator()`.
+- Buffer = % subtracted from observed median rug to set `pattern_suggested_exit_pct[0]` (the TP override Phase 2.7 uses).
+- Example: creator dumps at avg 20%, buffer 2% → TP set at **18%**. User's exact ask.
+- Threaded through `update_creator_score(tp_buffer=...)` → bot.py + failure_sweep.py both read the live BotConfig value.
+
+### NEW Strategy Doctor rule — `_rule_pattern_tp_calibration` (ADDITIVE, not replacement)
+Surfaces concrete `pattern_tp_buffer_pct` suggestions based on actual realized exits per pattern:
+
+1. **TIGHTEN signal**: when ≥6 trades of a tradeable pattern show ≥40% winners AND winners' mean peak ran ≥4pp past mean PnL — "Winners are running past TP, lower buffer to capture more upside."
+2. **LOOSEN signal**: when ≥35% of pattern trades hit SL — "TP override too close to rug edge, raise buffer to lock wins earlier."
+
+- Priority: SL-rate check runs FIRST so a mostly-losing pattern doesn't ALSO mis-fire the tighten path (loser PnLs inflate the gap metric).
+- Only counts WINNERS for the peak/gap math (losers' peak data is noise for "running past TP" signal).
+- Floors/ceilings: buffer won't drop below 0.5 or rise above 5.0; suggestions skipped if cur_buffer already at the relevant boundary.
+- Confidence: `high` at n≥12 winners, `med` otherwise.
+- Per-pattern independent: slow_rug + dump can each get their own suggestion in the same cycle.
+- One-click apply via the existing Strategy Doctor panel → `pattern_tp_buffer_pct` flips → next score-update (every trade close) propagates to every greylist creator.
+
+### Example output (verified live with 10 seeded trades, mean peak +26, mean PnL +18)
+```
+slow rug: winners ran 8.0pp past TP — tighten buffer to 1.0%
+action: {pattern_tp_buffer_pct: 1.0}
+```
+
+### Tests
+- `tests/test_strategy_doctor_pattern_rule.py`: 8 new tests covering small-sample suppression, tighten path, loosen path, unclassified rejection, per-pattern independence, floor/ceiling boundaries.
+- **59 tests total, 100% pass.**
+
+
+
 ## 2026-05-25 — Phase 2.6 Pattern Analytics + Phase 2.7 Pattern→TP Wiring
 
 ### Phase 2.7 — Pattern-aware TP override (bot.py)

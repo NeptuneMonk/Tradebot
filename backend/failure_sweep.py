@@ -144,13 +144,15 @@ class FailureSweeper:
             cfg_doc = await self.db.bot_config.find_one({}, {"_id": 0}) or {}
             min_f = int(cfg_doc.get("creator_greylist_min_fails", 5))
             max_f = int(cfg_doc.get("creator_greylist_max_fails", 80))
+            tp_buf = float(cfg_doc.get("pattern_tp_buffer_pct", 2.0))
         except Exception:
-            min_f, max_f = 5, 80
+            min_f, max_f, tp_buf = 5, 80, 2.0
         for creator in creators_touched:
             try:
                 from creator_greylist import update_creator_score
                 await update_creator_score(self.db, creator,
-                                            min_fails=min_f, max_fails=max_f)
+                                            min_fails=min_f, max_fails=max_f,
+                                            tp_buffer=tp_buf)
             except Exception as e:
                 logger.debug(f"greylist refresh failed for {creator[:8]}…: {e}")
 

@@ -294,7 +294,8 @@ def strategy_overrides(strategy: str) -> dict:
 
 
 async def update_creator_score(db, creator: str,
-                                min_fails: int = 5, max_fails: int = 80) -> dict | None:
+                                min_fails: int = 5, max_fails: int = 80,
+                                tp_buffer: float = 2.0) -> dict | None:
     """Recompute + persist greylist score for one creator. Called on every
     trade close AND every launch outcome stamp. Cheap — Mongo-only.
 
@@ -302,7 +303,10 @@ async def update_creator_score(db, creator: str,
     user's preferred 5-80 window). Outside the band the COMPONENT stats are
     still computed + persisted (so the moment a creator crosses into the
     band their score "wakes up"), but the composite is forced to 0 and an
-    `out_of_band` flag is set so the UI can explain the suppression."""
+    `out_of_band` flag is set so the UI can explain the suppression.
+
+    `tp_buffer` is the % subtracted from the median observed rug to derive
+    `pattern_suggested_exit_pct[0]` (the TP override Phase 2.7 uses)."""
     if not creator:
         return None
     creator_doc = await db.creators.find_one({"_id": creator})
@@ -329,7 +333,7 @@ async def update_creator_score(db, creator: str,
     # Good patterns (slow_rug / predictable_dump / fake_hype) stay scored
     # and get a pattern badge in the UI.
     from creator_pattern import classify_creator, BAD_PATTERNS
-    pattern = classify_creator(creator_doc, failed, trades)
+    pattern = classify_creator(creator_doc, failed, trades, tp_buffer=tp_buffer)
     pattern_blacklisted = bool(pattern.get("blacklisted")) or pattern["pattern"] in BAD_PATTERNS
     # F-band gate. We use LIFETIME `tokens_failed` (the "F" badge the user
     # sees in Recent Launches) — not `n_failed_launches` which only counts
