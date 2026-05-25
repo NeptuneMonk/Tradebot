@@ -244,8 +244,8 @@ async def test_update_creator_score_below_band_zeros_composite():
         "first_seen": _iso(48), "last_seen": _iso(1),
     }
     db = _FakeDB(creator_doc, launches=[
-        {"outcome": "failed", "final_peak_mc_usd": 50_000},
-        {"outcome": "failed", "final_peak_mc_usd": 52_000},
+        {"outcome": "failed", "final_peak_mc_usd": 50_000, "sol_inflow": 5.0, "buy_count": 20},
+        {"outcome": "failed", "final_peak_mc_usd": 52_000, "sol_inflow": 5.0, "buy_count": 20},
     ])
     r = await update_creator_score(db, "C1", min_fails=5, max_fails=80)
     assert r["out_of_band"] is True

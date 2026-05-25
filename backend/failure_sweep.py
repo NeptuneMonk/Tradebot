@@ -41,18 +41,49 @@ SWEEP_AGE_THRESHOLD_HOURS = 24
 def classify_failed_launch(launch: dict) -> str:
     """Mechanical classification per RUG_PATTERNS.md. Returns one of:
       'failed_instant' | 'failed_fizzled' | 'failed_chaotic'
-    Used to filter what the greylist scorer should weight."""
+
+    Primary signal is `sol_inflow` — a launch that died with < 2 SOL of
+    total buy-side inflow never reached tradeable volume regardless of how
+    many micro-buys hit it. This eliminates the long tail of noise mints
+    that would otherwise dilute the creator's peak-MC median.
+    """
+    sol_inflow = float(launch.get("sol_inflow") or 0)
     buys = int(launch.get("buy_count") or 0)
     unique_buyers = int(launch.get("unique_buyers") or 0)
     peak_mc = float(launch.get("peak_mc_usd") or 0)
-    if buys < 5 and unique_buyers < 5:
+    if peak_mc <= 0:
+        peak_mc = _estimate_peak_mc(launch)
+    # Dead-on-arrival — < 2 SOL inflow OR < 5 buys+buyers (handles edge
+    # cases where inflow is unset).
+    if sol_inflow < 2.0 or (buys < 5 and unique_buyers < 5):
         return "failed_instant"
     # Had volume — separate "fizzled gracefully" from "chaotic":
-    #   fizzled = peak MC > $5k (meaningful pump pre-dormancy)
-    #   chaotic = below threshold or otherwise low signal
+    #   fizzled = peak MC ≥ $5k (meaningful pump pre-dormancy)
+    #   chaotic = below threshold (volume but never sustained)
     if peak_mc >= 5_000:
         return "failed_fizzled"
     return "failed_chaotic"
+
+
+# Pump.fun bonding curve graduates at 100% fill which corresponds to ~$69k
+# market cap. The mapping is roughly linear (slight curve, but linear is a
+# good approximation for our greylist purposes — we need a ROUGH ceiling,
+# not a precise valuation).
+_PUMPFUN_GRADUATION_MC_USD = 69_000.0
+
+
+def _estimate_peak_mc(launch: dict) -> float:
+    """Derive an approximate peak MC for a launch when `peak_mc_usd` was
+    never populated by the scanner. Uses `curve_fill_pct` primarily,
+    falling back to a rough SOL-inflow heuristic."""
+    fill = launch.get("curve_fill_pct")
+    if fill is not None and fill > 0:
+        return float(fill) / 100.0 * _PUMPFUN_GRADUATION_MC_USD
+    inflow = launch.get("sol_inflow")
+    if inflow is not None and inflow > 0:
+        # ~32 SOL accumulates around $25k MC on early curve. Rough.
+        return float(inflow) * 800.0
+    return 0.0
 
 
 class FailureSweeper:
@@ -96,13 +127,22 @@ class FailureSweeper:
                   timedelta(hours=SWEEP_AGE_THRESHOLD_HOURS)).isoformat()
         # Find launches: older than 24h, outcome unset (i.e. didn't graduate
         # by 60s AND we never came back to stamp them).
+        # Uses `detected_at` (the actual launch timestamp field) — earlier
+        # versions of this file queried `first_seen` which doesn't exist on
+        # launches docs, silently making the sweep a no-op. The
+        # `$or` lets older docs that DID have first_seen still match.
         cur = self.db.launches.find(
             {
-                "first_seen": {"$lt": cutoff},
+                "$or": [
+                    {"detected_at": {"$lt": cutoff}},
+                    {"first_seen": {"$lt": cutoff}},
+                ],
                 "outcome": {"$in": [None]},
             },
             {"_id": 1, "mint": 1, "creator": 1, "buy_count": 1,
-             "unique_buyers": 1, "peak_mc_usd": 1, "first_seen": 1},
+             "unique_buyers": 1, "peak_mc_usd": 1,
+             "curve_fill_pct": 1, "sol_inflow": 1,
+             "detected_at": 1, "first_seen": 1},
         ).limit(2000)
 
         classified = 0
@@ -111,16 +151,20 @@ class FailureSweeper:
 
         async for d in cur:
             fail_class = classify_failed_launch(d)
+            # Stamp final_peak_mc_usd from observed peak OR derive from
+            # curve_fill_pct (pump.fun 100% fill ≈ $69k MC). Necessary for
+            # the greylist's median-MC pattern signal — without this every
+            # historical failed launch shows up as $0 peak.
+            peak_mc = float(d.get("peak_mc_usd") or 0)
+            if peak_mc <= 0:
+                peak_mc = _estimate_peak_mc(d)
             await self.db.launches.update_one(
                 {"_id": d["_id"]},
                 {"$set": {
                     "outcome": "failed",
                     "outcome_at": now_iso,
                     "fail_class": fail_class,
-                    # Stamp final_peak_mc_usd from whatever we observed.
-                    # For tokens we stopped tracking before they fizzled,
-                    # this is the peak we DID see (better than nothing).
-                    "final_peak_mc_usd": float(d.get("peak_mc_usd") or 0.0),
+                    "final_peak_mc_usd": peak_mc,
                 }},
             )
             # Decrement creators.tokens_active and increment tokens_failed

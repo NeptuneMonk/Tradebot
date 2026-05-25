@@ -743,6 +743,27 @@ class BotState:
         creator_doc = await record_new_launch(self.db, launch.creator, launch.mint)
         creator_rugs = derive_rug_count(creator_doc)
 
+        # Phase 2.8 / user feedback — refresh the creator's greylist score on
+        # every observed launch. Without this, creators sitting in the F-band
+        # (5 ≤ tokens_failed < 80) only get scored when (a) they graduate,
+        # (b) we close a trade on them, or (c) the 6h failure-sweep cycle
+        # touches one of their new failures. For creators we've NEVER traded
+        # — which is most of them — that meant they were absent from the
+        # greylist surface despite being prime candidates. Now every fresh
+        # launch keeps the score current. Cheap — Mongo-only.
+        if (creator_doc and self.config.creator_greylist_enabled
+                and (creator_doc.get("tokens_failed") or 0) >= int(self.config.creator_greylist_min_fails)):
+            try:
+                from creator_greylist import update_creator_score
+                await update_creator_score(
+                    self.db, launch.creator,
+                    min_fails=int(self.config.creator_greylist_min_fails),
+                    max_fails=int(self.config.creator_greylist_max_fails),
+                    tp_buffer=float(self.config.pattern_tp_buffer_pct),
+                )
+            except Exception as e:
+                logger.debug(f"greylist refresh on launch skipped: {e}")
+
         # Initial baseline classification (no metrics yet, but we have rug count)
         verdict = classify(
             {"curve_fill_pct": 0, "elapsed_s": 0, "unique_buyers": 0,

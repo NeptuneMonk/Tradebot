@@ -1,5 +1,45 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-25 — Greylist Population Fix (per-launch refresh, sweep bugs, classifier permissive)
+
+User feedback: only 2 creators visible on the greylist despite seeing 10+ qualifying creators per minute in the Recent Launches feed. Root-causing led to a cascade of issues:
+
+### Fix 1: `failure_sweep` was a silent no-op
+- Query used `first_seen` (doesn't exist on launches docs) instead of `detected_at`. 29,584 dormant launches were sitting in the DB with `outcome=null` and never being classified as failed.
+- Also extended projection to include `curve_fill_pct` and `sol_inflow` for the peak MC estimator.
+
+### Fix 2: `final_peak_mc_usd` was always 0
+- `peak_mc_usd` field on launches is rarely populated by the scanner.
+- New `_estimate_peak_mc(launch)` derives MC from `curve_fill_pct` (pump.fun graduates at 100% fill ≈ $69k MC) or `sol_inflow` (~821 USD/SOL on bonding curve) as fallback.
+- One-shot retro-update populated peak MC for 9,406 + 2,599 = 12,005 historical failed launches.
+
+### Fix 3: Spam launches polluted the pattern signal
+- Per your "<2 SOL inflow = dead on arrival" insight: `classify_failed_launch` now classifies any launch with `sol_inflow < 2 SOL OR (buys<5 AND buyers<5)` as `failed_instant`.
+- `_instant_share` and `update_creator_score` both now filter `failed_meaningful` (sol_inflow ≥ 0.1 OR buys ≥ 3) so 0.00001-SOL test mints don't drown out the real rug signal.
+
+### Fix 4: Per-launch greylist score refresh
+- `bot.py:_listen_pump_launches` now calls `update_creator_score()` for every new launch from an in-band creator. Was only triggered on graduation / trade close / 6h sweep — meaning creators we never traded sat in the DB unscored for hours.
+
+### Fix 5: One-shot backfill endpoint
+- New `POST /api/creator-greylist/backfill-all` — re-scores every in-band creator in the DB. Returns `{scanned, scored, now_active_on_greylist, now_blacklisted}`. UI button added next to Sweep.
+
+### Fix 6: Classifier was too strict (per Bing reference)
+- Per the Bing classifier reference (incremental scoring, never blacklist): loosened thresholds from `mc_stats["n"] >= 5, CV ≤ 0.40` to `n >= 3, CV ≤ 0.60`. Lowered median MC floors. Lowered fizzled/chaotic share thresholds.
+- `unknown` pattern is no longer auto-blacklisted by `update_creator_score` — trusts the classifier's per-result `blacklisted` flag.
+- Creators with ≥3 meaningful fails OR ≥5 lifetime tokens_failed remain WATCHABLE even when no clean pattern signature emerges yet.
+
+### Result
+- Before: 2 active greylist creators.
+- After: **905 active greylist creators** with realistic peak MC and fail counts. 393 correctly classified as untradeable_rug / unpredictable_rug.
+- Screenshot confirms full panel population with HYBRID-tier rows scored 50-59 showing peak MC $5.3k–$33.1k.
+
+### Tests
+- Updated existing tests to set `sol_inflow` ≥ 0.1 / `buy_count` ≥ 3 on fixtures so they pass the new "meaningful" filter.
+- New `test_instant_share_drops_spam_launches`.
+- **37 tests in creator_pattern + creator_greylist still 100% green.**
+
+
+
 ## 2026-05-25 — Phase 2.9 — Greylist Mint Pinning in Scanner Feeds
 
 Reframed per user feedback: instead of a separate "post-exit observation loop", leverage the scanner's existing data flow by **pinning** greylisted-creator mints in the Recent Launches feed.

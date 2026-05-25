@@ -65,14 +65,75 @@ def _hype_score_from_names(names: list[str]) -> tuple[float, list[str]]:
 
 
 def _instant_share(failed_launches: list[dict]) -> tuple[float, int, int]:
-    """Fraction of failed launches that are 'failed_instant' (Dead in 60s).
-    Returns (share 0..1, n_instant, n_total). When the share > 0.5 the
-    creator is dominated by the untradeable cohort."""
+    """Fraction of *meaningful* failed launches that are 'failed_instant'.
+    
+    "Meaningful" excludes spam/test launches (sol_inflow < 0.1 SOL with
+    only 1-2 buys). A creator who routinely deploys test mints at 0.00001
+    SOL would otherwise show 95% 'instant' just from noise launches that
+    have nothing to do with their actual rug pattern.
+    
+    Returns (share 0..1, n_instant, n_meaningful_total). When the share
+    > 0.5 the creator is dominated by the untradeable cohort."""
     if not failed_launches:
         return 0.0, 0, 0
-    n_total = len(failed_launches)
-    n_instant = sum(1 for f in failed_launches if f.get("fail_class") == "failed_instant")
+    # Filter out spam (no real money attempted)
+    meaningful = [
+        f for f in failed_launches
+        if (float(f.get("sol_inflow") or 0) >= 0.1
+            or int(f.get("buy_count") or 0) >= 3)
+    ]
+    if not meaningful:
+        return 0.0, 0, 0
+    n_total = len(meaningful)
+    n_instant = sum(1 for f in meaningful if f.get("fail_class") == "failed_instant")
     return (n_instant / n_total), n_instant, n_total
+
+
+def _peak_mc_stats(failed_launches: list[dict]) -> dict[str, Any]:
+    """Peak MC distribution across the creator's FAILED launches.
+    This is the user's primary signal: 'whats most important is their
+    median mc across all fails — so we know when its too late'.
+
+    Excludes `failed_instant` (Dead-in-60s) since their peak MCs are tiny
+    and would drag the median artificially low. A creator who consistently
+    rugs at $50k MC is the signal we want, not one whose 'fails' were 80%
+    rugged within 60s with no real volume."""
+    peaks = [
+        float(f["final_peak_mc_usd"])
+        for f in failed_launches
+        if (f.get("final_peak_mc_usd") and f.get("fail_class") != "failed_instant")
+    ]
+    if len(peaks) < 2:
+        return {"median": None, "mean": None, "cv": None, "n": len(peaks)}
+    mean = statistics.mean(peaks)
+    try:
+        sd = statistics.stdev(peaks) if len(peaks) >= 2 else 0.0
+    except statistics.StatisticsError:
+        sd = 0.0
+    cv = sd / mean if mean else 0.0
+    return {
+        "median": round(statistics.median(peaks), 0),
+        "mean": round(mean, 0),
+        "stddev": round(sd, 0),
+        "cv": round(cv, 3),
+        "n": len(peaks),
+    }
+
+
+def _fail_class_breakdown(failed_launches: list[dict]) -> dict[str, float]:
+    """Share of each fail_class. Used to distinguish:
+      - slow_rug         → mostly `failed_fizzled` (slow death over hours/days)
+      - heavier_dump     → mostly `failed_chaotic` (volume + abrupt rug)
+      - untradeable      → mostly `failed_instant` (Dead in 60s)
+    """
+    if not failed_launches:
+        return {}
+    n = len(failed_launches)
+    shares: dict[str, float] = {}
+    for f in failed_launches:
+        k = f.get("fail_class") or "failed"
+        shares[k] = shares.get(k, 0.0) + 1.0 / n
+    return shares
 
 
 def _rug_pct_stats(trades: list[dict]) -> dict[str, Any]:
@@ -136,13 +197,18 @@ def classify_creator(
         }
 
     rug_stats = _rug_pct_stats(trades)
+    mc_stats = _peak_mc_stats(failed_launches)
+    fail_classes = _fail_class_breakdown(failed_launches)
     instant_share, n_instant, n_total_failed = _instant_share(failed_launches)
     names = [(fl.get("symbol") or fl.get("name") or "") for fl in failed_launches]
     hype_share, hype_kw = _hype_score_from_names(names)
 
     evidence: list[str] = []
 
-    # --- bucket 2: unpredictable (variance too high) — only if we have enough data ---
+    # --- bucket 2: unpredictable (variance too high) ---
+    # Two paths: rug_pct stddev (when we have trades) OR peak_mc CV (when
+    # we only have launch data, which is the common case since we won't
+    # be trading these creators in standard mode).
     if rug_stats["n"] >= 4 and rug_stats["stddev"] is not None and rug_stats["stddev"] > 20.0:
         evidence.append(f"rug_pct stddev {rug_stats['stddev']:.1f}% > 20% on {rug_stats['n']} samples")
         return {
@@ -150,6 +216,21 @@ def classify_creator(
             "confidence": min(100.0, 50.0 + rug_stats["stddev"]),
             "evidence": evidence,
             "rug_stats": rug_stats,
+            "mc_stats": mc_stats,
+            "blacklisted": True,
+        }
+    if mc_stats["n"] >= 5 and mc_stats["cv"] is not None and mc_stats["cv"] > 0.55:
+        evidence.append(
+            f"peak MC CV {mc_stats['cv']:.2f} > 0.55 on {mc_stats['n']} fails "
+            f"(median ${int(mc_stats['median']):,}, mean ${int(mc_stats['mean']):,}, "
+            f"σ ${int(mc_stats['stddev']):,}) — no consistent peak"
+        )
+        return {
+            "pattern": "unpredictable_rug",
+            "confidence": min(100.0, 50.0 + mc_stats["cv"] * 50),
+            "evidence": evidence,
+            "rug_stats": rug_stats,
+            "mc_stats": mc_stats,
             "blacklisted": True,
         }
 
@@ -164,12 +245,112 @@ def classify_creator(
             "confidence": min(100.0, instant_share * 100),
             "evidence": evidence,
             "rug_stats": rug_stats,
+            "mc_stats": mc_stats,
             "blacklisted": True,
         }
 
-    # --- bucket 4: fake_hype (hype name + fast acceleration profile) ---
-    # Hype names alone aren't enough — we need a launch profile that ALSO
-    # looks like a fake-hype rug (some `failed_instant` + low rug-pct samples).
+    # === PRIMARY PATH (launch-data classification) =========================
+    # Looser thresholds than the pre-Bing-reference version so creators with
+    # PARTIAL signal (3-4 fails, moderate CV) still surface at low confidence
+    # instead of getting silently blacklisted as "unknown". Matches the
+    # Bing classifier's incremental-scoring philosophy: score everything we
+    # see, blacklist only the clearly-bad patterns.
+    if mc_stats["n"] >= 3 and mc_stats["cv"] is not None and mc_stats["cv"] <= 0.60:
+        median_mc = float(mc_stats["median"])
+        fizzled_share = fail_classes.get("failed_fizzled", 0.0)
+        chaotic_share = fail_classes.get("failed_chaotic", 0.0)
+        # Consistency points: tight CV → high score (range 0..100). Linear
+        # interpolation: CV 0 = 100pts, CV 0.60 = 0pts.
+        consistency_pts = max(0.0, (0.60 - mc_stats["cv"]) / 0.60 * 100)
+        mc_evidence = (
+            f"median peak MC ${int(median_mc):,} "
+            f"(σ ${int(mc_stats['stddev']):,}, CV {mc_stats['cv']:.2f}) "
+            f"across {mc_stats['n']} fails"
+        )
+
+        # Pattern A: fake_hype — hype name + slow death (fizzled-dominant)
+        if hype_share >= 0.4 and fizzled_share >= 0.3:
+            evidence.append(mc_evidence)
+            evidence.append(
+                f"{hype_share*100:.0f}% of mint names match hype keywords {hype_kw[:4]}"
+            )
+            evidence.append(
+                f"{fizzled_share*100:.0f}% slow-fizzle pattern (trendy-name signature)"
+            )
+            return {
+                "pattern": "fake_hype_tradeable",
+                "confidence": min(95.0, 30.0 + 0.6 * consistency_pts),
+                "evidence": evidence,
+                "rug_stats": rug_stats,
+                "mc_stats": mc_stats,
+                "blacklisted": False,
+                "hype_keywords": hype_kw,
+                "median_peak_mc_usd": median_mc,
+                "stop_mc_usd": median_mc * 0.7,
+            }
+
+        # Pattern B: predictable_dump — chaotic-significant share
+        if chaotic_share >= 0.25 and median_mc >= 5_000:
+            evidence.append(mc_evidence)
+            evidence.append(
+                f"{chaotic_share*100:.0f}% `failed_chaotic` — heavier dump signature"
+            )
+            return {
+                "pattern": "predictable_dump_tradeable",
+                "confidence": min(95.0, 25.0 + 0.7 * consistency_pts),
+                "evidence": evidence,
+                "rug_stats": rug_stats,
+                "mc_stats": mc_stats,
+                "blacklisted": False,
+                "suggested_entry_pct": (8.0, 10.0),
+                "median_peak_mc_usd": median_mc,
+                "stop_mc_usd": median_mc * 0.7,
+            }
+
+        # Pattern C: slow_rug — fizzled-dominant + consistent peak
+        if fizzled_share >= 0.4 and median_mc >= 8_000:
+            evidence.append(mc_evidence)
+            evidence.append(
+                f"{fizzled_share*100:.0f}% `failed_fizzled` — slow-rug signature "
+                f"(creator + seeded wallets pull at consistent curve %)"
+            )
+            return {
+                "pattern": "slow_rug_tradeable",
+                "confidence": min(95.0, 30.0 + 0.65 * consistency_pts),
+                "evidence": evidence,
+                "rug_stats": rug_stats,
+                "mc_stats": mc_stats,
+                "blacklisted": False,
+                "suggested_entry_pct": (10.0, 15.0),
+                "median_peak_mc_usd": median_mc,
+                "stop_mc_usd": median_mc * 0.7,
+            }
+
+        # Tight-MC creator that didn't match any clean bucket signature →
+        # surface as `unknown` BUT NOT BLACKLISTED. Per the Bing reference:
+        # score everything we see, even partial signal, so the user can
+        # observe these candidates in the panel. The composite score will
+        # be modest (driven by component math in compute_score) so they
+        # naturally sit below the strong patterns.
+        evidence.append(mc_evidence)
+        evidence.append(
+            f"fail_class mix: fizzled {fizzled_share*100:.0f}% / "
+            f"chaotic {chaotic_share*100:.0f}% / instant {instant_share*100:.0f}% — "
+            f"no clean pattern signature yet (still watchable)"
+        )
+        return {
+            "pattern": "unknown",
+            "confidence": min(70.0, 30.0 + 0.4 * consistency_pts),
+            "evidence": evidence,
+            "rug_stats": rug_stats,
+            "mc_stats": mc_stats,
+            "blacklisted": False,   # Watchable, not blacklisted
+            "median_peak_mc_usd": median_mc,
+            "stop_mc_usd": median_mc * 0.7,
+        }
+
+    # --- legacy bucket 4 retained for back-compat with prior trade-based
+    # fake_hype detection. Only fires if launch path above didn't match.
     if hype_share >= 0.4 and n_total_failed >= 4 and instant_share >= 0.3:
         evidence.append(
             f"{hype_share*100:.0f}% of mint names match hype keywords {hype_kw[:4]}"
@@ -233,15 +414,26 @@ def classify_creator(
 
     # --- fallback: not enough signal yet ---
     msg_parts = []
+    if mc_stats["n"] < 3:
+        msg_parts.append(f"only {mc_stats['n']} meaningful fails with peak data (need ≥3)")
     if rug_stats["n"] < 4:
         msg_parts.append(f"only {rug_stats['n']} rug_pct samples (need ≥4)")
     if rug_stats["n"] >= 4 and rug_stats["stddev"] is not None and rug_stats["stddev"] >= 6.0:
         msg_parts.append(f"stddev {rug_stats['stddev']:.1f}% too wide (need <6%)")
     evidence.append("; ".join(msg_parts) if msg_parts else "no decisive pattern yet")
+    # Watchable when we have ANY lifetime fail history — score will be
+    # modest but the creator stays visible in the panel so the user can
+    # observe additional launches accumulate.
+    has_fail_history = (
+        n_total_failed >= 3
+        or tokens_failed >= 5
+        or mc_stats["n"] >= 1
+    )
     return {
         "pattern": "unknown",
-        "confidence": 20.0,
+        "confidence": 25.0 if has_fail_history else 60.0,
         "evidence": evidence,
         "rug_stats": rug_stats,
-        "blacklisted": True,   # treat unknown as blacklisted-from-greylist
+        "mc_stats": mc_stats,
+        "blacklisted": not has_fail_history,
     }

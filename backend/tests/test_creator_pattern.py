@@ -39,15 +39,31 @@ def test_hype_score_empty_inputs():
 
 
 def test_instant_share_counts_correctly():
+    # All fixtures need sol_inflow≥0.1 OR buy_count≥3 to be considered "meaningful"
     fails = [
-        {"fail_class": "failed_instant"},
-        {"fail_class": "failed_instant"},
-        {"fail_class": "failed_fizzled"},
-        {"fail_class": "failed_chaotic"},
+        {"fail_class": "failed_instant", "buy_count": 3},
+        {"fail_class": "failed_instant", "buy_count": 3},
+        {"fail_class": "failed_fizzled", "buy_count": 10},
+        {"fail_class": "failed_chaotic", "buy_count": 5},
     ]
     share, n_inst, n_total = _instant_share(fails)
     assert n_inst == 2 and n_total == 4
     assert share == 0.5
+
+
+def test_instant_share_drops_spam_launches():
+    """Test/spam launches (<0.1 SOL inflow AND <3 buys) shouldn't count."""
+    fails = [
+        {"fail_class": "failed_instant", "sol_inflow": 0.00001, "buy_count": 1},
+        {"fail_class": "failed_instant", "sol_inflow": 0.00001, "buy_count": 1},
+        {"fail_class": "failed_fizzled", "sol_inflow": 5.0, "buy_count": 20},
+        {"fail_class": "failed_chaotic", "sol_inflow": 3.0, "buy_count": 10},
+    ]
+    share, n_inst, n_total = _instant_share(fails)
+    # Only the 2 meaningful fails counted; both are non-instant
+    assert n_total == 2
+    assert n_inst == 0
+    assert share == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -62,8 +78,9 @@ def test_unknown_when_no_history():
 
 def test_untradeable_when_dominant_instant_rugs():
     """≥50% of failed launches are failed_instant → blacklisted."""
-    fails = [{"fail_class": "failed_instant"} for _ in range(4)]
-    fails += [{"fail_class": "failed_fizzled"} for _ in range(2)]
+    # All fixtures need buy_count≥3 to pass the "meaningful" filter
+    fails = [{"fail_class": "failed_instant", "buy_count": 3} for _ in range(4)]
+    fails += [{"fail_class": "failed_fizzled", "buy_count": 10, "final_peak_mc_usd": 10000} for _ in range(2)]
     r = classify_creator(
         {"tokens_created": 10, "tokens_failed": 6},
         failed_launches=fails,
@@ -135,11 +152,11 @@ def test_predictable_dump_tradeable_lower_median():
 def test_fake_hype_tradeable_when_hype_names_plus_fast_rugs():
     """hype-keyword names + ≥40% of fails are failed_instant → fake_hype."""
     fails = [
-        {"fail_class": "failed_instant", "symbol": "AI MOON DOG"},
-        {"fail_class": "failed_instant", "symbol": "ELON PEPE"},
-        {"fail_class": "failed_fizzled", "symbol": "MUSK BUTT"},
-        {"fail_class": "failed_fizzled", "symbol": "regular thing"},
-        {"fail_class": "failed_instant", "symbol": "GOD COIN"},
+        {"fail_class": "failed_instant", "symbol": "AI MOON DOG", "buy_count": 3},
+        {"fail_class": "failed_instant", "symbol": "ELON PEPE", "buy_count": 3},
+        {"fail_class": "failed_fizzled", "symbol": "MUSK BUTT", "buy_count": 10, "final_peak_mc_usd": 8000},
+        {"fail_class": "failed_fizzled", "symbol": "regular thing", "buy_count": 10, "final_peak_mc_usd": 8000},
+        {"fail_class": "failed_instant", "symbol": "GOD COIN", "buy_count": 3},
     ]
     r = classify_creator(
         {"tokens_created": 8, "tokens_failed": 5},
@@ -157,11 +174,11 @@ def test_fake_hype_tradeable_when_hype_names_plus_fast_rugs():
 def test_fake_hype_branch_when_hype_names_but_instant_share_below_untradeable_floor():
     """≥40% hype + 30-49% instant → fake_hype (not untradeable)."""
     fails = [
-        {"fail_class": "failed_instant", "symbol": "AI ROCKET"},
-        {"fail_class": "failed_fizzled",  "symbol": "MOON BABY"},
-        {"fail_class": "failed_fizzled",  "symbol": "ELON DOG"},
-        {"fail_class": "failed_fizzled",  "symbol": "regular"},
-        {"fail_class": "failed_instant",  "symbol": "GOD PEPE"},
+        {"fail_class": "failed_instant", "symbol": "AI ROCKET", "buy_count": 3},
+        {"fail_class": "failed_fizzled",  "symbol": "MOON BABY", "buy_count": 10, "final_peak_mc_usd": 8000},
+        {"fail_class": "failed_fizzled",  "symbol": "ELON DOG", "buy_count": 10, "final_peak_mc_usd": 8000},
+        {"fail_class": "failed_fizzled",  "symbol": "regular", "buy_count": 10, "final_peak_mc_usd": 8000},
+        {"fail_class": "failed_instant",  "symbol": "GOD PEPE", "buy_count": 3},
     ]
     # 2/5 = 40% instant share (≥0.3 floor for fake_hype but <0.5 for untradeable)
     # 4/5 = 80% hype share (≥0.4 floor)

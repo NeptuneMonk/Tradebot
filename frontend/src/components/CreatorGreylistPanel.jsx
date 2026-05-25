@@ -436,6 +436,7 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
   const [showBlacklist, setShowBlacklist] = useState(false);
   const [loading, setLoading] = useState(false);
   const [sweepRunning, setSweepRunning] = useState(false);
+  const [backfillRunning, setBackfillRunning] = useState(false);
   const [modeToggling, setModeToggling] = useState(false);
   const [minScore, setMinScore] = useState(30);
   const [expanded, setExpanded] = useState(null);
@@ -481,6 +482,21 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
       toast.error("Sweep failed: " + (e?.response?.data?.detail || e.message));
     } finally {
       setSweepRunning(false);
+    }
+  };
+
+  const runBackfill = async () => {
+    setBackfillRunning(true);
+    try {
+      const r = await api.creatorGreylistBackfill();
+      toast.success(
+        `Backfill: scanned ${r?.scanned ?? 0} · ${r?.now_active_on_greylist ?? 0} now active · ${r?.now_blacklisted ?? 0} blacklisted`
+      );
+      refresh();
+    } catch (e) {
+      toast.error("Backfill failed: " + (e?.response?.data?.detail || e.message));
+    } finally {
+      setBackfillRunning(false);
     }
   };
 
@@ -563,6 +579,16 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
               data-testid="greylist-min-score-input"
             />
           </label>
+          <button
+            type="button"
+            onClick={runBackfill}
+            disabled={backfillRunning}
+            data-testid="greylist-backfill-btn"
+            className="flex items-center gap-1 px-2 py-1 border border-neutral-800 hover:bg-neutral-800 disabled:opacity-50 text-[10px] font-mono uppercase tracking-wider text-neutral-300"
+            title="Re-score every creator already in DB whose tokens_failed is inside the F-band. Cheap — Mongo-only, no Helius calls."
+          >
+            <RefreshCw className={`w-3 h-3 ${backfillRunning ? "animate-spin" : ""}`} /> {backfillRunning ? "scoring…" : "backfill"}
+          </button>
           <button
             type="button"
             onClick={runSweep}

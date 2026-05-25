@@ -324,17 +324,29 @@ async def update_creator_score(db, creator: str,
         {"creator": creator, "outcome": "failed"},
         {"_id": 0, "mint": 1, "symbol": 1, "outcome": 1, "fail_class": 1,
          "outcome_at": 1, "final_peak_mc_usd": 1, "buy_count": 1,
-         "unique_buyers": 1},
+         "unique_buyers": 1, "sol_inflow": 1},
     ).to_list(200)
-    score = compute_score(creator_doc, trades, failed)
+    # Filter spam/test launches BEFORE pattern classification — keeps the
+    # creator's lifetime tokens_failed counter accurate (it's already
+    # incremented at record/sweep time) but prevents 0.00001-SOL test
+    # mints from drowning out the real rug signal.
+    failed_meaningful = [
+        f for f in failed
+        if (float(f.get("sol_inflow") or 0) >= 0.1
+            or int(f.get("buy_count") or 0) >= 3)
+    ]
+    score = compute_score(creator_doc, trades, failed_meaningful)
     # Mechanical pattern classifier (see creator_pattern.py + RUG_PATTERNS.md).
     # Bad patterns (untradeable_rug / unpredictable_rug / unknown) flip
     # `blacklisted=True` → composite forced to 0 → creator hidden from UI.
     # Good patterns (slow_rug / predictable_dump / fake_hype) stay scored
     # and get a pattern badge in the UI.
-    from creator_pattern import classify_creator, BAD_PATTERNS
-    pattern = classify_creator(creator_doc, failed, trades, tp_buffer=tp_buffer)
-    pattern_blacklisted = bool(pattern.get("blacklisted")) or pattern["pattern"] in BAD_PATTERNS
+    from creator_pattern import classify_creator
+    pattern = classify_creator(creator_doc, failed_meaningful, trades, tp_buffer=tp_buffer)
+    # Trust the classifier's per-result `blacklisted` flag — it knows whether
+    # an "unknown" pattern is a hard reject vs a watchable candidate. Don't
+    # re-blacklist based on the pattern name alone.
+    pattern_blacklisted = bool(pattern.get("blacklisted"))
     # F-band gate. We use LIFETIME `tokens_failed` (the "F" badge the user
     # sees in Recent Launches) — not `n_failed_launches` which only counts
     # sweep-classified ones with peak MC. The lifetime counter is the right
@@ -344,9 +356,10 @@ async def update_creator_score(db, creator: str,
     suppressed = out_of_band or pattern_blacklisted
     composite = 0.0 if suppressed else score["score"]
     now_iso = datetime.now(timezone.utc).isoformat()
-    # Top 10 recent failed mints (for the profile/UI card)
+    # Top 10 recent meaningful failed mints (for the profile/UI card —
+    # spam launches like 0.00001-SOL tests are dropped).
     recent_failed = sorted(
-        failed,
+        failed_meaningful,
         key=lambda fl: fl.get("outcome_at") or "",
         reverse=True,
     )[:10]

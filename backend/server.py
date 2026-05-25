@@ -1888,6 +1888,50 @@ async def creator_greylist(limit: int = 25, min_score: float = 30.0):
     return {"items": await top_greylisted(db, limit=limit, min_score=min_score)}
 
 
+@api.post("/creator-greylist/backfill-all")
+async def creator_greylist_backfill():
+    """One-shot: re-score every creator whose lifetime `tokens_failed`
+    already sits inside the F-band. Used when the user observes creators
+    in the Recent Launches feed that SHOULD be on the greylist but aren't
+    (because they were ingested before the per-launch scoring hook was
+    wired, or because the failure-sweep hasn't visited their cohort yet).
+    Cheap — Mongo-only, no Helius calls."""
+    cfg = await db.bot_config.find_one({}, {"_id": 0}) or {}
+    min_f = int(cfg.get("creator_greylist_min_fails", 5))
+    max_f = int(cfg.get("creator_greylist_max_fails", 80))
+    tp_buf = float(cfg.get("pattern_tp_buffer_pct", 2.0))
+    # Include both in-band creators AND any whose score was previously set
+    # (so creators that dropped OUT of the band get their composite zeroed).
+    cur = db.creators.find(
+        {"$or": [
+            {"tokens_failed": {"$gte": min_f, "$lt": max_f}},
+            {"greylist_score": {"$gt": 0}},
+        ]},
+        {"_id": 1, "tokens_failed": 1},
+    ).limit(5000)
+    from creator_greylist import update_creator_score
+    n_scanned = 0
+    n_scored = 0
+    n_blacklisted = 0
+    n_active = 0
+    async for d in cur:
+        n_scanned += 1
+        try:
+            r = await update_creator_score(db, d["_id"], min_fails=min_f,
+                                            max_fails=max_f, tp_buffer=tp_buf)
+            if r:
+                if (r.get("score") or 0) > 0:
+                    n_active += 1
+                elif r.get("pattern_blacklisted"):
+                    n_blacklisted += 1
+                n_scored += 1
+        except Exception:
+            continue
+    return {"scanned": n_scanned, "scored": n_scored,
+            "now_active_on_greylist": n_active,
+            "now_blacklisted": n_blacklisted}
+
+
 @api.get("/creator-greylist/blacklist")
 async def creator_blacklist(limit: int = 50):
     """Top N blacklisted creators (untradeable_rug / unpredictable_rug /
