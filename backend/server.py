@@ -1956,7 +1956,8 @@ async def creator_greylist_backfill_signatures(limit: int = 5000, only_missing: 
     cur = db.launches.find(
         q,
         {"_id": 1, "sol_inflow": 1, "buy_count": 1, "unique_buyers": 1,
-         "outcome": 1, "detected_at": 1, "outcome_at": 1},
+         "outcome": 1, "detected_at": 1, "outcome_at": 1,
+         "peak_mc_usd_at": 1},
     ).limit(max(1, min(50000, int(limit))))
     n_scanned = 0
     n_updated = 0

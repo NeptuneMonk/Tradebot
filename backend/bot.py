@@ -1048,6 +1048,9 @@ class BotState:
         prev_peak = float(b.get("peak_mc_usd") or 0.0)
         if cur_mc > prev_peak:
             b["peak_mc_usd"] = cur_mc
+            # Stamp peak time so we can later compute profit_window_seconds
+            # (peak → rug delta) — Bing reference §3.B.
+            b["peak_mc_usd_at"] = now_utc().isoformat()
         update = {
             "unique_buyers": len(b["buyers"]),
             "sol_inflow": b["sol_inflow_lamports"] / LAMPORTS_PER_SOL,
@@ -1057,6 +1060,8 @@ class BotState:
             "social_sources": b["social_sources"],
             "peak_mc_usd": b.get("peak_mc_usd", 0.0),
         }
+        if b.get("peak_mc_usd_at"):
+            update["peak_mc_usd_at"] = b["peak_mc_usd_at"]
         await self.db.launches.update_one({"_id": b["launch_id"]}, {"$set": update})
         for r in self.recent_launches:
             if r.get("id") == b["launch_id"]:
@@ -1138,25 +1143,34 @@ class BotState:
                     # Derive per-launch behavioral signatures so the
                     # creator's repeatability aggregator sees consistent
                     # data across both failed and graduated launches.
-                    from launch_signatures import derive_signatures
+                    from launch_signatures import derive_signatures, accel_signature_v2
                     grad_outcome_at = now_utc().isoformat()
+                    peak_at = b.get("peak_mc_usd_at")
                     launch_for_sig = {
-                        "sol_inflow": b.get("sol_inflow") or 0,
+                        "sol_inflow": b.get("sol_inflow_lamports", 0) / LAMPORTS_PER_SOL,
                         "buy_count": b.get("buy_count") or 0,
-                        "unique_buyers": b.get("unique_buyers") or 0,
+                        "unique_buyers": len(b.get("buyers") or []),
                         "detected_at": b.get("start"),
                         "outcome": "graduated",
                         "outcome_at": grad_outcome_at,
+                        "peak_mc_usd_at": peak_at,
                     }
                     sig_fields = derive_signatures(launch_for_sig)
+                    # Delta-based accel signature (parabolic / bot_swarm / whale_led)
+                    av2 = accel_signature_v2(list(b.get("buy_events") or []))
+                    if av2:
+                        sig_fields["accel_signature_v2"] = av2
+                    update_doc = {
+                        "outcome": "graduated",
+                        "outcome_at": grad_outcome_at,
+                        "final_peak_mc_usd": float(b.get("peak_mc_usd") or 0.0),
+                        **sig_fields,
+                    }
+                    if peak_at:
+                        update_doc["peak_mc_usd_at"] = peak_at
                     await self.db.launches.update_one(
                         {"_id": b["launch_id"]},
-                        {"$set": {
-                            "outcome": "graduated",
-                            "outcome_at": grad_outcome_at,
-                            "final_peak_mc_usd": float(b.get("peak_mc_usd") or 0.0),
-                            **sig_fields,
-                        }},
+                        {"$set": update_doc},
                     )
                     try:
                         from creator_greylist import update_creator_score

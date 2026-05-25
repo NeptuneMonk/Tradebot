@@ -27,18 +27,18 @@ with profitable snipes before flipping `creator_greylist_mode=live`.
 """
 from __future__ import annotations
 import logging
-import math
 import statistics
 from datetime import datetime, timezone
 
 logger = logging.getLogger("creator_greylist")
 
 # Composite weights (must sum to 1.0)
-W_PROFITABILITY = 0.30
+W_PROFITABILITY = 0.28
 W_PREDICTABILITY = 0.20
-W_PEAK_MC = 0.25           # NEW: avg peak MC of past FAILED mints
-W_ACTIVITY = 0.15
-W_VOLUME = 0.10
+W_PEAK_MC = 0.25           # avg peak MC of past FAILED mints
+W_ACTIVITY = 0.13
+W_VOLUME = 0.09
+W_LINKS = 0.05             # NEW: linked-wallet evidence (Bing §2)
 
 # Decay: ~1%/hr → score halves in ~70h. Reset on new launch zeroes elapsed.
 DECAY_PER_HOUR = 0.99
@@ -51,6 +51,31 @@ def _safe_iso_to_ts(iso: str | None) -> float:
         return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
     except Exception:
         return 0.0
+
+
+# Module-level cache for the blacklisted-creators set. The Bing §2 link
+# overlap check needs this for every score update; rebuilding it from
+# scratch each time would re-scan the creators collection ~1000×/sweep.
+_BLACKLIST_CACHE: dict = {"set": set(), "fetched_at": 0.0}
+
+
+async def _get_blacklisted_creators(db, ttl_s: int = 300) -> set:
+    """Return the set of creator IDs flagged `greylist_blacklisted=True`.
+    Cached for `ttl_s` seconds in-process. Cheap projection."""
+    import time as _time
+    now = _time.time()
+    if (_BLACKLIST_CACHE["set"]
+            and now - _BLACKLIST_CACHE["fetched_at"] < ttl_s):
+        return _BLACKLIST_CACHE["set"]
+    cur = db.creators.find(
+        {"greylist_blacklisted": True}, {"_id": 1}
+    ).limit(20000)
+    s: set = set()
+    async for d in cur:
+        s.add(d["_id"])
+    _BLACKLIST_CACHE["set"] = s
+    _BLACKLIST_CACHE["fetched_at"] = now
+    return s
 
 
 def apply_decay(stored_score: float, updated_at_iso: str | None) -> float:
@@ -183,8 +208,53 @@ def _peak_mc_component(failed_launches: list[dict]) -> tuple[float, dict]:
     return round(score, 1), stats
 
 
+def _links_component(linked_wallets: list[dict] | None,
+                     blacklisted_creators: set | None) -> tuple[float, dict]:
+    """Bing §2 — linked-wallet score (0..100 scaled, then weighted W_LINKS).
+
+    Inputs come from the `wallet_graph` hunter:
+      - `linked_wallets`: list of {wallet, hop, via, ...}
+      - `blacklisted_creators`: set of creator IDs already flagged as
+         bad-pattern (untradeable_rug etc.). Used to detect rug-cluster
+         overlap when the same wallet funded multiple known-bad creators.
+
+    Heuristic:
+      - +30 base per discovered hop-1 funder (cap 60)
+      - +25 if ANY funder is also a blacklisted creator (rug-cluster hit)
+      - +15 per additional rug-cluster hit (cap +50)
+
+    Returns (score 0..100, evidence dict).
+    """
+    if not linked_wallets:
+        return 0.0, {"n_links": 0, "rug_cluster_hits": 0,
+                     "linked_to_rug_cluster": False}
+    n_hop1 = sum(1 for L in linked_wallets if (L.get("hop") or 1) == 1)
+    base = min(60.0, n_hop1 * 30.0)
+    rug_hits = 0
+    if blacklisted_creators:
+        # A funding-wallet that itself appears in `blacklisted_creators` is
+        # the strongest signal: this creator was funded by a known bad
+        # actor (or one of their wallets), making them likely an alias.
+        rug_hits = sum(
+            1 for L in linked_wallets
+            if L.get("wallet") in blacklisted_creators
+        )
+    bonus = 0.0
+    if rug_hits >= 1:
+        bonus = 25.0 + min(50.0, (rug_hits - 1) * 15.0)
+    raw = min(100.0, base + bonus)
+    return raw, {
+        "n_links": len(linked_wallets),
+        "n_hop1": n_hop1,
+        "rug_cluster_hits": rug_hits,
+        "linked_to_rug_cluster": rug_hits >= 1,
+    }
+
+
 def compute_score(creator_doc: dict, trades: list[dict],
-                   failed_launches: list[dict] | None = None) -> dict:
+                   failed_launches: list[dict] | None = None,
+                   linked_wallets: list[dict] | None = None,
+                   blacklisted_creators: set | None = None) -> dict:
     """Composite greylist score (0-100) + breakdown + rug-window estimate
     + expected peak MC estimate.
 
@@ -198,12 +268,15 @@ def compute_score(creator_doc: dict, trades: list[dict],
     a = _activity_component(creator_doc)
     v = _volume_component(creator_doc)
     peak_mc_score, peak_mc_stats = _peak_mc_component(failed_launches or [])
+    links_score, links_evidence = _links_component(linked_wallets,
+                                                   blacklisted_creators)
     composite = (
         W_PROFITABILITY * p
         + W_PREDICTABILITY * pred
         + W_PEAK_MC * peak_mc_score
         + W_ACTIVITY * a
         + W_VOLUME * v
+        + W_LINKS * links_score
     )
     rugs = [float(t["rug_pct_from_peak"])
             for t in trades if t.get("rug_pct_from_peak") is not None]
@@ -230,7 +303,9 @@ def compute_score(creator_doc: dict, trades: list[dict],
             "peak_mc": peak_mc_score,
             "activity": round(a, 1),
             "volume": round(v, 1),
+            "links": round(links_score, 1),
         },
+        "links_evidence": links_evidence,
         "expected_rug_window_pct": rug_window,
         "expected_peak_mc_usd": peak_mc_stats,
         "n_trades": len(trades),
@@ -293,6 +368,51 @@ def strategy_overrides(strategy: str) -> dict:
     return dict(_STRATEGY_OVERRIDES.get(strategy) or {})
 
 
+def stage1_filter(creator_doc: dict | None,
+                  failed_launches: list[dict],
+                  linked_wallets: list[dict] | None = None,
+                  links_evidence: dict | None = None) -> tuple[bool, str]:
+    """Bing §1 — cheap, fast, broad. Returns (pass, reason).
+
+    A creator passes Stage 1 (i.e. deserves the expensive classifier run)
+    if ANY of these conditions hold. All inputs are already-fetched from
+    Mongo — no Helius calls here.
+
+      A. tokens_failed ≥ 2                                  (≥2 launches)
+      B. linked_to_rug_cluster                             (Bing C)
+      C. ANY launch rug_seconds_from_launch < 20            (Bing D)
+      D. ANY launch accel_signature_v2 in {parabolic, bot_swarm}  (Bing E)
+      E. F-band membership (5 ≤ tokens_failed < 80)         (custom: our
+         existing primary admission gate — kept here so calling code that
+         doesn't otherwise filter by F-band still gets sane behavior)
+
+    A creator who fails ALL conditions returns (False, reason) — they're
+    either too quiet, too new, or showing no behavioral edges yet. The
+    caller can skip the full classifier run and persist a placeholder.
+    """
+    creator_doc = creator_doc or {}
+    failed_launches = failed_launches or []
+    tokens_failed = int(creator_doc.get("tokens_failed") or 0)
+    if tokens_failed >= 2:
+        return True, f"≥2 fails ({tokens_failed})"
+    if links_evidence and links_evidence.get("linked_to_rug_cluster"):
+        return True, "linked to rug cluster"
+    if linked_wallets and len([L for L in linked_wallets
+                               if (L.get("hop") or 1) == 1]) >= 2:
+        return True, ">=2 hop-1 funders"
+    for L in failed_launches:
+        rs = L.get("rug_seconds_from_launch")
+        if rs is not None and rs < 20:
+            return True, "instant-rug history"
+    for L in failed_launches:
+        accv2 = L.get("accel_signature_v2")
+        if accv2 in ("parabolic", "bot_swarm"):
+            return True, f"{accv2} signature"
+    if 5 <= tokens_failed < 80:
+        return True, "in F-band"
+    return False, f"no stage1 trigger (F={tokens_failed}, links={len(linked_wallets or [])})"
+
+
 async def update_creator_score(db, creator: str,
                                 min_fails: int = 5, max_fails: int = 80,
                                 tp_buffer: float = 2.0) -> dict | None:
@@ -335,7 +455,18 @@ async def update_creator_score(db, creator: str,
         if (float(f.get("sol_inflow") or 0) >= 0.1
             or int(f.get("buy_count") or 0) >= 3)
     ]
-    score = compute_score(creator_doc, trades, failed_meaningful)
+    # Linked-wallets (Bing §2) from the background hunter. Cheap Mongo
+    # lookup; the hunter does the Helius calls separately and persists.
+    wg_doc = await db.wallet_graph.find_one({"_id": creator}, {"_id": 0, "linked_wallets": 1})
+    linked_wallets = (wg_doc or {}).get("linked_wallets") or []
+    # Blacklisted-creators set — rebuilt lazily ONCE per process tick via
+    # module-level cache (refreshed every 5min). The rug-cluster overlap
+    # check needs this set; without it linked_wallets contributes only the
+    # base "you have N linked funders" bonus.
+    blacklisted = await _get_blacklisted_creators(db)
+    score = compute_score(creator_doc, trades, failed_meaningful,
+                          linked_wallets=linked_wallets,
+                          blacklisted_creators=blacklisted)
     # Mechanical pattern classifier (see creator_pattern.py + RUG_PATTERNS.md).
     # Bad patterns (untradeable_rug / unpredictable_rug / unknown) flip
     # `blacklisted=True` → composite forced to 0 → creator hidden from UI.
@@ -350,7 +481,8 @@ async def update_creator_score(db, creator: str,
         {"_id": 0, "sol_inflow": 1, "buy_count": 1, "unique_buyers": 1,
          "outcome": 1, "outcome_at": 1, "detected_at": 1,
          "accel_class": 1, "flow_class": 1, "rug_speed_class": 1,
-         "rug_seconds_from_launch": 1},
+         "rug_seconds_from_launch": 1, "accel_signature_v2": 1,
+         "profit_window_seconds": 1, "peak_mc_usd_at": 1},
     ).to_list(300)
     from creator_pattern import classify_with_signatures
     pattern = classify_with_signatures(
@@ -397,6 +529,7 @@ async def update_creator_score(db, creator: str,
             "greylist_pattern_suggested_exit": pattern.get("suggested_exit_pct"),
             "greylist_signatures": pattern.get("signatures") or {},
             "greylist_signature_bonus": pattern.get("signature_bonus", 0),
+            "greylist_links_evidence": score.get("links_evidence") or {},
             "greylist_band_min": min_fails,
             "greylist_band_max": max_fails,
             "greylist_recent_failed_mints": recent_failed,
@@ -438,6 +571,7 @@ async def top_greylisted(db, limit: int = 20, min_score: float = 30.0) -> list[d
          "greylist_pattern_suggested_entry": 1,
          "greylist_pattern_suggested_exit": 1,
          "greylist_signatures": 1, "greylist_signature_bonus": 1,
+         "greylist_links_evidence": 1,
          "expected_rug_window_pct": 1, "expected_peak_mc_usd": 1,
          "greylist_score_updated_at": 1, "tokens_created": 1,
          "tokens_graduated": 1, "tokens_failed": 1, "last_seen": 1},
@@ -467,6 +601,7 @@ async def top_greylisted(db, limit: int = 20, min_score: float = 30.0) -> list[d
             "pattern_suggested_exit": d.get("greylist_pattern_suggested_exit"),
             "signatures": d.get("greylist_signatures") or {},
             "signature_bonus": d.get("greylist_signature_bonus", 0),
+            "links_evidence": d.get("greylist_links_evidence") or {},
             "recommended_strategy": recommended_strategy(eff),
             "last_seen": d.get("last_seen"),
         })

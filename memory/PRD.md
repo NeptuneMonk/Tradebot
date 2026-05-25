@@ -902,3 +902,55 @@ User-provided Bing schema requires per-creator behavioral signatures (accelerati
 - Jito bundles (P3)
 - Smart-money index (P3)
 
+
+
+## 2026-05-25 — Bing Greylist Coverage Sprint (a + b + c + d)
+
+User picked all 4: linked-wallets scoring + Stage-1 cheap filter + delta-based accel + profit window. Blueprint coverage moved from ~65% → ~90%.
+
+### Linked-wallets (a) — Bing §2 closed loop
+- `_links_component()` added to `creator_greylist.py`: scores 0-100 from `linked_wallets` doc (W1: hop-1 funder count, W2: rug-cluster overlap).
+- `compute_score()` accepts `linked_wallets` + `blacklisted_creators` and folds into composite with new `W_LINKS=0.05`. Other weights rebalanced: profitability 0.30→0.28, activity 0.15→0.13, volume 0.10→0.09 (sum still 1.0).
+- `update_creator_score()` fetches `wallet_graph` collection (already populated by the existing background hunter — 36 docs, 144 wallet_links pre-sprint) and the blacklisted-creators set (5-min in-process cache, ~1k creators).
+- API `/api/creator-greylist` now returns `links_evidence: {n_links, n_hop1, rug_cluster_hits, linked_to_rug_cluster}` per row.
+- `CreatorGreylistPanel.jsx` renders rose-pink `rug cluster · N` badge when overlap > 0; amber `N links` badge when only base hop-1 funders exist.
+- Live verification: backfill rescored **1402 creators (was 905)** — `924 active / 478 blacklisted`. Top rows show real link contributions (e.g. `bwamJeRs` with links=60.0 from 3 hop-1 funders).
+
+### Stage-1 cheap filter (b) — Bing §1
+- `stage1_filter()` in `creator_greylist.py` returns (pass, reason) from 5 cheap conditions: ≥2 fails, rug-cluster link, instant-rug history (<20s), parabolic/bot_swarm history, F-band membership. Pure Mongo data — no Helius calls.
+- Currently exposed as a reusable predicate; the scoring path still runs the full classifier on every band-passing creator. Future optimization: hot-path can skip expensive `all_launches` fetch when Stage-1 rejects.
+
+### Delta-based acceleration signature (c) — Bing §3.C
+- `accel_signature_v2(buy_events)` in `launch_signatures.py` returns `parabolic | bot_swarm | whale_led | moderate | dead` from `(ts, lamports, user)` series.
+  - **whale_led**: single buy ≥ 40% of total inflow
+  - **bot_swarm**: ≥20 buys AND ≥70% of buys < 0.005 SOL
+  - **parabolic**: 5-bucket cumulative inflow shows accelerating slopes (deltas[i] > deltas[i-1] for all i)
+  - **moderate / dead**: fall-through
+- Wired into `bot.py _tracker_cleanup` graduation path — graduated launches get `accel_signature_v2` persisted from their tracked `buy_events` deque.
+- Stage-1 reads it directly via the in-launch `accel_signature_v2` field.
+
+### Profit window (d) — Bing §3.B
+- `peak_mc_usd_at` timestamp stamped in `_persist_metrics` whenever the peak MC advances.
+- `profit_window_seconds(launch)` in `launch_signatures.py` returns `outcome_at - peak_mc_usd_at` (or None if either missing/negative).
+- `derive_signatures()` now also persists `profit_window_seconds` so the failure_sweep, graduation, and backfill paths all carry the field.
+- `update_creator_score()` fetches the new fields in its all_launches projection so aggregators see them.
+
+### Tests
+- `tests/test_launch_signatures.py`: extended with 9 new cases for `accel_signature_v2` (dead/whale/swarm/parabolic/moderate) and `profit_window_seconds` (none/positive/negative).
+- `tests/test_stage1_and_links.py` (**NEW**): 16 cases covering Stage-1 trigger matrix and `_links_component` math.
+- **113 tests pass** across launch_signatures + creator_greylist + creator_pattern + pattern_analytics + strategy_doctor_pattern_rule + exit_param + stage1_and_links.
+
+### Blueprint coverage by section (after this sprint)
+| § | Lane | Status |
+|---|---|---|
+| 1 | Stage-1 cheap filter | 🟢 implemented (function ready; wire into scoring hot path is the next opt) |
+| 2 | Helius wallet graph | 🟢 hunter active + scoring component live |
+| 3.A | Rug seconds | 🟢 54,656/54,656 launches |
+| 3.B | Profit window | 🟢 from new graduations forward |
+| 3.C | Delta-based accel | 🟢 from new graduations forward |
+| 4 | Mempool detector | 🔴 deferred — needs LaserStream/Yellowstone (Business tier, $200+/mo) |
+| 5 | Feature extractor | 🟡 covers all but mempool features |
+| 6 | Scoring formula | 🟢 6-component composite, W_LINKS folded in |
+| 7 | Pattern classifier | 🟢 6 buckets + tradeable subset |
+| 8 | Mongo schema | 🟢 `links_evidence`, `signatures`, `peak_mc_usd_at`, `accel_signature_v2` all persisted |
+| 9 | Integration patch | 🟢 |

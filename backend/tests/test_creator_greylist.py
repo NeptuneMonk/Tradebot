@@ -229,10 +229,18 @@ class _FakeCollection:
 
 
 class _FakeDB:
-    def __init__(self, creator_doc, trades=None, launches=None):
+    def __init__(self, creator_doc, trades=None, launches=None,
+                 wallet_graph_doc=None, blacklisted_creators=None):
         self.creators = _FakeCollection(doc=creator_doc)
         self.trades = _FakeCollection(docs=trades or [])
         self.launches = _FakeCollection(docs=launches or [])
+        self.wallet_graph = _FakeCollection(doc=wallet_graph_doc)
+        # Reset the blacklisted-creators cache. The score path may consult
+        # this lazily; tests that don't care get an empty set.
+        from creator_greylist import _BLACKLIST_CACHE
+        import time as _t
+        _BLACKLIST_CACHE["set"] = blacklisted_creators or set()
+        _BLACKLIST_CACHE["fetched_at"] = _t.time()
 
 
 @pytest.mark.asyncio

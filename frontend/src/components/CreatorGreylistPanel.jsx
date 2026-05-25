@@ -394,6 +394,24 @@ function GreylistRow({ row, expanded, onToggle }) {
               {row.signatures.dominant_accel}·{row.signatures.dominant_flow}
             </span>
           )}
+          {row.links_evidence?.linked_to_rug_cluster && (
+            <span
+              className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-rose-800/70 text-rose-300 bg-rose-950/40"
+              title={`Funded by ${row.links_evidence.rug_cluster_hits} known rug wallet${row.links_evidence.rug_cluster_hits > 1 ? 's' : ''}`}
+              data-testid={`greylist-rug-cluster-${row.creator}`}
+            >
+              rug cluster · {row.links_evidence.rug_cluster_hits}
+            </span>
+          )}
+          {!row.links_evidence?.linked_to_rug_cluster && (row.links_evidence?.n_hop1 || 0) >= 1 && (
+            <span
+              className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-amber-800/70 text-amber-300 bg-amber-950/30"
+              title={`Wallet graph: ${row.links_evidence.n_hop1} hop-1 funder${row.links_evidence.n_hop1 > 1 ? 's' : ''} discovered`}
+              data-testid={`greylist-links-${row.creator}`}
+            >
+              {row.links_evidence.n_hop1} link{row.links_evidence.n_hop1 > 1 ? 's' : ''}
+            </span>
+          )}
           <span className="text-sm font-mono font-semibold text-neutral-100 tabular-nums">
             {row.effective_score.toFixed(0)}
           </span>

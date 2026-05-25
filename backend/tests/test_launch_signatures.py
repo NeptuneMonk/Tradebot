@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from launch_signatures import (
     accel_class, flow_class, rug_speed_class,
     derive_signatures, aggregate_signatures,
+    accel_signature_v2, profit_window_seconds,
 )
 
 
@@ -218,3 +219,85 @@ def test_aggregate_distributions_count_correctly():
     agg = aggregate_signatures(launches)
     assert agg["accel_distribution"] == {"fast": 2, "moderate": 1}
     assert agg["flow_distribution"] == {"broad": 2, "whale_led": 1}
+
+
+# ----- accel_signature_v2 (delta-based) -----------------------------------
+
+def _evt(ts: float, sol: float, user: str = "u") -> tuple:
+    """Helper: build a (ts, lamports, user) buy_event tuple."""
+    return (ts, int(sol * 1_000_000_000), user)
+
+
+def test_accel_sig_v2_dead_for_no_events():
+    assert accel_signature_v2([]) == "dead"
+    assert accel_signature_v2([_evt(1, 0.01)]) == "dead"
+    assert accel_signature_v2([_evt(1, 0.001), _evt(2, 0.001)]) == "dead"
+
+
+def test_accel_sig_v2_whale_led():
+    # one 2 SOL buy out of 3 SOL total → whale dominates
+    events = [_evt(1, 2.0), _evt(2, 0.05), _evt(3, 0.5), _evt(4, 0.45)]
+    assert accel_signature_v2(events) == "whale_led"
+
+
+def test_accel_sig_v2_bot_swarm():
+    # 30 tiny buys (0.002 SOL each = 0.06 SOL total → above dead threshold)
+    events = [_evt(i, 0.002, f"u{i}") for i in range(30)]
+    assert accel_signature_v2(events) == "bot_swarm"
+
+
+def test_accel_sig_v2_parabolic():
+    # accelerating cumulative inflow shape
+    events = (
+        [_evt(0 + i, 0.01) for i in range(3)]
+        + [_evt(3 + i, 0.05) for i in range(3)]
+        + [_evt(6 + i, 0.15) for i in range(3)]
+        + [_evt(9 + i, 0.4) for i in range(3)]
+        + [_evt(12 + i, 1.0) for i in range(3)]
+    )
+    assert accel_signature_v2(events) == "parabolic"
+
+
+def test_accel_sig_v2_moderate_default():
+    # Flat inflow — no whale, no swarm, no acceleration — moderate
+    events = [_evt(i, 0.05) for i in range(10)]
+    assert accel_signature_v2(events) == "moderate"
+
+
+# ----- profit_window_seconds ----------------------------------------------
+
+def test_profit_window_none_without_peak_at():
+    assert profit_window_seconds({"outcome_at": _iso(120)}) is None
+
+
+def test_profit_window_none_without_outcome_at():
+    assert profit_window_seconds({"peak_mc_usd_at": _iso(60)}) is None
+
+
+def test_profit_window_positive():
+    pw = profit_window_seconds({
+        "peak_mc_usd_at": _iso(60),
+        "outcome_at": _iso(180),
+    })
+    assert pw == pytest.approx(120.0, abs=0.1)
+
+
+def test_profit_window_negative_clipped_to_none():
+    pw = profit_window_seconds({
+        "peak_mc_usd_at": _iso(180),
+        "outcome_at": _iso(60),
+    })
+    assert pw is None
+
+
+def test_derive_signatures_includes_profit_window():
+    sig = derive_signatures({
+        "sol_inflow": 5.0, "buy_count": 20,
+        "outcome": "failed",
+        "detected_at": _iso(0),
+        "peak_mc_usd_at": _iso(40),
+        "outcome_at": _iso(120),
+    })
+    assert sig["profit_window_seconds"] == pytest.approx(80.0, abs=0.1)
+    assert sig["rug_seconds_from_launch"] == pytest.approx(120, abs=0.1)
+

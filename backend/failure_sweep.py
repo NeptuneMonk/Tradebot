@@ -142,7 +142,7 @@ class FailureSweeper:
             {"_id": 1, "mint": 1, "creator": 1, "buy_count": 1,
              "unique_buyers": 1, "peak_mc_usd": 1,
              "curve_fill_pct": 1, "sol_inflow": 1,
-             "detected_at": 1, "first_seen": 1},
+             "detected_at": 1, "first_seen": 1, "peak_mc_usd_at": 1},
         ).limit(2000)
 
         classified = 0

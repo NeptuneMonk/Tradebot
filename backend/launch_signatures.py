@@ -110,7 +110,84 @@ def derive_signatures(launch: dict) -> dict:
         rugged = _parse_iso(launch.get("outcome_at"))
         if started and rugged:
             out["rug_seconds_from_launch"] = (rugged - started).total_seconds()
+    # Profit window — peak → rug delta. Tells the strategy how long you
+    # have to ride a pump before the typical dump for this creator.
+    # Requires `peak_mc_usd_at` to have been stamped during the launch's
+    # tracked lifetime (see `_persist_metrics` in bot.py).
+    pw = profit_window_seconds(launch)
+    if pw is not None:
+        out["profit_window_seconds"] = pw
     return out
+
+
+def profit_window_seconds(launch: dict) -> float | None:
+    """Time between peak MC and rug. Captures the trading window per
+    creator. Returns None unless BOTH `peak_mc_usd_at` and `outcome_at` are
+    present (which requires the launch to have lived through the tracked
+    lifetime AND failed/graduated)."""
+    peak = _parse_iso(launch.get("peak_mc_usd_at"))
+    rugged = _parse_iso(launch.get("outcome_at"))
+    if not peak or not rugged:
+        return None
+    delta = (rugged - peak).total_seconds()
+    return delta if delta >= 0 else None
+
+
+# === Delta-based acceleration signature (Bing reference §3.C) ============
+# Distinguishes parabolic / bot_swarm / whale_led using per-event SOL
+# deltas rather than total inflow/buy counts. Captures HOW money arrived,
+# not just how much. Persisted as `accel_signature_v2` on launches that
+# had live buy_events tracked (failure_sweep can't compute this for
+# historical launches because raw event series wasn't persisted).
+
+def accel_signature_v2(buy_events: list) -> str | None:
+    """`buy_events` is a list of `(timestamp, sol_lamports, user)` tuples
+    captured by the listener during the launch's tracked lifetime.
+    Returns one of: 'parabolic' | 'bot_swarm' | 'whale_led' | 'moderate'
+    | 'dead' | None (insufficient data).
+
+      parabolic   : monotonic +acceleration in cumulative inflow
+                    (>70% of consecutive deltas are positive AND each delta
+                    grows). Classic pump-and-dump shape.
+      bot_swarm   : many tiny buys with low timestamp variance
+                    (>70% of buys are < 0.005 SOL each AND >20 buys)
+      whale_led   : single largest buy ≥ 40% of total inflow
+      moderate    : mixed/organic shape that doesn't trip the others
+      dead        : <3 events total
+    """
+    if not buy_events or len(buy_events) < 3:
+        return "dead"
+    sols = [float(e[1]) / 1_000_000_000.0 for e in buy_events]  # lamports → SOL
+    total = sum(sols)
+    if total < 0.05:
+        return "dead"
+    n = len(sols)
+
+    # whale-led: single biggest buy dominates
+    if max(sols) >= 0.4 * total:
+        return "whale_led"
+
+    # bot-swarm: lots of tiny buys
+    tiny = sum(1 for s in sols if s < 0.005)
+    if n >= 20 and tiny >= 0.7 * n:
+        return "bot_swarm"
+
+    # parabolic: cumulative-inflow growth shows acceleration. Use
+    # cumulative-sum deltas (windowed) — a parabola has growing slopes.
+    if n >= 6:
+        # Bucket events into 5 equal slices, look at slope acceleration.
+        bucket_size = max(1, n // 5)
+        buckets = [sum(sols[i:i + bucket_size])
+                   for i in range(0, n, bucket_size)][:5]
+        # Need at least 3 buckets for acceleration check
+        if len(buckets) >= 3:
+            deltas = [buckets[i] - buckets[i - 1] for i in range(1, len(buckets))]
+            growing = sum(1 for i in range(1, len(deltas))
+                          if deltas[i] > deltas[i - 1])
+            if growing >= len(deltas) - 1 and deltas[-1] > deltas[0]:
+                return "parabolic"
+
+    return "moderate"
 
 
 # === Creator-level aggregation ============================================
