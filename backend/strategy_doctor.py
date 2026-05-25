@@ -229,6 +229,35 @@ class StrategyDoctor:
         }, {"signature": 1, "_id": 0})
         return {d["signature"] async for d in cur if d.get("signature")}
 
+    async def _existing_applied_active_signatures(self, cfg_doc: dict) -> set[str]:
+        """Dedup against APPLIED suggestions whose action values still match
+        the current bot_config. Without this, after a rule like "set
+        take_profit_pct=8" is applied, the SAME rule keeps re-suggesting it
+        next cycle until the lookback rolls past — annoying user noise.
+
+        We consider an applied suggestion "still active" when EVERY key in
+        its `actions` dict still equals the current value in bot_config.
+        If the user later changed any of those keys manually, the suggestion
+        is no longer in effect and we should let the rule re-fire."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=DISMISS_COOLDOWN_HOURS)).isoformat()
+        cur = self.db.strategy_suggestions.find({
+            "status": "applied",
+            "applied_at": {"$gte": cutoff},
+        }, {"signature": 1, "actions": 1, "_id": 0})
+        active: set[str] = set()
+        async for d in cur:
+            sig = d.get("signature")
+            actions = d.get("actions") or {}
+            if not sig or not actions:
+                continue
+            # Are all action values STILL in force in bot_config?
+            still_in_force = all(
+                cfg_doc.get(k) == v for k, v in actions.items()
+            )
+            if still_in_force:
+                active.add(sig)
+        return active
+
     async def _expire_stale(self):
         now = _now_iso()
         await self.db.strategy_suggestions.update_many(
