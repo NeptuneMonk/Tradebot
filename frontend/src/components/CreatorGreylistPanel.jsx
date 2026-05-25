@@ -355,7 +355,7 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
       const r = await api.creatorGreylistRunSweep();
       toast.success(
         `Sweep done: classified ${r?.classified ?? 0} dormant launches, ` +
-          `refreshed ${r?.creators_refreshed ?? 0} creators`
+          `refreshed ${r?.creators_touched ?? r?.creators_refreshed ?? 0} creators`
       );
       refresh();
     } catch (e) {

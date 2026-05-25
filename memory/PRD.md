@@ -20,6 +20,17 @@ For learning and experimentation only — no deployment outside preview.
 - **Frontend (React + Tailwind + shadcn)**: Single-page "Control Room" dashboard, polling every 3s, IBM Plex Sans/Mono, sharp-edged dark UI, Recharts P/L sparkline, QR deposit address.
 
 
+## Creator Greylist Phase 2 (2026-05-25)
+- ✅ **`strategy_overrides(strategy)`** in `creator_greylist.py` — per-tier dict of `{size_mult, tp_pct, sl_pct, trail_pct, trail_arm_pct}`. Aggressive = 1.5× size + tighter exits; Hybrid = 1.2× + moderate; Standard = no overrides.
+- ✅ **`_exit_param(slot, key, default)`** in `bot.py` — per-position TP/SL reader. Slot-level overrides win over `self.config.*`; falls back to default for missing keys, None values, or empty slots. Multi-slot isolated (verified by `test_exit_param_independent_per_slot`).
+- ✅ **`_enter_impl` greylist resolution** — fetches creator tier at entry, layers `size_mult` (capped 2× max_trade_usd), stashes overrides on `trade_extras['greylist_overrides']` for `_check_fast_exit` + `_monitor_position` to read per-trade.
+- ✅ **Trade model audit fields** — `greylist_strategy_at_entry`, `greylist_score_at_entry`, `greylist_overrides_at_entry` persisted so post-hoc analytics can compare live-override vs standard outcomes.
+- ✅ **Restart-survival** — `_load_active_trades` restores `greylist_overrides` + `greylist_strategy` onto resumed in-memory slots from the persisted Trade doc.
+- ✅ **`CreatorGreylistPanel.jsx`** — tier-badged rows with expandable detail (component bars, recent failed mints, recent trades, linked-wallet stub), min-score filter, sweep button, **TELEMETRY↔LIVE toggle** with confirmation dialog. Mounted on Dashboard between Strategy Doctor and Trade History.
+- ✅ **Tests**: 25/25 green (`test_creator_greylist.py` 18 + `test_exit_param.py` 7). Testing agent verified all 4 backend API endpoints + full frontend flow.
+
+
+
 ## Doctor Live + breaker + budget (2026-05-25)
 - ✅ **Apply bug fixed** (dirty-guard baseline) — Doctor Apply now updates the UI form correctly. Backend was always writing.
 - ✅ **Dedup against in-force applies** — Doctor no longer re-suggests fixes that are already applied AND still active in bot_config.

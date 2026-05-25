@@ -1,5 +1,38 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-25 — Creator Greylist Phase 2 (live execution overrides + frontend panel)
+
+### `creator_greylist.strategy_overrides()` (NEW)
+- Per-tier override dict consumed at trade-entry time when `creator_greylist_mode == "live"`.
+- **aggressive** (score ≥ 70): `size_mult=1.5, tp_pct=35, sl_pct=12, trail_pct=6, trail_arm_pct=12`.
+- **hybrid** (45 ≤ score < 70): `size_mult=1.2, tp_pct=25, sl_pct=15, trail_pct=7, trail_arm_pct=14`.
+- **standard** (< 45): empty dict → BotConfig defaults used.
+- Returns a *fresh copy* every call so concurrent entries cannot poison the module-level template.
+
+### `bot.py` — wired into entry + exit paths
+- `_enter_impl`: resolves the creator's tier at the top of the pipeline, logs `GREYLIST APPLY|telemetry: …`, layers `size_mult` on top of the risk-bucket sizing (capped at 2× `max_trade_usd` ceiling).
+- `_exit_param(slot, key, default)` helper: per-position reader that prefers `slot['greylist_overrides'][key]` over `self.config.*`. Used in BOTH fast-exit (`_check_fast_exit`) and `_monitor_position` loops for `tp_pct` / `sl_pct` / `trail_pct` / `trail_arm_pct`.
+- Per-trade overrides survive backend restarts: `_load_active_trades` restores `greylist_overrides` and `greylist_strategy` onto the in-memory slot from the persisted Trade doc.
+- Trade model gained `greylist_strategy_at_entry`, `greylist_score_at_entry`, `greylist_overrides_at_entry` for post-hoc analytics.
+
+### Frontend — `CreatorGreylistPanel.jsx` (NEW)
+- Mounted on Dashboard between Strategy Doctor and Trade History.
+- Tier-badged rows (aggressive/hybrid/standard) with effective score, expected peak MC (μ ± σ), expected rug-from-peak %, fail/trade counts, last-seen time.
+- Click-to-expand detail row: component breakdown bars, recent failed mints with peak MC, our recent trades on the creator, linked wallets (stub for Phase 2.5).
+- Header controls: min-score input, sweep button (`/api/creator-greylist/failure-sweep/run-now`), refresh, **mode toggle chip** (`TELEMETRY ↔ LIVE`) with confirmation dialog before flipping to live.
+- Auto-polls every 60s.
+
+### Tests
+- `tests/test_creator_greylist.py`: +5 tests for `strategy_overrides()` covering tier shapes, copy isolation, defensive defaults. **18 tests total, 100% pass.**
+- `tests/test_exit_param.py`: **NEW 7 tests** for the per-slot override reader — defaults, partial overrides, None handling, multi-slot isolation.
+- **All 25 tests green.** Testing agent verified all 4 API endpoints + full UI flow.
+
+### Minor notes
+- Sweep endpoint returns `creators_touched` (not `creators_refreshed` as initially documented) — frontend toast reads both keys defensively.
+- Mode toggle currently uses native `window.confirm()` — works fine but doesn't match dark theme; can be upgraded to shadcn `AlertDialog` later if user requests.
+
+
+
 ## 2026-05-25 — Doctor Live + trailing-stop breaker + budget tracker + bug fixes
 
 ### Three pre-existing UX bugs fixed
