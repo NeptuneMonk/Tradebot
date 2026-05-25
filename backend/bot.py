@@ -1569,13 +1569,28 @@ class BotState:
         # still expires every 0.8s) — WSS is purely a "wake earlier" path,
         # so a stale WSS never blocks SL/TP from firing.
         from account_event_bus import account_event_bus
-        watch_account = (
-            slot.get("pumpswap_pool")
-            if slot.get("protocol") == "pumpswap"
-            else slot.get("bonding_curve")
-        )
+        if slot.get("protocol") == "pumpswap":
+            watch_account = slot.get("pumpswap_pool") or ""
+        else:
+            # Try (in order): explicit field on slot, launch dict, trade dict,
+            # derive PDA from mint as a deterministic fallback (works even
+            # for restored-from-DB trades that lost the launch object).
+            watch_account = (
+                slot.get("bonding_curve")
+                or (slot.get("launch") or {}).get("bonding_curve")
+                or (slot.get("trade") or {}).get("bonding_curve")
+                or ""
+            )
+            if not watch_account:
+                try:
+                    watch_account = str(pumpfun.derive_bonding_curve(Pubkey.from_string(mint)))
+                except Exception:
+                    watch_account = ""
         if watch_account:
             account_event_bus.subscribe(watch_account)
+            # Cache on the slot so _exit can unsubscribe the same address
+            # without re-deriving (avoids drift if derive logic ever changes).
+            slot["watch_account"] = watch_account
 
         while True:
             # Liveness heartbeat — refreshed every tick. Reconciler uses this
