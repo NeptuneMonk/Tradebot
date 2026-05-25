@@ -1,5 +1,31 @@
 # Pump.fun Bot — Changelog
 
+## 2026-05-25 — Post-test fixes (WSS bus subscribe bug + Chrome OOM)
+
+### Bug 1: WSS bus showed 0 subs while 6 trades were active
+Root cause: `_monitor_position` was reading `slot.get("bonding_curve")` which never existed — `bonding_curve` lives on the nested `slot["launch"]` / `slot["trade"]` dicts, OR has to be derived from the mint PDA for trades restored after a backend restart.
+
+Fix: monitor now tries (in order): `slot["bonding_curve"]` → `slot["launch"]["bonding_curve"]` → `slot["trade"]["bonding_curve"]` → `pumpfun.derive_bonding_curve(mint)` PDA. Caches the resolved address on `slot["watch_account"]` so `_exit` unsubscribes the same address even if derivation changes.
+
+### Bug 2: Mobile Chrome "Aw, Snap!" tab crash
+Root cause: `_persist_metrics` broadcasted `launch_update` every 2s **per tracked mint**. With 150+ mints being tracked simultaneously, this is ~75 WS events/sec hitting every connected browser, each firing a `setLaunches(prev.map(...))` → React reconciler can't keep up → mobile Chrome OOMs the tab. The user thought it was caused by `scan_every=1s` but the backend has always clamped scanner interval to a 5s floor — the broadcast volume was the real issue.
+
+Fixes:
+- **Backend**: `_persist_metrics` broadcast now throttled to 5s/mint via `bucket["last_ws_broadcast"]`. DB writes still happen at 2s so the scanner sees fresh data — only the wire broadcast is rate-limited.
+- **Frontend** (defensive): `launch_update` events are ignored for mints not already in the displayed 50-item window. Eliminates O(n) work + re-render for events the UI was going to discard anyway.
+- **Tooltip**: scanner-interval hint now explicitly states the 5s backend floor and clarifies LaserStream WSS (not scan-every) drives SL/TP reactions for open positions.
+
+### User-facing clarification documented
+"Scan every N" vs WSS — they do different jobs:
+- `scan_every_s` controls the ENTRY scanner (decides what to buy)
+- LaserStream WSS drives the per-position MONITOR (SL/TP/trailing reactions on what you already own)
+WSS does NOT replace `scan_every_s`. The scanner needs periodic polling because it computes rolling metrics (1h growth, inflow window, velocity).
+
+### Verified
+52 backend tests pass. Backend restarted clean, bus connected, watcher saw no EMERGENCY/RESCUED/GIVING UP lines during the user's test run — i.e., no positions went terminal in this session, and the auto-recovery paths weren't exercised (the bug-fixed and Sender-routed paths weren't NEEDED, which is the best possible signal).
+
+
+
 ## 2026-05-25 — LaserStream WebSocket wired into `_monitor_position`
 
 ### What changed

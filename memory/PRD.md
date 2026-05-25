@@ -20,6 +20,12 @@ For learning and experimentation only — no deployment outside preview.
 - **Frontend (React + Tailwind + shadcn)**: Single-page "Control Room" dashboard, polling every 3s, IBM Plex Sans/Mono, sharp-edged dark UI, Recharts P/L sparkline, QR deposit address.
 
 
+## Post-test fixes (2026-05-25)
+- ✅ **WSS subscribe bug fixed** — monitor now resolves the watched account from any of {slot, launch dict, trade dict, derived PDA} so the bus subscribes correctly for both fresh entries AND restored-after-restart positions.
+- ✅ **Chrome OOM fixed** — `_persist_metrics` broadcast throttled to 5s/mint (was 2s × N mints = ~75 events/sec at scale). Frontend additionally ignores `launch_update` for mints outside the displayed window.
+- ✅ **Tooltip clarified** — scanner-interval now documents the 5s backend floor and explains LaserStream WSS is independent.
+
+
 ## LaserStream WebSocket wired (2026-05-25)
 - ✅ **`account_event_bus.py`** — one persistent Helius WSS multiplexing `accountSubscribe` for every open position. Exponential-backoff reconnect + auto re-subscribe.
 - ✅ **`_monitor_position`** now wakes on Helius push within ~50-150ms of a trade landing on the watched curve/pool, vs the previous 0.8s polling floor. Polling cadence retained as safety net (same 0.8s timeout) — zero behavioral regression if WSS drops.
