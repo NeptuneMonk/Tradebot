@@ -1135,12 +1135,27 @@ class BotState:
                 state = await pumpfun.fetch_bonding_curve_state(mint)
                 if state and state["complete"]:
                     await mark_outcome(self.db, b["creator"], "graduated")
+                    # Derive per-launch behavioral signatures so the
+                    # creator's repeatability aggregator sees consistent
+                    # data across both failed and graduated launches.
+                    from launch_signatures import derive_signatures
+                    grad_outcome_at = now_utc().isoformat()
+                    launch_for_sig = {
+                        "sol_inflow": b.get("sol_inflow") or 0,
+                        "buy_count": b.get("buy_count") or 0,
+                        "unique_buyers": b.get("unique_buyers") or 0,
+                        "detected_at": b.get("start"),
+                        "outcome": "graduated",
+                        "outcome_at": grad_outcome_at,
+                    }
+                    sig_fields = derive_signatures(launch_for_sig)
                     await self.db.launches.update_one(
                         {"_id": b["launch_id"]},
                         {"$set": {
                             "outcome": "graduated",
-                            "outcome_at": now_utc().isoformat(),
+                            "outcome_at": grad_outcome_at,
                             "final_peak_mc_usd": float(b.get("peak_mc_usd") or 0.0),
+                            **sig_fields,
                         }},
                     )
                     try:

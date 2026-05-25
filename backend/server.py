@@ -1932,6 +1932,51 @@ async def creator_greylist_backfill():
             "now_blacklisted": n_blacklisted}
 
 
+@api.post("/creator-greylist/backfill-signatures")
+async def creator_greylist_backfill_signatures(limit: int = 5000, only_missing: bool = True):
+    """Backfill per-launch behavioral signatures (accel_class / flow_class /
+    rug_speed_class / rug_seconds_from_launch) on existing `launches`
+    documents. The greylist scorer reads these from each launch when it
+    builds the creator's repeatability aggregate — without them the Bing
+    +15 acceleration bonus stays dormant.
+
+    Cheap, Mongo-only:
+      - reads `sol_inflow`, `buy_count`, `unique_buyers`, `outcome`,
+        `detected_at`, `outcome_at`
+      - writes `accel_class`, `flow_class`, optionally `rug_speed_class` +
+        `rug_seconds_from_launch` when both timestamps are present.
+
+    Idempotent. Default skips launches that already have `accel_class` set
+    so repeated calls converge cheaply.
+    """
+    from launch_signatures import derive_signatures
+    q: dict = {}
+    if only_missing:
+        q["accel_class"] = {"$exists": False}
+    cur = db.launches.find(
+        q,
+        {"_id": 1, "sol_inflow": 1, "buy_count": 1, "unique_buyers": 1,
+         "outcome": 1, "detected_at": 1, "outcome_at": 1},
+    ).limit(max(1, min(50000, int(limit))))
+    n_scanned = 0
+    n_updated = 0
+    n_with_rug_speed = 0
+    async for d in cur:
+        n_scanned += 1
+        sig = derive_signatures(d)
+        if not sig:
+            continue
+        # Only count as 'updated' if at least accel_class is set
+        if "accel_class" in sig:
+            n_updated += 1
+        if "rug_speed_class" in sig:
+            n_with_rug_speed += 1
+        await db.launches.update_one({"_id": d["_id"]}, {"$set": sig})
+    return {"scanned": n_scanned, "updated": n_updated,
+            "with_rug_speed": n_with_rug_speed,
+            "only_missing": only_missing}
+
+
 @api.get("/creator-greylist/blacklist")
 async def creator_blacklist(limit: int = 50):
     """Top N blacklisted creators (untradeable_rug / unpredictable_rug /

@@ -158,6 +158,17 @@ class FailureSweeper:
             peak_mc = float(d.get("peak_mc_usd") or 0)
             if peak_mc <= 0:
                 peak_mc = _estimate_peak_mc(d)
+            # Derive Bing-reference behavioral signatures (accel_class /
+            # flow_class / rug_speed_class). Computed inline so the stamped
+            # launch doc carries the per-launch signature that
+            # `aggregate_signatures()` reads when building the creator's
+            # repeatability score — without forcing the classifier to
+            # recompute them from raw fields every score update.
+            from launch_signatures import derive_signatures
+            launch_for_sig = dict(d)
+            launch_for_sig["outcome"] = "failed"
+            launch_for_sig["outcome_at"] = now_iso
+            sig_fields = derive_signatures(launch_for_sig)
             await self.db.launches.update_one(
                 {"_id": d["_id"]},
                 {"$set": {
@@ -165,6 +176,7 @@ class FailureSweeper:
                     "outcome_at": now_iso,
                     "fail_class": fail_class,
                     "final_peak_mc_usd": peak_mc,
+                    **sig_fields,
                 }},
             )
             # Decrement creators.tokens_active and increment tokens_failed

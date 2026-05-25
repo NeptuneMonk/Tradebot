@@ -874,3 +874,31 @@ Summary:
 - All `/api/*` routes + WebSocket gated; non-whitelisted Google accounts rejected with 403.
 - New frontend routes: `/login`, `/dashboard`, OAuth callback handler.
 - **Action required before first login**: set `ALLOWED_EMAIL` in `/app/backend/.env`.
+
+
+## 2026-05-25 — Bing Greylist Classifier — Per-launch signature persistence
+
+User-provided Bing schema requires per-creator behavioral signatures (acceleration, flow concentration, rug timing) that aggregate across all of a creator's launches. The classifier was already wired into `creator_pattern.classify_with_signatures()` and the UI; this commit closes the data persistence loop.
+
+### What changed
+- **`failure_sweep.py`** — `run_once()` now invokes `derive_signatures()` on every dormant launch it stamps `outcome=failed` and persists `accel_class` / `flow_class` / `rug_speed_class` / `rug_seconds_from_launch` inline with the existing fail_class + final_peak_mc_usd update. Cost: zero RPC, single Mongo `$set`.
+- **`bot.py _tracker_cleanup`** — graduation path now also derives + persists signatures so the per-creator aggregator sees consistent data across both failed and graduated launches (signatures are about BEHAVIOR not outcome).
+- **NEW `POST /api/creator-greylist/backfill-signatures`** — idempotent endpoint to populate signatures on any launches missing them. Defaults to `only_missing=true`, batch limit 5000.
+- **NEW `tests/test_launch_signatures.py`** — 25 cases covering accel/flow/rug_speed bands, `derive_signatures()` combo, and `aggregate_signatures()` repeatability formula.
+
+### DB state after wiring
+- **54,656 / 54,656 launches** in DB now carry `accel_class` + `flow_class` (was 54,371 / 54,495 — 285 missing closed by initial backfill call).
+- Two consecutive backfill calls confirmed idempotent: first picked up 283 stragglers, second only 2 (race with live discovery seeding).
+- **1,355 creators** carry `greylist_signatures` with non-zero repeatability; the +15 Bing acceleration bonus is now actively scoring patterns.
+
+### Verified
+- `pytest tests/test_launch_signatures.py tests/test_creator_greylist.py tests/test_creator_pattern.py tests/test_pattern_analytics.py tests/test_strategy_doctor_pattern_rule.py tests/test_exit_param.py` → **85 passed**.
+
+### Phase 3 remaining
+- 1-hop linked-wallets traversal via Helius (P1)
+- Mempool pre-launch bot-cluster scoring (P2)
+- Whale presence gate (P2)
+- Telegram alerts (P2)
+- Jito bundles (P3)
+- Smart-money index (P3)
+
