@@ -969,7 +969,17 @@ class BotState:
         if len(peaks) >= 2:
             out["expected_peak_mc_usd"] = round(statistics.median(peaks), 0)
         if len(rugs) >= 2:
-            out["expected_rug_curve_pct"] = round(statistics.median(rugs), 1)
+            med_rug = statistics.median(rugs)
+            # Refuse to return a rug-curve target that's lower than the
+            # buffer used by the exit gate (+5pp safety cushion). Otherwise
+            # the gate fires the moment the launch starts filling — that
+            # was the 2026-05-26 instant-exit bug. Creators whose tokens
+            # all die at <15% curve fill are effectively untradeable_rug
+            # and shouldn't have a curve-based exit at all.
+            buffer_pp = float(self.config.greylist_snipe_curve_buffer_pct or 0)
+            min_floor = buffer_pp + 10.0  # 10pp room above the buffer
+            if med_rug >= min_floor:
+                out["expected_rug_curve_pct"] = round(med_rug, 1)
         return out or None
 
     def _snipe_velocity_signals(self, bucket: dict) -> dict | None:
@@ -1131,14 +1141,23 @@ class BotState:
         # `expected_rug_curve_pct` is the median curve fill at which their
         # past launches rugged. We exit when we're within `curve_buffer_pct`
         # of that — gives us a head-start before the dump.
+        #
+        # IMPORTANT: if rug_curve is below the buffer (e.g. creator rugs at
+        # 3% curve fill, buffer is 5pp), `max(0, rug-buffer) = 0` would
+        # trigger this gate IMMEDIATELY on any non-zero curve fill —
+        # producing the instant-exit bug observed 2026-05-26. The fix is
+        # to refuse to fire the gate at all when rug_curve <= buffer + 5pp
+        # cushion; those creators are essentially untradeable_rug and have
+        # no entry-to-exit window.
         curve_pct = bucket.get("curve_fill_pct") or 0.0
         rug_curve = ctx.get("expected_rug_curve_pct")
         if rug_curve is not None and curve_pct > 0:
             buffer_pp = float(cfg.greylist_snipe_curve_buffer_pct or 0)
-            trigger_at = max(0.0, float(rug_curve) - buffer_pp)
-            if curve_pct >= trigger_at:
-                return True, (f"snipe curve-fill exit ({curve_pct:.1f}% ≥ "
-                              f"rug curve {rug_curve:.1f}% − {buffer_pp:.1f}pp buffer)")
+            if float(rug_curve) > buffer_pp + 5.0:
+                trigger_at = float(rug_curve) - buffer_pp
+                if curve_pct >= trigger_at:
+                    return True, (f"snipe curve-fill exit ({curve_pct:.1f}% ≥ "
+                                  f"rug curve {rug_curve:.1f}% − {buffer_pp:.1f}pp buffer)")
 
         # 3. Peak MC proximity. If the creator's typical peak MC is known
         # and the current MC is within `peak_mc_proximity_pct` of it, exit

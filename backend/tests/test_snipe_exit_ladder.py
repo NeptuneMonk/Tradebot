@@ -254,3 +254,61 @@ def test_all_gates_silent_returns_false():
     stub.tracking["MintX"] = {"curve_fill_pct": 30, "usd_market_cap": 20_000}
     should, _ = _bind(stub, "_check_snipe_pattern_exit")(slot, 0.000102)
     assert should is False
+
+
+
+# ===== Regression: instant-exit bug when expected_rug_curve_pct is tiny ===
+# 2026-05-26 paper bug: fallback returned rug_curve=3.0 for creators whose
+# tokens died at <5% curve fill. The gate then computed
+#   trigger_at = max(0, 3.0 - 5.0) = 0
+# and fired the moment curve fill became non-zero — instant -0.7% exit on
+# entry. Fix: refuse to fire the curve-fill gate when rug_curve <= buffer+5.
+
+def test_curve_fill_exit_skipped_when_rug_curve_below_buffer_floor():
+    """rug_curve=3% with buffer=5pp should NOT trigger an instant exit
+    even at full 10% curve fill — those creators are untradeable_rug."""
+    stub = _Stub(greylist_snipe_curve_buffer_pct=5.0)
+    slot = _slot(snipe_ctx={
+        "expected_peak_mc_usd": None,
+        "expected_rug_curve_pct": 3.0,  # the buggy tiny rug-curve
+    })
+    stub.tracking["MintX"] = {"curve_fill_pct": 10.0}  # actively trading
+    should, reason = _bind(stub, "_check_snipe_pattern_exit")(slot, 0.0001)
+    assert should is False, f"unexpectedly fired: {reason}"
+
+
+def test_curve_fill_exit_still_fires_with_healthy_rug_curve():
+    """Sanity check — the gate must still fire when rug_curve is well
+    above the buffer floor."""
+    stub = _Stub(greylist_snipe_curve_buffer_pct=5.0)
+    slot = _slot(snipe_ctx={
+        "expected_peak_mc_usd": None,
+        "expected_rug_curve_pct": 70.0,
+    })
+    stub.tracking["MintX"] = {"curve_fill_pct": 66.0}  # at trigger_at=65
+    should, reason = _bind(stub, "_check_snipe_pattern_exit")(slot, 0.0001)
+    assert should is True
+    assert "curve-fill exit" in reason
+
+
+def test_curve_fill_exit_skipped_right_at_floor_boundary():
+    """rug_curve exactly at buffer+5 floor → still skipped (need strictly above)."""
+    stub = _Stub(greylist_snipe_curve_buffer_pct=5.0)
+    slot = _slot(snipe_ctx={
+        "expected_rug_curve_pct": 10.0,  # buffer+5 = floor, NOT strictly above
+    })
+    stub.tracking["MintX"] = {"curve_fill_pct": 5.0}
+    should, _ = _bind(stub, "_check_snipe_pattern_exit")(slot, 0.0001)
+    assert should is False
+
+
+def test_curve_fill_exit_fires_just_above_floor():
+    """rug_curve just above floor → gate fires normally."""
+    stub = _Stub(greylist_snipe_curve_buffer_pct=5.0)
+    slot = _slot(snipe_ctx={
+        "expected_rug_curve_pct": 11.0,  # 11 > 5 + 5 = 10 floor
+    })
+    # trigger_at = 11 - 5 = 6
+    stub.tracking["MintX"] = {"curve_fill_pct": 7.0}
+    should, _ = _bind(stub, "_check_snipe_pattern_exit")(slot, 0.0001)
+    assert should is True
