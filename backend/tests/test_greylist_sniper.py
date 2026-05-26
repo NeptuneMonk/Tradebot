@@ -61,6 +61,10 @@ class _StubBotState:
         self.config.greylist_snipe_research_mode = research_mode
         self.config.greylist_snipe_research_min_score = research_min_score
         self.config.greylist_snipe_research_size_mult = research_size_mult
+        # P0 pattern-gate field — disabled by default so existing tests
+        # (which use pattern="slow_rug_tradeable" already) aren't blocked.
+        # Tests that need it ON explicitly flip this.
+        self.config.greylist_snipe_require_classified_pattern = False
         self._greylist_snipe_fires: list[float] = []
         self.active_trades: dict = {}
         self._pending_entry_mints: set = set()
@@ -231,6 +235,68 @@ def test_pl_sources_classifies_greylist_snipe():
     from pl_sources import classify_source, SOURCE_LABELS
     assert classify_source("greylist_snipe") == "greylist_snipe"
     assert SOURCE_LABELS["greylist_snipe"] == "Greylist Sniper"
+
+
+# ===== Classified-pattern requirement (P0 — block unknown patterns) =======
+# Paper data: 45/45 snipes fired on unknown-pattern creators with 4/45 wins.
+# `greylist_snipe_require_classified_pattern=True` blocks these snipes —
+# only fires when the creator has a real classified pattern.
+
+
+@pytest.mark.asyncio
+async def test_sniper_blocks_unknown_pattern_when_required():
+    stub = _StubBotState()
+    stub.config.greylist_snipe_require_classified_pattern = True
+    stub.db.creator_doc = _make_creator_doc(score=70.0, pattern="unknown")
+    sniper = _bind_sniper(stub)
+    await sniper(_StubLaunch(), {})
+    assert stub.enter_calls == []
+
+
+@pytest.mark.asyncio
+async def test_sniper_blocks_null_pattern_when_required():
+    stub = _StubBotState()
+    stub.config.greylist_snipe_require_classified_pattern = True
+    stub.db.creator_doc = _make_creator_doc(score=70.0, pattern=None)
+    sniper = _bind_sniper(stub)
+    await sniper(_StubLaunch(), {})
+    assert stub.enter_calls == []
+
+
+@pytest.mark.asyncio
+async def test_sniper_allows_classified_pattern_when_required():
+    """Real pattern → passes the gate."""
+    stub = _StubBotState()
+    stub.config.greylist_snipe_require_classified_pattern = True
+    stub.db.creator_doc = _make_creator_doc(score=70.0, pattern="slow_rug_tradeable")
+    sniper = _bind_sniper(stub)
+    await sniper(_StubLaunch(), {})
+    assert len(stub.enter_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_sniper_allows_unknown_when_requirement_off():
+    """Gate OFF → unknown still fires."""
+    stub = _StubBotState()
+    stub.config.greylist_snipe_require_classified_pattern = False
+    stub.db.creator_doc = _make_creator_doc(score=70.0, pattern="unknown")
+    sniper = _bind_sniper(stub)
+    await sniper(_StubLaunch(), {})
+    assert len(stub.enter_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_research_mode_bypasses_classified_pattern_requirement():
+    """Research mode targets `unpredictable_rug` specifically — the
+    classified-pattern gate must NOT block research snipes."""
+    stub = _StubBotState(research_mode=True, research_min_score=35.0)
+    stub.config.greylist_snipe_require_classified_pattern = True
+    stub.db.creator_doc = _make_creator_doc(
+        score=50.0, blacklisted=True, pattern="unpredictable_rug",
+    )
+    sniper = _bind_sniper(stub)
+    await sniper(_StubLaunch(), {})
+    assert len(stub.enter_calls) == 1
 
 
 # ===== Research-mode snipes (Bimodal/Unpredictable creators) ==============

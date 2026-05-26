@@ -65,6 +65,10 @@ def _make_stub(**cfg_overrides):
     stub.config.greylist_snipe_curve_buffer_pct = 5.0
     stub.config.greylist_snipe_ripcord_drawdown_pct = 60.0
     stub.config.greylist_snipe_ripcord_grace_seconds = 8
+    # P0 fields added in 2026-02-08
+    stub.config.greylist_snipe_stale_seconds = 0  # disabled in unit tests
+    stub.config.greylist_snipe_stale_min_profit_pct = 25.0
+    stub.config.greylist_snipe_require_classified_pattern = False
     for k, v in cfg_overrides.items():
         setattr(stub.config, k, v)
     stub.tracking = {}
@@ -304,3 +308,72 @@ def test_profit_ripcord_priority_over_pattern_tp():
     should, reason = stub._check_snipe_pattern_exit(slot, 2.2e-7)
     assert should is True
     assert "profit-ripcord" in reason
+
+
+# ===== Stale-snipe time fail-safe =========================================
+# Snipes held longer than `stale_seconds` without reaching `stale_min_profit_pct`
+# get auto-exited. Prevents 10-30min drift losses observed in paper data.
+
+def test_stale_exit_fires_when_held_past_threshold():
+    """Held > 90s and stuck at +0% profit → exit fires."""
+    stub = _make_stub(greylist_snipe_stale_seconds=90,
+                      greylist_snipe_stale_min_profit_pct=25.0,
+                      greylist_snipe_profit_ripcord_pct=0,  # disable to isolate
+                      greylist_snipe_velocity_exits_enabled=False)
+    slot = _make_slot(entry_price=1e-7)
+    slot["_entry_ts_mono"] = time.time() - 120  # 120s ago
+    should, reason = stub._check_snipe_pattern_exit(slot, 1.0e-7)  # +0%
+    assert should is True
+    assert "stale-exit" in reason
+
+
+def test_stale_exit_does_not_fire_when_profitable_enough():
+    """Held > 90s but +30% profit → keeps running."""
+    stub = _make_stub(greylist_snipe_stale_seconds=90,
+                      greylist_snipe_stale_min_profit_pct=25.0,
+                      greylist_snipe_profit_ripcord_pct=0,
+                      greylist_snipe_velocity_exits_enabled=False)
+    slot = _make_slot(entry_price=1e-7)
+    slot["_entry_ts_mono"] = time.time() - 120
+    should, _ = stub._check_snipe_pattern_exit(slot, 1.3e-7)  # +30%
+    assert should is False
+
+
+def test_stale_exit_does_not_fire_before_threshold():
+    """Only 30s old, no profit → still in window."""
+    stub = _make_stub(greylist_snipe_stale_seconds=90,
+                      greylist_snipe_stale_min_profit_pct=25.0,
+                      greylist_snipe_profit_ripcord_pct=0,
+                      greylist_snipe_velocity_exits_enabled=False)
+    slot = _make_slot(entry_price=1e-7)
+    slot["_entry_ts_mono"] = time.time() - 30
+    should, _ = stub._check_snipe_pattern_exit(slot, 1.0e-7)
+    assert should is False
+
+
+def test_stale_exit_disabled_when_seconds_zero():
+    """stale_seconds=0 → never fires."""
+    stub = _make_stub(greylist_snipe_stale_seconds=0,
+                      greylist_snipe_profit_ripcord_pct=0,
+                      greylist_snipe_velocity_exits_enabled=False)
+    slot = _make_slot(entry_price=1e-7)
+    slot["_entry_ts_mono"] = time.time() - 9999
+    should, _ = stub._check_snipe_pattern_exit(slot, 1.0e-7)
+    assert should is False
+
+
+def test_stale_exit_lazy_timestamp_no_immediate_fire():
+    """If _entry_ts_mono is missing, the helper lazily stamps `now()` so
+    the very next call doesn't immediately fire (age=0)."""
+    stub = _make_stub(greylist_snipe_stale_seconds=90,
+                      greylist_snipe_profit_ripcord_pct=0,
+                      greylist_snipe_velocity_exits_enabled=False)
+    slot = _make_slot(entry_price=1e-7)
+    # No _entry_ts_mono on slot
+    should, _ = stub._check_snipe_pattern_exit(slot, 1.0e-7)
+    assert should is False
+    # On second call, age is still ~0 → no fire
+    should2, _ = stub._check_snipe_pattern_exit(slot, 1.0e-7)
+    assert should2 is False
+    # Stamp was set lazily
+    assert "_entry_ts_mono" in slot

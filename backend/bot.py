@@ -928,6 +928,50 @@ class BotState:
         return (trade.get("classifier_action") == "greylist_snipe"
                 and bool(self.config.greylist_snipe_pattern_exits))
 
+    async def _compute_creator_snipe_ctx_fallback(self, creator: str) -> dict | None:
+        """Fallback for snipe_pattern_ctx when the creator doc lacks the
+        scorer-populated `expected_peak_mc_usd` / `expected_rug_window_pct`
+        aggregates. Reads the creator's failed launches directly and
+        computes medians for:
+
+          - `expected_peak_mc_usd`  — median `final_peak_mc_usd` across
+            failed launches (excluding failed_instant since those have
+            tiny peaks and would drag the median artificially low)
+          - `expected_rug_curve_pct` — median `curve_fill_pct` at the
+            point each launch died (excludes launches that never started
+            filling, i.e. `curve_fill_pct < 1.0`)
+
+        Bounded scan (max 60 docs, projection-only) → ~1-5ms per snipe.
+        Returns None when the creator has fewer than 2 usable failed
+        launches.
+        """
+        if not creator:
+            return None
+        import statistics
+        try:
+            cursor = self.db.launches.find(
+                {"creator": creator, "outcome": "failed"},
+                {"_id": 0, "final_peak_mc_usd": 1, "curve_fill_pct": 1,
+                 "fail_class": 1},
+            ).limit(60)
+        except Exception:
+            return None
+        peaks: list[float] = []
+        rugs: list[float] = []
+        async for d in cursor:
+            mc = d.get("final_peak_mc_usd")
+            if mc and float(mc) > 0 and d.get("fail_class") != "failed_instant":
+                peaks.append(float(mc))
+            cv = d.get("curve_fill_pct")
+            if cv is not None and float(cv) >= 1.0:
+                rugs.append(float(cv))
+        out: dict = {}
+        if len(peaks) >= 2:
+            out["expected_peak_mc_usd"] = round(statistics.median(peaks), 0)
+        if len(rugs) >= 2:
+            out["expected_rug_curve_pct"] = round(statistics.median(rugs), 1)
+        return out or None
+
     def _snipe_velocity_signals(self, bucket: dict) -> dict | None:
         """Compute SOL inflow rate and new-holder rate over two rolling
         windows: a RECENT window (`velocity_window_s`) and a BASELINE
@@ -1008,20 +1052,39 @@ class BotState:
             return False, ""
         cfg = self.config
 
-        # 0. PROFIT RIPCORD — the highest-priority exit. Fires the moment the
+        # 0a. PROFIT RIPCORD — the highest-priority exit. Fires the moment the
         # position is up >= `greylist_snipe_profit_ripcord_pct` from entry,
-        # regardless of pattern. A greylisted creator that lets us hit 2x
-        # has already paid for the snipe — locking that profit before the
-        # predictable rug erases it is the single best EV decision we can
-        # make. Set the config to 0 to disable.
+        # regardless of pattern. Paper data: snipes that hit +29-33% TP
+        # then gave it all back to a partial-trail runner. A FULL-EXIT
+        # ripcord at +30% (default) realizes those wins. Set to 0 to disable.
         trade = slot["trade"]
         entry_p = trade.get("entry_price_sol") or 0
+        pct_change = 0.0
         if entry_p > 0:
             pct_change = (cur_price_sol - entry_p) / entry_p * 100
             profit_ripcord = float(cfg.greylist_snipe_profit_ripcord_pct or 0)
             if profit_ripcord > 0 and pct_change >= profit_ripcord:
                 return True, (f"snipe profit-ripcord (+{pct_change:.1f}% ≥ "
-                              f"{profit_ripcord:.0f}% — locking 2x before rug)")
+                              f"{profit_ripcord:.0f}% — locking profit before rug)")
+
+        # 0b. STALE-SNIPE TIME FAIL-SAFE — paper data showed 10-30 min holds
+        # drifting to -20-45%. A snipe that hasn't popped within ~90s is
+        # almost always going to die. Exit if held > stale_seconds AND
+        # the position has not climbed at least stale_min_profit_pct above
+        # entry. Set stale_seconds=0 to disable.
+        stale_s = int(cfg.greylist_snipe_stale_seconds or 0)
+        if stale_s > 0 and entry_p > 0:
+            entry_ts = trade.get("_entry_ts_mono") or slot.get("_entry_ts_mono")
+            if entry_ts is None:
+                # Lazily stamp on first call — _enter_impl doesn't currently
+                # set this and we don't want to backfill every call site.
+                entry_ts = time.time()
+                slot["_entry_ts_mono"] = entry_ts
+            age = time.time() - entry_ts
+            stale_min = float(cfg.greylist_snipe_stale_min_profit_pct or 0)
+            if age >= stale_s and pct_change < stale_min:
+                return True, (f"snipe stale-exit (held {age:.0f}s ≥ {stale_s}s "
+                              f"@ {pct_change:+.1f}% < required +{stale_min:.0f}%)")
 
         # 1. Pattern-suggested TP. If the creator has a known pattern with a
         # suggested exit %, lock in profit there. Falls through to other
@@ -1531,6 +1594,21 @@ class BotState:
                               gc.get("greylist_score_updated_at"))
             if eff < min_score:
                 return
+            # Pattern gate — paper data showed 45/45 snipes fired on
+            # `unknown` or null patterns with 4/45 wins. The "predictable
+            # curve" thesis only holds when the creator HAS a classified
+            # pattern. Research-mode bypasses this (it deliberately targets
+            # the noisy bucket).
+            pat = gc.get("greylist_pattern")
+            if (not is_research
+                    and self.config.greylist_snipe_require_classified_pattern
+                    and pat in (None, "unknown", "")):
+                logger.info(
+                    f"greylist_snipe: skipping {launch.mint[:8]}… — "
+                    f"creator has no classified pattern (pat={pat!r}) and "
+                    f"require_classified_pattern=True"
+                )
+                return
             # Settle wait — give the tracking bucket a moment to populate
             # liquidity / first price so the entry doesn't fire pre-curve.
             settle = max(1, int(self.config.greylist_snipe_settle_seconds or 5))
@@ -1723,6 +1801,30 @@ class BotState:
                         "expected_peak_mc_stddev": pmc.get("stddev_peak_mc_usd"),
                         "expected_rug_curve_pct": rw.get("median_rug_pct"),
                     }
+                    # On-demand fallback: when the scorer hasn't populated
+                    # `expected_*` on the creator doc (only ~25-45% of
+                    # greylisted creators have them per the 24h paper data),
+                    # compute medians directly from their failed launches
+                    # so the snipe pattern-exit ladder has something to fire
+                    # on. Without this fallback the ladder degrades to
+                    # ripcord-only — which catches at 60-90% drawdown.
+                    if (action == "greylist_snipe"
+                            and (greylist_ctx.get("expected_peak_mc_usd") is None
+                                 or greylist_ctx.get("expected_rug_curve_pct") is None)):
+                        try:
+                            fb = await self._compute_creator_snipe_ctx_fallback(launch.creator)
+                            if fb:
+                                if greylist_ctx.get("expected_peak_mc_usd") is None:
+                                    greylist_ctx["expected_peak_mc_usd"] = fb.get("expected_peak_mc_usd")
+                                if greylist_ctx.get("expected_rug_curve_pct") is None:
+                                    greylist_ctx["expected_rug_curve_pct"] = fb.get("expected_rug_curve_pct")
+                                logger.info(
+                                    f"snipe ctx fallback for {launch.creator[:8]}…: "
+                                    f"peak_mc=${greylist_ctx.get('expected_peak_mc_usd') or 0:,.0f} "
+                                    f"rug_curve={greylist_ctx.get('expected_rug_curve_pct')}%"
+                                )
+                        except Exception as e:
+                            logger.debug(f"snipe ctx fallback failed: {e}")
         except Exception as e:
             logger.debug(f"greylist context skipped: {e}")
 
@@ -2164,6 +2266,7 @@ class BotState:
         self.active_trades[launch.mint] = {
             "trade": trade.model_dump(),
             "launch": launch.model_dump(),
+            "_entry_ts_mono": time.time(),  # for greylist_snipe stale-exit gate
             **trade_extras,
         }
         await hub.broadcast("trade_enter", trade.model_dump())

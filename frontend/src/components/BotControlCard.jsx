@@ -425,6 +425,30 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
               Velocity Exits Enabled
               <span className="text-neutral-600 normal-case tracking-normal ml-1">(both gates on/off — profit ripcord stays independent)</span>
             </label>
+
+            {/* Stale-snipe & pattern-required gates (P0) */}
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+              <Field label="Stale Exit (s)" testid="greylist-snipe-stale-seconds-input"
+                     hint="Auto-exit a snipe held longer than this many seconds without reaching the Stale Min Profit. Default 90s — paper data showed 10-30min holds drifting to -20-45%. Set 0 to disable."
+                     value={local.greylist_snipe_stale_seconds}
+                     onChange={(v) => setLocal({ ...local, greylist_snipe_stale_seconds: parseInt(v, 10) || 0 })} step="15" />
+              <Field label="Stale Min Profit %" testid="greylist-snipe-stale-min-profit-input"
+                     hint="If a snipe is past Stale Exit (s) and is below this % from entry, exit. Default 25%. A snipe that hasn't popped this much in 90s is almost always going to die."
+                     value={local.greylist_snipe_stale_min_profit_pct}
+                     onChange={(v) => setLocal({ ...local, greylist_snipe_stale_min_profit_pct: parseFloat(v) || 0 })} step="5" />
+            </div>
+            <label className="mt-2 flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-[0.15em] text-amber-400/80 cursor-pointer">
+              <input
+                type="checkbox"
+                data-testid="greylist-snipe-require-classified-pattern-checkbox"
+                checked={!!local.greylist_snipe_require_classified_pattern}
+                onChange={(e) => setLocal({ ...local, greylist_snipe_require_classified_pattern: e.target.checked })}
+              />
+              Require Classified Pattern
+              <HelpHint label="Require Classified Pattern">
+                When ON, the sniper refuses to fire on creators whose pattern is `unknown` or null. Paper data showed 45/45 unknown-pattern snipes with only 4 winners (9% win rate). The "predictable curve" thesis only holds when the creator HAS a real classified pattern (slow_rug, predictable_dump, fake_hype, bimodal_dump). Research mode bypasses this gate (it deliberately targets the noisy bucket).
+              </HelpHint>
+            </label>
           </div>
 
           {/* Research Mode — unpredictable-creator bimodal exploration */}

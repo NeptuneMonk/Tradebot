@@ -50,6 +50,10 @@ class _Stub:
             greylist_snipe_velocity_min_buys = 8
             greylist_snipe_sol_vel_drop_pct = 70.0
             greylist_snipe_holder_vel_drop_pct = 70.0
+            # P0 stale-snipe + pattern-gate fields — disabled in this suite
+            greylist_snipe_stale_seconds = 0
+            greylist_snipe_stale_min_profit_pct = 25.0
+            greylist_snipe_require_classified_pattern = False
         for k, v in cfg_overrides.items():
             setattr(_Cfg, k, v)
         self.config = _Cfg()

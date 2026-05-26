@@ -239,14 +239,25 @@ class BotConfig(BaseModel):
     greylist_snipe_pattern_exits: bool = True
     greylist_snipe_peak_mc_proximity_pct: float = 85.0  # exit when MC ≥ X% of expected peak
     greylist_snipe_curve_buffer_pct: float = 5.0        # exit when curve ≥ rug_pct - X pp
-    greylist_snipe_ripcord_drawdown_pct: float = 60.0   # emergency exit X% from peak observed
-    greylist_snipe_ripcord_grace_seconds: int = 8       # ripcord requires Xs above threshold first
+    greylist_snipe_ripcord_drawdown_pct: float = 40.0   # emergency exit X% from peak observed (lowered from 60 — snipes rug fast)
+    greylist_snipe_ripcord_grace_seconds: int = 3       # ripcord requires Xs above threshold first (lowered from 8)
     # Profit ripcord — a SEPARATE TP from pattern_suggested_tp. Always fires
     # when the position is up X% from entry, regardless of pattern. Rationale:
-    # any greylisted creator that lets the price double has already given us
-    # a 2x — locking it before the predictable rug strips it back is free
-    # money. Default 100% (= 2x entry). Set to 0 to disable.
-    greylist_snipe_profit_ripcord_pct: float = 100.0
+    # paper data showed snipes hitting +29-33% TP then giving the gain back
+    # to a partial-trail runner that got rugged. A full-exit ripcord at +30%
+    # locks the realistic win before reversion. Set to 0 to disable.
+    greylist_snipe_profit_ripcord_pct: float = 30.0
+    # Stale-snipe time fail-safe — if a snipe has been held > stale_seconds
+    # AND has not climbed at least stale_min_profit_pct above entry, exit.
+    # Paper data: 10-30 min holds drifted to -20-45%. Snipes that haven't
+    # popped within ~90s are almost always going to die. Set seconds=0 to disable.
+    greylist_snipe_stale_seconds: int = 90
+    greylist_snipe_stale_min_profit_pct: float = 25.0
+    # Require classified pattern — when True, the sniper REFUSES to fire on
+    # creators whose pattern is `unknown` or null. Paper data showed 45/45
+    # snipes fired on unknown patterns with 4/45 (9%) win rate — the
+    # "predictable curve" thesis only holds when there IS a pattern.
+    greylist_snipe_require_classified_pattern: bool = True
     # Velocity-decay exits — the rug is preceded by:
     #   1. SOL inflow rate collapsing (buyers tap out)
     #   2. New-holder rate collapsing (no fresh FOMO)
