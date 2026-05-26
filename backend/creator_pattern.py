@@ -136,14 +136,43 @@ def _fail_class_breakdown(failed_launches: list[dict]) -> dict[str, float]:
     return shares
 
 
-def _rug_pct_stats(trades: list[dict]) -> dict[str, Any]:
-    """Median / stddev / count of `rug_pct_from_peak`. Used to classify
-    slow-rug (high %) vs predictable-dump (low %) vs unpredictable (high σ)."""
-    rugs = [
-        float(t["rug_pct_from_peak"])
-        for t in trades
-        if t.get("rug_pct_from_peak") is not None
-    ]
+def _rug_pct_stats(trades: list[dict], failed_launches: list[dict] | None = None) -> dict[str, Any]:
+    """Median / stddev / count of where this creator's launches typically
+    rug. Used to classify slow-rug (high %) vs predictable-dump (low %)
+    vs unpredictable (high σ).
+
+    Two data sources, in priority order:
+      1. **Failed launch `curve_fill_pct`** — the % the bonding curve had
+         filled when the launch died. This is the PRIMARY signal because
+         we have ~thousands of failed launches with this data, but only
+         ~tens of closed trades. Without this fallback, the classifier
+         can't produce a pattern for 99% of creators.
+      2. **Trade `rug_pct_from_peak`** — historical legacy: the drop from
+         our trade's peak price to exit price. Useful when we've actually
+         traded the creator, mostly empty.
+
+    We use launch curve_fill_pct as the proxy for "where the curve rugged"
+    because pump.fun bonding curves are monotonic with cumulative net
+    buys — when the curve fills 40% then dies, it died near the 40% mark.
+    """
+    # Primary: failed-launch curve_fill_pct. Only include curves that
+    # actually started filling (>= 1%) so dead-instant launches don't
+    # bias the median toward 0.
+    rugs: list[float] = []
+    if failed_launches:
+        rugs.extend([
+            float(fl["curve_fill_pct"])
+            for fl in failed_launches
+            if fl.get("curve_fill_pct") is not None
+            and float(fl["curve_fill_pct"] or 0) >= 1.0
+        ])
+    # Secondary: trade rug_pct (legacy / sparse data)
+    if not rugs and trades:
+        rugs = [
+            float(t["rug_pct_from_peak"])
+            for t in trades
+            if t.get("rug_pct_from_peak") is not None
+        ]
     if len(rugs) < 2:
         return {"median": None, "stddev": None, "n": len(rugs)}
     try:
@@ -216,7 +245,7 @@ def classify_creator(
             "blacklisted": True,
         }
 
-    rug_stats = _rug_pct_stats(trades)
+    rug_stats = _rug_pct_stats(trades, failed_launches)
     mc_stats = _peak_mc_stats(failed_launches)
     fail_classes = _fail_class_breakdown(failed_launches)
     instant_share, n_instant, n_total_failed = _instant_share(failed_launches)

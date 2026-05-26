@@ -90,6 +90,12 @@ export default function RecentLaunchesFeed({ launches, onUnpin }) {
                 </div>
                 <div className="flex flex-col items-end gap-1 shrink-0">
                   <ActionBadge action={l.classifier_action} risk={l.classifier_risk} entered={l.entered} entryAction={l.entry_action} />
+                  {l.entered && !l.pin_exited && l.live_pnl_pct != null && (
+                    <PnlBadge pnlPct={l.live_pnl_pct} drawdown={l.live_drawdown_from_peak_pct} mint={l.mint} live={true} />
+                  )}
+                  {l.entered && l.pin_exited && l.exit_pnl_pct != null && (
+                    <PnlBadge pnlPct={l.exit_pnl_pct} reason={l.exit_reason} mint={l.mint} live={false} />
+                  )}
                   <span className="text-[10px] font-mono text-neutral-600">{timeAgo(l.detected_at)}</span>
                 </div>
               </div>
@@ -99,6 +105,32 @@ export default function RecentLaunchesFeed({ launches, onUnpin }) {
         </ul>
       </div>
     </div>
+  );
+}
+
+function PnlBadge({ pnlPct, reason, mint, live, drawdown }) {
+  if (pnlPct == null) return null;
+  const sign = pnlPct >= 0 ? "+" : "";
+  const cls = pnlPct >= 0
+    ? "border-emerald-700 text-emerald-300 bg-emerald-950/40"
+    : "border-rose-800 text-rose-300 bg-rose-950/40";
+  // Live PnL pulses subtly so the operator can spot it shifting at a glance.
+  const liveCls = live ? " animate-pulse" : "";
+  const title = live
+    ? `LIVE unrealized PnL ${sign}${pnlPct.toFixed(1)}%${drawdown != null && drawdown > 5 ? ` (down ${drawdown.toFixed(0)}% from peak)` : ""}. Click X on the PIN to manually exit.`
+    : (reason ? `exit: ${reason}` : `realized PnL ${sign}${pnlPct.toFixed(1)}%`);
+  return (
+    <span
+      className={`px-1.5 py-0.5 border text-[10px] font-mono uppercase ${cls}${liveCls}`}
+      title={title}
+      data-testid={`launch-pnl-badge-${mint}`}
+    >
+      {live && <span className="opacity-70 mr-0.5">●</span>}
+      {sign}{pnlPct.toFixed(1)}%
+      {live && drawdown != null && drawdown > 5 && (
+        <span className="ml-0.5 text-[9px] opacity-70">↓{drawdown.toFixed(0)}</span>
+      )}
+    </span>
   );
 }
 

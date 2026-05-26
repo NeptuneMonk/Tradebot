@@ -17,20 +17,28 @@ export default function ActiveTradesTable({ trades, onExit }) {
               <th className="text-left py-2">Mint</th>
               <th className="text-right">Mode</th>
               <th className="text-right">Entry SOL</th>
-              <th className="text-right">Tokens</th>
+              <th className="text-right">PnL %</th>
+              <th className="text-right">Curve / Peak</th>
               <th className="text-right">Risk</th>
               <th className="text-right">Action</th>
             </tr>
           </thead>
           <tbody>
             {trades.length === 0 && (
-              <tr><td colSpan="6" className="text-center py-6 text-[10px] uppercase tracking-[0.2em] text-neutral-600">
+              <tr><td colSpan="7" className="text-center py-6 text-[10px] uppercase tracking-[0.2em] text-neutral-600">
                 no active positions
               </td></tr>
             )}
             {trades.map((t) => (
               <tr key={t.id} className="border-b border-neutral-900 hover:bg-neutral-900/40 transition-colors duration-100" data-testid={`active-trade-row-${t.mint}`}>
                 <td className="py-2 font-mono">
+                  {t.classifier_action === "greylist_snipe" && (
+                    <span
+                      data-testid={`active-snipe-badge-${t.id}`}
+                      className="mr-1 inline-block px-1 py-0 border border-rose-700 text-rose-300 bg-rose-950/40 text-[9px] font-mono align-middle"
+                      title={`Greylist Sniper — pattern-based exits only (no SL, no max-hold). Score at entry: ${t.greylist_score_at_entry ?? "?"}, pattern: ${t.greylist_pattern_at_entry ?? "?"}.`}
+                    >SNIPE</span>
+                  )}
                   {t.partial_done && (
                     <span
                       data-testid={`active-partial-badge-${t.id}`}
@@ -47,7 +55,8 @@ export default function ActiveTradesTable({ trades, onExit }) {
                   </span>
                 </td>
                 <td className="text-right font-mono">{t.entry_sol.toFixed(5)}</td>
-                <td className="text-right font-mono text-neutral-400">{Number(t.entry_tokens).toExponential(2)}</td>
+                <PnlCell pnl={t.unrealized_pnl_pct} drawdown={t.drawdown_from_peak_pct} mint={t.mint} />
+                <CurveCell live={t.live_curve_fill_pct} target={t.snipe_pattern_ctx?.expected_rug_curve_pct} liveMc={t.live_usd_market_cap} peakMc={t.snipe_pattern_ctx?.expected_peak_mc_usd} mint={t.mint} />
                 <td className="text-right font-mono">
                   <RiskBadge risk={t.risk_score} />
                 </td>
@@ -66,6 +75,50 @@ export default function ActiveTradesTable({ trades, onExit }) {
         </table>
       </div>
     </div>
+  );
+}
+
+function PnlCell({ pnl, drawdown, mint }) {
+  if (pnl == null) {
+    return <td className="text-right font-mono text-neutral-600" data-testid={`active-pnl-${mint}`}>—</td>;
+  }
+  const sign = pnl >= 0 ? "+" : "";
+  const cls = pnl >= 0 ? "text-emerald-300" : "text-rose-300";
+  return (
+    <td className="text-right font-mono" data-testid={`active-pnl-${mint}`}>
+      <span className={cls}>{sign}{pnl.toFixed(1)}%</span>
+      {drawdown != null && drawdown > 5 && (
+        <span className="ml-1 text-[9px] text-neutral-500" title={`Down ${drawdown.toFixed(1)}% from peak`}>
+          ↓{drawdown.toFixed(0)}
+        </span>
+      )}
+    </td>
+  );
+}
+
+function CurveCell({ live, target, liveMc, peakMc, mint }) {
+  if (live == null && liveMc == null) {
+    return <td className="text-right font-mono text-neutral-600" data-testid={`active-curve-${mint}`}>—</td>;
+  }
+  return (
+    <td className="text-right font-mono text-[10px]" data-testid={`active-curve-${mint}`}>
+      {live != null && (
+        <div>
+          <span className="text-neutral-400">{Number(live).toFixed(0)}%</span>
+          {target != null && (
+            <span className="text-neutral-600"> / {Number(target).toFixed(0)}%</span>
+          )}
+        </div>
+      )}
+      {liveMc != null && liveMc > 0 && (
+        <div className="text-neutral-500">
+          ${Math.round(liveMc / 1000)}k
+          {peakMc != null && peakMc > 0 && (
+            <span className="text-neutral-700"> / ${Math.round(peakMc / 1000)}k</span>
+          )}
+        </div>
+      )}
+    </td>
   );
 }
 

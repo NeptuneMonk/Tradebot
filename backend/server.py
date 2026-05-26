@@ -1333,7 +1333,31 @@ async def launches_recent(limit: int = 30):
     unpinned = await db.launches.find(
         {"mint": {"$nin": list(pinned_mints)}}, {"_id": 0},
     ).sort("detected_at", -1).to_list(limit)
-    return pinned + unpinned
+    out = pinned + unpinned
+    # Stamp LIVE PnL% on every open position so the operator can rip the
+    # cord manually from the feed/active-trades cards. Cheap: in-memory
+    # lookup against the active_trades slot. Each slot caches
+    # `_last_price_sol` on every monitor tick + on every fast-exit pulse,
+    # so this is always fresh-ish (~500ms max staleness).
+    for row in out:
+        if not row.get("entered") or row.get("pin_exited"):
+            continue
+        slot = bot_state.active_trades.get(row.get("mint"))
+        if not slot:
+            continue
+        trade = slot.get("trade") or {}
+        entry = trade.get("entry_price_sol") or 0
+        cur = (slot.get("_last_price_sol")
+               or slot.get("peak_price_sol")
+               or entry)
+        if entry > 0 and cur > 0:
+            row["live_pnl_pct"] = round((cur - entry) / entry * 100.0, 1)
+            peak = slot.get("peak_price_sol") or cur
+            if peak > 0:
+                row["live_drawdown_from_peak_pct"] = round(
+                    (peak - cur) / peak * 100.0, 1
+                )
+    return out
 
 
 @api.post("/launches/{launch_id}/unpin")
@@ -1364,10 +1388,42 @@ async def launches_unpin(launch_id: str):
 @api.get("/trades/active")
 async def trades_active():
     docs = await db.trades.find({"status": "active"}, {"_id": 0}).sort("entry_time", -1).to_list(100)
+    # Augment each row with LIVE PnL%: pull cur price from the in-memory
+    # slot's `peak_price_sol` (last seen by the monitor) or the slot's
+    # recorded current price. For snipes this is the operator's single
+    # most-important question — "am I in profit?" — so we surface it
+    # right on the active-trades row.
     for d in docs:
         slot = bot_state.active_trades.get(d["mint"])
-        if slot:
-            d["risk_score"] = slot["trade"].get("risk_score", d.get("risk_score", 50))
+        if not slot:
+            continue
+        d["risk_score"] = slot["trade"].get("risk_score", d.get("risk_score", 50))
+        # Pull the freshest price the monitor has cached. `peak_price_sol`
+        # only tracks the high-water mark, but `_last_price_sol` is updated
+        # every monitor tick (added below). Fallback chain handles both old
+        # slots and slots that just got created.
+        cur = (slot.get("_last_price_sol")
+               or slot.get("peak_price_sol")
+               or d.get("entry_price_sol") or 0)
+        entry = d.get("entry_price_sol") or 0
+        if cur > 0 and entry > 0:
+            pnl_pct = (cur - entry) / entry * 100.0
+            d["current_price_sol"] = cur
+            d["unrealized_pnl_pct"] = round(pnl_pct, 2)
+            d["peak_price_sol"] = slot.get("peak_price_sol") or cur
+            if d["peak_price_sol"] > 0:
+                d["drawdown_from_peak_pct"] = round(
+                    (d["peak_price_sol"] - cur) / d["peak_price_sol"] * 100.0, 1
+                )
+        # Snipe pattern context — handy for the UI to show "you're 14pp
+        # from predicted rug" etc.
+        snipe_ctx = slot.get("snipe_pattern_ctx") or {}
+        if snipe_ctx:
+            d["snipe_pattern_ctx"] = snipe_ctx
+            # Current MC / curve from the tracking bucket
+            tb = bot_state.tracking.get(d["mint"], {})
+            d["live_curve_fill_pct"] = tb.get("curve_fill_pct") or 0
+            d["live_usd_market_cap"] = tb.get("usd_market_cap") or 0
     return docs
 
 

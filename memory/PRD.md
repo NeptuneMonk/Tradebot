@@ -1151,3 +1151,64 @@ greylist_snipe_ripcord_grace_seconds: 8
 - UI row shows **rose-pink "SNIPED"** badge instead of the previous misleading red "ABORT TRADE".
 - Exit reason auditable via `t.exit_reason` on the trade doc.
 
+
+## 2026-05-26 — Pattern Recognition Fix + In-Profit % UI
+
+### Pattern Recognition — root-cause fix
+User reported snipes were running on `pattern: unknown` creators. Audit revealed: **0% of active creators had `expected_rug_window_pct.samples ≥ 3`** because the metric was being derived from TRADE data (`rug_pct_from_peak`) — and we have ~zero closed trades since the sniper just shipped.
+
+### The fix (backend)
+- **`creator_greylist.py` `compute_score()`** — `expected_rug_window_pct` now derives from FAILED LAUNCH `curve_fill_pct` (broad data: ~thousands per creator) instead of trade `rug_pct_from_peak` (sparse / zero). The bonding curve is monotonic with cumulative net buys, so the `curve_fill_pct` at outcome is a clean proxy for "where on the curve did this creator's launch die".
+- **`creator_pattern.py` `_rug_pct_stats()`** — same fix: accepts `failed_launches` as primary source, falls back to trade data only when launches are empty.
+- **`failed` projection in `update_creator_score`** — added `curve_fill_pct` so the data actually reaches the scorer.
+
+### Live audit (after fix)
+- 36,127 failed launches in DB; **2,863 (8%) have curve_fill_pct ≥ 5%**
+- **322 creators have ≥3 curve_fill samples** (was 0 before fix)
+- Of those, **237 are in F-band (5 ≤ tokens_failed < 80)**
+
+### Pattern distribution shifts
+| Pattern | Before fix | After fix |
+|---|---|---|
+| `unknown` (no data) | ~99% | ~57% |
+| `unpredictable_rug` (data found, variance too high) | ~0% | 21% |
+| `untradeable_rug` (data found, untradeable archetype) | ~0% | 21% |
+| `predictable_dump_tradeable` | 3 | 3 |
+| `fake_hype_tradeable` | 1 | 1 |
+| `slow_rug_tradeable` | 0 | 0 |
+
+**Key insight**: the data we now collect MOSTLY reveals that pump.fun creator rug patterns are inherently noisy. Variance of curve_fill_pct at rug is typically 30-50% — classifier correctly rejects these as untradeable. Tradeable patterns are RARE by nature.
+
+### Live Snipe data so far (paper mode)
+6 snipes in last 4h, all on `pattern: unknown` creators (snipe entered because score ≥ 45). Realized PnL:
+- `+114.2%` (NEGATIVE 1)
+- `+111.9%` (SIN CITY)
+- `−32.3%`, `−36.5%`, `−74.0%`, `−85.5%`
+
+Sniper IS finding profitable plays (~33% win rate, 2 of 6 winners). Exits firing via rip-cord (no pattern data → curve/peak gates dormant → rip-cord is the only active exit).
+
+### In-Profit % UI
+User asked: "add in a % in profit data point on the sniper cards in feed or active trades".
+
+**Backend** — `/api/trades/active` now returns per-trade:
+- `unrealized_pnl_pct` (live PnL%)
+- `drawdown_from_peak_pct`
+- `current_price_sol`, `peak_price_sol`
+- `live_curve_fill_pct`, `live_usd_market_cap` (for snipes — comparison to pattern target)
+- `snipe_pattern_ctx` (expected_peak_mc / expected_rug_curve so UI can show "you're 14pp from rug")
+
+Slot-side: monitor loop & `_check_fast_exit` now cache `slot["_last_price_sol"]` every tick so API can read freshest price without re-fetching curve state.
+
+**ActiveTradesTable.jsx** — new columns:
+- **PnL %** with green/red color, drawdown-from-peak suffix
+- **Curve / Peak** — live curve fill % / target rug curve %, live MC / expected peak MC
+- **SNIPE badge** on the symbol cell for greylist snipes
+
+**RecentLaunchesFeed.jsx** — for entered launches:
+- **Live PnL badge** (pulsing emerald/rose ● dot) while OPEN — operator can spot at a glance which positions are up/down to manually pull the cord. Hover shows full reason text, drawdown if > 5%.
+- **Realized PnL badge** when EXITED — historical reference (green/red ± %). Hover shows exit reason.
+- Backend `/api/launches/recent` stamps `live_pnl_pct` + `live_drawdown_from_peak_pct` on every open entered position by joining against `bot_state.active_trades[mint]._last_price_sol`. Same cache the active-trades API reads — ~500ms staleness max.
+
+### Tests
+143 tests pass across all suites. No new tests for the UI changes (display-only, no logic to assert).
+

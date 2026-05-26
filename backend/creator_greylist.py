@@ -278,12 +278,23 @@ def compute_score(creator_doc: dict, trades: list[dict],
         + W_VOLUME * v
         + W_LINKS * links_score
     )
-    rugs = [float(t["rug_pct_from_peak"])
-            for t in trades if t.get("rug_pct_from_peak") is not None]
-    if len(rugs) >= 4:
-        med = statistics.median(rugs)
+    # Failed-launch curve fill % distribution — what % of the bonding curve
+    # typically fills before THIS creator's launches die. Drives the snipe
+    # exit's `expected_rug_curve_pct` gate (see `_check_snipe_pattern_exit`).
+    # We use FAILED LAUNCHES (broad data, ~thousands per creator) not trades
+    # (~zero per creator pre-sniper). Curves that died below 1% fill are
+    # excluded — dead-instant launches don't tell us where the creator's
+    # OWN curve typically rugs.
+    rug_curve_pcts = [
+        float(fl["curve_fill_pct"])
+        for fl in (failed_launches or [])
+        if fl.get("curve_fill_pct") is not None
+        and float(fl["curve_fill_pct"] or 0) >= 1.0
+    ]
+    if len(rug_curve_pcts) >= 3:
+        med = statistics.median(rug_curve_pcts)
         try:
-            sd = statistics.stdev(rugs)
+            sd = statistics.stdev(rug_curve_pcts)
         except statistics.StatisticsError:
             sd = 0.0
         rug_window = {
@@ -291,10 +302,10 @@ def compute_score(creator_doc: dict, trades: list[dict],
             "stddev_rug_pct": round(sd, 1),
             "lo": round(max(0.0, med - sd), 1),
             "hi": round(med + sd, 1),
-            "samples": len(rugs),
+            "samples": len(rug_curve_pcts),
         }
     else:
-        rug_window = {"samples": len(rugs)}
+        rug_window = {"samples": len(rug_curve_pcts)}
     return {
         "score": round(composite, 1),
         "components": {
@@ -450,7 +461,7 @@ async def update_creator_score(db, creator: str,
         {"creator": creator, "outcome": "failed"},
         {"_id": 0, "mint": 1, "symbol": 1, "outcome": 1, "fail_class": 1,
          "outcome_at": 1, "final_peak_mc_usd": 1, "buy_count": 1,
-         "unique_buyers": 1, "sol_inflow": 1,
+         "unique_buyers": 1, "sol_inflow": 1, "curve_fill_pct": 1,
          "rug_seconds_from_launch": 1, "accel_signature_v2": 1},
     ).to_list(200)
     failed_meaningful = [

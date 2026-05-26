@@ -1041,6 +1041,8 @@ class BotState:
         if cur_price_sol > peak:
             peak = cur_price_sol
             slot["peak_price_sol"] = peak
+        # Cache last seen price for the UI's live-PnL panel.
+        slot["_last_price_sol"] = cur_price_sol
 
         # Greylist snipes use pattern-based exits, NOT entry-loss SL/TP/trail
         # ladder. Short-circuit the whole standard exit block here.
@@ -2172,6 +2174,11 @@ class BotState:
 
                 pct_change = (cur_price_sol - trade_doc["entry_price_sol"]) / max(trade_doc["entry_price_sol"], 1e-18) * 100
 
+                # Cache last seen price on the slot so `/api/trades/active`
+                # can surface live PnL% to the UI without re-fetching curve
+                # state on every poll.
+                slot["_last_price_sol"] = cur_price_sol
+
                 # Bail out of this tick if another exit (fast-exit path or a
                 # prior monitor tick) is already in flight — they're operating
                 # on the same slot and would race for the same wallet balance,
@@ -3129,11 +3136,14 @@ class BotState:
         # is no longer in the position. If the launch was never pinned the
         # update is a no-op on a non-existent doc — cheap.
         try:
+            exit_pnl_pct = trade_doc.get("pnl_pct")
             await self.db.launches.update_one(
                 {"mint": mint, "pinned": True, "pin_exited": False},
                 {"$set": {
                     "pin_exited": True,
                     "pin_exited_at": datetime.now(timezone.utc).isoformat(),
+                    "exit_pnl_pct": exit_pnl_pct,
+                    "exit_reason": reason,
                 }},
             )
             # In-memory mirror so the scanner UI flips immediately without
@@ -3142,6 +3152,8 @@ class BotState:
                 if r.get("mint") == mint and r.get("pinned") and not r.get("pin_exited"):
                     r["pin_exited"] = True
                     r["pin_exited_at"] = datetime.now(timezone.utc).isoformat()
+                    r["exit_pnl_pct"] = exit_pnl_pct
+                    r["exit_reason"] = reason
                     break
         except Exception as e:
             logger.debug(f"pin-exit update skipped: {e}")
