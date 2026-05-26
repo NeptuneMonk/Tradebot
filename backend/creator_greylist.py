@@ -393,7 +393,7 @@ def stage1_filter(creator_doc: dict | None,
       B. linked_to_rug_cluster                             (Bing C)
       C. ANY launch rug_seconds_from_launch < 20            (Bing D)
       D. ANY launch accel_signature_v2 in {parabolic, bot_swarm}  (Bing E)
-      E. F-band membership (5 ≤ tokens_failed < 80)         (custom: our
+      E. F-band membership (2 ≤ tokens_failed ≤ 100)        (custom: our
          existing primary admission gate — kept here so calling code that
          doesn't otherwise filter by F-band still gets sane behavior)
 
@@ -419,13 +419,13 @@ def stage1_filter(creator_doc: dict | None,
         accv2 = L.get("accel_signature_v2")
         if accv2 in ("parabolic", "bot_swarm"):
             return True, f"{accv2} signature"
-    if 5 <= tokens_failed < 80:
+    if 2 <= tokens_failed <= 100:
         return True, "in F-band"
     return False, f"no stage1 trigger (F={tokens_failed}, links={len(linked_wallets or [])})"
 
 
 async def update_creator_score(db, creator: str,
-                                min_fails: int = 5, max_fails: int = 80,
+                                min_fails: int = 2, max_fails: int = 100,
                                 tp_buffer: float = 2.0) -> dict | None:
     """Recompute + persist greylist score for one creator. Called on every
     trade close AND every launch outcome stamp. Cheap — Mongo-only.

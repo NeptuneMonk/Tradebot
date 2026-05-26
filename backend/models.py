@@ -211,8 +211,8 @@ class BotConfig(BaseModel):
     # Creators OUTSIDE the band still have their stats computed + persisted
     # (so the moment they cross into the band, the score "wakes up") — only
     # the composite score is forced to 0 so they don't surface in the UI.
-    creator_greylist_min_fails: int = 5
-    creator_greylist_max_fails: int = 80
+    creator_greylist_min_fails: int = 2
+    creator_greylist_max_fails: int = 100
     # Greylist Sniper — opens a SECOND entry path alongside the momentum
     # scanner. Fires on every NEW launch where the creator scored ≥
     # `greylist_snipe_min_score` on the greylist. Bypasses the momentum

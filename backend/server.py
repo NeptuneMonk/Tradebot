@@ -1961,8 +1961,8 @@ async def creator_greylist_backfill():
     wired, or because the failure-sweep hasn't visited their cohort yet).
     Cheap — Mongo-only, no Helius calls."""
     cfg = await db.bot_config.find_one({}, {"_id": 0}) or {}
-    min_f = int(cfg.get("creator_greylist_min_fails", 5))
-    max_f = int(cfg.get("creator_greylist_max_fails", 80))
+    min_f = int(cfg.get("creator_greylist_min_fails", 2))
+    max_f = int(cfg.get("creator_greylist_max_fails", 100))
     tp_buf = float(cfg.get("pattern_tp_buffer_pct", 2.0))
     # Include both in-band creators AND any whose score was previously set
     # (so creators that dropped OUT of the band get their composite zeroed).

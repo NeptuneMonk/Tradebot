@@ -1212,3 +1212,44 @@ Slot-side: monitor loop & `_check_fast_exit` now cache `slot["_last_price_sol"]`
 ### Tests
 143 tests pass across all suites. No new tests for the UI changes (display-only, no logic to assert).
 
+
+## 2026-05-26 — Pattern Variance + F-Band Loosened
+
+User: *"Loosen the unpredictable_rug variance threshold (currently stddev > 20%). Also open up the F limit so it's 2F-100F."*
+
+### Threshold changes
+- **`creator_pattern.py`** — unpredictable_rug variance threshold:
+  - `rug_pct stddev > 20%` → **`> 40%`** (only EXTREME variance blacklists)
+  - `peak_mc CV > 0.55` → **`> 0.85`**
+  - Tradeable-classification gate: `cv <= 0.60` → **`<= 0.85`**
+  - Sample floor: rug_pct path `n >= 4` → **`>= 3`** (we have more samples from launch data now)
+- **F-band defaults** — `BotConfig.creator_greylist_min_fails: 5 → 2`, `max_fails: 80 → 100`
+- All call sites updated: `creator_greylist.update_creator_score()`, `stage1_filter()`, `server.py` backfill endpoint defaults
+
+### Live impact (after 5000 creator rescore)
+
+**Pattern distribution shift** (in F-band 2-100):
+| Pattern | Before (5-80 band, stddev=20) | After (2-100 band, stddev=40) |
+|---|---|---|
+| `unknown` | ~99% | 78% |
+| `untradeable_rug` | rare | 482 |
+| `unpredictable_rug` | rare | 413 |
+| `predictable_dump_tradeable` | 3 | **10** |
+| **`slow_rug_tradeable`** (was empty!) | 0 | **7** |
+| `fake_hype_tradeable` | 1 | 1 |
+
+**Snipe-eligible creators** (score ≥ 45 + tradeable pattern + not blacklisted): **6** (was 4).
+
+### Quality of newly-unlocked patterns
+Top examples after backfill:
+- `AoGefnxF5C` — `slow_rug_tradeable`, F=3, peak=$48k, **rug at 73% curve fill** (full pattern data)
+- `EdNcBDUFQa` — `predictable_dump_tradeable`, F=9, peak=$10k
+- `EmuMVS8CtS` — `predictable_dump_tradeable`, F=6, peak=$20k
+- `FnW6MLyu5U` — `slow_rug_tradeable`, F=3, peak=$34k, **rug at 34% curve fill**
+
+These are the EXACT high-confidence snipe targets the system was designed to find. Curve/peak gates inside `_check_snipe_pattern_exit` will now fire on them.
+
+### Tests
+- `test_unpredictable_when_variance_above_20` → renamed to `test_unpredictable_when_variance_above_40` with adjusted data (rug_pct values now span 5-95 instead of 5-80).
+- **143 tests pass** across all 8 suites.
+

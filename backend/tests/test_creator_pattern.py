@@ -90,11 +90,12 @@ def test_untradeable_when_dominant_instant_rugs():
     assert r["blacklisted"] is True
 
 
-def test_unpredictable_when_variance_above_20():
-    """rug_pct stddev > 20 on ≥4 samples → blacklisted (chaos)."""
+def test_unpredictable_when_variance_above_40():
+    """rug_pct stddev > 40 on ≥3 samples → blacklisted (chaos).
+    Loosened from 20 to 40 (2026-05-26) to surface more tradeable creators."""
     trades = [
         {"status": "closed", "rug_pct_from_peak": v}
-        for v in (5, 80, 30, 55, 10, 70)
+        for v in (5, 95, 10, 90, 5, 85)
     ]
     r = classify_creator(
         {"tokens_created": 8, "tokens_failed": 6},

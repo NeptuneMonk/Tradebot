@@ -4,7 +4,7 @@ creator_pattern — classify a creator into one of 6 buckets per RUG_PATTERNS.md
 Three BAD buckets (creator gets `greylist_blacklisted=True`, excluded from
 greylist surface):
   - `untradeable_rug`        — dominant failed_instant cohort (Dead in 60s)
-  - `unpredictable_rug`      — rug_pct stddev > 20 on ≥4 samples
+  - `unpredictable_rug`      — rug_pct stddev > 40 on ≥3 samples
   - `unknown`                — no history / can't classify yet (standard logic)
 
 Three GOOD buckets (creator stays in greylist; UI shows the pattern badge):
@@ -258,8 +258,15 @@ def classify_creator(
     # Two paths: rug_pct stddev (when we have trades) OR peak_mc CV (when
     # we only have launch data, which is the common case since we won't
     # be trading these creators in standard mode).
-    if rug_stats["n"] >= 4 and rug_stats["stddev"] is not None and rug_stats["stddev"] > 20.0:
-        evidence.append(f"rug_pct stddev {rug_stats['stddev']:.1f}% > 20% on {rug_stats['n']} samples")
+    #
+    # Loosened thresholds (2026-05-26): pump.fun creator rug patterns are
+    # inherently noisy. A 30% stddev creator may still be tradeable with
+    # wider exit buffers. We only blacklist when variance is EXTREME
+    # (stddev > 40% on curve_fill_pct) — leaving moderate-variance
+    # creators in the tradeable bucket where pattern-based exits + the
+    # rip-cord can absorb the residual noise.
+    if rug_stats["n"] >= 3 and rug_stats["stddev"] is not None and rug_stats["stddev"] > 40.0:
+        evidence.append(f"rug_pct stddev {rug_stats['stddev']:.1f}% > 40% on {rug_stats['n']} samples")
         return {
             "pattern": "unpredictable_rug",
             "confidence": min(100.0, 50.0 + rug_stats["stddev"]),
@@ -268,9 +275,9 @@ def classify_creator(
             "mc_stats": mc_stats,
             "blacklisted": True,
         }
-    if mc_stats["n"] >= 5 and mc_stats["cv"] is not None and mc_stats["cv"] > 0.55:
+    if mc_stats["n"] >= 5 and mc_stats["cv"] is not None and mc_stats["cv"] > 0.85:
         evidence.append(
-            f"peak MC CV {mc_stats['cv']:.2f} > 0.55 on {mc_stats['n']} fails "
+            f"peak MC CV {mc_stats['cv']:.2f} > 0.85 on {mc_stats['n']} fails "
             f"(median ${int(mc_stats['median']):,}, mean ${int(mc_stats['mean']):,}, "
             f"σ ${int(mc_stats['stddev']):,}) — no consistent peak"
         )
@@ -304,13 +311,13 @@ def classify_creator(
     # instead of getting silently blacklisted as "unknown". Matches the
     # Bing classifier's incremental-scoring philosophy: score everything we
     # see, blacklist only the clearly-bad patterns.
-    if mc_stats["n"] >= 3 and mc_stats["cv"] is not None and mc_stats["cv"] <= 0.60:
+    if mc_stats["n"] >= 3 and mc_stats["cv"] is not None and mc_stats["cv"] <= 0.85:
         median_mc = float(mc_stats["median"])
         fizzled_share = fail_classes.get("failed_fizzled", 0.0)
         chaotic_share = fail_classes.get("failed_chaotic", 0.0)
         # Consistency points: tight CV → high score (range 0..100). Linear
-        # interpolation: CV 0 = 100pts, CV 0.60 = 0pts.
-        consistency_pts = max(0.0, (0.60 - mc_stats["cv"]) / 0.60 * 100)
+        # interpolation: CV 0 = 100pts, CV 0.85 = 0pts.
+        consistency_pts = max(0.0, (0.85 - mc_stats["cv"]) / 0.85 * 100)
         mc_evidence = (
             f"median peak MC ${int(median_mc):,} "
             f"(σ ${int(mc_stats['stddev']):,}, CV {mc_stats['cv']:.2f}) "
