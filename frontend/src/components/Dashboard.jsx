@@ -212,7 +212,21 @@ export default function Dashboard() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
-          <ActiveTradesTable trades={activeTrades} onExit={async (id) => { await api.exitTrade(id); refreshAll(); }} />
+          <ActiveTradesTable trades={activeTrades} onExit={async (id) => {
+            try {
+              await api.exitTrade(id);
+              toast.success("Manual exit submitted");
+            } catch (e) {
+              const detail = e?.response?.data?.detail || e?.message || "exit failed";
+              if (e?.response?.status === 400 && /not active/i.test(detail)) {
+                toast.info("Trade already closed");
+              } else {
+                toast.error(`Exit failed: ${detail}`);
+              }
+            } finally {
+              refreshAll();
+            }
+          }} />
           <RecentLaunchesFeed
             launches={launches}
             onUnpin={(launchId) =>

@@ -1,4 +1,5 @@
 import "@/App.css";
+import { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import Dashboard from "@/components/Dashboard";
 import Login from "@/components/Login";
@@ -31,6 +32,26 @@ function AppRouter() {
 }
 
 function App() {
+  // Periodic Performance buffer cleanup. React 19's profiling build calls
+  // `performance.mark` / `performance.measure` on every render. On long
+  // mobile sessions (especially with the high-churn WS dashboard) the
+  // entries accumulate until Chrome runs out of memory on the structured
+  // clone for DevTools, surfacing as:
+  //   `DataCloneError: Failed to execute 'measure' on 'Performance':
+  //    Data cannot be cloned, out of memory.`
+  // Clearing every 30s keeps the buffer bounded without affecting React.
+  useEffect(() => {
+    const id = setInterval(() => {
+      try {
+        if (typeof performance !== "undefined") {
+          if (performance.clearMarks) performance.clearMarks();
+          if (performance.clearMeasures) performance.clearMeasures();
+        }
+      } catch { /* noop */ }
+    }, 30_000);
+    return () => clearInterval(id);
+  }, []);
+
   return (
     <div className="App min-h-screen bg-neutral-950 text-neutral-50">
       <BrowserRouter>
