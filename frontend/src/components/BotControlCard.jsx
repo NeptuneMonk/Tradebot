@@ -370,6 +370,37 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                    value={local.greylist_snipe_ripcord_grace_seconds}
                    onChange={(v) => setLocal({ ...local, greylist_snipe_ripcord_grace_seconds: parseInt(v, 10) || 0 })} step="1" />
           </div>
+
+          {/* Research Mode — unpredictable-creator bimodal exploration */}
+          <div className="mt-3 border-t border-dashed border-neutral-800 pt-2.5">
+            <label className="flex items-center justify-between text-[10px] font-mono uppercase tracking-[0.15em] text-amber-400/80 cursor-pointer">
+              <span className="flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  data-testid="greylist-snipe-research-mode-checkbox"
+                  checked={!!local.greylist_snipe_research_mode}
+                  onChange={(e) => setLocal({ ...local, greylist_snipe_research_mode: e.target.checked })}
+                />
+                Research Mode
+                <HelpHint label="Research Mode">
+                  EXPERIMENTAL. When ON, the sniper also fires on creators currently classified as `unpredictable_rug` (high curve_fill variance — would normally be blacklisted). Size is automatically halved via Research Size Mult. The bimodal detector still promotes tight 2-cluster creators to `bimodal_dump_tradeable` (full size) — research mode only catches the genuinely chaotic ones so we can collect win-rate data. `untradeable_rug` and `out_of_band` creators stay blocked.
+                </HelpHint>
+              </span>
+              <span className="text-neutral-600 normal-case tracking-normal">
+                snipe unpredictable creators at half size
+              </span>
+            </label>
+            <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+              <Field label="Research Min Score" testid="greylist-snipe-research-min-score-input"
+                     hint="Effective greylist score required for a RESEARCH snipe (separate floor from the normal Min Score). 35 is the recommended observation threshold — these creators are noisy but tradeable enough to learn from."
+                     value={local.greylist_snipe_research_min_score}
+                     onChange={(v) => setLocal({ ...local, greylist_snipe_research_min_score: parseFloat(v) || 0 })} step="5" />
+              <Field label="Research Size Mult" testid="greylist-snipe-research-size-mult-input"
+                     hint="Multiplier applied on top of the risk-bucket size for research snipes. 0.5 = half size. Lower = safer experimental positions. Trades are stamped `is_research_snipe=true` for downstream PnL bucketing."
+                     value={local.greylist_snipe_research_size_mult}
+                     onChange={(v) => setLocal({ ...local, greylist_snipe_research_size_mult: parseFloat(v) || 0 })} step="0.1" />
+            </div>
+          </div>
         </div>
 
         {/* Per-band gates table */}
