@@ -928,6 +928,62 @@ class BotState:
         return (trade.get("classifier_action") == "greylist_snipe"
                 and bool(self.config.greylist_snipe_pattern_exits))
 
+    def _snipe_velocity_signals(self, bucket: dict) -> dict | None:
+        """Compute SOL inflow rate and new-holder rate over two rolling
+        windows: a RECENT window (`velocity_window_s`) and a BASELINE
+        window (`velocity_baseline_s`, ending right before the recent
+        window starts).
+
+        Returns dict with:
+          - `recent_sol_per_s`, `baseline_sol_per_s` (SOL inflow rate)
+          - `recent_holders_per_s`, `baseline_holders_per_s` (unique new buyers / sec)
+          - `recent_buys`, `baseline_buys` (raw counts — for cold-start protection)
+
+        New-holder rate is computed against buyers UNIQUE to that window —
+        i.e. a buyer who already appeared in the baseline doesn't count as
+        new in the recent window. This is the "fresh FOMO" signal.
+
+        Returns `None` if the tracking bucket lacks the `buy_events` deque.
+        """
+        events = bucket.get("buy_events") if bucket else None
+        if not events:
+            return None
+        cfg = self.config
+        win = max(1.0, float(cfg.greylist_snipe_velocity_window_s or 15))
+        baseline_s = max(1.0, float(cfg.greylist_snipe_velocity_baseline_s or 60))
+        now = time.time()
+        recent_lo = now - win
+        baseline_lo = recent_lo - baseline_s
+        recent_lamports = 0
+        baseline_lamports = 0
+        recent_buyers: set = set()
+        baseline_buyers: set = set()
+        recent_buys = 0
+        baseline_buys = 0
+        # Single pass — events are append-only ordered by ts asc.
+        for ts, sol_lamp, user in events:
+            if ts >= recent_lo:
+                recent_lamports += int(sol_lamp or 0)
+                recent_buys += 1
+                if user:
+                    recent_buyers.add(user)
+            elif ts >= baseline_lo:
+                baseline_lamports += int(sol_lamp or 0)
+                baseline_buys += 1
+                if user:
+                    baseline_buyers.add(user)
+        # New holders in recent = buyers NOT seen in baseline
+        new_recent_holders = len(recent_buyers - baseline_buyers)
+        baseline_unique_holders = len(baseline_buyers)
+        return {
+            "recent_sol_per_s": (recent_lamports / LAMPORTS_PER_SOL) / win,
+            "baseline_sol_per_s": (baseline_lamports / LAMPORTS_PER_SOL) / baseline_s,
+            "recent_holders_per_s": new_recent_holders / win,
+            "baseline_holders_per_s": baseline_unique_holders / baseline_s,
+            "recent_buys": recent_buys,
+            "baseline_buys": baseline_buys,
+        }
+
     def _check_snipe_pattern_exit(self, slot: dict, cur_price_sol: float) -> tuple[bool, str]:
         """Pattern-based exit decision for greylist snipes. Returns
         `(should_exit, reason)`.
@@ -952,22 +1008,66 @@ class BotState:
             return False, ""
         cfg = self.config
 
+        # 0. PROFIT RIPCORD — the highest-priority exit. Fires the moment the
+        # position is up >= `greylist_snipe_profit_ripcord_pct` from entry,
+        # regardless of pattern. A greylisted creator that lets us hit 2x
+        # has already paid for the snipe — locking that profit before the
+        # predictable rug erases it is the single best EV decision we can
+        # make. Set the config to 0 to disable.
+        trade = slot["trade"]
+        entry_p = trade.get("entry_price_sol") or 0
+        if entry_p > 0:
+            pct_change = (cur_price_sol - entry_p) / entry_p * 100
+            profit_ripcord = float(cfg.greylist_snipe_profit_ripcord_pct or 0)
+            if profit_ripcord > 0 and pct_change >= profit_ripcord:
+                return True, (f"snipe profit-ripcord (+{pct_change:.1f}% ≥ "
+                              f"{profit_ripcord:.0f}% — locking 2x before rug)")
+
         # 1. Pattern-suggested TP. If the creator has a known pattern with a
         # suggested exit %, lock in profit there. Falls through to other
         # gates if not hit.
-        trade = slot["trade"]
-        entry_p = trade.get("entry_price_sol") or 0
         if entry_p > 0:
             pct_change = (cur_price_sol - entry_p) / entry_p * 100
             pattern_tp = trade.get("greylist_pattern_suggested_tp_pct")
             if pattern_tp is not None and pct_change >= float(pattern_tp):
                 return True, f"snipe pattern-TP hit (+{pct_change:.1f}% ≥ {pattern_tp:.1f}%)"
 
+        # 1b. Velocity-decay exits. The rug is preceded by SOL inflow rate
+        # collapsing and/or new-holder rate collapsing. Compare the LAST
+        # `velocity_window_s` of trade activity against the PRIOR
+        # `velocity_baseline_s` (rolling baseline). If the recent rate has
+        # dropped below `(1 - drop_pct/100)` of the baseline rate AND the
+        # baseline has enough samples, exit — the pump is exhausting.
+        bucket = self.tracking.get(trade["mint"], {})
+        if cfg.greylist_snipe_velocity_exits_enabled:
+            sig = self._snipe_velocity_signals(bucket)
+            if sig is not None:
+                # Only check decay AFTER baseline window has had enough buys
+                # — protects against cold-start false positives.
+                if sig["baseline_buys"] >= int(cfg.greylist_snipe_velocity_min_buys or 0):
+                    sol_drop_floor = max(0.0, 1.0 - float(cfg.greylist_snipe_sol_vel_drop_pct or 0) / 100.0)
+                    hol_drop_floor = max(0.0, 1.0 - float(cfg.greylist_snipe_holder_vel_drop_pct or 0) / 100.0)
+                    if (sig["baseline_sol_per_s"] > 0
+                            and sig["recent_sol_per_s"] / sig["baseline_sol_per_s"] <= sol_drop_floor):
+                        return True, (
+                            f"snipe SOL-velocity decay "
+                            f"({sig['recent_sol_per_s']:.3f} SOL/s recent vs "
+                            f"{sig['baseline_sol_per_s']:.3f} baseline = "
+                            f"-{(1 - sig['recent_sol_per_s']/sig['baseline_sol_per_s'])*100:.0f}%)"
+                        )
+                    if (sig["baseline_holders_per_s"] > 0
+                            and sig["recent_holders_per_s"] / sig["baseline_holders_per_s"] <= hol_drop_floor):
+                        return True, (
+                            f"snipe new-holder velocity decay "
+                            f"({sig['recent_holders_per_s']:.2f}/s recent vs "
+                            f"{sig['baseline_holders_per_s']:.2f}/s baseline = "
+                            f"-{(1 - sig['recent_holders_per_s']/sig['baseline_holders_per_s'])*100:.0f}%)"
+                        )
+
         # 2. Curve fill proximity to typical rug curve %. The creator's
         # `expected_rug_curve_pct` is the median curve fill at which their
         # past launches rugged. We exit when we're within `curve_buffer_pct`
         # of that — gives us a head-start before the dump.
-        bucket = self.tracking.get(slot["trade"]["mint"], {})
         curve_pct = bucket.get("curve_fill_pct") or 0.0
         rug_curve = ctx.get("expected_rug_curve_pct")
         if rug_curve is not None and curve_pct > 0:

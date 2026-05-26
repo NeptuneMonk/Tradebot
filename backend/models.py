@@ -241,6 +241,26 @@ class BotConfig(BaseModel):
     greylist_snipe_curve_buffer_pct: float = 5.0        # exit when curve ≥ rug_pct - X pp
     greylist_snipe_ripcord_drawdown_pct: float = 60.0   # emergency exit X% from peak observed
     greylist_snipe_ripcord_grace_seconds: int = 8       # ripcord requires Xs above threshold first
+    # Profit ripcord — a SEPARATE TP from pattern_suggested_tp. Always fires
+    # when the position is up X% from entry, regardless of pattern. Rationale:
+    # any greylisted creator that lets the price double has already given us
+    # a 2x — locking it before the predictable rug strips it back is free
+    # money. Default 100% (= 2x entry). Set to 0 to disable.
+    greylist_snipe_profit_ripcord_pct: float = 100.0
+    # Velocity-decay exits — the rug is preceded by:
+    #   1. SOL inflow rate collapsing (buyers tap out)
+    #   2. New-holder rate collapsing (no fresh FOMO)
+    # We measure the LAST `velocity_window_s` of trade activity against the
+    # PRIOR `velocity_baseline_s` of activity. When the recent rate falls
+    # below `(1 - drop_pct/100)` of the baseline rate, exit. Requires a
+    # minimum of `velocity_min_buys` events in the baseline window to avoid
+    # firing on cold-start tracking buckets.
+    greylist_snipe_velocity_exits_enabled: bool = True
+    greylist_snipe_sol_vel_drop_pct: float = 70.0       # SOL inflow rate drop %
+    greylist_snipe_holder_vel_drop_pct: float = 70.0    # new-holder rate drop %
+    greylist_snipe_velocity_window_s: int = 15          # recent window
+    greylist_snipe_velocity_baseline_s: int = 60        # prior baseline window
+    greylist_snipe_velocity_min_buys: int = 8           # need ≥N buys in baseline
     # Research mode — when ON, the sniper ALSO fires on `unpredictable_rug`
     # creators (currently blacklisted as too noisy). Stamps `is_research=True`
     # on the trade doc so a Strategy Doctor rule can later promote specific

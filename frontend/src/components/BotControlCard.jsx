@@ -371,6 +371,62 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                    onChange={(v) => setLocal({ ...local, greylist_snipe_ripcord_grace_seconds: parseInt(v, 10) || 0 })} step="1" />
           </div>
 
+          {/* Profit ripcord + velocity decay exits */}
+          <div className="mt-3 border-t border-dashed border-neutral-800 pt-2.5">
+            <div className="text-[10px] uppercase tracking-[0.15em] text-emerald-400/80 mb-1.5 flex items-center gap-1.5">
+              Profit Ripcord & Velocity Decay
+              <HelpHint label="Snipe-only exits beyond pattern TP">
+                These are sniper-only exit gates that run BEFORE the pattern/curve/peak-MC checks:
+                <br /><br />
+                <b>Profit Ripcord</b> — hard TP at X% above entry. Always wins over pattern TP. Defaults to 100% (lock the 2x before the rug erases it). Set to 0 to disable.
+                <br /><br />
+                <b>SOL-velocity decay</b> — exit when SOL inflow rate in the last N sec drops by X% vs the prior baseline window. The buying wave is exhausting → rug imminent.
+                <br /><br />
+                <b>New-holder velocity decay</b> — exit when fresh unique buyers / sec collapses vs baseline. FOMO has dried up → no one left to dump on.
+                <br /><br />
+                Both decay gates require a minimum number of buys in the baseline window to avoid cold-start false exits.
+              </HelpHint>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              <Field label="Profit Ripcord %" testid="greylist-snipe-profit-ripcord-input"
+                     hint="Hard TP — exits the snipe when up X% from entry, regardless of pattern. 100 = +100% (2x). Set 0 to disable."
+                     value={local.greylist_snipe_profit_ripcord_pct}
+                     onChange={(v) => setLocal({ ...local, greylist_snipe_profit_ripcord_pct: parseFloat(v) || 0 })} step="10" />
+              <Field label="SOL Vel Drop %" testid="greylist-snipe-sol-vel-drop-input"
+                     hint="Exit when recent SOL inflow rate is below (100% − this) of the baseline rate. 70 = exit when SOL/s falls to 30% or less of baseline."
+                     value={local.greylist_snipe_sol_vel_drop_pct}
+                     onChange={(v) => setLocal({ ...local, greylist_snipe_sol_vel_drop_pct: parseFloat(v) || 0 })} step="5" />
+              <Field label="Holder Vel Drop %" testid="greylist-snipe-holder-vel-drop-input"
+                     hint="Exit when fresh new-buyer rate falls by this % vs baseline. 70 = exit when new-holders/s falls to 30% or less of baseline."
+                     value={local.greylist_snipe_holder_vel_drop_pct}
+                     onChange={(v) => setLocal({ ...local, greylist_snipe_holder_vel_drop_pct: parseFloat(v) || 0 })} step="5" />
+            </div>
+            <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+              <Field label="Recent Window (s)" testid="greylist-snipe-vel-window-input"
+                     hint="Recent activity window for velocity comparison. Smaller = faster reaction. 15s default."
+                     value={local.greylist_snipe_velocity_window_s}
+                     onChange={(v) => setLocal({ ...local, greylist_snipe_velocity_window_s: parseInt(v, 10) || 0 })} step="5" />
+              <Field label="Baseline (s)" testid="greylist-snipe-vel-baseline-input"
+                     hint="Prior baseline window length, ending at the start of the recent window. Larger = more stable comparison."
+                     value={local.greylist_snipe_velocity_baseline_s}
+                     onChange={(v) => setLocal({ ...local, greylist_snipe_velocity_baseline_s: parseInt(v, 10) || 0 })} step="15" />
+              <Field label="Min Baseline Buys" testid="greylist-snipe-vel-min-buys-input"
+                     hint="Velocity decay only fires when the baseline window has ≥ this many buys. Cold-start guard. 8 default."
+                     value={local.greylist_snipe_velocity_min_buys}
+                     onChange={(v) => setLocal({ ...local, greylist_snipe_velocity_min_buys: parseInt(v, 10) || 0 })} step="1" />
+            </div>
+            <label className="mt-2 flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-[0.15em] text-neutral-400 cursor-pointer">
+              <input
+                type="checkbox"
+                data-testid="greylist-snipe-velocity-exits-checkbox"
+                checked={!!local.greylist_snipe_velocity_exits_enabled}
+                onChange={(e) => setLocal({ ...local, greylist_snipe_velocity_exits_enabled: e.target.checked })}
+              />
+              Velocity Exits Enabled
+              <span className="text-neutral-600 normal-case tracking-normal ml-1">(both gates on/off — profit ripcord stays independent)</span>
+            </label>
+          </div>
+
           {/* Research Mode — unpredictable-creator bimodal exploration */}
           <div className="mt-3 border-t border-dashed border-neutral-800 pt-2.5">
             <label className="flex items-center justify-between text-[10px] font-mono uppercase tracking-[0.15em] text-amber-400/80 cursor-pointer">

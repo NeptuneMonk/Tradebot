@@ -40,6 +40,16 @@ class _Stub:
             greylist_snipe_curve_buffer_pct = 5.0
             greylist_snipe_ripcord_drawdown_pct = 60.0
             greylist_snipe_ripcord_grace_seconds = 8
+            # Defaults so the new gates (profit ripcord, velocity decay)
+            # are inactive in these legacy tests — they target the older
+            # pattern/curve/peak-MC paths only.
+            greylist_snipe_profit_ripcord_pct = 0.0  # disabled
+            greylist_snipe_velocity_exits_enabled = False
+            greylist_snipe_velocity_window_s = 15
+            greylist_snipe_velocity_baseline_s = 60
+            greylist_snipe_velocity_min_buys = 8
+            greylist_snipe_sol_vel_drop_pct = 70.0
+            greylist_snipe_holder_vel_drop_pct = 70.0
         for k, v in cfg_overrides.items():
             setattr(_Cfg, k, v)
         self.config = _Cfg()
