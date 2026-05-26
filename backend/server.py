@@ -416,6 +416,69 @@ async def reset_config_to_defaults():
     return new_cfg
 
 
+@api.post("/bot/config/save-as-default", response_model=BotConfig)
+async def save_config_as_user_default():
+    """Snapshot the current bot config as the user's preferred default.
+    Stored in `bot_config_defaults._id="singleton"`. `enabled` and
+    `live_trading` are NOT snapshotted — those are runtime flags, not
+    tuning preferences.
+
+    Use case: tune the snipe gates / band thresholds to your liking, click
+    "Save as Default", then any future "Restore My Defaults" returns to
+    these values (instead of the coded defaults).
+    """
+    doc = bot_state.config.model_dump()
+    # Strip runtime-only flags
+    doc.pop("enabled", None)
+    doc.pop("live_trading", None)
+    doc["_id"] = "singleton"
+    doc["saved_at"] = datetime.now(timezone.utc).isoformat()
+    await db.bot_config_defaults.replace_one(
+        {"_id": "singleton"}, doc, upsert=True,
+    )
+    return bot_state.config
+
+
+@api.post("/bot/config/restore-defaults", response_model=BotConfig)
+async def restore_user_default_config():
+    """Restore the previously-snapshotted user defaults from
+    `bot_config_defaults`. Falls back to the coded BotConfig() defaults
+    when no user snapshot exists. Preserves `enabled` + `live_trading`."""
+    keep_enabled = bot_state.config.enabled
+    keep_live = bot_state.config.live_trading
+    snap = await db.bot_config_defaults.find_one(
+        {"_id": "singleton"}, {"_id": 0, "saved_at": 0},
+    )
+    if snap:
+        # Drop any keys the model no longer knows about so reload doesn't fail
+        # (Pydantic extra="ignore" handles this but explicit is safer).
+        try:
+            new_cfg = BotConfig(**snap)
+        except Exception as e:
+            raise HTTPException(400, f"saved defaults invalid: {e}")
+    else:
+        new_cfg = BotConfig()
+    new_cfg.enabled = keep_enabled
+    new_cfg.live_trading = keep_live
+    bot_state.config = new_cfg
+    await bot_state.save_config()
+    try:
+        await hub.broadcast("status", (await bot_status()).model_dump())
+    except Exception:
+        pass
+    return new_cfg
+
+
+@api.get("/bot/config/saved-defaults-exists")
+async def saved_user_defaults_exists():
+    """Returns `{exists, saved_at}` so the UI can show/hide the
+    'Restore my defaults' button and display when the snapshot was taken."""
+    doc = await db.bot_config_defaults.find_one(
+        {"_id": "singleton"}, {"_id": 0, "saved_at": 1},
+    )
+    return {"exists": doc is not None, "saved_at": (doc or {}).get("saved_at")}
+
+
 @api.post("/paper/reset")
 async def paper_reset():
     """Clear paper-mode trade history + reset daily P&L / kill-switch tracking.

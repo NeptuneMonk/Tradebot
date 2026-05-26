@@ -15,6 +15,14 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
   // because `config !== local`.
   const [baseline, setBaseline] = useState(null);
   const [showAdvancedFees, setShowAdvancedFees] = useState(false);
+  const [savedDefaults, setSavedDefaults] = useState({ exists: false, saved_at: null });
+
+  // Probe whether the user has previously saved their own defaults so we
+  // can render the "Restore my defaults" button + the "saved on …" hint.
+  useEffect(() => {
+    import("@/lib/api").then(m => m.api.savedDefaultsExists())
+      .then(setSavedDefaults).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!config) return;
@@ -589,22 +597,57 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
         <Zap className="w-3 h-3" />
         {dirty ? "Save Config" : "Saved"}
       </button>
-      <button
-        onClick={async () => {
-          if (!window.confirm("Reset ALL settings to suggested defaults? (kill switch + live trading flag preserved)")) return;
-          try {
-            const fresh = await import("@/lib/api").then(m => m.api.resetConfig());
-            setLocal(fresh);
-            toast.success("Settings restored to defaults");
-          } catch (e) {
-            toast.error("Reset failed");
-          }
-        }}
-        data-testid="reset-defaults-btn"
-        className="w-full px-3 py-1.5 border border-neutral-700 text-neutral-400 hover:bg-neutral-900 hover:text-neutral-200 font-mono text-[10px] uppercase tracking-[0.2em] transition-colors duration-100"
-      >
-        Reset to Defaults
-      </button>
+
+      {/* Save as Default + Restore My Defaults */}
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          onClick={async () => {
+            if (dirty) {
+              if (!window.confirm("You have unsaved edits. Save them first, then snapshot as your new defaults?")) return;
+              try { await onUpdate(local); setBaseline(local); }
+              catch { toast.error("Save failed"); return; }
+            }
+            try {
+              const res = await import("@/lib/api").then(m => m.api.saveConfigAsDefault());
+              setSavedDefaults({ exists: true, saved_at: new Date().toISOString() });
+              toast.success("Current settings saved as your defaults");
+              // Keep `res` referenced to satisfy lint
+              void res;
+            } catch {
+              toast.error("Save-as-default failed");
+            }
+          }}
+          data-testid="save-as-default-btn"
+          className="px-3 py-1.5 border border-emerald-800 text-emerald-300 bg-emerald-950/40 hover:bg-emerald-900/50 font-mono text-[10px] uppercase tracking-[0.2em] transition-colors duration-100"
+        >
+          Save as My Default
+        </button>
+        <button
+          onClick={async () => {
+            const which = savedDefaults.exists ? "your saved defaults" : "the SHIPPED defaults";
+            if (!window.confirm(`Restore settings to ${which}? (kill switch + live trading flag preserved)`)) return;
+            try {
+              const fresh = savedDefaults.exists
+                ? await import("@/lib/api").then(m => m.api.restoreUserDefaults())
+                : await import("@/lib/api").then(m => m.api.resetConfig());
+              setLocal(fresh);
+              setBaseline(fresh);
+              toast.success(`Restored to ${which}`);
+            } catch {
+              toast.error("Restore failed");
+            }
+          }}
+          data-testid="restore-defaults-btn"
+          className="px-3 py-1.5 border border-neutral-700 text-neutral-400 hover:bg-neutral-900 hover:text-neutral-200 font-mono text-[10px] uppercase tracking-[0.2em] transition-colors duration-100"
+        >
+          {savedDefaults.exists ? "Restore My Defaults" : "Reset to Shipped Defaults"}
+        </button>
+      </div>
+      {savedDefaults.exists && savedDefaults.saved_at && (
+        <div className="text-[10px] text-neutral-600 font-mono tracking-wide text-center -mt-1">
+          your defaults saved {new Date(savedDefaults.saved_at).toLocaleString()}
+        </div>
+      )}
 
       <ConfigSyncPanel onApplied={(cfg) => setLocal(cfg)} />
     </div>

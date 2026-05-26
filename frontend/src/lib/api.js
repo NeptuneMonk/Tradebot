@@ -33,6 +33,9 @@ export const api = {
   paperReset: () => client.post("/paper/reset").then(r => r.data),
   resetLivePnl: () => client.post("/pnl/reset-live").then(r => r.data),
   resetConfig: () => client.post("/bot/reset-config").then(r => r.data),
+  saveConfigAsDefault: () => client.post("/bot/config/save-as-default").then(r => r.data),
+  restoreUserDefaults: () => client.post("/bot/config/restore-defaults").then(r => r.data),
+  savedDefaultsExists: () => client.get("/bot/config/saved-defaults-exists").then(r => r.data),
   suggestions: () => client.get("/suggestions").then(r => r.data),
   applySuggestion: (field, suggested) => client.post("/suggestions/apply", { field, suggested }).then(r => r.data),
   // Auth
