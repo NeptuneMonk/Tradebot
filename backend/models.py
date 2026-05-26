@@ -241,6 +241,15 @@ class BotConfig(BaseModel):
     greylist_snipe_curve_buffer_pct: float = 5.0        # exit when curve ≥ rug_pct - X pp
     greylist_snipe_ripcord_drawdown_pct: float = 60.0   # emergency exit X% from peak observed
     greylist_snipe_ripcord_grace_seconds: int = 8       # ripcord requires Xs above threshold first
+    # Research mode — when ON, the sniper ALSO fires on `unpredictable_rug`
+    # creators (currently blacklisted as too noisy). Stamps `is_research=True`
+    # on the trade doc so a Strategy Doctor rule can later promote specific
+    # unpredictable creators if their research-trade win-rate proves the
+    # variance was actually predictable (just along a non-curve dimension).
+    # Size auto-reduced to `greylist_snipe_research_size_mult` of normal.
+    greylist_snipe_research_mode: bool = False
+    greylist_snipe_research_min_score: float = 35.0      # lower bar — these are blacklisted creators
+    greylist_snipe_research_size_mult: float = 0.5       # half-size research positions
     wallet_graph_enabled: bool = True          # 2-hop hunter on/off
     # Live PnL reset cutoff: when set, daily_pnl_usd(mode='live') only sums
     # trades closed at-or-after this ISO timestamp instead of today's 00:00 UTC.
@@ -357,6 +366,11 @@ class Trade(BaseModel):
     # layered onto the tier overrides. Diagnostic only — the EFFECTIVE
     # values live in `greylist_overrides_at_entry`.
     greylist_pattern_suggested_tp_pct: Optional[float] = None
+    # Research-mode flag — true when this snipe fired on an
+    # `unpredictable_rug` creator under research-mode escape hatch.
+    # Strategy Doctor uses this to bucket research vs primary snipes
+    # separately for promotion analysis.
+    is_research_snipe: bool = False
 
 
 class WalletInfo(BaseModel):

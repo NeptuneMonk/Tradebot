@@ -92,13 +92,15 @@ def test_untradeable_when_dominant_instant_rugs():
 
 def test_unpredictable_when_variance_above_40():
     """rug_pct stddev > 40 on ≥3 samples → blacklisted (chaos).
-    Loosened from 20 to 40 (2026-05-26) to surface more tradeable creators."""
+    Loosened from 20 to 40 (2026-05-26) to surface more tradeable creators.
+    Two LOOSE clusters (intra-σ > 12pp each) so bimodal intercept fails
+    the `tradeable` gate and we fall through to the unpredictable branch."""
     trades = [
         {"status": "closed", "rug_pct_from_peak": v}
-        for v in (5, 95, 10, 90, 5, 85)
+        for v in (1, 3, 5, 25, 35, 65, 75, 95, 97, 99)  # overall σ ≈ 40.8
     ]
     r = classify_creator(
-        {"tokens_created": 8, "tokens_failed": 6},
+        {"tokens_created": 12, "tokens_failed": 10},
         failed_launches=[{"fail_class": "failed_fizzled"} for _ in range(5)],
         trades=trades,
     )

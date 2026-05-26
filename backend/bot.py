@@ -1396,8 +1396,8 @@ class BotState:
                 return
             # Score gate. We use the LIVE (decayed) score, not the raw
             # persisted value — a creator's predictability fades if they
-            # haven't launched in a while.
-            min_score = float(self.config.greylist_snipe_min_score or 0)
+            # haven't launched in a while. Research mode lowers the bar to
+            # `greylist_snipe_research_min_score` for blacklisted-as-noisy creators.
             # creator_doc passed in is from `record_new_launch` which uses
             # `creators.find_one_and_update(..., return_document=AFTER)`,
             # so it has the LATEST tokens_failed but might NOT have the
@@ -1411,8 +1411,21 @@ class BotState:
             )
             if not gc:
                 return
+            is_research = False
+            min_score = float(self.config.greylist_snipe_min_score or 0)
             if gc.get("greylist_blacklisted") or gc.get("greylist_out_of_band"):
-                return
+                # Research-mode escape hatch — when ON, the sniper ALSO
+                # fires on `unpredictable_rug` creators (currently
+                # blacklisted). Other blacklist reasons (untradeable_rug
+                # / out_of_band) stay blocked because they're harder evidence.
+                pat = gc.get("greylist_pattern")
+                if (self.config.greylist_snipe_research_mode
+                        and pat == "unpredictable_rug"
+                        and not gc.get("greylist_out_of_band")):
+                    is_research = True
+                    min_score = float(self.config.greylist_snipe_research_min_score or 35.0)
+                else:
+                    return
             from creator_greylist import apply_decay
             eff = apply_decay(gc.get("greylist_score"),
                               gc.get("greylist_score_updated_at"))
@@ -1432,15 +1445,25 @@ class BotState:
             # at most a few during contention which is acceptable).
             self._greylist_snipe_fires.append(time.time())
             logger.info(
-                f"greylist_snipe: firing on {launch.symbol or launch.mint[:8]}… "
-                f"creator={launch.creator[:8]}… score={eff:.0f} pattern={gc.get('greylist_pattern')}"
+                f"greylist_snipe: firing{' [RESEARCH]' if is_research else ''} on "
+                f"{launch.symbol or launch.mint[:8]}… "
+                f"creator={launch.creator[:8]}… score={eff:.0f} "
+                f"pattern={gc.get('greylist_pattern')}"
             )
             await hub.broadcast("greylist_snipe_fire", {
                 "mint": launch.mint, "symbol": launch.symbol,
                 "creator": launch.creator, "score": round(eff, 1),
                 "pattern": gc.get("greylist_pattern"),
+                "is_research": is_research,
             })
-            await self._enter(launch, risk_score=0, action="greylist_snipe")
+            # Stash research flag for `_enter_impl` to pick up via the
+            # creator_doc passed in (cheaper than a kwarg cascade).
+            self._snipe_research_flags = getattr(self, "_snipe_research_flags", {})
+            self._snipe_research_flags[launch.mint] = is_research
+            try:
+                await self._enter(launch, risk_score=0, action="greylist_snipe")
+            finally:
+                self._snipe_research_flags.pop(launch.mint, None)
         except Exception as e:
             logger.exception(f"greylist_snipe failed for {launch.mint}: {e}")
 
@@ -1622,6 +1645,13 @@ class BotState:
         gl_size_mult = float((greylist_ctx.get("overrides") or {}).get("size_mult") or 1.0)
         if gl_size_mult != 1.0:
             size_mult *= gl_size_mult
+        # Research-mode snipes use a reduced size multiplier — these are
+        # experimental positions on currently-blacklisted-as-noisy
+        # creators, so we cap exposure while collecting the win-rate data.
+        is_research_snipe = (action == "greylist_snipe"
+                             and getattr(self, "_snipe_research_flags", {}).get(launch.mint, False))
+        if is_research_snipe:
+            size_mult *= float(self.config.greylist_snipe_research_size_mult or 0.5)
         size_mult = min(size_mult, 2.0)
         base_usd = self.config.max_trade_usd * size_mult
         trade_usd = max(self.config.min_trade_usd, base_usd)
@@ -1929,6 +1959,7 @@ class BotState:
             greylist_overrides_at_entry=greylist_ctx.get("overrides") or {},
             greylist_pattern_at_entry=greylist_ctx.get("pattern"),
             greylist_pattern_suggested_tp_pct=greylist_ctx.get("pattern_tp_pct"),
+            is_research_snipe=is_research_snipe,
         )
         # Stash protocol on the trade dict (kept in active_trades) so _exit can route
         trade_extras = {

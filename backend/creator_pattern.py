@@ -136,6 +136,66 @@ def _fail_class_breakdown(failed_launches: list[dict]) -> dict[str, float]:
     return shares
 
 
+def _detect_bimodality(values: list[float]) -> dict:
+    """Detect whether the rug distribution is BIMODAL — i.e. clusters into
+    two distinct rug points (e.g. "rugs at 10-15% OR 60-70% but never in
+    between"). Such creators have HIGH overall stddev but are actually
+    PREDICTABLE — they just have 2 modes.
+
+    Algorithm (cheap, no sklearn dependency):
+      1. Sort the values
+      2. Find the LARGEST GAP between consecutive values
+      3. If gap >= 20 percentage points AND splits the dataset into
+         two non-trivial halves (each ≥ 30% of n), call it bimodal
+      4. For each cluster, compute median + stddev
+      5. Bimodal is "tradeable" only if BOTH clusters have low intra-stddev
+         (≤ 12pp each) — otherwise it's just chaotic with a gap
+
+    Returns dict:
+      {bimodal: bool, gap_pct: float, lo_cluster: {median, stddev, n},
+       hi_cluster: {median, stddev, n}, tradeable: bool}
+    Returns {bimodal: False} if not detected.
+    """
+    if not values or len(values) < 6:
+        return {"bimodal": False}
+    sorted_v = sorted(values)
+    n = len(sorted_v)
+    # Find largest consecutive gap
+    best_gap = 0.0
+    best_idx = -1
+    for i in range(1, n):
+        gap = sorted_v[i] - sorted_v[i - 1]
+        if gap > best_gap:
+            best_gap = gap
+            best_idx = i
+    if best_gap < 20.0 or best_idx < 0:
+        return {"bimodal": False, "gap_pct": round(best_gap, 1)}
+    lo = sorted_v[:best_idx]
+    hi = sorted_v[best_idx:]
+    # Each cluster must be at least 30% of the data
+    if min(len(lo), len(hi)) < max(2, int(0.30 * n)):
+        return {"bimodal": False, "gap_pct": round(best_gap, 1)}
+    lo_sd = statistics.stdev(lo) if len(lo) >= 2 else 0.0
+    hi_sd = statistics.stdev(hi) if len(hi) >= 2 else 0.0
+    # Tradeable bimodality requires TIGHT intra-cluster variance
+    tradeable = lo_sd <= 12.0 and hi_sd <= 12.0
+    return {
+        "bimodal": True,
+        "gap_pct": round(best_gap, 1),
+        "lo_cluster": {
+            "median": round(statistics.median(lo), 1),
+            "stddev": round(lo_sd, 1),
+            "n": len(lo),
+        },
+        "hi_cluster": {
+            "median": round(statistics.median(hi), 1),
+            "stddev": round(hi_sd, 1),
+            "n": len(hi),
+        },
+        "tradeable": tradeable,
+    }
+
+
 def _rug_pct_stats(trades: list[dict], failed_launches: list[dict] | None = None) -> dict[str, Any]:
     """Median / stddev / count of where this creator's launches typically
     rug. Used to classify slow-rug (high %) vs predictable-dump (low %)
@@ -183,6 +243,7 @@ def _rug_pct_stats(trades: list[dict], failed_launches: list[dict] | None = None
         "median": round(statistics.median(rugs), 1),
         "stddev": round(sd, 1),
         "n": len(rugs),
+        "bimodality": _detect_bimodality(rugs),
     }
 
 
@@ -266,6 +327,32 @@ def classify_creator(
     # creators in the tradeable bucket where pattern-based exits + the
     # rip-cord can absorb the residual noise.
     if rug_stats["n"] >= 3 and rug_stats["stddev"] is not None and rug_stats["stddev"] > 40.0:
+        # Bimodality intercept — high overall stddev MAY come from TWO
+        # distinct rug points (e.g. "always rugs at 12% OR 65% but never
+        # in between"). That's actually PREDICTABLE, just bimodal. The
+        # snipe exit ladder can handle it with a wider curve_buffer at
+        # entry-time (lo cluster) or a peak-MC gate (hi cluster).
+        bm = rug_stats.get("bimodality") or {}
+        if bm.get("bimodal") and bm.get("tradeable"):
+            evidence.append(
+                f"BIMODAL rug curve: {bm['lo_cluster']['n']} launches @ "
+                f"{bm['lo_cluster']['median']}% (σ{bm['lo_cluster']['stddev']}%) "
+                f"+ {bm['hi_cluster']['n']} launches @ "
+                f"{bm['hi_cluster']['median']}% (σ{bm['hi_cluster']['stddev']}%) "
+                f"with {bm['gap_pct']}pp gap"
+            )
+            # Suggest TP at the LO cluster median (the "fast rug" mode).
+            # Operator can override via greylist_pattern_suggested_exit.
+            suggested_tp = max(5.0, bm["lo_cluster"]["median"] - tp_buffer)
+            return {
+                "pattern": "bimodal_dump_tradeable",
+                "confidence": min(100.0, 60.0 + (12.0 - bm["lo_cluster"]["stddev"]) * 2),
+                "evidence": evidence,
+                "rug_stats": rug_stats,
+                "mc_stats": mc_stats,
+                "suggested_exit_pct": (suggested_tp, None, None),
+                "blacklisted": False,
+            }
         evidence.append(f"rug_pct stddev {rug_stats['stddev']:.1f}% > 40% on {rug_stats['n']} samples")
         return {
             "pattern": "unpredictable_rug",

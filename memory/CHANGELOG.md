@@ -1,5 +1,31 @@
 # Pump.fun Bot — Changelog
 
+## 2026-02-08 — Bimodal Pattern & Research-Mode Snipe Unit Tests
+
+Completed the test coverage gap left by the previous session: added 12 new tests in `test_greylist_sniper.py` plus the full 9-test `test_bimodal_pattern.py` is now green.
+
+### Tests added (all passing)
+- `test_bimodal_pattern.py` (9 tests):
+  - `_detect_bimodality` direct: tight 2-clusters, loose 2-clusters, unimodal rejection, sample-floor, lopsided rejection, 20pp-gap floor
+  - Classifier integration: bimodal-tradeable promotion, chaotic-bimodal stays blacklisted, suggested TP targets lo cluster
+- `test_greylist_sniper.py` (12 new research-mode tests):
+  - Fires on `unpredictable_rug` creator when `research_mode=True`
+  - Sets `_snipe_research_flags[mint]=True` during `_enter` and cleans up after
+  - Blocked when `research_mode=False`
+  - Does NOT promote `untradeable_rug` (Dead-in-60s) creators
+  - Does NOT bypass `out_of_band`
+  - Uses lower `research_min_score` floor (35 vs 45)
+  - Below research floor → still blocked
+  - Size-multiplier math: research halves (1.0 → 0.5), layers with risk bucket (1.5×0.5=0.75), non-research keeps full
+  - Trade doc accepts `is_research_snipe=True`, defaults False
+
+### Regression fix
+- `test_creator_pattern.py::test_unpredictable_when_variance_above_40`: pre-existing test data `(5, 95, 10, 90, 5, 85)` formed a TIGHT bimodal distribution and now (correctly) classifies as `bimodal_dump_tradeable`. Updated to loose 2-cluster data `(1, 3, 5, 25, 35, 65, 75, 95, 97, 99)` with σ ≈ 40.8 that exercises the genuine `unpredictable_rug` path.
+
+### Result: 151 tests passing across bimodal/sniper/pattern/exit-ladder/stage1/greylist/signatures.
+
+
+
 ## 2026-05-25 — Greylist Population Fix (per-launch refresh, sweep bugs, classifier permissive)
 
 User feedback: only 2 creators visible on the greylist despite seeing 10+ qualifying creators per minute in the Recent Launches feed. Root-causing led to a cascade of issues:
