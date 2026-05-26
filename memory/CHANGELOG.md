@@ -1,6 +1,34 @@
 # Pump.fun Bot — Changelog
 
-## 2026-02-08 — Bimodal Pattern & Research-Mode Snipe Unit Tests
+## 2026-02-08 — Snipe P0 Improvements (from paper-mode data analysis)
+
+24h paper-mode review showed 4/45 wins (9%) on snipes, avg −17.9% PnL, all firing on `unknown`-pattern creators with empty `snipe_pattern_ctx`. Shipped five P0 changes:
+
+### Config defaults changed
+- `greylist_snipe_profit_ripcord_pct`: 100 → **30** (locks the realistic +29-33% wins that previously gave back to a partial-trail runner)
+- `greylist_snipe_ripcord_drawdown_pct`: 60 → **40**
+- `greylist_snipe_ripcord_grace_seconds`: 8 → **3**
+
+### New config fields
+- `greylist_snipe_stale_seconds: int = 90` + `greylist_snipe_stale_min_profit_pct: float = 25.0` — auto-exit snipes held past N seconds without reaching X% profit. Paper data: 10-30min holds drifted to −20-45%.
+- `greylist_snipe_require_classified_pattern: bool = True` — blocks snipes on `unknown`/null patterns. Research mode bypasses (deliberately).
+
+### Behavior changes
+- New `_compute_creator_snipe_ctx_fallback()` — when the creator doc lacks `expected_peak_mc_usd`/`expected_rug_window_pct` (~55% of greylisted creators), computes medians on-demand from failed launches at snipe time. Closes the "hollow ladder" gap where curve-fill/peak-MC gates couldn't fire.
+- `_attempt_greylist_snipe` now refuses to fire when pattern is unknown/null and `require_classified_pattern=True`.
+- `_check_snipe_pattern_exit` ladder now has 7 gates (added profit-ripcord 30%, stale-exit, plus the velocity-decay gates from earlier today).
+- `_enter_impl` stamps `_entry_ts_mono` on active_trades slot for the stale-exit clock.
+
+### UI
+- New controls in Bot Control → Greylist Sniper → Profit Ripcord & Velocity Decay subsection: Stale Exit (s), Stale Min Profit %, Require Classified Pattern checkbox.
+
+### Live config migration
+- DB `bot_config` doc updated where values still matched old defaults; user-tuned fields preserved. Backend restarted to refresh in-memory config.
+
+### Tests
+- 10 new tests (5 stale-exit + 5 classified-pattern-gate). 89 passing across snipe/bimodal/sniper/pattern suites.
+
+
 
 Completed the test coverage gap left by the previous session: added 12 new tests in `test_greylist_sniper.py` plus the full 9-test `test_bimodal_pattern.py` is now green.
 
