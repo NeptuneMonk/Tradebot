@@ -1,6 +1,33 @@
 # Pump.fun Bot — Changelog
 
-## 2026-02-08 — Snipe P0 Improvements (from paper-mode data analysis)
+## 2026-02-08 — Major reliability + UX pass
+
+### Sliding session expiry (root cause of "fail to load greylist" + 504s)
+- 1-hour hard timeout → 1-hour IDLE timeout that resets on every authenticated API call
+- 24-hour absolute cap from session creation
+- Cookie `max_age` refreshed on each request so the browser's stored cookie also extends
+- WS connections count as activity (extends session too)
+- Login screen text updated
+
+### Background jobs (fixes production 504s)
+- `POST /creator-greylist/backfill-all`, `backfill-signatures`, `backfill-curve-fill`, `failure-sweep/run-now` all converted from synchronous to background tasks
+- New `GET /api/jobs/{job_id}` + `GET /api/jobs` polling endpoints
+- In-memory `_job_registry` keeps the last 50 jobs (status, result, error, timestamps)
+- Frontend: `api.awaitJob()` helper that polls every 2s with progress toast; CreatorGreylistPanel buttons updated to use it
+
+### Doctor advisory mode
+- New `doctor_advisory_only: bool` config — when ON, Doctor still scores + records pause decisions but **does NOT block new entries**
+- New UI toggle in Strategy Doctor panel header (Enforced ↔ Advisory)
+- Use case: user is actively supervising in the UI and doesn't want Doctor stepping on their toes
+
+### Dashboard UX redesign
+- New `CollapsibleSection` component (lazy-mounted children, localStorage-persisted state per section)
+- Top-priority layout: Wallet · PnL · Daily-Loss → Active Trades + Recent Launches → History
+- Collapsed-by-default sections: Bot Control, Strategy Doctor, Creator Greylist, Re-entry Watch, P/L by Source, Cost Tracker, Scanner Candidates, Classifier Rules
+- New header button: 1-click bot Start/Stop with running/stopped state pulse (no need to expand Bot Control)
+- Cuts initial DOM cost dramatically; only mounts heavy panels when the user explicitly opens them
+
+
 
 24h paper-mode review showed 4/45 wins (9%) on snipes, avg −17.9% PnL, all firing on `unknown`-pattern creators with empty `snipe_pattern_ctx`. Shipped five P0 changes:
 

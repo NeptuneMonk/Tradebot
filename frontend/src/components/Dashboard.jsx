@@ -18,6 +18,7 @@ import StrategyDoctorPanel from "@/components/StrategyDoctorPanel";
 import CreatorGreylistPanel from "@/components/CreatorGreylistPanel";
 import PLBySourceCard from "@/components/PLBySourceCard";
 import CostTrackerCard from "@/components/CostTrackerCard";
+import CollapsibleSection from "@/components/CollapsibleSection";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Activity, LogOut } from "lucide-react";
 
@@ -183,6 +184,30 @@ export default function Dashboard() {
               <span className="text-neutral-400">{me.email}</span>
             </span>
           )}
+          {status && (
+            <button
+              type="button"
+              data-testid="header-bot-toggle"
+              onClick={async () => {
+                try {
+                  if (status.enabled) { await api.stop(); }
+                  else { await api.start(); }
+                  refreshAll();
+                } catch (e) {
+                  toast.error(`Toggle failed: ${e?.response?.data?.detail || e.message}`);
+                }
+              }}
+              className={`px-2.5 py-1 border text-[11px] font-mono uppercase tracking-wider transition-colors duration-100 ${
+                status.enabled
+                  ? "border-emerald-700/60 text-emerald-300 hover:bg-emerald-950/40"
+                  : "border-rose-800/60 text-rose-300 hover:bg-rose-950/40"
+              }`}
+              title={status.enabled ? "Bot is RUNNING — click to stop" : "Bot is STOPPED — click to start"}
+            >
+              <span className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 ${status.enabled ? "bg-emerald-500 animate-pulse" : "bg-rose-500"}`} />
+              {status.enabled ? "RUNNING" : "STOPPED"}
+            </button>
+          )}
           <button
             type="button"
             onClick={handleLogout}
@@ -198,19 +223,16 @@ export default function Dashboard() {
       <StatusBanner status={status} onResetKill={async () => { await api.resetKillSwitch(); refreshAll(); }} />
 
       <main className="max-w-[1600px] mx-auto p-4 md:p-6 space-y-4 md:space-y-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
+        {/* TOP KPI STRIP — always visible. Wallet + PnL + DailyLoss.
+            Bot Control moved to a collapsible below; the StatusBanner at
+            the top of the page already shows running/stopped state. */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
           <WalletCard wallet={wallet} />
-          <BotControlCard
-            status={status}
-            config={config}
-            onUpdate={async (cfg) => { setConfig(await api.updateConfig(cfg)); refreshAll(); }}
-            onStart={async () => { await api.start(); refreshAll(); }}
-            onStop={async () => { await api.stop(); refreshAll(); }}
-          />
           <PLSummaryCard pl={pl} status={status} onReset={refreshAll} />
           <DailyLossMeter status={status} onReset={refreshAll} />
         </div>
 
+        {/* PRIMARY — Active Trades + Recent Launches always visible. */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
           <ActiveTradesTable trades={activeTrades} onExit={async (id) => {
             try {
@@ -241,29 +263,104 @@ export default function Dashboard() {
           />
         </div>
 
-        <ReentryWatchCard watchlist={reentry} onRefresh={() => api.reentryWatchlist().then(setReentry).catch(() => {})} />
-
-        <PLBySourceCard refreshSignal={plSourceRefresh} />
-
-        <CostTrackerCard apiBase={process.env.REACT_APP_BACKEND_URL || ""} />
-
-        <ScannerCandidatesCard candidates={scanner} config={config} />
-
-        <StrategyDoctorPanel
-          config={config}
-          onConfigUpdate={setConfig}
-          onApplied={() => api.config().then(setConfig).catch(() => {})}
-        />
-
-        <CreatorGreylistPanel
-          config={config}
-          onConfigUpdate={(cfg) => setConfig(cfg)}
-        />
-
+        {/* Trade History — always visible (collapsed cards above feed flow).
+            Co-mounted with Classifier Rules so the second column on wide
+            screens stays useful. */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
           <TradeHistoryTable history={history} />
-          <ClassifierRulesEditor rules={rules} onSave={async (r) => { setRules(await api.updateRules(r)); }} />
+          <CollapsibleSection
+            title="Classifier Rules"
+            description="entry/exit gates — abort & exit-early rules"
+            storageKey="ui.section.classifier"
+            testId="section-classifier"
+          >
+            <ClassifierRulesEditor rules={rules} onSave={async (r) => { setRules(await api.updateRules(r)); }} />
+          </CollapsibleSection>
         </div>
+
+        {/* COLLAPSIBLE — everything below is lazy-mounted on first expand
+            and persists per-user via localStorage. Closed by default
+            because the bot runs fine without them being on-screen. */}
+
+        <CollapsibleSection
+          title="Bot Control"
+          description="Start/Stop · bands · gates · greylist sniper config"
+          storageKey="ui.section.bot-control"
+          testId="section-bot-control"
+          badge={status?.enabled ? "RUNNING" : "STOPPED"}
+        >
+          <BotControlCard
+            status={status}
+            config={config}
+            onUpdate={async (cfg) => { setConfig(await api.updateConfig(cfg)); refreshAll(); }}
+            onStart={async () => { await api.start(); refreshAll(); }}
+            onStop={async () => { await api.stop(); refreshAll(); }}
+          />
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Strategy Doctor"
+          description="advisory toggle · pending suggestions · live panels"
+          storageKey="ui.section.doctor"
+          testId="section-doctor"
+          badge={config?.doctor_advisory_only ? "advisory" : null}
+        >
+          <StrategyDoctorPanel
+            config={config}
+            onConfigUpdate={setConfig}
+            onApplied={() => api.config().then(setConfig).catch(() => {})}
+          />
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Creator Greylist"
+          description="creator scoring · pattern analytics · sniper targets"
+          storageKey="ui.section.greylist"
+          testId="section-greylist"
+        >
+          <CreatorGreylistPanel
+            config={config}
+            onConfigUpdate={(cfg) => setConfig(cfg)}
+          />
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Re-entry Watchlist"
+          description={`${reentry?.length || 0} winners eligible to re-buy`}
+          storageKey="ui.section.reentry"
+          testId="section-reentry"
+          badge={reentry?.length ? String(reentry.length) : null}
+        >
+          <ReentryWatchCard watchlist={reentry} onRefresh={() => api.reentryWatchlist().then(setReentry).catch(() => {})} />
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="P/L by Source"
+          description="momentum_new · momentum_seasoned · greylist_snipe · reentry"
+          storageKey="ui.section.pl-by-source"
+          testId="section-pl-by-source"
+        >
+          <PLBySourceCard refreshSignal={plSourceRefresh} />
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Cost Tracker"
+          description="Helius credit burn · monthly cap"
+          storageKey="ui.section.cost"
+          testId="section-cost"
+        >
+          <CostTrackerCard apiBase={process.env.REACT_APP_BACKEND_URL || ""} />
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Scanner Candidates"
+          description="live tokens being tracked towards entry"
+          storageKey="ui.section.scanner"
+          testId="section-scanner"
+          badge={scanner?.length ? String(scanner.length) : null}
+        >
+          <ScannerCandidatesCard candidates={scanner} config={config} />
+        </CollapsibleSection>
 
         <footer className="text-[10px] text-neutral-600 font-mono text-center pt-4 pb-8 tracking-wider uppercase">
           // Preview-only. Real funds at risk. Never deploy this outside Emergent preview.

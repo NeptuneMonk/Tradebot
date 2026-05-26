@@ -75,7 +75,7 @@ export default function Login() {
           </button>
 
           <div className="mt-6 text-[10px] text-neutral-600 font-mono leading-relaxed text-center">
-            Session lasts 1 hour. You'll be asked to sign in again after expiry.
+            Session stays active while you're using the app. Auto-locks after 1 hour idle (24h hard cap).
           </div>
         </div>
 
