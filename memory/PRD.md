@@ -1253,3 +1253,22 @@ These are the EXACT high-confidence snipe targets the system was designed to fin
 - `test_unpredictable_when_variance_above_20` → renamed to `test_unpredictable_when_variance_above_40` with adjusted data (rug_pct values now span 5-95 instead of 5-80).
 - **143 tests pass** across all 8 suites.
 
+
+## 2026-05-26 — Greylist Panel Collapsed by Default (Lazy Load)
+
+User showed a mobile screenshot of overlapping columns and asked the Creator Greylist panel to stay collapsed until clicked — only loading data from the server when expanded.
+
+### What changed
+- **`CreatorGreylistPanel.jsx`** — new `open` state (default `false`). The 60s `refresh()` interval + initial fetch are now gated on `open === true`: closing the panel cancels the interval, opening it triggers an immediate fetch + restarts polling.
+- **Collapsed header** shows only: chevron, ghost icon, panel name, current mode chip (`live`/`telemetry`/`disabled`), and a "click to load" hint.
+- **Expanded view** restores: tier counters, min-score input, mode-toggle button, backfill / sweep / refresh actions, the rows list, pattern analytics card, blacklist card, and the scoring footer.
+- **Updated scoring footer** to reflect current weights (28/20/25/13/9/5) and new F-band default (2-100).
+
+### Why it matters
+- No background `/api/creator-greylist` + `/api/creator-greylist/pattern-analytics` polls until the operator chooses to look — saves both server cycles and ~924 row renders for the common case.
+- Mobile layout is no longer dominated by a single oversized panel. The control card collapses to a single header line.
+- Polling cadence stays at 60s (cheap) but ONLY when the panel is open — net request reduction is roughly proportional to the time the panel sits closed.
+
+### Tests
+150 backend tests pass. UI change is purely structural — `data-testid="greylist-panel-toggle"` added for any future smoke test.
+

@@ -467,6 +467,12 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
   const [modeToggling, setModeToggling] = useState(false);
   const [minScore, setMinScore] = useState(30);
   const [expanded, setExpanded] = useState(null);
+  // Panel-open state — kept closed by default so the 924-row list doesn't
+  // load into the DOM (or trigger the 60s background poll) unless the
+  // operator explicitly clicks to expand. Cuts mobile DOM cost and the
+  // /api/creator-greylist + /api/creator-greylist/pattern-analytics calls
+  // entirely for the common case where this panel is just background context.
+  const [open, setOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -488,13 +494,15 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
     }
   }, [minScore, analyticsDays, analyticsMode]);
 
+  // Only fetch + poll while open. Closing the panel cancels the interval.
   useEffect(() => {
+    if (!open) return;
     refresh();
     // Auto-refresh every 60s — greylist scores update on trade-close + failure-sweep,
     // so a slower poll is fine.
     const id = setInterval(refresh, 60000);
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [refresh, open]);
 
   const runSweep = async () => {
     setSweepRunning(true);
@@ -566,79 +574,109 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
 
   return (
     <div className="control-card" data-testid="creator-greylist-panel">
-      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-        <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-neutral-500">
-          <Ghost className="w-3.5 h-3.5" /> Creator Greylist ({items.length})
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          data-testid="greylist-panel-toggle"
+          className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-neutral-400 hover:text-neutral-200 transition"
+          title={open ? "Collapse — stops the 60s data refresh" : "Expand — loads creator list + analytics"}
+        >
+          {open ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+          <Ghost className="w-3.5 h-3.5" />
+          Creator Greylist
+          {open && items.length > 0 && (
+            <span className="text-neutral-600">({items.length})</span>
+          )}
           {enabled ? (
-            <button
-              type="button"
-              onClick={toggleMode}
-              disabled={modeToggling}
-              data-testid="greylist-mode-toggle"
-              title={
-                mode === "live"
-                  ? "Click to switch back to telemetry mode (no execution overrides)"
-                  : "Click to enable LIVE overrides — uses tier-based TP/SL/trail/size on entry"
-              }
-              className={`ml-2 px-1.5 py-0.5 border text-[9px] font-mono uppercase tracking-wider transition hover:brightness-125 disabled:opacity-50 ${
+            <span
+              className={`ml-1 px-1.5 py-0.5 border text-[9px] font-mono uppercase tracking-wider ${
                 MODE_CHIP[mode] || MODE_CHIP.telemetry
               }`}
+              title={`Greylist mode: ${mode}`}
             >
-              {modeToggling ? "…" : mode}
-            </button>
+              {mode}
+            </span>
           ) : (
-            <span className="ml-2 px-1.5 py-0.5 border border-neutral-800 text-[9px] font-mono uppercase text-neutral-500">
+            <span className="ml-1 px-1.5 py-0.5 border border-neutral-800 text-[9px] font-mono uppercase text-neutral-500">
               disabled
             </span>
           )}
-        </div>
-        <div className="flex items-center gap-2">
-          <label className="text-[10px] font-mono text-neutral-500 flex items-center gap-1">
-            min score
-            <input
-              type="number"
-              min="0"
-              max="100"
-              step="5"
-              value={minScore}
-              onChange={(e) => setMinScore(Number(e.target.value))}
-              className="w-12 px-1.5 py-0.5 bg-neutral-950 border border-neutral-800 text-neutral-200 font-mono text-[11px]"
-              data-testid="greylist-min-score-input"
-            />
-          </label>
-          <button
-            type="button"
-            onClick={runBackfill}
-            disabled={backfillRunning}
-            data-testid="greylist-backfill-btn"
-            className="flex items-center gap-1 px-2 py-1 border border-neutral-800 hover:bg-neutral-800 disabled:opacity-50 text-[10px] font-mono uppercase tracking-wider text-neutral-300"
-            title="Re-score every creator already in DB whose tokens_failed is inside the F-band. Cheap — Mongo-only, no Helius calls."
-          >
-            <RefreshCw className={`w-3 h-3 ${backfillRunning ? "animate-spin" : ""}`} /> {backfillRunning ? "scoring…" : "backfill"}
-          </button>
-          <button
-            type="button"
-            onClick={runSweep}
-            disabled={sweepRunning}
-            data-testid="greylist-run-sweep-btn"
-            className="flex items-center gap-1 px-2 py-1 border border-neutral-800 hover:bg-neutral-800 disabled:opacity-50 text-[10px] font-mono uppercase tracking-wider text-neutral-300"
-            title="Force-run a failure-sweep cycle now (normally runs every 6h)"
-          >
-            <Play className="w-3 h-3" /> {sweepRunning ? "sweeping…" : "sweep"}
-          </button>
-          <button
-            type="button"
-            onClick={refresh}
-            disabled={loading}
-            data-testid="greylist-refresh-btn"
-            className="p-1 border border-neutral-800 hover:bg-neutral-800 disabled:opacity-50 text-neutral-500"
-            title="Refresh"
-          >
-            <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} />
-          </button>
-        </div>
+          {!open && (
+            <span className="ml-2 text-neutral-600 normal-case tracking-normal text-[10px] font-mono">
+              · click to load
+            </span>
+          )}
+        </button>
+        {open && (
+          <div className="flex items-center gap-2" data-testid="greylist-actions">
+            <label className="text-[10px] font-mono text-neutral-500 flex items-center gap-1">
+              min score
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="5"
+                value={minScore}
+                onChange={(e) => setMinScore(Number(e.target.value))}
+                className="w-12 px-1.5 py-0.5 bg-neutral-950 border border-neutral-800 text-neutral-200 font-mono text-[11px]"
+                data-testid="greylist-min-score-input"
+              />
+            </label>
+            {enabled && (
+              <button
+                type="button"
+                onClick={toggleMode}
+                disabled={modeToggling}
+                data-testid="greylist-mode-toggle"
+                title={
+                  mode === "live"
+                    ? "Click to switch back to telemetry mode (no execution overrides)"
+                    : "Click to enable LIVE overrides — uses tier-based TP/SL/trail/size on entry"
+                }
+                className={`px-1.5 py-0.5 border text-[9px] font-mono uppercase tracking-wider transition hover:brightness-125 disabled:opacity-50 ${
+                  MODE_CHIP[mode] || MODE_CHIP.telemetry
+                }`}
+              >
+                {modeToggling ? "…" : `set ${mode === "live" ? "telem" : "live"}`}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={runBackfill}
+              disabled={backfillRunning}
+              data-testid="greylist-backfill-btn"
+              className="flex items-center gap-1 px-2 py-1 border border-neutral-800 hover:bg-neutral-800 disabled:opacity-50 text-[10px] font-mono uppercase tracking-wider text-neutral-300"
+              title="Re-score every creator already in DB whose tokens_failed is inside the F-band. Cheap — Mongo-only, no Helius calls."
+            >
+              <RefreshCw className={`w-3 h-3 ${backfillRunning ? "animate-spin" : ""}`} /> {backfillRunning ? "scoring…" : "backfill"}
+            </button>
+            <button
+              type="button"
+              onClick={runSweep}
+              disabled={sweepRunning}
+              data-testid="greylist-run-sweep-btn"
+              className="flex items-center gap-1 px-2 py-1 border border-neutral-800 hover:bg-neutral-800 disabled:opacity-50 text-[10px] font-mono uppercase tracking-wider text-neutral-300"
+              title="Force-run a failure-sweep cycle now (normally runs every 6h)"
+            >
+              <Play className="w-3 h-3" /> {sweepRunning ? "sweeping…" : "sweep"}
+            </button>
+            <button
+              type="button"
+              onClick={refresh}
+              disabled={loading}
+              data-testid="greylist-refresh-btn"
+              className="p-1 border border-neutral-800 hover:bg-neutral-800 disabled:opacity-50 text-neutral-500"
+              title="Refresh"
+            >
+              <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} />
+            </button>
+          </div>
+        )}
       </div>
 
+      {!open ? null : (
+        <>
       {/* Tier counters */}
       <div className="flex items-center gap-3 mb-3 text-[10px] font-mono uppercase tracking-wider">
         <span className="text-neutral-600">tier:</span>
@@ -868,11 +906,13 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
       </div>
 
       <div className="mt-2 text-[10px] font-mono text-neutral-600">
-        scoring: profitability 30% · predictability 20% · peak mc 25% · activity 15% · volume 10% ·
+        scoring: profitability 28% · predictability 20% · peak mc 25% · activity 13% · volume 9% · links 5% ·
         decay ~1%/hr · tiers at 45 (hybrid) and 70 (aggressive) ·
-        F-band <span className="text-neutral-400">{config?.creator_greylist_min_fails ?? 5}–{(config?.creator_greylist_max_fails ?? 80) - 1}</span>{" "}
+        F-band <span className="text-neutral-400">{config?.creator_greylist_min_fails ?? 2}–{config?.creator_greylist_max_fails ?? 100}</span>{" "}
         (outside band → stats kept, score suppressed)
       </div>
+        </>
+      )}
     </div>
   );
 }
