@@ -126,7 +126,11 @@ export default function Dashboard() {
         break;
       case "trade_exit":
         setActiveTrades((prev) => prev.filter((t) => t.id !== data.id));
-        setHistory((prev) => [data, ...prev]);
+        // Dedupe by id — WS can fire `trade_exit` more than once per trade
+        // (partial-TP + final exit, or scanner/exit-monitor race). Without
+        // this guard the same row appears 4-5x in the history table until
+        // the 20s polling refresh overwrites it.
+        setHistory((prev) => [data, ...prev.filter((t) => t.id !== data.id)]);
         // Refresh launches so the exited card flips to grey/dimmed state
         api.launches().then(setLaunches).catch(() => {});
         api.plSummary(7).then(setPl).catch(() => {});
