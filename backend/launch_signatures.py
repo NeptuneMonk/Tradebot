@@ -95,6 +95,40 @@ def rug_speed_class(launch: dict) -> str | None:
     return "fizzle"
 
 
+def derive_curve_fill_pct(launch: dict) -> float | None:
+    """Reconstruct `curve_fill_pct` for historical launches that were
+    persisted before the live tracker started capturing it (~92% of
+    pre-2026-05 failed launches sit at curve_fill_pct=0).
+
+    Two derivation paths, in priority order:
+
+    1. **From `final_peak_mc_usd`** (preferred). Pump.fun graduation MC is
+       ~$69k → curve_fill_pct = 100. The relationship is linear in
+       real_sol_reserves so:
+            `curve_fill_pct ≈ peak_mc_usd / 69_000 * 100`
+       This is the cleanest derivation because peak_mc represents WHERE
+       THE CURVE GOT TO, which is exactly what `expected_rug_curve_pct`
+       needs.
+
+    2. **From `sol_inflow`** (fallback). When peak_mc isn't set:
+            `curve_fill_pct ≈ sol_inflow / 85 * 100`
+       Caveat: `sol_inflow` is the SUM of buy amounts, not real_sol
+       reserves (which is buys − sells). For launches that pumped then
+       dumped, sol_inflow > peak_real_sol. So this is an UPPER BOUND.
+       For dead-instant launches it's essentially equal.
+
+    Returns the derived value clamped to [0, 100], or None if neither
+    `final_peak_mc_usd` nor `sol_inflow` are present.
+    """
+    peak_mc = launch.get("final_peak_mc_usd")
+    if peak_mc is not None and peak_mc > 0:
+        return min(100.0, max(0.0, float(peak_mc) / 69_000.0 * 100.0))
+    inflow = launch.get("sol_inflow")
+    if inflow is not None and inflow > 0:
+        return min(100.0, max(0.0, float(inflow) / 85.0 * 100.0))
+    return None
+
+
 def derive_signatures(launch: dict) -> dict:
     """Combine all 3 signatures for batch persistence. Returns the dict
     that should be `$set` on the launch doc."""

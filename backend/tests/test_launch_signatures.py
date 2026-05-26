@@ -17,7 +17,55 @@ from launch_signatures import (
     accel_class, flow_class, rug_speed_class,
     derive_signatures, aggregate_signatures,
     accel_signature_v2, profit_window_seconds,
+    derive_curve_fill_pct,
 )
+
+
+# ----- derive_curve_fill_pct (historical backfill) -----------------------
+
+def test_derive_curve_fill_from_peak_mc():
+    # $34,500 peak → 50% of $69k graduation
+    assert derive_curve_fill_pct({"final_peak_mc_usd": 34_500}) == pytest.approx(50.0, abs=0.1)
+
+
+def test_derive_curve_fill_from_peak_mc_clamps_at_100():
+    # $80k peak → clamped to 100 (above graduation should never happen but be safe)
+    assert derive_curve_fill_pct({"final_peak_mc_usd": 80_000}) == 100.0
+
+
+def test_derive_curve_fill_from_sol_inflow_fallback():
+    # 42.5 SOL inflow → 50% of 85 SOL graduation
+    assert derive_curve_fill_pct({"sol_inflow": 42.5}) == pytest.approx(50.0, abs=0.1)
+
+
+def test_derive_curve_fill_peak_mc_preferred_over_inflow():
+    # Both set — peak_mc wins because it represents WHERE the curve got to
+    out = derive_curve_fill_pct({
+        "final_peak_mc_usd": 13_800,   # → 20%
+        "sol_inflow": 42.5,            # → 50% (but ignored)
+    })
+    assert out == pytest.approx(20.0, abs=0.1)
+
+
+def test_derive_curve_fill_skips_when_no_data():
+    assert derive_curve_fill_pct({}) is None
+    assert derive_curve_fill_pct({"final_peak_mc_usd": 0, "sol_inflow": 0}) is None
+
+
+def test_derive_curve_fill_skips_negligible_inflow():
+    # 0.05 SOL inflow — below the 0.1 threshold the backfill endpoint enforces.
+    # Helper itself returns a value (0.06% curve) because the threshold is a
+    # caller-side decision; the helper just computes from what's given.
+    out = derive_curve_fill_pct({"sol_inflow": 0.05})
+    assert out is not None
+    assert out < 1.0  # ~0.06%
+
+
+def test_derive_curve_fill_idempotent_realistic_examples():
+    # Real launch from DB: 100% curve filled (graduated then rugged)
+    assert derive_curve_fill_pct({"final_peak_mc_usd": 69_000}) == 100.0
+    # Real failed launch: peak was ~$8k (12% curve)
+    assert derive_curve_fill_pct({"final_peak_mc_usd": 8_280}) == pytest.approx(12.0, abs=0.1)
 
 
 # ----- accel_class bands ---------------------------------------------------

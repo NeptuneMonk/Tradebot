@@ -2042,6 +2042,69 @@ async def creator_greylist_backfill_signatures(limit: int = 5000, only_missing: 
             "only_missing": only_missing}
 
 
+@api.post("/creator-greylist/backfill-curve-fill")
+async def creator_greylist_backfill_curve_fill(limit: int = 20000):
+    """Backfill `curve_fill_pct` on historical failed launches that were
+    persisted before the live tracker started capturing it. The greylist
+    pattern classifier reads `curve_fill_pct` to compute
+    `expected_rug_window_pct` — without it, ~92% of failed launches
+    contribute nothing to the per-creator rug-curve pattern.
+
+    Idempotent: only updates launches where `curve_fill_pct` is missing
+    or 0 AND we have a derivable value (`final_peak_mc_usd` > 0 or
+    `sol_inflow` > 0.1).
+
+    Cheap — Mongo-only, single pass, no Helius calls.
+    """
+    from launch_signatures import derive_curve_fill_pct
+    q = {
+        "outcome": "failed",
+        "$or": [
+            {"curve_fill_pct": 0},
+            {"curve_fill_pct": {"$exists": False}},
+        ],
+        # Skip docs we can't derive anything from
+        "$and": [
+            {"$or": [
+                {"final_peak_mc_usd": {"$gt": 0}},
+                {"sol_inflow": {"$gt": 0.1}},
+            ]},
+        ],
+    }
+    cur = db.launches.find(
+        q,
+        {"_id": 1, "final_peak_mc_usd": 1, "sol_inflow": 1},
+    ).limit(max(1, min(50000, int(limit))))
+    n_scanned = 0
+    n_updated = 0
+    n_from_peak = 0
+    n_from_inflow = 0
+    async for d in cur:
+        n_scanned += 1
+        derived = derive_curve_fill_pct(d)
+        if derived is None:
+            continue
+        # Track which source we used (for the response audit)
+        if d.get("final_peak_mc_usd") and d["final_peak_mc_usd"] > 0:
+            n_from_peak += 1
+        else:
+            n_from_inflow += 1
+        await db.launches.update_one(
+            {"_id": d["_id"]},
+            {"$set": {
+                "curve_fill_pct": round(derived, 2),
+                "curve_fill_pct_derived": True,
+            }},
+        )
+        n_updated += 1
+    return {
+        "scanned": n_scanned,
+        "updated": n_updated,
+        "from_peak_mc": n_from_peak,
+        "from_sol_inflow": n_from_inflow,
+    }
+
+
 @api.get("/creator-greylist/blacklist")
 async def creator_blacklist(limit: int = 50):
     """Top N blacklisted creators (untradeable_rug / unpredictable_rug /

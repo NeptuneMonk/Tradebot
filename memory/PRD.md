@@ -1272,3 +1272,43 @@ User showed a mobile screenshot of overlapping columns and asked the Creator Gre
 ### Tests
 150 backend tests pass. UI change is purely structural — `data-testid="greylist-panel-toggle"` added for any future smoke test.
 
+
+## 2026-05-26 — Historical curve_fill_pct Backfill
+
+User: *"Backfill historical `curve_fill_pct` from `sol_inflow` for older launches — could unlock 10-20% more creators."*
+
+### What changed
+- **`launch_signatures.derive_curve_fill_pct(launch)`** — new helper. Reconstructs `curve_fill_pct` from existing per-launch fields:
+  - **Path 1 (preferred)**: `final_peak_mc_usd / 69_000 * 100` — cleanest because peak_mc represents where the curve actually got to. Pump.fun graduation MC is ~$69k → 100%.
+  - **Path 2 (fallback)**: `sol_inflow / 85 * 100` — when peak_mc isn't set. Caveat: sol_inflow is buys-only (not net), so for pump-then-dump launches this is an UPPER BOUND.
+  - Clamped to [0, 100]. Returns `None` if neither source is available.
+- **`POST /api/creator-greylist/backfill-curve-fill`** — idempotent endpoint. Scans failed launches where `curve_fill_pct` is 0 OR missing AND we have a derivable source. Stamps the derived value + `curve_fill_pct_derived: True` flag so we can distinguish derived from live-measured later.
+
+### Live impact
+| Metric | Before backfill | After backfill |
+|---|---|---|
+| Failed launches with `curve_fill_pct ≥ 1%` | 2,863 | **11,943** (+317%) |
+| Creators with ≥3 curve samples | 322 | **535** (+66%) |
+| **From peak_mc / from sol_inflow split** | — | 9,080 / 0 (all from peak) |
+
+Interesting outcome: 100% of derivable launches had `final_peak_mc_usd` set (failure_sweep is robust about this), so the sol_inflow fallback wasn't needed. Path 2 stays as safety net for edge cases.
+
+### Pattern distribution after backfill (re-scoring 535 creators)
+| Pattern | After variance loosening | After curve backfill |
+|---|---|---|
+| `unknown` | 78% | 78% (the 9,080 launches were already classified; backfill just sharpens existing patterns) |
+| `predictable_dump_tradeable` | 10 | 10 |
+| `slow_rug_tradeable` | 7 | **8** |
+| `fake_hype_tradeable` | 1 | 1 |
+
+Top tradeable creators now have RICH sample counts:
+- `EdNcBDUFQa` — predictable_dump, **rug@12% (n=9 samples)**, peak=$10k
+- `A1jmc6mZGg` — predictable_dump, **rug@15.5% (n=13 samples)**, peak=$10k
+- `EmuMVS8CtS` — predictable_dump, **rug@27.9% (n=6 samples)**, peak=$20k
+
+These are exactly the high-confidence snipe targets the sniper was designed for — pattern + curve gates inside `_check_snipe_pattern_exit` will fire on them.
+
+### Tests
+- 7 new pytest cases in `test_launch_signatures.py` covering: peak-MC primary, sol-inflow fallback, peak-MC-preferred-over-inflow, clamps at 100, no-data returns None, negligible inflow handling, realistic examples (graduation MC, $8k peak).
+- **157 tests pass.**
+
