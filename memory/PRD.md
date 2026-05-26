@@ -1045,3 +1045,39 @@ Rolling 1h list of fire timestamps stored on `BotState._greylist_snipe_fires`. C
 - Every sniper-driven Trade doc gets `pl_source_at_entry = "greylist_snipe"` and `greylist_strategy_at_entry` populated
 - `PLBySourceCard` shows a NEW "Greylist Sniper" lane with its own win-rate / PnL tally
 
+
+## 2026-05-25 — Strategy Doctor Greylist-Sniper feedback rule
+
+Closes the loop: greylist score → sniper threshold → trade outcomes → re-tune. User asked for this immediately after Greylist Sniper shipped.
+
+### What changed
+- **NEW `_rule_greylist_sniper_tuning()`** in `strategy_doctor.py`. Registered in the per-tick rule list. Pure function (no Mongo) — same shape as the other rules.
+- **Decision matrix** (filters trades to `classifier_action == "greylist_snipe"` only):
+  - WR < 35% AND n ≥ 10 → bump `greylist_snipe_min_score` by **+5** (more selective)
+  - WR > 55% AND n ≥ 10 → drop `greylist_snipe_min_score` by **-5** (more aggressive)
+  - 35% ≤ WR ≤ 55% → no suggestion (dead zone)
+  - Clamp: 25 ≤ min_score ≤ 90
+- **Confidence**: `high` if n ≥ 20 sniper trades, `med` otherwise
+- **Rationale text** includes current/proposed threshold + sample size + WR + avg PnL — operator sees exactly what the doctor saw.
+- **Frontend**: `StrategyDoctorPanel.jsx` gets `greylist_sniper` entries in `CATEGORY_LABEL` + `CATEGORY_TINT` (rose-pink) so suggestions render with their own tooltip.
+
+### Why this matters
+The greylist scorer (compute_score) is calibrated on historical PnL, but the sniper threshold (`greylist_snipe_min_score`) is just a static knob. Without this rule, the only way to tune it is for the operator to read the PnL-by-Source card and guess. The doctor now does it automatically every analysis tick, with the same dismiss/apply UX as every other rule. Both `apply` (auto-update config) and `dismiss` (record signature, never resurface) work out-of-the-box because the suggestion shape matches existing rules.
+
+### Tests
+- **NEW `tests/test_strategy_doctor_sniper_rule.py`** — 12 cases:
+  - Tightens at WR < 35%, loosens at WR > 55%, no-op in dead zone
+  - High vs med confidence based on sample size
+  - Sample-size floor (n ≥ 10) enforced
+  - Skips when sniper is disabled
+  - Only counts `classifier_action == "greylist_snipe"` trades (ignores momentum)
+  - Clamps at upper (90) and lower (25) bounds
+  - Partial-clamp case still fires (87 → 90 is a real change)
+  - Rationale + metrics include trade count, WR, current threshold, proposed threshold
+- **141 tests pass** across all relevant suites.
+
+### Live state
+- DB has 0 closed sniper trades yet (sniper just shipped, no fires yet)
+- Rule fires only when ≥10 closed sniper trades exist in the doctor's analysis window (24h)
+- Once the first 10+ sniper trades close, the rule will start emitting suggestions every analysis tick (3min by default)
+

@@ -160,6 +160,7 @@ class StrategyDoctor:
                 self._rule_time_of_day,
                 self._rule_protocol_focus,
                 self._rule_pattern_tp_calibration,
+                self._rule_greylist_sniper_tuning,
             ):
                 try:
                     rule_out = rule(trades, cfg_doc)
@@ -698,6 +699,95 @@ class StrategyDoctor:
                 })
 
         return suggestions
+
+
+    def _rule_greylist_sniper_tuning(self, trades, cfg):
+        """Auto-tune `greylist_snipe_min_score` based on sniper win-rate.
+
+        The Greylist Sniper opens positions on every new launch from a
+        creator that scored >= `greylist_snipe_min_score`. As the bot
+        accumulates sniper-driven trades we can observe whether the
+        threshold is too loose (taking too many losers) or too tight
+        (missing winners). Closes the feedback loop:
+
+          greylist score → sniper threshold → trade outcomes → re-tune
+
+        Decision matrix (uses CLOSED sniper trades from the last 24h):
+
+          - If win-rate < 35% AND n >= 10  → bump min_score by +5
+            (more selective; current threshold is letting too many losers through)
+          - If win-rate > 55% AND n >= 10  → drop min_score by -5
+            (more aggressive; we're being too picky and missing winners)
+          - Clamp: 25 <= min_score <= 90 (below 25 is meaningless, above 90
+            is unreachable for almost all creators).
+
+        Confidence:
+          - "high" if n >= 20 trades in the window
+          - "med"  if 10 <= n < 20
+
+        Skips entirely when the sniper is disabled OR < 10 sniper trades.
+        Returns at most ONE suggestion per analysis cycle.
+        """
+        if not cfg.get("greylist_snipe_enabled", True):
+            return []
+        # Filter to sniper-only trades. We use `classifier_action` (the
+        # field bot.py stamps at entry) — pl_sources.classify_source maps
+        # it to the `greylist_snipe` bucket label.
+        sniper = [t for t in trades if t.get("classifier_action") == "greylist_snipe"]
+        n = len(sniper)
+        if n < 10:
+            return []
+        wins = sum(1 for t in sniper if (t.get("pnl_pct") or 0) > 0)
+        wr = wins / n * 100.0
+        avg_pnl = statistics.mean([float(t.get("pnl_pct") or 0) for t in sniper])
+        cur = float(cfg.get("greylist_snipe_min_score", 45.0))
+        # Decide direction
+        if wr < 35.0:
+            new = min(90.0, round(cur + 5.0, 1))
+            direction = "tighten"
+            reason_phrase = "letting too many losers through"
+            verb_phrase = "more selective"
+        elif wr > 55.0:
+            new = max(25.0, round(cur - 5.0, 1))
+            direction = "loosen"
+            reason_phrase = "too picky — missing winners"
+            verb_phrase = "more aggressive"
+        else:
+            return []
+        if abs(new - cur) < 0.1:
+            # Already at the clamp boundary — nothing to do.
+            return []
+        confidence = "high" if n >= 20 else "med"
+        return [{
+            "category": "greylist_sniper",
+            "title": (
+                f"Greylist Sniper WR {wr:.0f}% — "
+                f"{direction} min_score from {cur:.0f} to {new:.0f}"
+            ),
+            "rationale": (
+                f"Last 24h sniper-driven trades:\n"
+                f"  - **{n}** closed positions\n"
+                f"  - **{wr:.0f}%** win-rate (avg PnL {avg_pnl:+.1f}%)\n\n"
+                f"Win-rate is {'below 35%' if wr < 35 else 'above 55%'} — "
+                f"current `greylist_snipe_min_score={cur:.0f}` is "
+                f"{reason_phrase}.\n\n"
+                f"Applying will {direction} the threshold to **{new:.0f}** "
+                f"(making the sniper {verb_phrase}). The greylist score → "
+                f"sniper threshold → trade outcomes loop closes here: "
+                f"the next cycle re-evaluates against the new threshold's "
+                f"trade cohort. Dismiss if you want to override the auto-tune."
+            ),
+            "actions": {"greylist_snipe_min_score": new},
+            "confidence": confidence,
+            "metrics": {
+                "n_sniper_trades": n,
+                "sniper_wr_pct": round(wr, 1),
+                "sniper_avg_pnl_pct": round(avg_pnl, 1),
+                "current_min_score": cur,
+                "proposed_min_score": new,
+                "direction": direction,
+            },
+        }]
 
 
 # Singleton holder — set on app startup

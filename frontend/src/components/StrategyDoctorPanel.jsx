@@ -16,6 +16,7 @@ const CATEGORY_LABEL = {
   scanner: "Scanner timing / bands — what tokens get tracked",
   classifier: "Classifier rules — abort/exit-early on real-time signals",
   timing: "Re-entry & cooldown — handling exits and re-buys",
+  greylist_sniper: "Greylist Sniper tuning — auto-adjusts min_score based on win-rate feedback",
   needs_more_data: "Doctor needs more trades before it can suggest changes",
 };
 
@@ -29,6 +30,7 @@ const CATEGORY_TINT = {
   scanner: "border-blue-800/60 text-blue-300",
   classifier: "border-fuchsia-800/60 text-fuchsia-300",
   timing: "border-violet-800/60 text-violet-300",
+  greylist_sniper: "border-rose-700/60 text-rose-300",
   needs_more_data: "border-neutral-700 text-neutral-400",
 };
 
