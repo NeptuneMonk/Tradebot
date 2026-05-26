@@ -1081,3 +1081,73 @@ The greylist scorer (compute_score) is calibrated on historical PnL, but the sni
 - Rule fires only when ≥10 closed sniper trades exist in the doctor's analysis window (24h)
 - Once the first 10+ sniper trades close, the rule will start emitting suggestions every analysis tick (3min by default)
 
+
+## 2026-05-26 — Snipe-only pattern-based exit ladder
+
+User reported snipes were entering on greylist creators but exiting on SL hits (e.g. `-27.1%`). The "ABORT TRADE" red badge on the launch row was also misleading — that's the launch-level classifier verdict, not a trade decision (sniper bypasses it).
+
+User spec: *"For greylist only, we shouldn't be using an SL based on our investment. We know the rugs are predictable so we watch the % to bond curve or how far from their patterned sell off for the mint. Getting out is not based off our entry loss. These are extremely volatile investments but have somewhat predictable patterns. No max hold, no stop loss, or these things that we use for unpredictable plays."*
+
+### What changed
+
+**5 new config knobs** (all clamped server-side, defaults are conservative):
+- `greylist_snipe_pattern_exits: bool = True` — master toggle
+- `greylist_snipe_peak_mc_proximity_pct: float = 85.0` — exit when current MC ≥ X% of expected peak
+- `greylist_snipe_curve_buffer_pct: float = 5.0` — exit when curve fill ≥ rug_pct − Xpp
+- `greylist_snipe_ripcord_drawdown_pct: float = 60.0` — rip-cord from OBSERVED peak (NOT entry)
+- `greylist_snipe_ripcord_grace_seconds: int = 8` — sustained-breach window before rip-cord fires
+
+**`_check_snipe_pattern_exit(slot, cur_price_sol)` in `bot.py`** — single source of truth for snipe exits. Returns `(should_exit, reason)`. Decision matrix:
+
+1. **Pattern-suggested TP** — if `greylist_pattern_suggested_tp_pct` is set, lock profit at that level
+2. **Curve-fill exit** — if `curve_fill_pct ≥ expected_rug_curve_pct − buffer_pp`, exit
+3. **Peak-MC exit** — if `current_mc ≥ proximity_pct% × expected_peak_mc_usd`, exit
+4. **Rip-cord** — if price drops `ripcord_drawdown_pct%` from OBSERVED peak (tracked on `slot["peak_price_sol"]`), sustained for `grace_seconds`, exit. **Anchored on peak, NOT entry** — a trade that went +200% then crashed 60% from peak (still +20% from entry) MUST rip-cord. The standard SL ladder would have let it ride; this rule recognizes "the rug already happened, nothing to salvage."
+
+**Wired into both exit paths**:
+- `_check_fast_exit` (push-based, fires on Helius account update WS): short-circuits the SL/TP/trailing block via `if self._is_snipe(slot): ...`. Calls pattern helper instead.
+- `_monitor_position` (per-tick polling loop): same short-circuit. Skips `max_hold`, `SL breach`, `live classifier abort` for snipes. Calls pattern helper on every tick.
+
+**Pattern context stash** — `greylist_ctx` resolution at entry now grabs `expected_peak_mc_usd` and `expected_rug_curve_pct` from the creator doc and stashes them as `trade_extras["snipe_pattern_ctx"]` so the helper has data without re-reading Mongo every tick.
+
+### UI fix
+
+`RecentLaunchesFeed.jsx` `ActionBadge`: when `l.entered === true && l.entry_action === "greylist_snipe"`, show a rose-pink **"SNIPED"** badge instead of the misleading red **"ABORT TRADE"**. The classifier verdict that fed the old badge is informational only (snipe path bypasses it deliberately) — operator was correctly reading it but mis-interpreting it as a trade decision.
+
+`bot.py` now stamps `entry_action` on the launch doc when ANY entry fires (`{"entered": True, "entry_action": action}`) so the UI can branch on it.
+
+`BotControlCard.jsx` now has the 4 pattern-exit knobs (Peak MC %, Curve Buffer pp, Ripcord %, Ripcord Grace s) in a dedicated row labeled "Pattern-based exits (no SL, no max-hold)".
+
+### Tests
+
+NEW `tests/test_snipe_exit_ladder.py` — 17 cases:
+- `_is_snipe()` true/false matrix (greylist_snipe ≠ momentum_new; pattern_exits disabled)
+- Peak-MC proximity: triggers at 85%, doesn't below, custom thresholds
+- Curve-fill: triggers within buffer, doesn't below, zero curve doesn't crash
+- Pattern-TP: locks profit at threshold, no trigger below
+- **Rip-cord anchored on OBSERVED PEAK** (the key spec assertion): trade at +20% from entry but −60% from peak MUST rip-cord
+- Rip-cord requires grace period; timer clears on recovery
+- No-context safety: missing `snipe_pattern_ctx` → silent (don't crash, don't exit-spam)
+- All-gates-silent baseline → false
+
+**158 tests pass** across all suites.
+
+### Live verification
+All 9 sniper config knobs returned from `/api/bot/config`:
+```
+greylist_snipe_enabled: True
+greylist_snipe_min_score: 45.0
+greylist_snipe_max_per_hour: 12
+greylist_snipe_settle_seconds: 5
+greylist_snipe_pattern_exits: True
+greylist_snipe_peak_mc_proximity_pct: 85.0
+greylist_snipe_curve_buffer_pct: 5.0
+greylist_snipe_ripcord_drawdown_pct: 60.0
+greylist_snipe_ripcord_grace_seconds: 8
+```
+
+### How operator validates
+- New snipes will exit with reasons like `"snipe peak-MC exit ($8,500 ≥ 85% of expected $10,000)"`, `"snipe curve-fill exit (62.0% ≥ rug curve 65.0% − 5pp buffer)"`, `"snipe rip-cord (62% drawdown from peak sustained 9s)"` — never `"stop-loss hit"` or `"timeout after Xs"`.
+- UI row shows **rose-pink "SNIPED"** badge instead of the previous misleading red "ABORT TRADE".
+- Exit reason auditable via `t.exit_reason` on the trade doc.
+

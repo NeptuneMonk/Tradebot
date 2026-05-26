@@ -919,6 +919,105 @@ class BotState:
             pass
         return float(default)
 
+    def _is_snipe(self, slot: dict) -> bool:
+        """True iff this position was entered via the Greylist Sniper path.
+        Snipes follow a fundamentally different exit philosophy from
+        momentum trades (pattern-based exits, no entry-loss SL, no max-hold).
+        See `_check_snipe_pattern_exit` for the actual exit logic."""
+        trade = (slot or {}).get("trade") or {}
+        return (trade.get("classifier_action") == "greylist_snipe"
+                and bool(self.config.greylist_snipe_pattern_exits))
+
+    def _check_snipe_pattern_exit(self, slot: dict, cur_price_sol: float) -> tuple[bool, str]:
+        """Pattern-based exit decision for greylist snipes. Returns
+        `(should_exit, reason)`.
+
+        Per user spec for greylist plays:
+          - NO entry-loss SL
+          - NO max-hold timeout
+          - NO momentum trailing stop
+          - YES exit when curve fill approaches creator's typical rug point
+          - YES exit when current MC approaches creator's typical peak
+          - YES rip-cord on catastrophic drawdown from OBSERVED peak (rug
+            already happened; ride it out is futile)
+          - YES pattern-suggested TP (lock profit on parabolic moves)
+
+        All thresholds are configurable. Conservative defaults: exit at 85%
+        of expected peak MC, exit when curve is within 5pp of expected rug
+        curve %, rip-cord at 60% drawdown from peak observed (sustained 8s).
+        """
+        ctx = (slot or {}).get("snipe_pattern_ctx")
+        if ctx is None:
+            # No snipe context at all — not a sniper trade, nothing to do.
+            return False, ""
+        cfg = self.config
+
+        # 1. Pattern-suggested TP. If the creator has a known pattern with a
+        # suggested exit %, lock in profit there. Falls through to other
+        # gates if not hit.
+        trade = slot["trade"]
+        entry_p = trade.get("entry_price_sol") or 0
+        if entry_p > 0:
+            pct_change = (cur_price_sol - entry_p) / entry_p * 100
+            pattern_tp = trade.get("greylist_pattern_suggested_tp_pct")
+            if pattern_tp is not None and pct_change >= float(pattern_tp):
+                return True, f"snipe pattern-TP hit (+{pct_change:.1f}% ≥ {pattern_tp:.1f}%)"
+
+        # 2. Curve fill proximity to typical rug curve %. The creator's
+        # `expected_rug_curve_pct` is the median curve fill at which their
+        # past launches rugged. We exit when we're within `curve_buffer_pct`
+        # of that — gives us a head-start before the dump.
+        bucket = self.tracking.get(slot["trade"]["mint"], {})
+        curve_pct = bucket.get("curve_fill_pct") or 0.0
+        rug_curve = ctx.get("expected_rug_curve_pct")
+        if rug_curve is not None and curve_pct > 0:
+            buffer_pp = float(cfg.greylist_snipe_curve_buffer_pct or 0)
+            trigger_at = max(0.0, float(rug_curve) - buffer_pp)
+            if curve_pct >= trigger_at:
+                return True, (f"snipe curve-fill exit ({curve_pct:.1f}% ≥ "
+                              f"rug curve {rug_curve:.1f}% − {buffer_pp:.1f}pp buffer)")
+
+        # 3. Peak MC proximity. If the creator's typical peak MC is known
+        # and the current MC is within `peak_mc_proximity_pct` of it, exit
+        # before the predicted rug. Uses LIVE MC from the tracking bucket.
+        cur_mc = float(bucket.get("usd_market_cap") or 0.0)
+        exp_peak = ctx.get("expected_peak_mc_usd")
+        if exp_peak and exp_peak > 0 and cur_mc > 0:
+            proximity_pct = float(cfg.greylist_snipe_peak_mc_proximity_pct or 85.0)
+            trigger_mc = float(exp_peak) * (proximity_pct / 100.0)
+            if cur_mc >= trigger_mc:
+                return True, (f"snipe peak-MC exit (${cur_mc:,.0f} ≥ "
+                              f"{proximity_pct:.0f}% of expected ${exp_peak:,.0f})")
+
+        # 4. Rip-cord — catastrophic drawdown FROM OBSERVED PEAK (NOT from
+        # entry). If the price has been below `1 - ripcord_drawdown_pct`
+        # of the observed peak for `ripcord_grace_seconds`, the rug already
+        # happened and there's nothing left to salvage. Bail.
+        peak = slot.get("peak_price_sol", entry_p)
+        if cur_price_sol > peak:
+            peak = cur_price_sol
+            slot["peak_price_sol"] = peak
+        if peak > 0:
+            drawdown_pct = (peak - cur_price_sol) / peak * 100
+            ripcord_thresh = float(cfg.greylist_snipe_ripcord_drawdown_pct or 60.0)
+            if drawdown_pct >= ripcord_thresh:
+                # First breach starts the grace timer; subsequent breaches
+                # check elapsed.
+                first = slot.get("_snipe_ripcord_start")
+                now = time.time()
+                if first is None:
+                    slot["_snipe_ripcord_start"] = now
+                else:
+                    grace = float(cfg.greylist_snipe_ripcord_grace_seconds or 8)
+                    if now - first >= grace:
+                        return True, (f"snipe rip-cord ({drawdown_pct:.1f}% drawdown "
+                                      f"from peak sustained {now - first:.0f}s)")
+            else:
+                # Recovered above threshold — clear the timer.
+                slot.pop("_snipe_ripcord_start", None)
+
+        return False, ""
+
     async def _check_fast_exit(self, mint: str, cur_price_sol: float):
         """Real-time TP/SL/trailing-stop check fired by on_trade.
         Idempotent: only acts once per mint."""
@@ -942,6 +1041,19 @@ class BotState:
         if cur_price_sol > peak:
             peak = cur_price_sol
             slot["peak_price_sol"] = peak
+
+        # Greylist snipes use pattern-based exits, NOT entry-loss SL/TP/trail
+        # ladder. Short-circuit the whole standard exit block here.
+        if self._is_snipe(slot):
+            should_exit, reason = self._check_snipe_pattern_exit(slot, cur_price_sol)
+            if should_exit:
+                slot["exit_in_progress"] = True
+                try:
+                    await self._exit(mint, reason=reason + " [fast]")
+                    return
+                finally:
+                    slot["exit_in_progress"] = False
+            return
 
         pct_change = (cur_price_sol - entry_p) / entry_p * 100
 
@@ -1400,7 +1512,10 @@ class BotState:
         # Mode "live" → applies overrides to size/TP/SL/trail.
         # Mode "telemetry" → logs only; standard config values used.
         greylist_ctx: dict = {"strategy": None, "score": None, "overrides": {},
-                              "pattern": None, "pattern_tp_pct": None}
+                              "pattern": None, "pattern_tp_pct": None,
+                              "expected_peak_mc_usd": None,
+                              "expected_peak_mc_stddev": None,
+                              "expected_rug_curve_pct": None}
         try:
             if self.config.creator_greylist_enabled and launch.creator:
                 gc = await self.db.creators.find_one(
@@ -1476,6 +1591,12 @@ class BotState:
                         "overrides": overrides,
                         "pattern": pattern,
                         "pattern_tp_pct": pattern_tp,
+                        # Snipe-exit data — `_check_snipe_pattern_exit()` reads
+                        # these to know when to bail based on the creator's
+                        # OBSERVED rug pattern instead of our entry loss.
+                        "expected_peak_mc_usd": pmc.get("mean_peak_mc_usd"),
+                        "expected_peak_mc_stddev": pmc.get("stddev_peak_mc_usd"),
+                        "expected_rug_curve_pct": rw.get("median_rug_pct"),
                     }
         except Exception as e:
             logger.debug(f"greylist context skipped: {e}")
@@ -1816,6 +1937,15 @@ class BotState:
             # tier (a hot greylist + a standard mint can be open concurrently).
             "greylist_overrides": greylist_ctx.get("overrides") or {},
             "greylist_strategy": greylist_ctx.get("strategy"),
+            # Snipe pattern context — read by `_check_snipe_pattern_exit()`
+            # to drive curve-fill / peak-MC / rip-cord exits instead of the
+            # standard SL/TP/trailing ladder.
+            "snipe_pattern_ctx": {
+                "expected_peak_mc_usd": greylist_ctx.get("expected_peak_mc_usd"),
+                "expected_peak_mc_stddev": greylist_ctx.get("expected_peak_mc_stddev"),
+                "expected_rug_curve_pct": greylist_ctx.get("expected_rug_curve_pct"),
+                "pattern": greylist_ctx.get("pattern"),
+            } if action == "greylist_snipe" else None,
         }
 
         if mode == "live":
@@ -1882,7 +2012,7 @@ class BotState:
         # greylisted creator. Card stays pinned (at top, with a badge) until
         # manually unpinned, surviving the normal scanner aging logic.
         # `pin_exited` flips later in `_exit` so the card greys out.
-        launch_update = {"entered": True}
+        launch_update = {"entered": True, "entry_action": action}
         if greylist_ctx.get("strategy") and greylist_ctx["strategy"] != "standard":
             launch_update.update({
                 "pinned": True,
@@ -1978,7 +2108,18 @@ class BotState:
             elapsed = time.time() - start
 
             try:
-                if elapsed > max_hold:
+                # Greylist snipes use pattern-based exits — short-circuit
+                # the entire standard SL/TP/trailing/max-hold ladder. Curve
+                # state still needs to be fetched (below) so we have
+                # cur_price_sol for the pattern check.
+                is_snipe = self._is_snipe(slot)
+                if is_snipe:
+                    # We still need cur_price_sol for the pattern check, so
+                    # fall through to the protocol-aware price polling below.
+                    # The standard SL/TP/trailing block past line ~2099 is
+                    # gated on `not is_snipe` so snipes skip it.
+                    pass
+                elif elapsed > max_hold:
                     # Velocity-aware timeout: if the price is still trending up
                     # over the last N seconds, defer the cutoff rather than
                     # cutting a winner mid-pump. TP/SL/trailing keep guarding,
@@ -2041,6 +2182,26 @@ class BotState:
                         await account_event_bus.wait_for_change(watch_account, timeout=0.4)
                     else:
                         await asyncio.sleep(0.4)
+                    continue
+
+                # Snipes: pattern-based exit ONLY. Skip the rest of the
+                # standard exit ladder entirely (no SL, no max-hold trail,
+                # no live classifier abort — see _check_snipe_pattern_exit
+                # for what we DO check).
+                if is_snipe:
+                    should_exit, reason = self._check_snipe_pattern_exit(slot, cur_price_sol)
+                    if should_exit:
+                        slot["exit_in_progress"] = True
+                        try:
+                            await self._exit(mint, reason=reason)
+                            return
+                        finally:
+                            slot["exit_in_progress"] = False
+                    # Push-based wake / safety sleep, then back to top.
+                    if watch_account:
+                        await account_event_bus.wait_for_change(watch_account, timeout=0.8)
+                    else:
+                        await asyncio.sleep(0.8)
                     continue
 
                 # Track price samples for the velocity-aware timeout (cap window ~ 2x velocity window)

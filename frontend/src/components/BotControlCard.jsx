@@ -351,6 +351,25 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                    value={local.greylist_snipe_settle_seconds}
                    onChange={(v) => setLocal({ ...local, greylist_snipe_settle_seconds: parseInt(v, 10) || 0 })} step="1" />
           </div>
+          <div className="mt-2 text-[10px] uppercase tracking-[0.15em] text-neutral-500">Pattern-based exits (no SL, no max-hold)</div>
+          <div className="mt-1 grid grid-cols-4 gap-2 text-xs">
+            <Field label="Peak MC %" testid="greylist-snipe-peak-mc-input"
+                   hint="Exit when current MC reaches this % of the creator's typical peak MC. Lower = earlier exit before the predictable rug. 85% is a safe default."
+                   value={local.greylist_snipe_peak_mc_proximity_pct}
+                   onChange={(v) => setLocal({ ...local, greylist_snipe_peak_mc_proximity_pct: parseFloat(v) || 0 })} step="5" />
+            <Field label="Curve Buffer pp" testid="greylist-snipe-curve-buf-input"
+                   hint="Exit when curve fill % is within this many points of the creator's typical rug curve %. 5pp = exit at rug_pct - 5. Higher = earlier exit."
+                   value={local.greylist_snipe_curve_buffer_pct}
+                   onChange={(v) => setLocal({ ...local, greylist_snipe_curve_buffer_pct: parseFloat(v) || 0 })} step="1" />
+            <Field label="Ripcord %" testid="greylist-snipe-ripcord-input"
+                   hint="Emergency exit when price drops this much FROM OBSERVED PEAK (not from entry). 60% means the rug already happened — bail. NOT an entry-loss SL."
+                   value={local.greylist_snipe_ripcord_drawdown_pct}
+                   onChange={(v) => setLocal({ ...local, greylist_snipe_ripcord_drawdown_pct: parseFloat(v) || 0 })} step="5" />
+            <Field label="Ripcord Grace (s)" testid="greylist-snipe-grace-input"
+                   hint="Ripcord requires the drawdown to be sustained this many seconds before firing. Kills wick-driven false exits."
+                   value={local.greylist_snipe_ripcord_grace_seconds}
+                   onChange={(v) => setLocal({ ...local, greylist_snipe_ripcord_grace_seconds: parseInt(v, 10) || 0 })} step="1" />
+          </div>
         </div>
 
         {/* Per-band gates table */}

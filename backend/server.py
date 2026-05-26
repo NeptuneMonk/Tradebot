@@ -343,6 +343,10 @@ async def update_config(cfg: BotConfig):
     cfg.greylist_snipe_min_score = max(0.0, min(100.0, cfg.greylist_snipe_min_score))
     cfg.greylist_snipe_max_per_hour = max(0, min(200, cfg.greylist_snipe_max_per_hour))
     cfg.greylist_snipe_settle_seconds = max(0, min(120, cfg.greylist_snipe_settle_seconds))
+    cfg.greylist_snipe_peak_mc_proximity_pct = max(50.0, min(99.0, cfg.greylist_snipe_peak_mc_proximity_pct))
+    cfg.greylist_snipe_curve_buffer_pct = max(0.0, min(40.0, cfg.greylist_snipe_curve_buffer_pct))
+    cfg.greylist_snipe_ripcord_drawdown_pct = max(20.0, min(95.0, cfg.greylist_snipe_ripcord_drawdown_pct))
+    cfg.greylist_snipe_ripcord_grace_seconds = max(0, min(60, cfg.greylist_snipe_ripcord_grace_seconds))
     bot_state.config = cfg
     await bot_state.save_config()
     return cfg

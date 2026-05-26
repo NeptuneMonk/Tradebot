@@ -225,6 +225,22 @@ class BotConfig(BaseModel):
     greylist_snipe_min_score: float = 45.0   # hybrid threshold by default
     greylist_snipe_max_per_hour: int = 12    # rate cap (safety)
     greylist_snipe_settle_seconds: int = 5   # wait after launch for tracking bucket
+    # Pattern-based exits — the WHOLE point of greylist snipes is that the
+    # creator's rug is predictable (peak MC, curve fill %, rug timing). So
+    # we throw out the unpredictable-play exit ladder (entry-loss SL, max
+    # hold, momentum trailing) for snipes and ONLY exit when:
+    #   1. Current MC approaches the creator's typical peak MC
+    #   2. Curve fill % approaches the creator's typical rug point
+    #   3. Price drops more than `ripcord_drawdown_pct` from observed peak
+    #      (catastrophic rip-cord — recognizes the rug already happened,
+    #      NOT an entry-loss SL)
+    #   4. Pattern-suggested TP hits (locks profit on parabolic moves)
+    # `_check_snipe_pattern_exit()` in bot.py is the single source of truth.
+    greylist_snipe_pattern_exits: bool = True
+    greylist_snipe_peak_mc_proximity_pct: float = 85.0  # exit when MC ≥ X% of expected peak
+    greylist_snipe_curve_buffer_pct: float = 5.0        # exit when curve ≥ rug_pct - X pp
+    greylist_snipe_ripcord_drawdown_pct: float = 60.0   # emergency exit X% from peak observed
+    greylist_snipe_ripcord_grace_seconds: int = 8       # ripcord requires Xs above threshold first
     wallet_graph_enabled: bool = True          # 2-hop hunter on/off
     # Live PnL reset cutoff: when set, daily_pnl_usd(mode='live') only sums
     # trades closed at-or-after this ISO timestamp instead of today's 00:00 UTC.
