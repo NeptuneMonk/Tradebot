@@ -1653,8 +1653,12 @@ class BotState:
         # Doctor circuit-breaker: refuse new entries while the Doctor (or the
         # user manually via the UI) has paused trading. Existing positions
         # continue to be monitored normally — only NEW entries are blocked.
+        # When `doctor_advisory_only` is True the pause is observed (logged
+        # + reflected in UI status) but new entries are NOT blocked — user
+        # is actively supervising and decides when to stop.
         pause_until = float(getattr(self.config, "doctor_pause_until_ts", 0) or 0)
-        if pause_until and time.time() < pause_until:
+        if (pause_until and time.time() < pause_until
+                and not getattr(self.config, "doctor_advisory_only", False)):
             logger.debug(
                 f"doctor pause: skipping entry for {launch.mint[:8]}… "
                 f"({int(pause_until - time.time())}s remaining)"

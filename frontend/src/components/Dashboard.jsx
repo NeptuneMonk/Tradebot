@@ -249,7 +249,11 @@ export default function Dashboard() {
 
         <ScannerCandidatesCard candidates={scanner} config={config} />
 
-        <StrategyDoctorPanel onApplied={() => api.config().then(setConfig).catch(() => {})} />
+        <StrategyDoctorPanel
+          config={config}
+          onConfigUpdate={setConfig}
+          onApplied={() => api.config().then(setConfig).catch(() => {})}
+        />
 
         <CreatorGreylistPanel
           config={config}

@@ -20,7 +20,11 @@ from pydantic import BaseModel
 logger = logging.getLogger("auth")
 
 EMERGENT_SESSION_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
+# Idle timeout — extended on every authenticated request.
 SESSION_TTL = timedelta(hours=1)
+# Hard cap from session creation. Even with continuous activity the user
+# must re-auth after this window. Set high so testing isn't disrupted.
+SESSION_MAX_LIFETIME = timedelta(hours=24)
 COOKIE_NAME = "session_token"
 
 auth_router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -60,6 +64,55 @@ def _norm_expires(expires_at):
     return expires_at
 
 
+async def _maybe_extend_session(db, sess: dict, response: Optional[Response] = None) -> None:
+    """Sliding expiry: push `expires_at` forward by SESSION_TTL on every
+    successful auth check, capped at `created_at + SESSION_MAX_LIFETIME`.
+
+    Only writes when the new expiry would be at least 60s further out than
+    the current one (so we don't hammer Mongo on every single request).
+
+    When `response` is provided, also refreshes the cookie `max_age` so
+    the browser's stored cookie reflects the new expiry.
+    """
+    now = datetime.now(timezone.utc)
+    created_at = sess.get("created_at")
+    if isinstance(created_at, str):
+        try:
+            created_at = datetime.fromisoformat(created_at)
+        except Exception:
+            created_at = None
+    if isinstance(created_at, datetime) and created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    # Cap candidate at the absolute lifetime
+    cur_expires = _norm_expires(sess["expires_at"])
+    candidate = now + SESSION_TTL
+    if isinstance(created_at, datetime):
+        hard_cap = created_at + SESSION_MAX_LIFETIME
+        if candidate > hard_cap:
+            candidate = hard_cap
+    # Only persist if at least 60s further out
+    if (candidate - cur_expires).total_seconds() >= 60:
+        try:
+            await db.user_sessions.update_one(
+                {"session_token": sess["session_token"]},
+                {"$set": {"expires_at": candidate}},
+            )
+        except Exception:
+            return
+        if response is not None:
+            try:
+                response.set_cookie(
+                    key=COOKIE_NAME,
+                    value=sess["session_token"],
+                    max_age=int((candidate - now).total_seconds()),
+                    httponly=True,
+                    secure=True,
+                    samesite="none",
+                )
+            except Exception:
+                pass
+
+
 # ---------- DB Holder ----------
 class AuthDB:
     """Late-bound so server.py can pass its motor db."""
@@ -79,10 +132,13 @@ def get_db():
 # ---------- Dependency ----------
 async def get_current_user(
     request: Request,
+    response: Response,
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ) -> User:
-    """Validate session via cookie first, then Bearer header."""
+    """Validate session via cookie first, then Bearer header.
+    Sliding expiry: each successful call extends `expires_at` by SESSION_TTL,
+    capped at SESSION_MAX_LIFETIME from session creation."""
     token = session_token
     if not token and authorization and authorization.lower().startswith("bearer "):
         token = authorization.split(" ", 1)[1].strip()
@@ -107,6 +163,8 @@ async def get_current_user(
     if allowed and user_doc.get("email", "").lower() != allowed:
         raise HTTPException(status_code=403, detail="Account not authorized")
 
+    # Sliding session extension — keep the user logged in while active.
+    await _maybe_extend_session(db, sess, response=response)
     return User(**user_doc)
 
 
@@ -127,6 +185,8 @@ async def validate_token_str(token: str) -> Optional[User]:
     allowed = _allowed_email()
     if allowed and user_doc.get("email", "").lower() != allowed:
         return None
+    # WS connects are activity too — extend the session.
+    await _maybe_extend_session(db, sess, response=None)
     return User(**user_doc)
 
 

@@ -182,6 +182,11 @@ class BotConfig(BaseModel):
     # Scanner & _enter check `doctor_pause_until_ts` on every cycle — non-zero
     # means no new entries. Existing positions keep being monitored normally.
     doctor_circuit_breaker_enabled: bool = True
+    # When True, Doctor still computes/records pause decisions for visibility
+    # but doesn't actually block new entries. Use this while you're actively
+    # supervising the bot in the UI — you decide when to stop, Doctor only
+    # advises. Defaults False (full enforcement).
+    doctor_advisory_only: bool = False
     doctor_trail_drawdown_pct: float = 40.0     # pause if score drops this far from peak
     doctor_trail_recovery_pct: float = 70.0     # resume when score recovers to this fraction of pre-pause peak
     doctor_trail_lookback_minutes: int = 240    # peak rolls over this many minutes

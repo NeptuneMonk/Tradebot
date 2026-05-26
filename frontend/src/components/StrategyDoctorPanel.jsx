@@ -36,12 +36,32 @@ const CATEGORY_TINT = {
 
 const CONFIDENCE_DOT = { high: "bg-emerald-400", med: "bg-amber-400", low: "bg-neutral-500" };
 
-export default function StrategyDoctorPanel({ onApplied }) {
+export default function StrategyDoctorPanel({ onApplied, config, onConfigUpdate }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [busyId, setBusyId] = useState(null);
   const [lastRun, setLastRun] = useState(null);
+  const [advisoryToggling, setAdvisoryToggling] = useState(false);
+  const advisoryOnly = !!config?.doctor_advisory_only;
+
+  const toggleAdvisory = async () => {
+    if (advisoryToggling) return;
+    setAdvisoryToggling(true);
+    try {
+      const upd = await api.updateConfig({ doctor_advisory_only: !advisoryOnly });
+      toast.success(
+        !advisoryOnly
+          ? "Doctor → Advisory only (won't pause the bot)"
+          : "Doctor → Full enforcement (can pause the bot)"
+      );
+      onConfigUpdate && onConfigUpdate(upd);
+    } catch (e) {
+      toast.error("Toggle failed: " + (e?.response?.data?.detail || e.message));
+    } finally {
+      setAdvisoryToggling(false);
+    }
+  };
 
   const refresh = useCallback(async () => {
     try {
@@ -117,16 +137,34 @@ export default function StrategyDoctorPanel({ onApplied }) {
             </span>
           )}
         </div>
-        <button
-          type="button"
-          onClick={runNow}
-          disabled={running}
-          data-testid="doctor-run-now"
-          className="px-2 py-1 text-[10px] uppercase tracking-wider font-mono border border-neutral-700 text-neutral-300 hover:bg-neutral-900 disabled:opacity-40 inline-flex items-center gap-1"
-        >
-          {running ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-          {running ? "Analyzing…" : "Re-analyze"}
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={toggleAdvisory}
+            disabled={advisoryToggling}
+            data-testid="doctor-advisory-toggle"
+            title={advisoryOnly
+              ? "Currently advisory only — doctor logs warnings but won't pause the bot. Click to re-enable full enforcement."
+              : "Currently full enforcement — doctor can pause the bot on circuit-breaker. Click to switch to advisory-only mode (recommended while you're actively supervising)."}
+            className={`px-2 py-1 text-[10px] uppercase tracking-wider font-mono border inline-flex items-center gap-1 transition-colors duration-100 ${
+              advisoryOnly
+                ? "border-amber-700/60 text-amber-300 hover:bg-amber-950/50"
+                : "border-emerald-800/60 text-emerald-300 hover:bg-emerald-950/50"
+            }`}
+          >
+            {advisoryOnly ? "Advisory" : "Enforced"}
+          </button>
+          <button
+            type="button"
+            onClick={runNow}
+            disabled={running}
+            data-testid="doctor-run-now"
+            className="px-2 py-1 text-[10px] uppercase tracking-wider font-mono border border-neutral-700 text-neutral-300 hover:bg-neutral-900 disabled:opacity-40 inline-flex items-center gap-1"
+          >
+            {running ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+            {running ? "Analyzing…" : "Re-analyze"}
+          </button>
+        </div>
       </div>
 
       {loading ? (

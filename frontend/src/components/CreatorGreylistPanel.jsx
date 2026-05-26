@@ -506,15 +506,27 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
 
   const runSweep = async () => {
     setSweepRunning(true);
+    let toastId;
     try {
-      const r = await api.creatorGreylistRunSweep();
-      toast.success(
-        `Sweep done: classified ${r?.classified ?? 0} dormant launches, ` +
-          `refreshed ${r?.creators_touched ?? r?.creators_refreshed ?? 0} creators`
-      );
-      refresh();
+      const queued = await api.creatorGreylistRunSweep();
+      toastId = toast.loading("Failure sweep queued…", { duration: Infinity });
+      const job = await api.awaitJob(queued.job_id, {
+        onProgress: (j) => toast.loading(`Failure sweep ${j.status}…`, { id: toastId, duration: Infinity }),
+      });
+      if (job.status === "error") {
+        toast.error(`Sweep failed: ${job.error || "unknown"}`, { id: toastId, duration: 5000 });
+      } else {
+        const r = job.result || {};
+        toast.success(
+          `Sweep done: classified ${r?.classified ?? 0} dormant launches, ` +
+            `refreshed ${r?.creators_touched ?? r?.creators_refreshed ?? 0} creators`,
+          { id: toastId, duration: 5000 }
+        );
+        refresh();
+      }
     } catch (e) {
-      toast.error("Sweep failed: " + (e?.response?.data?.detail || e.message));
+      toast.error("Sweep failed: " + (e?.response?.data?.detail || e.message),
+                  { id: toastId, duration: 5000 });
     } finally {
       setSweepRunning(false);
     }
@@ -522,14 +534,26 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
 
   const runBackfill = async () => {
     setBackfillRunning(true);
+    let toastId;
     try {
-      const r = await api.creatorGreylistBackfill();
-      toast.success(
-        `Backfill: scanned ${r?.scanned ?? 0} · ${r?.now_active_on_greylist ?? 0} now active · ${r?.now_blacklisted ?? 0} blacklisted`
-      );
-      refresh();
+      const queued = await api.creatorGreylistBackfill();
+      toastId = toast.loading("Backfill queued…", { duration: Infinity });
+      const job = await api.awaitJob(queued.job_id, {
+        onProgress: (j) => toast.loading(`Backfill ${j.status}…`, { id: toastId, duration: Infinity }),
+      });
+      if (job.status === "error") {
+        toast.error(`Backfill failed: ${job.error || "unknown"}`, { id: toastId, duration: 5000 });
+      } else {
+        const r = job.result || {};
+        toast.success(
+          `Backfill: scanned ${r?.scanned ?? 0} · ${r?.now_active_on_greylist ?? 0} now active · ${r?.now_blacklisted ?? 0} blacklisted`,
+          { id: toastId, duration: 5000 }
+        );
+        refresh();
+      }
     } catch (e) {
-      toast.error("Backfill failed: " + (e?.response?.data?.detail || e.message));
+      toast.error("Backfill failed: " + (e?.response?.data?.detail || e.message),
+                  { id: toastId, duration: 5000 });
     } finally {
       setBackfillRunning(false);
     }

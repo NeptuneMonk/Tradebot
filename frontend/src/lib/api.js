@@ -82,13 +82,28 @@ export const api = {
   creatorGreylistProfile: (creator) =>
     client.get(`/creator-greylist/${creator}`).then(r => r.data),
   creatorGreylistRunSweep: () =>
-    longClient.post(`/creator-greylist/failure-sweep/run-now`).then(r => r.data),
+    client.post(`/creator-greylist/failure-sweep/run-now`).then(r => r.data),
   creatorBlacklist: (limit = 50) =>
     client.get(`/creator-greylist/blacklist`, { params: { limit } }).then(r => r.data),
   creatorPatternAnalytics: (days = 30, mode = null) =>
     client.get(`/creator-greylist/pattern-analytics`, { params: { days, ...(mode ? { mode } : {}) } }).then(r => r.data),
   creatorGreylistBackfill: () =>
-    longClient.post(`/creator-greylist/backfill-all`).then(r => r.data),
+    client.post(`/creator-greylist/backfill-all`).then(r => r.data),
+  // Job polling — used by the backfill / sweep buttons
+  getJob: (jobId) =>
+    client.get(`/jobs/${jobId}`).then(r => r.data),
+  // Poll helper: returns a promise that resolves with the final job doc
+  // when status moves to done/error. Polls every 2s, caps at 5min.
+  awaitJob: async (jobId, { onProgress, intervalMs = 2000, timeoutMs = 300000 } = {}) => {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const j = await client.get(`/jobs/${jobId}`).then(r => r.data);
+      if (onProgress) onProgress(j);
+      if (j.status === "done" || j.status === "error") return j;
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+    throw new Error("job polling timed out");
+  },
   unpinLaunch: (launchId) =>
     client.post(`/launches/${launchId}/unpin`).then(r => r.data),
 };

@@ -45,6 +45,52 @@ bot_state = BotState(db)
 listener = PumpFunListener(on_launch=bot_state.on_launch, on_trade=bot_state.on_trade)
 AuthDB.set(db)
 
+# In-memory job registry for long-running backfills. Keyed by job_id (uuid).
+# Each entry is {status: queued|running|done|error, started_at, ended_at,
+#                result?, error?, kind}. Lives for the process lifetime; old
+# entries are pruned when count exceeds 50.
+_job_registry: dict = {}
+
+
+def _new_job(kind: str) -> str:
+    """Allocate a job slot, return job_id."""
+    import uuid as _uuid
+    job_id = _uuid.uuid4().hex[:12]
+    _job_registry[job_id] = {
+        "job_id": job_id,
+        "kind": kind,
+        "status": "queued",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "ended_at": None,
+        "result": None,
+        "error": None,
+    }
+    # Prune old jobs — keep most recent 50
+    if len(_job_registry) > 50:
+        keys = sorted(_job_registry.keys(),
+                      key=lambda k: _job_registry[k].get("started_at") or "")
+        for k in keys[:-50]:
+            _job_registry.pop(k, None)
+    return job_id
+
+
+async def _run_job(job_id: str, coro_factory):
+    """Wrap a coroutine factory so its result/error lands in `_job_registry`."""
+    job = _job_registry.get(job_id)
+    if not job:
+        return
+    job["status"] = "running"
+    try:
+        result = await coro_factory()
+        job["result"] = result
+        job["status"] = "done"
+    except Exception as e:
+        logger.exception(f"job {job_id} ({job.get('kind')}) failed")
+        job["error"] = str(e)
+        job["status"] = "error"
+    finally:
+        job["ended_at"] = datetime.now(timezone.utc).isoformat()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -1997,13 +2043,16 @@ async def helius_budget_reset():
 async def trigger_failure_sweep():
     """Force a failure-sweep cycle. Classifies all launches older than 24h
     that didn't graduate as failed_instant / failed_fizzled / failed_chaotic,
-    then refreshes greylist scores for every affected creator. Use after
-    importing trade history or to fast-forward the first cycle on a new
-    install (normally runs every 6h)."""
+    then refreshes greylist scores for every affected creator. Runs as a
+    BACKGROUND JOB — returns immediately with `{job_id}`. Poll
+    `GET /api/jobs/{job_id}` for status/result."""
     sweeper = getattr(app.state, "failure_sweeper", None)
     if not sweeper:
         raise HTTPException(503, "failure sweeper not initialized")
-    return await sweeper.run_once()
+    job_id = _new_job("failure_sweep")
+    asyncio.create_task(_run_job(job_id, lambda: sweeper.run_once()))
+    return {"job_id": job_id, "status": "queued", "kind": "failure_sweep",
+            "poll": f"/api/jobs/{job_id}"}
 
 
 @api.get("/creator-greylist")
@@ -2022,150 +2071,167 @@ async def creator_greylist_backfill():
     in the Recent Launches feed that SHOULD be on the greylist but aren't
     (because they were ingested before the per-launch scoring hook was
     wired, or because the failure-sweep hasn't visited their cohort yet).
-    Cheap — Mongo-only, no Helius calls."""
-    cfg = await db.bot_config.find_one({}, {"_id": 0}) or {}
-    min_f = int(cfg.get("creator_greylist_min_fails", 2))
-    max_f = int(cfg.get("creator_greylist_max_fails", 100))
-    tp_buf = float(cfg.get("pattern_tp_buffer_pct", 2.0))
-    # Include both in-band creators AND any whose score was previously set
-    # (so creators that dropped OUT of the band get their composite zeroed).
-    cur = db.creators.find(
-        {"$or": [
-            {"tokens_failed": {"$gte": min_f, "$lt": max_f}},
-            {"greylist_score": {"$gt": 0}},
-        ]},
-        {"_id": 1, "tokens_failed": 1},
-    ).limit(5000)
-    from creator_greylist import update_creator_score
-    n_scanned = 0
-    n_scored = 0
-    n_blacklisted = 0
-    n_active = 0
-    async for d in cur:
-        n_scanned += 1
-        try:
-            r = await update_creator_score(db, d["_id"], min_fails=min_f,
-                                            max_fails=max_f, tp_buffer=tp_buf)
-            if r:
-                if (r.get("score") or 0) > 0:
-                    n_active += 1
-                elif r.get("pattern_blacklisted"):
-                    n_blacklisted += 1
-                n_scored += 1
-        except Exception:
-            continue
-    return {"scanned": n_scanned, "scored": n_scored,
-            "now_active_on_greylist": n_active,
-            "now_blacklisted": n_blacklisted}
+    Cheap — Mongo-only, no Helius calls.
+
+    Runs as a BACKGROUND JOB to avoid the 60s gateway timeout on larger
+    DBs. Returns `{job_id}`; poll `GET /api/jobs/{job_id}` for status/result.
+    """
+    async def _impl():
+        cfg = await db.bot_config.find_one({}, {"_id": 0}) or {}
+        min_f = int(cfg.get("creator_greylist_min_fails", 2))
+        max_f = int(cfg.get("creator_greylist_max_fails", 100))
+        tp_buf = float(cfg.get("pattern_tp_buffer_pct", 2.0))
+        cur = db.creators.find(
+            {"$or": [
+                {"tokens_failed": {"$gte": min_f, "$lt": max_f}},
+                {"greylist_score": {"$gt": 0}},
+            ]},
+            {"_id": 1, "tokens_failed": 1},
+        ).limit(5000)
+        from creator_greylist import update_creator_score
+        n_scanned = 0
+        n_scored = 0
+        n_blacklisted = 0
+        n_active = 0
+        async for d in cur:
+            n_scanned += 1
+            try:
+                r = await update_creator_score(db, d["_id"], min_fails=min_f,
+                                                max_fails=max_f, tp_buffer=tp_buf)
+                if r:
+                    if (r.get("score") or 0) > 0:
+                        n_active += 1
+                    elif r.get("pattern_blacklisted"):
+                        n_blacklisted += 1
+                    n_scored += 1
+            except Exception:
+                continue
+        return {"scanned": n_scanned, "scored": n_scored,
+                "now_active_on_greylist": n_active,
+                "now_blacklisted": n_blacklisted}
+
+    job_id = _new_job("backfill_all")
+    asyncio.create_task(_run_job(job_id, _impl))
+    return {"job_id": job_id, "status": "queued", "kind": "backfill_all",
+            "poll": f"/api/jobs/{job_id}"}
 
 
 @api.post("/creator-greylist/backfill-signatures")
 async def creator_greylist_backfill_signatures(limit: int = 5000, only_missing: bool = True):
     """Backfill per-launch behavioral signatures (accel_class / flow_class /
-    rug_speed_class / rug_seconds_from_launch) on existing `launches`
-    documents. The greylist scorer reads these from each launch when it
-    builds the creator's repeatability aggregate — without them the Bing
-    +15 acceleration bonus stays dormant.
+    rug_speed_class / rug_seconds_from_launch). Runs as a BACKGROUND JOB.
+    Returns `{job_id}`; poll `GET /api/jobs/{job_id}` for status/result."""
+    async def _impl():
+        from launch_signatures import derive_signatures
+        q: dict = {}
+        if only_missing:
+            q["accel_class"] = {"$exists": False}
+        cur = db.launches.find(
+            q,
+            {"_id": 1, "sol_inflow": 1, "buy_count": 1, "unique_buyers": 1,
+             "outcome": 1, "detected_at": 1, "outcome_at": 1,
+             "peak_mc_usd_at": 1},
+        ).limit(max(1, min(50000, int(limit))))
+        n_scanned = 0
+        n_updated = 0
+        n_with_rug_speed = 0
+        async for d in cur:
+            n_scanned += 1
+            sig = derive_signatures(d)
+            if not sig:
+                continue
+            if "accel_class" in sig:
+                n_updated += 1
+            if "rug_speed_class" in sig:
+                n_with_rug_speed += 1
+            await db.launches.update_one({"_id": d["_id"]}, {"$set": sig})
+        return {"scanned": n_scanned, "updated": n_updated,
+                "with_rug_speed": n_with_rug_speed,
+                "only_missing": only_missing}
 
-    Cheap, Mongo-only:
-      - reads `sol_inflow`, `buy_count`, `unique_buyers`, `outcome`,
-        `detected_at`, `outcome_at`
-      - writes `accel_class`, `flow_class`, optionally `rug_speed_class` +
-        `rug_seconds_from_launch` when both timestamps are present.
-
-    Idempotent. Default skips launches that already have `accel_class` set
-    so repeated calls converge cheaply.
-    """
-    from launch_signatures import derive_signatures
-    q: dict = {}
-    if only_missing:
-        q["accel_class"] = {"$exists": False}
-    cur = db.launches.find(
-        q,
-        {"_id": 1, "sol_inflow": 1, "buy_count": 1, "unique_buyers": 1,
-         "outcome": 1, "detected_at": 1, "outcome_at": 1,
-         "peak_mc_usd_at": 1},
-    ).limit(max(1, min(50000, int(limit))))
-    n_scanned = 0
-    n_updated = 0
-    n_with_rug_speed = 0
-    async for d in cur:
-        n_scanned += 1
-        sig = derive_signatures(d)
-        if not sig:
-            continue
-        # Only count as 'updated' if at least accel_class is set
-        if "accel_class" in sig:
-            n_updated += 1
-        if "rug_speed_class" in sig:
-            n_with_rug_speed += 1
-        await db.launches.update_one({"_id": d["_id"]}, {"$set": sig})
-    return {"scanned": n_scanned, "updated": n_updated,
-            "with_rug_speed": n_with_rug_speed,
-            "only_missing": only_missing}
+    job_id = _new_job("backfill_signatures")
+    asyncio.create_task(_run_job(job_id, _impl))
+    return {"job_id": job_id, "status": "queued", "kind": "backfill_signatures",
+            "poll": f"/api/jobs/{job_id}"}
 
 
 @api.post("/creator-greylist/backfill-curve-fill")
 async def creator_greylist_backfill_curve_fill(limit: int = 20000):
-    """Backfill `curve_fill_pct` on historical failed launches that were
-    persisted before the live tracker started capturing it. The greylist
-    pattern classifier reads `curve_fill_pct` to compute
-    `expected_rug_window_pct` — without it, ~92% of failed launches
-    contribute nothing to the per-creator rug-curve pattern.
+    """Backfill `curve_fill_pct` on historical failed launches. Runs as a
+    BACKGROUND JOB. Returns `{job_id}`; poll `GET /api/jobs/{job_id}`."""
+    async def _impl():
+        from launch_signatures import derive_curve_fill_pct
+        q = {
+            "outcome": "failed",
+            "$or": [
+                {"curve_fill_pct": 0},
+                {"curve_fill_pct": {"$exists": False}},
+            ],
+            "$and": [
+                {"$or": [
+                    {"final_peak_mc_usd": {"$gt": 0}},
+                    {"sol_inflow": {"$gt": 0.1}},
+                ]},
+            ],
+        }
+        cur = db.launches.find(
+            q,
+            {"_id": 1, "final_peak_mc_usd": 1, "sol_inflow": 1},
+        ).limit(max(1, min(50000, int(limit))))
+        n_scanned = 0
+        n_updated = 0
+        n_from_peak = 0
+        n_from_inflow = 0
+        async for d in cur:
+            n_scanned += 1
+            derived = derive_curve_fill_pct(d)
+            if derived is None:
+                continue
+            if d.get("final_peak_mc_usd") and d["final_peak_mc_usd"] > 0:
+                n_from_peak += 1
+            else:
+                n_from_inflow += 1
+            await db.launches.update_one(
+                {"_id": d["_id"]},
+                {"$set": {
+                    "curve_fill_pct": round(derived, 2),
+                    "curve_fill_pct_derived": True,
+                }},
+            )
+            n_updated += 1
+        return {
+            "scanned": n_scanned,
+            "updated": n_updated,
+            "from_peak_mc": n_from_peak,
+            "from_sol_inflow": n_from_inflow,
+        }
 
-    Idempotent: only updates launches where `curve_fill_pct` is missing
-    or 0 AND we have a derivable value (`final_peak_mc_usd` > 0 or
-    `sol_inflow` > 0.1).
+    job_id = _new_job("backfill_curve_fill")
+    asyncio.create_task(_run_job(job_id, _impl))
+    return {"job_id": job_id, "status": "queued", "kind": "backfill_curve_fill",
+            "poll": f"/api/jobs/{job_id}"}
 
-    Cheap — Mongo-only, single pass, no Helius calls.
-    """
-    from launch_signatures import derive_curve_fill_pct
-    q = {
-        "outcome": "failed",
-        "$or": [
-            {"curve_fill_pct": 0},
-            {"curve_fill_pct": {"$exists": False}},
-        ],
-        # Skip docs we can't derive anything from
-        "$and": [
-            {"$or": [
-                {"final_peak_mc_usd": {"$gt": 0}},
-                {"sol_inflow": {"$gt": 0.1}},
-            ]},
-        ],
-    }
-    cur = db.launches.find(
-        q,
-        {"_id": 1, "final_peak_mc_usd": 1, "sol_inflow": 1},
-    ).limit(max(1, min(50000, int(limit))))
-    n_scanned = 0
-    n_updated = 0
-    n_from_peak = 0
-    n_from_inflow = 0
-    async for d in cur:
-        n_scanned += 1
-        derived = derive_curve_fill_pct(d)
-        if derived is None:
-            continue
-        # Track which source we used (for the response audit)
-        if d.get("final_peak_mc_usd") and d["final_peak_mc_usd"] > 0:
-            n_from_peak += 1
-        else:
-            n_from_inflow += 1
-        await db.launches.update_one(
-            {"_id": d["_id"]},
-            {"$set": {
-                "curve_fill_pct": round(derived, 2),
-                "curve_fill_pct_derived": True,
-            }},
-        )
-        n_updated += 1
-    return {
-        "scanned": n_scanned,
-        "updated": n_updated,
-        "from_peak_mc": n_from_peak,
-        "from_sol_inflow": n_from_inflow,
-    }
+
+@api.get("/jobs/{job_id}")
+async def get_job_status(job_id: str):
+    """Poll a background job started by one of the backfill / sweep endpoints.
+    Returns `{status, started_at, ended_at, result, error}`."""
+    job = _job_registry.get(job_id)
+    if not job:
+        raise HTTPException(404, "job not found (may have expired or never existed)")
+    return job
+
+
+@api.get("/jobs")
+async def list_recent_jobs(limit: int = 20):
+    """List the N most-recent background jobs (descending by started_at).
+    Lets the UI render a 'job history' strip near the backfill buttons."""
+    items = sorted(
+        _job_registry.values(),
+        key=lambda j: j.get("started_at") or "",
+        reverse=True,
+    )[: max(1, min(50, int(limit)))]
+    return {"items": items}
 
 
 @api.get("/creator-greylist/blacklist")
