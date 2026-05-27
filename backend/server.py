@@ -1754,6 +1754,68 @@ async def scanner_candidates():
     return bot_state.scanner.candidates_snapshot()
 
 
+@api.get("/diagnostics/tracking-summary")
+async def tracking_summary():
+    """Live tracking state of the in-memory scanner buffer. Diagnostic
+    endpoint added 2026-02-08 to debug 'bot is running but never trades'
+    cases — pinpoint whether the issue is `tracking` empty (no launches
+    reach the scanner) vs all tokens failing gates (passes=False).
+    """
+    st = bot_state
+    cfg = st.config
+    now = time.time()
+    max_age = cfg.scanner_window_hours * 3600
+    min_age = cfg.scanner_min_age_minutes * 60
+    total = len(st.tracking)
+    fresh = 0
+    new_band = 0
+    seasoned_band = 0
+    in_active = 0
+    in_entered = 0
+    sample = []
+    for mint, b in st.tracking.items():
+        age = now - b.get("start", now)
+        if age > max_age:
+            continue
+        fresh += 1
+        is_active = mint in st.active_trades
+        is_entered = mint in st.entered_mints
+        if is_active: in_active += 1
+        if is_entered: in_entered += 1
+        if age >= min_age:
+            seasoned_band += 1
+        else:
+            new_band += 1
+        if len(sample) < 6:
+            sample.append({
+                "mint": mint[:8],
+                "symbol": b.get("symbol"),
+                "age_s": int(age),
+                "sol_inflow": b.get("sol_inflow_lamports", 0) / 1_000_000_000,
+                "buy_count": b.get("buy_count"),
+                "unique_buyers": len(b.get("buyers", set())),
+                "scanner_eligible": b.get("scanner_eligible"),
+                "in_active": is_active,
+                "in_entered": is_entered,
+            })
+    return {
+        "tracking_total": total,
+        "fresh_within_window": fresh,
+        "new_band_count": new_band,
+        "seasoned_band_count": seasoned_band,
+        "in_active_trades": in_active,
+        "in_entered_mints": in_entered,
+        "scanner_enabled": cfg.scanner_enabled,
+        "bot_enabled": cfg.enabled,
+        "kill_switch": st.kill_switch_tripped,
+        "active_trade_count": len(st.active_trades),
+        "max_concurrent_positions": cfg.max_concurrent_positions,
+        "doctor_pause_until_ts": cfg.doctor_pause_until_ts,
+        "doctor_advisory_only": cfg.doctor_advisory_only,
+        "sample": sample,
+    }
+
+
 # ---------- Suggested settings intelligence ----------
 @api.get("/suggestions")
 async def get_suggestions():
