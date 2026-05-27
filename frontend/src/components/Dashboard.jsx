@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
@@ -65,11 +65,101 @@ export default function Dashboard() {
     } catch (e) { /* swallow */ }
   }, []);
 
+  // ----- Polling fallback (only when WebSocket is NOT connected) ---------
+  // The WebSocket hub broadcasts every state change in real time. Polling
+  // every 20s on top of that doubles the work for no benefit — we drop it
+  // to a slower 60s safety net that only fires while disconnected.
   useEffect(() => {
-    refreshAll();
-    const id = setInterval(refreshAll, 20000);
-    return () => clearInterval(id);
+    refreshAll();  // initial pull
   }, [refreshAll]);
+
+  // ----- Coalesced launches updates --------------------------------------
+  // High-volume markets emit 5-20 launch_update events per second. Calling
+  // setLaunches on every one trashes the React render loop and tanks the
+  // UI on lower-power devices. We coalesce all updates within a 400ms
+  // window into a single state mutation by buffering pending patches in a
+  // ref + scheduling one render.
+  const launchUpdateBufRef = useRef(new Map());     // mint -> latest patch
+  const launchUpdateNewBufRef = useRef([]);          // brand-new launches (FIFO)
+  const launchFlushHandleRef = useRef(null);
+  const scheduleLaunchFlush = useCallback(() => {
+    if (launchFlushHandleRef.current) return;
+    launchFlushHandleRef.current = setTimeout(() => {
+      launchFlushHandleRef.current = null;
+      const updates = launchUpdateBufRef.current;
+      const newOnes = launchUpdateNewBufRef.current;
+      launchUpdateBufRef.current = new Map();
+      launchUpdateNewBufRef.current = [];
+      if (updates.size === 0 && newOnes.length === 0) return;
+      setLaunches((prev) => {
+        // 1. Merge updates against current state
+        let next = prev.map((l) => (updates.has(l.id) ? { ...l, ...updates.get(l.id) } : l));
+        // Drop any updates that hit mints we never displayed — keeps state tight
+        // 2. Prepend brand-new launches, dropping dupes
+        if (newOnes.length) {
+          const incomingIds = new Set(newOnes.map((d) => d.id));
+          next = [...newOnes, ...next.filter((l) => !incomingIds.has(l.id))];
+        }
+        const pinned = next.filter((l) => l.pinned);
+        const unpinned = next.filter((l) => !l.pinned);
+        return [...pinned.slice(0, 200), ...unpinned.slice(0, 50)];
+      });
+    }, 400);
+  }, []);
+  // Cleanup pending flush on unmount
+  useEffect(() => {
+    return () => {
+      if (launchFlushHandleRef.current) {
+        clearTimeout(launchFlushHandleRef.current);
+        launchFlushHandleRef.current = null;
+      }
+    };
+  }, []);
+
+  // ----- Coalesced exit toasts -------------------------------------------
+  // Bursts of trade_exit events (e.g. when the user hits "Stop bot" with
+  // 8 active positions) used to fire 8 stacked toasts. We aggregate exits
+  // within a 1.5s window into a single summary toast.
+  const exitToastCountRef = useRef(0);
+  const exitToastHandleRef = useRef(null);
+  const scheduleExitToast = useCallback(() => {
+    exitToastCountRef.current += 1;
+    if (exitToastHandleRef.current) return;
+    exitToastHandleRef.current = setTimeout(() => {
+      const n = exitToastCountRef.current;
+      exitToastHandleRef.current = null;
+      exitToastCountRef.current = 0;
+      if (n === 1) return;  // single exits don't deserve a toast
+      toast.info(`${n} trades exited`);
+    }, 1500);
+  }, []);
+  useEffect(() => () => {
+    if (exitToastHandleRef.current) {
+      clearTimeout(exitToastHandleRef.current);
+      exitToastHandleRef.current = null;
+    }
+  }, []);
+
+  // ----- Coalesced refetches on trade_exit -------------------------------
+  // Each trade_exit triggers a re-fetch of launches+pnl+pl_source+reentry.
+  // A burst of N exits = 4×N HTTP calls. Debounce to one set every 1s.
+  const tradeExitRefetchHandleRef = useRef(null);
+  const scheduleTradeExitRefetch = useCallback(() => {
+    if (tradeExitRefetchHandleRef.current) return;
+    tradeExitRefetchHandleRef.current = setTimeout(() => {
+      tradeExitRefetchHandleRef.current = null;
+      api.launches().then(setLaunches).catch(() => {});
+      api.plSummary(7).then(setPl).catch(() => {});
+      setPlSourceRefresh((n) => n + 1);
+      api.reentryWatchlist().then(setReentry).catch(() => {});
+    }, 1000);
+  }, []);
+  useEffect(() => () => {
+    if (tradeExitRefetchHandleRef.current) {
+      clearTimeout(tradeExitRefetchHandleRef.current);
+      tradeExitRefetchHandleRef.current = null;
+    }
+  }, []);
 
   // Pull current user once for header display
   useEffect(() => {
@@ -92,28 +182,18 @@ export default function Dashboard() {
       case "wallet":
         setWallet(data);
         break;
-      case "launch": {
-        // Pinned launches survive the 50-item cap (Phase 2.9). The backend
-        // already returns pinned-first on the /launches/recent endpoint;
-        // here we just ensure WS-driven inserts don't bump them off.
-        setLaunches((prev) => {
-          const merged = [data, ...prev.filter((l) => l.id !== data.id)];
-          const pinned = merged.filter((l) => l.pinned);
-          const unpinned = merged.filter((l) => !l.pinned);
-          return [...pinned.slice(0, 200), ...unpinned.slice(0, 50)];
-        });
+      case "launch":
+        // Buffer brand-new launches for the coalesced flush (perf — see
+        // scheduleLaunchFlush). Drops the per-event setLaunches mutation.
+        launchUpdateNewBufRef.current.push(data);
+        scheduleLaunchFlush();
         break;
-      }
       case "launch_update":
-        // Only update if the mint is already in our 50-item window —
-        // events for mints we never displayed shouldn't bloat React state.
-        setLaunches((prev) => {
-          const idx = prev.findIndex((l) => l.id === data.id);
-          if (idx === -1) return prev;
-          const next = prev.slice();
-          next[idx] = { ...next[idx], ...data };
-          return next;
-        });
+        // Buffer the update keyed by mint — successive updates for the
+        // same mint overwrite earlier ones in the buffer. One render per
+        // 400ms regardless of event volume.
+        launchUpdateBufRef.current.set(data.id, data);
+        scheduleLaunchFlush();
         break;
       case "trade_enter":
         setActiveTrades((prev) => [data, ...prev.filter((t) => t.id !== data.id)]);
@@ -126,17 +206,10 @@ export default function Dashboard() {
         break;
       case "trade_exit":
         setActiveTrades((prev) => prev.filter((t) => t.id !== data.id));
-        // Dedupe by id — WS can fire `trade_exit` more than once per trade
-        // (partial-TP + final exit, or scanner/exit-monitor race). Without
-        // this guard the same row appears 4-5x in the history table until
-        // the 20s polling refresh overwrites it.
         setHistory((prev) => [data, ...prev.filter((t) => t.id !== data.id)]);
-        // Refresh launches so the exited card flips to grey/dimmed state
-        api.launches().then(setLaunches).catch(() => {});
-        api.plSummary(7).then(setPl).catch(() => {});
-        setPlSourceRefresh((n) => n + 1);
-        // Refresh reentry watchlist (may have a new entry)
-        api.reentryWatchlist().then(setReentry).catch(() => {});
+        // Coalesce refetches + toast spam during exit bursts (perf).
+        scheduleTradeExitRefetch();
+        scheduleExitToast();
         break;
       case "reentry_watch_add":
         setReentry((prev) => [...prev.filter((w) => w.mint !== data.mint), data]);
@@ -156,7 +229,17 @@ export default function Dashboard() {
       default:
         break;
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []));
+
+  // WS-aware safety-net polling. While the WebSocket is healthy we don't
+  // need to poll — every state change is pushed in real time. While
+  // disconnected, fall back to a 30s pull so the UI keeps drifting forward.
+  useEffect(() => {
+    if (wsConnected) return;
+    const id = setInterval(refreshAll, 30000);
+    return () => clearInterval(id);
+  }, [wsConnected, refreshAll]);
 
   return (
     <TooltipProvider delayDuration={150} skipDelayDuration={50}>

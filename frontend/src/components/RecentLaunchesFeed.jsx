@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Radio, Users, Droplets, Flame, Pin, PinOff, X } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -11,7 +12,7 @@ const timeAgo = (iso) => {
   return `${Math.floor(sec / 3600)}h ago`;
 };
 
-export default function RecentLaunchesFeed({ launches, onUnpin }) {
+function RecentLaunchesFeed({ launches, onUnpin }) {
   const pinnedCount = launches.filter((l) => l.pinned).length;
   return (
     <div className="control-card flex flex-col" data-testid="recent-launches-card">
@@ -256,3 +257,9 @@ function ActionBadge({ action, risk, entered, entryAction }) {
     </div>
   );
 }
+
+
+// React.memo wrapper — only re-render when the launches array reference
+// changes. With the coalesced flush in Dashboard.jsx, a 20-event burst
+// now produces 1 re-render every 400ms instead of 20 per tick.
+export default memo(RecentLaunchesFeed);

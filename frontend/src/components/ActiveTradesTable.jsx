@@ -1,8 +1,9 @@
+import { memo } from "react";
 import { Activity, X } from "lucide-react";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 
-export default function ActiveTradesTable({ trades, onExit }) {
+function ActiveTradesTable({ trades, onExit }) {
   return (
     <div className="control-card" data-testid="active-trades-card">
       <div className="flex items-center justify-between mb-3">
@@ -128,3 +129,6 @@ function RiskBadge({ risk }) {
   else if (risk >= 50) cls = "text-amber-400 border-amber-800 bg-amber-950/40";
   return <span className={`px-1.5 py-0.5 border text-[10px] ${cls}`}>{risk}</span>;
 }
+
+
+export default memo(ActiveTradesTable);

@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { History, CircleDot, Search } from "lucide-react";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
@@ -37,7 +38,7 @@ function summarizeExit(t) {
   return { label: r.split(/[\s(]/).slice(0, 3).join(" "), tint: "text-neutral-400" };
 }
 
-export default function TradeHistoryTable({ history }) {
+function TradeHistoryTable({ history }) {
   const partialCount = history.filter((t) => t.partial_done).length;
   const partialBanked = history.reduce((sum, t) => sum + (t.partial_realized_usd || 0), 0);
 
@@ -143,3 +144,5 @@ export default function TradeHistoryTable({ history }) {
     </div>
   );
 }
+
+export default memo(TradeHistoryTable);
