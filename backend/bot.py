@@ -304,9 +304,21 @@ class BotState:
             return False
         # Still in breach
         # Severity override: dump is already much worse than the gate trigger
-        # → fire immediately to cap the bleed (no point waiting for confirmation).
+        # → fire fast to cap the bleed.
+        #
+        # 2026-02-08: Even severity overrides require AT LEAST 2 samples within
+        # ~300ms before firing. Paper data caught a "SL hit -62%" event where
+        # the raw entry→exit move was +0.61% (a single downward wick from a
+        # bad RPC quote / one outsized sell event). Without the 2-sample
+        # floor, a single bad tick could close a profitable position at
+        # invented severity.
         if severity_threshold_pct > 0 and severity_pct >= severity_threshold_pct:
-            return True
+            if slot.get(key_since) is None:
+                slot[key_since] = now
+                slot[key_count] = 1
+                return False
+            slot[key_count] = (slot.get(key_count) or 0) + 1
+            return slot[key_count] >= 2
         if slot.get(key_since) is None:
             slot[key_since] = now
             slot[key_count] = 1
