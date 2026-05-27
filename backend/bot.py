@@ -1250,7 +1250,31 @@ class BotState:
         # Take profit — either full exit or partial-then-tighten-trailing.
         # NOTE: after a successful partial, we skip the TP check entirely — the
         # runner is governed by the tightened trailing stop only.
-        if pct_change >= tp_pct and not slot.get("partial_done"):
+        #
+        # 2026-02-08: wrapped in persistence check. Paper data showed TP
+        # firing on single-tick wicks (+15-23% message vs 0-5% raw move
+        # entry→exit) — one outsized buy event spikes curve, TP fires,
+        # then price reverts before the sell settles. Persistence kills
+        # the false positives without delaying real TP moves more than ~800ms.
+        tp_breached = pct_change >= tp_pct
+        tp_should_fire = False
+        if tp_breached and not slot.get("partial_done"):
+            if self.config.intelligent_exit_v2:
+                tp_should_fire = self._check_breach_persistence(
+                    slot, kind="tp", breached=tp_breached,
+                    persistence_ms=self.config.tp_persistence_ms,
+                    min_samples=self.config.tp_persistence_min_samples,
+                )
+            else:
+                tp_should_fire = True
+        elif not tp_breached:
+            # Recovery — clear the TP breach state so next breach restarts the clock.
+            self._check_breach_persistence(
+                slot, kind="tp", breached=False,
+                persistence_ms=self.config.tp_persistence_ms,
+                min_samples=self.config.tp_persistence_min_samples,
+            )
+        if tp_should_fire:
             slot["exit_in_progress"] = True
             try:
                 ptp = self.config.partial_tp_pct

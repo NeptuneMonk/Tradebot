@@ -66,10 +66,18 @@ class BotConfig(BaseModel):
     # exits from millisecond dips during volatile microstructure.
     sl_persistence_ms: int = 1200
     ts_persistence_ms: int = 1500
+    # TP persistence — same wick-protection as SL/TS but for take-profit.
+    # 2026-02-08 paper data showed TP firing on momentary +15-23% wicks
+    # that vanished by the time the sell settled (final PnL near 0% or
+    # negative). Requiring the breach to persist N ms (default 800 — shorter
+    # than SL so we don't miss real moves) ensures TP only fires on
+    # genuine moves, not single-tick spikes from one outsized buy event.
+    tp_persistence_ms: int = 800
     # Defense-in-depth: require N price samples during persistence window
     # before firing, so a single bad RPC quote can't single-handedly cause exit.
     sl_persistence_min_samples: int = 3
     ts_persistence_min_samples: int = 3
+    tp_persistence_min_samples: int = 2
     # Auto-slip formula (when intelligent_exit_v2 is on, replaces panic_exit_slippage_bps
     # for exit-side sells; entry-side already has its own depth-aware ladder)
     auto_exit_slip_base_bps: int = 300            # 3% baseline
