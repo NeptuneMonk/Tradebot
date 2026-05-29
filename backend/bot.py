@@ -100,18 +100,25 @@ class BotState:
         # We do NOT clear `live_trading` here so the user's live/paper mode
         # preference is preserved across restarts; only the `enabled` flag is
         # forced off.
-        was_running_before_restart = self.config.enabled
-        if was_running_before_restart:
-            self.config.enabled = False
-            await self.db.bot_config.update_one(
-                {"_id": "current"},
-                {"$set": {"enabled": False}},
-                upsert=True,
-            )
-            logger.warning(
-                "BOT WAS RUNNING BEFORE THIS PROCESS START — auto-disabled "
-                "for safety. Press Start in the UI to resume trading."
-            )
+        #
+        # IMPORTANT: this guard runs ONCE per process lifetime (the first
+        # `load()` call after import). Subsequent calls (e.g. from
+        # live_doctor.py to pick up freshly-written config) MUST NOT
+        # auto-disable, or the doctor flips the bot off every cycle.
+        if not getattr(self, "_initial_load_done", False):
+            was_running_before_restart = self.config.enabled
+            if was_running_before_restart:
+                self.config.enabled = False
+                await self.db.bot_config.update_one(
+                    {"_id": "current"},
+                    {"$set": {"enabled": False}},
+                    upsert=True,
+                )
+                logger.warning(
+                    "BOT WAS RUNNING BEFORE THIS PROCESS START — auto-disabled "
+                    "for safety. Press Start in the UI to resume trading."
+                )
+            self._initial_load_done = True
         async for t in self.db.trades.find({"status": "active"}, {"_id": 0}):
             # Persist legacy active trades that lack the new protocol field —
             # we can't safely respawn a monitor for them since price polling

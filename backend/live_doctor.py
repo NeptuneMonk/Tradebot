@@ -482,33 +482,45 @@ class LiveDoctor:
             if score < trip_threshold and score < min_score_floor and peak >= min_score_floor:
                 new_paused = True
                 paused_peak = peak
-                # Long pause window — actual resume controlled by trail state
-                # (we just need the bot's _enter guard to see "paused" until we clear it)
-                await self.db.bot_config.update_one(
-                    {},
-                    {"$set": {
-                        "doctor_pause_until_ts": now + 24 * 3600,
-                        "doctor_pause_reason": (
-                            f"Trail stop: regime score {score:.0f} fell {drawdown_pct:.0f}%+ "
-                            f"from peak {peak:.0f}. Will resume when score recovers to "
-                            f"{recovery_pct:.0f}% of {peak:.0f} ({peak * recovery_pct / 100:.0f})."
-                        ),
-                    }},
-                )
-                if self.bot_state and hasattr(self.bot_state, "load"):
-                    try:
-                        await self.bot_state.load()
-                    except Exception:
-                        pass
-                action_taken = "PAUSED — trail tripped"
-                logger.warning(f"DOCTOR TRAIL STOP TRIPPED: score={score} peak={peak}")
+                # Respect `doctor_advisory_only` — if the user is actively
+                # supervising in the UI, surface the trail-stop state but
+                # don't actually block entries. The trail card still shows
+                # PAUSED so the user sees the regime degradation, but the
+                # entry guard in _enter ignores it (and the config reload
+                # broadcast won't wipe the user's in-flight UI edits).
+                advisory = bool(cfg.get("doctor_advisory_only", False))
+                if advisory:
+                    logger.warning(
+                        f"DOCTOR TRAIL STOP TRIPPED (advisory only): score={score} peak={peak} — NOT writing pause"
+                    )
+                    action_taken = "trail tripped (advisory — not enforced)"
+                else:
+                    await self.db.bot_config.update_one(
+                        {},
+                        {"$set": {
+                            "doctor_pause_until_ts": now + 24 * 3600,
+                            "doctor_pause_reason": (
+                                f"Trail stop: regime score {score:.0f} fell {drawdown_pct:.0f}%+ "
+                                f"from peak {peak:.0f}. Will resume when score recovers to "
+                                f"{recovery_pct:.0f}% of {peak:.0f} ({peak * recovery_pct / 100:.0f})."
+                            ),
+                        }},
+                    )
+                    if self.bot_state and hasattr(self.bot_state, "load"):
+                        try:
+                            await self.bot_state.load()
+                        except Exception:
+                            pass
+                    action_taken = "PAUSED — trail tripped"
+                    logger.warning(f"DOCTOR TRAIL STOP TRIPPED: score={score} peak={peak}")
         else:
             # Currently paused — check for recovery
             recovery_threshold = paused_peak * (recovery_pct / 100.0)
             if score >= recovery_threshold:
                 new_paused = False
                 paused_peak = 0
-                # Clear the pause
+                # Clear the pause (idempotent — even if advisory mode never
+                # wrote it, harmless to clear)
                 await self.db.bot_config.update_one(
                     {},
                     {"$set": {
