@@ -2347,6 +2347,83 @@ class BotState:
             {"_id": trade.id}, {"$set": {**doc, "_id": trade.id}}, upsert=True
         )
 
+    async def _detect_and_migrate_graduation(self, mint: str, slot: dict) -> bool:
+        """Detect post-entry graduation (pumpfun bonding curve → PumpSwap AMM)
+        and migrate the slot's protocol/pool in-place.
+
+        Called by `_monitor_position` whenever the pumpfun bonding-curve read
+        comes back null or with `complete=True`. Without this hook, the old
+        code paths interpret both signals as "position is dead, sell now" —
+        causing the bot to fire emergency exits on tokens that just graduated
+        successfully and now trade on PumpSwap at higher prices.
+
+        Returns True iff a PumpSwap pool was found and the slot was migrated
+        (caller should continue monitoring with the new protocol). Returns
+        False iff no pool exists yet (caller should keep waiting / use the
+        30s grace timer before triggering an emergency exit).
+
+        Side effects on success:
+          - slot["protocol"] = "pumpswap"
+          - slot["pumpswap_pool"] = <pool_address>
+          - trade doc patched in Mongo so reconciler-respawned monitors
+            inherit the migrated state (the orphan-reattach path at
+            `_reattach_orphaned_active_rows` reads `protocol` + `pumpswap_pool`
+            from the persisted doc).
+          - WS broadcast `trade_update` so the UI re-renders the position
+            with the new protocol badge.
+        """
+        if slot.get("protocol") == "pumpswap":
+            return True  # already migrated, idempotent
+        try:
+            pool = await pumpswap.find_pool_for_mint(mint)
+        except Exception as e:
+            logger.debug(f"graduation pool lookup failed for {mint[:8]}…: {e}")
+            return False
+        if not pool:
+            return False
+        # Confirm the pool is actually live by fetching its state.
+        try:
+            pool_state = await pumpswap.fetch_pool_state(pool)
+        except Exception as e:
+            logger.debug(f"graduation pool state fetch failed for {mint[:8]}…: {e}")
+            return False
+        if not pool_state:
+            return False
+        # Migrate the slot
+        slot["protocol"] = "pumpswap"
+        slot["pumpswap_pool"] = pool
+        slot["_graduation_detected_ts"] = time.time()
+        # Clear any null-curve grace timer that was running
+        slot.pop("_graduation_grace_start", None)
+        # Persist to Mongo so the reconciler-rebuilt slot inherits the new
+        # protocol on monitor respawn (otherwise a respawn would revert to
+        # the pumpfun protocol stored at entry).
+        trade_doc = slot.get("trade") or {}
+        trade_id = trade_doc.get("id")
+        if trade_id:
+            try:
+                await self.db.trades.update_one(
+                    {"id": trade_id},
+                    {"$set": {
+                        "protocol": "pumpswap",
+                        "pumpswap_pool": pool,
+                        "graduation_migrated_at": datetime.now(timezone.utc).isoformat(),
+                    }},
+                )
+                trade_doc["protocol"] = "pumpswap"
+                trade_doc["pumpswap_pool"] = pool
+            except Exception as e:
+                logger.warning(f"graduation persist failed for {mint[:8]}…: {e}")
+        logger.warning(
+            f"GRADUATION MIGRATED: {trade_doc.get('symbol','?')} {mint[:8]}… "
+            f"pumpfun → pumpswap (pool={pool[:8]}…). Continuing monitor."
+        )
+        try:
+            await hub.broadcast("trade_update", {**trade_doc})
+        except Exception:
+            pass
+        return True
+
     async def _monitor_position(self, mint: str):
         slot = self.active_trades.get(mint)
         if not slot:
@@ -2461,9 +2538,48 @@ class BotState:
                 else:
                     state = await pumpfun.fetch_bonding_curve_state(mint)
                     if not state:
+                        # Null curve state usually means one of:
+                        #   1. token graduated (bonding curve account closed)
+                        #   2. transient RPC failure
+                        # First, try graduation migration. If a PumpSwap pool
+                        # already exists for this mint, switch protocols and
+                        # continue monitoring without exiting. Otherwise, give
+                        # it `graduation_grace_seconds` of null reads before
+                        # falling back to an emergency exit (transient RPC
+                        # failures usually clear within 1-2 ticks).
+                        if await self._detect_and_migrate_graduation(mint, slot):
+                            continue  # loop again, will hit pumpswap branch
+                        grace_s = float(getattr(self.config, "graduation_grace_seconds", 30) or 30)
+                        if slot.get("_graduation_grace_start") is None:
+                            slot["_graduation_grace_start"] = time.time()
+                        elif time.time() - slot["_graduation_grace_start"] >= grace_s:
+                            logger.warning(
+                                f"null bonding curve for {mint[:8]}… persisted {grace_s:.0f}s "
+                                f"without graduation — emergency-exiting"
+                            )
+                            slot["exit_in_progress"] = True
+                            try:
+                                await self._exit(mint, reason=f"null curve state >{grace_s:.0f}s")
+                                return
+                            finally:
+                                slot["exit_in_progress"] = False
                         await asyncio.sleep(1.0)
                         continue
+                    # Curve readable — clear any in-flight grace timer
+                    slot.pop("_graduation_grace_start", None)
                     if state["complete"]:
+                        # Bonding curve is complete — token is GRADUATING (LP
+                        # about to deploy on PumpSwap). The old behavior was
+                        # to panic-exit here. New behavior: attempt the
+                        # migration first. If the PumpSwap pool is already
+                        # live, switch protocols and keep monitoring — we
+                        # often get the post-graduation rip for free.
+                        # If the pool isn't ready yet, fall back to the
+                        # original panic-exit as a safety net (LP deployment
+                        # can fail rarely; we don't want to hold forever).
+                        if await self._detect_and_migrate_graduation(mint, slot):
+                            await asyncio.sleep(0.4)
+                            continue
                         slot["exit_in_progress"] = True
                         try:
                             await self._exit(mint, reason="bonding curve completed (LP about to deploy)")

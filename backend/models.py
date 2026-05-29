@@ -177,6 +177,13 @@ class BotConfig(BaseModel):
     reentry_pullback_pct: float = 25.0
     reentry_window_seconds: int = 300
     reentry_size_multiplier: float = 0.5
+    # === Graduation (pumpfun → PumpSwap) handling ===
+    # When the bonding curve completes (`complete=True`) OR the curve account
+    # returns null (closed), the monitor first tries to migrate the position
+    # to PumpSwap instead of panic-exiting. `graduation_grace_seconds` is the
+    # max time we'll keep polling a null pumpfun curve while waiting for the
+    # PumpSwap pool to become discoverable. Past this window, emergency exit.
+    graduation_grace_seconds: int = 30
     # === Doctor circuit breaker (trailing-stop on bot performance) ===
     # Doctor tracks a "regime score" (0-100, from rolling 4h win-rate +
     # current passing-field winner-likeness). It maintains a rolling peak
