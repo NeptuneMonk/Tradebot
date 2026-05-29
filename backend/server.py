@@ -393,6 +393,38 @@ async def update_config(cfg: BotConfig):
     cfg.greylist_snipe_curve_buffer_pct = max(0.0, min(40.0, cfg.greylist_snipe_curve_buffer_pct))
     cfg.greylist_snipe_ripcord_drawdown_pct = max(20.0, min(95.0, cfg.greylist_snipe_ripcord_drawdown_pct))
     cfg.greylist_snipe_ripcord_grace_seconds = max(0, min(60, cfg.greylist_snipe_ripcord_grace_seconds))
+    # Advisory→Enforced reset: when the user flips Advisory OFF, reset the
+    # Doctor trail-stop's peak so it doesn't immediately slam a pause based
+    # on historical regime drift. Fresh baseline = fresh decisions.
+    # 2026-02-08: user feedback — "If I switch to enforced dr it should keep
+    # my settings initially and only make adjustments if there are trends
+    # into negative pnl."
+    prev_advisory = bool(bot_state.config.doctor_advisory_only)
+    new_advisory = bool(cfg.doctor_advisory_only)
+    if prev_advisory and not new_advisory:
+        try:
+            await db.doctor_trail_state.update_one(
+                {"_id": "trail"},
+                {"$set": {
+                    "peak": 0,           # next loop will seed from current score
+                    "peak_ts": 0,
+                    "paused": False,
+                    "paused_peak": 0,
+                    "advisory_reset_at": datetime.now(timezone.utc).isoformat(),
+                }},
+                upsert=True,
+            )
+            # Also clear any stale pause that was sitting around from a prior
+            # enforcement period (otherwise the enforced bot stays paused).
+            cfg.doctor_pause_until_ts = 0
+            cfg.doctor_pause_reason = ""
+            logger.warning(
+                "Advisory→Enforced: reset doctor trail-stop peak. Doctor will "
+                "now adopt the current regime score as its new baseline and only "
+                "pause on future drawdown from this point."
+            )
+        except Exception as e:
+            logger.warning(f"advisory→enforced trail reset failed: {e}")
     bot_state.config = cfg
     await bot_state.save_config()
     return cfg

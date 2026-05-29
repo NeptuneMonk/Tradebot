@@ -11,7 +11,7 @@ function ActiveTradesTable({ trades, onExit }) {
           <Activity className="w-3 h-3" /> Active Trades ({trades.length})
         </div>
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto overflow-y-auto max-h-[280px] md:max-h-[400px] [contain:layout]" data-testid="active-trades-scroll">
         <table className="w-full text-xs" data-testid="active-trades-table">
           <thead>
             <tr className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 border-b border-neutral-800">

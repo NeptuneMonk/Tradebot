@@ -58,7 +58,7 @@ function TradeHistoryTable({ history }) {
           </div>
         )}
       </div>
-      <div className="overflow-x-auto max-h-[420px] overflow-y-auto">
+      <div className="overflow-x-auto max-h-[300px] md:max-h-[420px] overflow-y-auto [contain:layout] [overscroll-behavior:contain]">
         <table className="w-full text-xs" data-testid="trade-history-table">
           <thead className="sticky top-0 bg-neutral-900">
             <tr className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 border-b border-neutral-800">

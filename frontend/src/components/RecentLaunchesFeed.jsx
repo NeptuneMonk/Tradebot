@@ -33,7 +33,7 @@ function RecentLaunchesFeed({ launches, onUnpin }) {
           <span className="pulse-dot"></span> LIVE
         </div>
       </div>
-      <div className="overflow-y-auto max-h-[480px]" data-testid="launches-list">
+      <div className="overflow-y-auto max-h-[280px] md:max-h-[480px] [contain:layout] [overscroll-behavior:contain]" data-testid="launches-list">
         {launches.length === 0 && (
           <div className="text-center py-6 text-[10px] uppercase tracking-[0.2em] text-neutral-600">
             listening for launches…

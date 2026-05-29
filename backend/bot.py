@@ -452,10 +452,20 @@ class BotState:
             slot = self.active_trades.get(mint)
             if slot is None:
                 # Orphan — in DB but not in memory. Rebuild slot + monitor.
+                # 2026-02-08: persist + restore the in-flight monitor state
+                # so a process restart / forced reconciler reattach doesn't
+                # forget the trailing-stop peak, partial-tp flag, or stale-
+                # exit clock. Without these, the rebuilt slot's first tick
+                # can re-fire partial TP or mis-trigger a trailing stop.
                 self.active_trades[mint] = {
                     "trade": t,
                     "protocol": t.get("protocol", "pumpfun"),
                     "pumpswap_pool": t.get("pumpswap_pool") or "",
+                    "peak_price_sol": t.get("peak_price_sol") or t.get("entry_price_sol") or 0,
+                    "first_seen_price_sol": t.get("first_seen_price_sol") or 0,
+                    "partial_done": bool(t.get("partial_done", False)),
+                    "_entry_ts_mono": t.get("_entry_ts_mono") or time.time(),
+                    "snipe_pattern_ctx": t.get("snipe_pattern_ctx"),
                 }
                 asyncio.create_task(self._monitor_position(mint))
                 reattached += 1
@@ -2484,6 +2494,27 @@ class BotState:
             if not slot or slot.get("monitor_uid") != monitor_uid:
                 return  # slot evicted OR another monitor took over
             slot["last_monitor_tick"] = time.time()
+            # Persist in-flight monitor state every ~10s so the orphan
+            # reattach path can restore the trailing-stop peak, partial-tp
+            # flag, and stale-exit clock if the process restarts or the
+            # reconciler has to rebuild the slot. Throttled to avoid Mongo
+            # churn at 2Hz per position.
+            if time.time() - slot.get("_last_persist_ts", 0) >= 10:
+                slot["_last_persist_ts"] = time.time()
+                try:
+                    trade_id = slot.get("trade", {}).get("id")
+                    if trade_id:
+                        await self.db.trades.update_one(
+                            {"id": trade_id},
+                            {"$set": {
+                                "peak_price_sol": float(slot.get("peak_price_sol") or 0),
+                                "first_seen_price_sol": float(slot.get("first_seen_price_sol") or 0),
+                                "partial_done": bool(slot.get("partial_done", False)),
+                                "_entry_ts_mono": float(slot.get("_entry_ts_mono") or 0),
+                            }},
+                        )
+                except Exception:
+                    pass  # never let a persist failure kill the monitor
             elapsed = time.time() - start
 
             try:
