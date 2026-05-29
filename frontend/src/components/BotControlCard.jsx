@@ -242,10 +242,13 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                  hint="Upper bound on token age for the Seasoned band. Tokens older than this fall off the scanner entirely."
                  value={local.scanner_window_hours}
                  onChange={(v) => setLocal({ ...local, scanner_window_hours: parseInt(v, 10) || 0 })} step="1" />
-          <Field label="Min Age (min)" testid="scanner-min-age-input"
-                 hint="Boundary between New and Seasoned bands. Below this = New (live mempool signals). Above = Seasoned (Pump.fun API signals)."
-                 value={local.scanner_min_age_minutes}
-                 onChange={(v) => setLocal({ ...local, scanner_min_age_minutes: parseInt(v, 10) || 0 })} step="15" />
+          <Field label="Min Age (h)" testid="scanner-min-age-input"
+                 hint="Boundary between New and Seasoned bands. Below this = New (live mempool signals). Above = Seasoned (Pump.fun API signals). Decimal hours supported — e.g. 0.5 = 30 min, 1.25 = 75 min."
+                 value={Math.round((local.scanner_min_age_minutes / 60) * 100) / 100}
+                 onChange={(v) => {
+                   const hrs = parseFloat(v) || 0;
+                   setLocal({ ...local, scanner_min_age_minutes: Math.max(0, Math.round(hrs * 60)) });
+                 }} step="0.25" />
           <Field label="Scan every (s)" testid="scanner-interval-input"
                  hint="How often the scanner loop re-evaluates all tracked tokens. Backend enforces a 5s minimum — values below 5 are clamped to 5 to avoid frontend OOM from rapid metric broadcasts. SL/TP reactions on open positions are NOT controlled by this — they use LaserStream WSS push events."
                  value={local.scanner_interval_s}
