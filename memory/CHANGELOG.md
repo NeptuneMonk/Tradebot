@@ -1121,3 +1121,63 @@ Added to ScannerCandidatesCard for both NEW and SEASONED bands. Each candidate r
 
 ### Test totals
 - 40/40 pass (`tests/test_*.py`). No new test files needed for these changes — pattern coverage already established.
+
+
+## 2026-05-29 — Scanner Protocol Segregation (New=Pump.fun, Seasoned=PumpSwap)
+
+### Architectural change (P0)
+User request: scanner bands should align with the underlying protocol, not just age.
+- **NEW band** = token is on the Pump.fun bonding curve (`protocol == "pumpfun"`) AND `age-since-launch ∈ [band_new_min_age_min, band_new_max_age_min]` minutes
+- **SEASONED band** = token has graduated to PumpSwap AMM (`protocol == "pumpswap"`) AND `age-since-graduation ∈ [band_seasoned_min_age_min, band_seasoned_max_age_min]` minutes
+- Tokens outside either band are silently dropped from the scanner — no leakage between bands
+
+Why: removes ambiguity (5h-old non-graduated pumpfun token can never sneak into the seasoned band alongside true graduates) and lets the user precisely target the 0-15min post-grad high-EV window.
+
+### Backend changes
+- ✅ `scanner.py::MomentumScanner.classify_band(b, cfg, now)` — new protocol-aware classifier (returns "new" / "seasoned" / None)
+- ✅ `candidates_snapshot()` and live `loop()` both refactored to use `classify_band` instead of `age >= min_age`
+- ✅ Routing invariant added: `band=="new"` only routes through pumpfun, `band=="seasoned"` only routes through pumpswap
+- ✅ `bot.py::BotState.tracking` buckets now carry `protocol` + `graduated_at` fields
+- ✅ `bot.py::on_launch` initializes `protocol="pumpfun"`, `graduated_at=None`
+- ✅ `bot.py::_tracker_cleanup` flips the bucket's protocol→pumpswap + stamps `graduated_at` when curve.complete observed
+- ✅ `bot.py::_detect_and_migrate_graduation` (active-position graduation migration) also flips the corresponding tracking bucket
+- ✅ `discovery.py::_refresh_once` extended to refresh near-graduation (≥80% curve fill) mempool-tracked tokens; flips bucket to pumpswap on observed graduation and persists `graduated_at` to the launch doc
+- ✅ `BotState.load()` migrates legacy configs: if `band_*` fields are at defaults but `scanner_min_age_minutes` was customized, populate new bands from the old values one-shot
+
+### Frontend changes
+- ✅ `BotControlCard.jsx` replaces "Window (h)" + "Min Age (h)" inputs with 4 per-band fields: New Min/Max Age (m) + Seasoned Min/Max Age (m). Tooltip explains the protocol split.
+- ✅ `ScannerCandidatesCard.jsx` header now reads new + seasoned ranges from `band_*` fields; band titles labelled "New (Pump.fun · 0–15m)" / "Seasoned (PumpSwap · 0–60m)"
+
+### Tests (15 new)
+`tests/test_scanner_band_protocol.py`:
+- Pumpfun in/out of window
+- Pumpswap in/out of window
+- Asymmetric min/max bounds (independent per band)
+- Protocol invariants (pumpfun→never seasoned, pumpswap→never new)
+- Boundary inclusivity (at min, at max)
+- Missing graduated_at fallback to `start`
+- Unknown protocol exclusion
+- End-to-end candidates_snapshot filtering
+
+### Verified live (53 candidates returned via /api/scanner/candidates)
+- NEW band: 51 candidates, **100% pumpfun** ✅
+- SEASONED band: 2 candidates, **100% pumpswap** ✅
+- Mis-banded count: **0** ✅
+
+### Holistic Config Audit (no conflicts found)
+| | NEW band | SEASONED band |
+|---|---|---|
+| Liquidity floor | 20 SOL | 12 SOL |
+| Age window (min) | 0–15 | 0–60 (post-grad) |
+| Min rolling growth % | 50% | 20% |
+| Inflow / Buyers | 5 SOL / 10 buyers | n/a (uses MC velocity) |
+| MC floor | n/a | $30,000 |
+| 5-min MC velocity | n/a | ≥5% |
+
+- Exits: TP 20% / SL 15% / Trail 8% (arm @ 15%) → trail arms before TP fires (engages on runners)
+- Partial TP: 50% at TP, then trail tightens to 5%
+- Entry velocity gate: ≥0% over last 30s (filters dead-cats)
+- Max concurrent positions: 8 (well under the per-trade $1 cap × 8 = $8 max exposure vs $20 daily kill switch)
+
+### Backwards-compat
+- Legacy `scanner_min_age_minutes` / `scanner_window_hours` fields are NO LONGER read by scanner logic but remain in `BotConfig` to preserve persisted documents. A one-shot migration on `BotState.load()` populates the new fields from legacy values when needed.

@@ -91,6 +91,46 @@ class MomentumScanner:
             "min_liquidity_sol": cfg.min_curve_liquidity_sol,
         }
 
+    @staticmethod
+    def classify_band(b: dict, cfg, now: float) -> str | None:
+        """Protocol-aware band classification.
+
+        - NEW band: `protocol == 'pumpfun'` (still on the bonding curve)
+          AND age-since-launch ∈ [band_new_min_age_min, band_new_max_age_min].
+        - SEASONED band: `protocol == 'pumpswap'` (graduated to AMM)
+          AND age-since-graduation ∈ [band_seasoned_min_age_min,
+                                       band_seasoned_max_age_min].
+        - Returns None for any token outside both bands (no protocol/range
+          overlap), which the caller treats as "skip".
+
+        Seasoned-age fallback: tokens DISCOVERED post-graduation (no exact
+        observation of the graduation tx) use `graduated_at = time of first
+        seeding` — see discovery.py. Tokens whose graduation we observed
+        in-band use the observed timestamp. Both are handled uniformly here.
+        """
+        protocol = b.get("protocol") or "pumpfun"
+        if protocol == "pumpfun":
+            age_min = (now - (b.get("start") or now)) / 60.0
+            lo = max(0.0, float(getattr(cfg, "band_new_min_age_min", 0.0)))
+            hi = max(lo, float(getattr(cfg, "band_new_max_age_min", 15.0)))
+            if lo <= age_min <= hi:
+                return "new"
+            return None
+        if protocol == "pumpswap":
+            grad_at = b.get("graduated_at")
+            if not grad_at:
+                # Fallback for legacy discovered tokens that have no
+                # graduated_at stamp yet — treat first-seen as graduation
+                # so they don't get permanently excluded.
+                grad_at = b.get("start") or now
+            age_min = (now - grad_at) / 60.0
+            lo = max(0.0, float(getattr(cfg, "band_seasoned_min_age_min", 0.0)))
+            hi = max(lo, float(getattr(cfg, "band_seasoned_max_age_min", 60.0)))
+            if lo <= age_min <= hi:
+                return "seasoned"
+            return None
+        return None
+
     def score(self, b: dict, curve_state: dict | None, now: float) -> dict:
         """Compute live metrics for a tracked mint. `curve_state` may be None
         (cheap path) or a real bonding-curve state dict (authoritative)."""
@@ -189,28 +229,31 @@ class MomentumScanner:
 
     def candidates_snapshot(self) -> list[dict]:
         """For the API: ranked candidates with current cached metrics (no RPC).
-        Returns both bands (`new` < min_age, `seasoned` >= min_age) so the UI
-        can render them separately."""
+        Returns both bands. Band classification is PROTOCOL-AWARE:
+          - NEW band: pumpfun curve in [band_new_min_age_min, band_new_max_age_min]
+          - SEASONED band: pumpswap (graduated) in [band_seasoned_min_age_min,
+                            band_seasoned_max_age_min]
+        Tokens outside either band are silently dropped from the snapshot.
+        """
         st = self.state
         cfg = st.config
         now = time.time()
         out: list[dict] = []
-        max_age = cfg.scanner_window_hours * 3600
-        min_age = cfg.scanner_min_age_minutes * 60
         for mint, b in st.tracking.items():
-            age = now - b["start"]
-            if age > max_age:
-                continue
             if mint in st.entered_mints or mint in st.active_trades:
+                continue
+            band = self.classify_band(b, cfg, now)
+            if band is None:
                 continue
             m = self.score(b, None, now)
             m["mint"] = mint
             m["symbol"] = b.get("symbol")
             m["name"] = b.get("name")
             m["launch_id"] = b.get("launch_id")
-            m["band"] = "seasoned" if age >= min_age else "new"
+            m["band"] = band
             m["discovered"] = bool(b.get("discovered"))
             m["protocol"] = b.get("protocol") or "pumpfun"
+            m["graduated_at"] = b.get("graduated_at")
             m["usd_market_cap"] = float(b.get("usd_market_cap") or 0.0)
             # 5-min MC velocity from rolling samples (kept by discovery refresh)
             samples = b.get("mc_samples") or ()
@@ -283,30 +326,27 @@ class MomentumScanner:
                     continue
 
                 now = time.time()
-                max_age = cfg.scanner_window_hours * 3600
-                min_age = cfg.scanner_min_age_minutes * 60
                 # Cooldown is only applied AFTER an entry tx is actually
                 # attempted (see below). Pre-_enter gate failures shouldn't
                 # lock a candidate out — the next pass can retry them.
                 cooldown = 30.0
 
                 # Pre-rank candidates using CACHED metrics (no RPC).
-                # Scanner now covers BOTH bands:
-                #   - "new"      : age < min_age  (replaces the old blind sniper)
-                #   - "seasoned" : age >= min_age (3h+ tokens, often discovered)
+                # PROTOCOL-AWARE band classification:
+                #   - "new"      : pumpfun curve AND age within band_new_*
+                #   - "seasoned" : pumpswap (graduated) AND age within band_seasoned_*
                 scored = []
                 for mint, b in st.tracking.items():
-                    age = now - b["start"]
-                    if age > max_age:
-                        continue
                     if mint in st.entered_mints or mint in st.active_trades:
                         continue
                     if (now - b.get("scanner_last_attempt", 0)) < cooldown:
                         continue
+                    band = self.classify_band(b, cfg, now)
+                    if band is None:
+                        continue
                     # For NEW band we need mempool buy events as a proxy for activity.
                     # SEASONED band uses Pump.fun-API signals (MC + MC velocity)
                     # and can't observe events via Helius (esp. graduated tokens).
-                    band = "seasoned" if age >= min_age else "new"
                     if band == "new" and not b.get("buy_events"):
                         continue
                     m = self.score(b, None, now)
@@ -370,8 +410,17 @@ class MomentumScanner:
                         break
                     if mint in st.active_trades or mint in st.entered_mints:
                         continue
-                    # Fetch authoritative state from the right protocol
+                    # Fetch authoritative state from the right protocol.
+                    # INVARIANT: band classification has already enforced
+                    # protocol-band alignment (New=pumpfun, Seasoned=pumpswap)
+                    # — this protocol-routed fetch just exercises the IX
+                    # builder. Skip if the bucket's protocol drifted out of
+                    # alignment with the band (extremely rare race).
                     protocol = b.get("protocol") or "pumpfun"
+                    if band == "new" and protocol != "pumpfun":
+                        continue
+                    if band == "seasoned" and protocol != "pumpswap":
+                        continue
                     if protocol == "pumpswap":
                         pool = b.get("pumpswap_pool") or (
                             await pumpswap.find_pool_for_mint(mint)

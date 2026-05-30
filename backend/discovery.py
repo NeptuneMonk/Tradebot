@@ -89,12 +89,24 @@ class PumpfunDiscovery:
         samples. Batches Pump.fun API calls (per-mint endpoint) up to 25 at a
         time with throttling to stay polite."""
         st = self.state
-        # Snapshot mint list — discovered tokens only (mempool-tracked mints
-        # already get price samples via on_trade, no refresh needed)
-        targets = [
-            (mint, b) for mint, b in st.tracking.items()
-            if b.get("discovered") and (mint not in st.active_trades)
-        ]
+        # Snapshot mint list — discovered tokens (always need refresh for MC
+        # samples) PLUS mempool-tracked tokens that are close to graduation
+        # so we can catch the protocol flip and stamp `graduated_at` in real
+        # time (otherwise a graduated curve sits in tracking as "pumpfun"
+        # indefinitely and never appears in the Seasoned band).
+        targets = []
+        for mint, b in st.tracking.items():
+            if mint in st.active_trades:
+                continue
+            if b.get("discovered"):
+                targets.append((mint, b))
+            elif (
+                b.get("protocol") == "pumpfun"
+                and float(b.get("curve_fill_pct") or 0.0) >= 80.0
+            ):
+                # Near-graduation: poll Pump.fun API for the up-to-date
+                # complete flag. Tokens at <80% fill are noise; skip them.
+                targets.append((mint, b))
         if not targets:
             return
         now = time.time()
@@ -143,6 +155,39 @@ class PumpfunDiscovery:
                 # Update bucket
                 bucket["usd_market_cap"] = usd_mc
                 bucket["last_trade_ms"] = last_trade_ms
+                # Graduation transition — if the bucket is still tagged
+                # pumpfun but the API now reports complete=True, migrate it
+                # to pumpswap and stamp `graduated_at` so the scanner's
+                # Seasoned band can start counting age from this moment.
+                # (Tokens DISCOVERED post-graduation already have these set
+                # at seed time — this branch handles tokens we observed
+                # pre-grad that flipped mid-tracking.)
+                if is_graduated and bucket.get("protocol") != "pumpswap":
+                    bucket["protocol"] = "pumpswap"
+                    bucket["graduated_at"] = now
+                    bucket["curve_fill_pct"] = 100.0
+                    # Resolve a pool address now so the scanner doesn't need
+                    # to fetch it on the next pass.
+                    pool_addr = bucket.get("pumpswap_pool") or c.get("pump_swap_pool") or ""
+                    if not pool_addr:
+                        try:
+                            pool_addr = await pumpswap.find_pool_for_mint(mint) or ""
+                        except Exception:
+                            pool_addr = ""
+                    if pool_addr:
+                        bucket["pumpswap_pool"] = pool_addr
+                    # Persist `graduated_at` on the launch doc so analytics
+                    # and the post-restart scanner have a consistent origin.
+                    try:
+                        from datetime import datetime, timezone as _tz
+                        await st.db.launches.update_one(
+                            {"mint": mint, "graduated_at": {"$in": [None, ""]}},
+                            {"$set": {
+                                "graduated_at": datetime.fromtimestamp(now, _tz.utc).isoformat(),
+                            }},
+                        )
+                    except Exception:
+                        pass
                 # Refresh social proof fields (creator can add twitter/telegram
                 # later, reply_count climbs over time)
                 bucket["reply_count"] = int(c.get("reply_count") or 0)

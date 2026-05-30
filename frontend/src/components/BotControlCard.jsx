@@ -226,7 +226,16 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
       {/* Momentum scanner config */}
       <div className="border-t border-neutral-800 pt-3 mt-1">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-[10px] uppercase tracking-[0.15em] text-neutral-500">Momentum Scanner</span>
+          <span className="text-[10px] uppercase tracking-[0.15em] text-neutral-500">
+            Momentum Scanner
+            <HelpHint label="Momentum Scanner — Per-band protocol split">
+              <div className="space-y-1">
+                <div><span className="text-amber-300">NEW</span> band = tokens on the Pump.fun bonding curve (pumpfun protocol only).</div>
+                <div><span className="text-cyan-300">SEASONED</span> band = tokens that have graduated to the PumpSwap AMM (pumpswap protocol only). Age is measured from the <em>graduation</em> moment.</div>
+                <div className="text-neutral-400">Pumpfun tokens that age past the New cap DO NOT roll into Seasoned unless they graduate first.</div>
+              </div>
+            </HelpHint>
+          </span>
           <label className="flex items-center gap-1.5 text-[10px] font-mono uppercase text-neutral-400">
             <input
               type="checkbox"
@@ -238,17 +247,22 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
           </label>
         </div>
         <div className="grid grid-cols-2 gap-2 text-xs">
-          <Field label="Window (h)" testid="scanner-window-input"
-                 hint="Upper bound on token age for the Seasoned band. Tokens older than this fall off the scanner entirely."
-                 value={local.scanner_window_hours}
-                 onChange={(v) => setLocal({ ...local, scanner_window_hours: parseInt(v, 10) || 0 })} step="1" />
-          <Field label="Min Age (h)" testid="scanner-min-age-input"
-                 hint="Boundary between New and Seasoned bands. Below this = New (live mempool signals). Above = Seasoned (Pump.fun API signals). Decimal hours supported — e.g. 0.5 = 30 min, 1.25 = 75 min."
-                 value={Math.round((local.scanner_min_age_minutes / 60) * 100) / 100}
-                 onChange={(v) => {
-                   const hrs = parseFloat(v) || 0;
-                   setLocal({ ...local, scanner_min_age_minutes: Math.max(0, Math.round(hrs * 60)) });
-                 }} step="0.25" />
+          <Field label="New Min Age (m)" testid="band-new-min-age-input"
+                 hint="Lower bound of the NEW band (Pump.fun bonding-curve only). Tokens younger than this are excluded from the scanner. Decimal minutes supported."
+                 value={local.band_new_min_age_min ?? 0}
+                 onChange={(v) => setLocal({ ...local, band_new_min_age_min: Math.max(0, parseFloat(v) || 0) })} step="0.25" />
+          <Field label="New Max Age (m)" testid="band-new-max-age-input"
+                 hint="Upper bound of the NEW band (Pump.fun bonding-curve only). Pumpfun tokens older than this fall OFF the scanner entirely — they DO NOT roll over into Seasoned unless graduated."
+                 value={local.band_new_max_age_min ?? 15}
+                 onChange={(v) => setLocal({ ...local, band_new_max_age_min: Math.max(0, parseFloat(v) || 0) })} step="1" />
+          <Field label="Seasoned Min Age (m)" testid="band-seasoned-min-age-input"
+                 hint="Lower bound of the SEASONED band (PumpSwap AMM only). Counted from the GRADUATION moment, not launch. Tokens just-graduated under this floor are excluded."
+                 value={local.band_seasoned_min_age_min ?? 0}
+                 onChange={(v) => setLocal({ ...local, band_seasoned_min_age_min: Math.max(0, parseFloat(v) || 0) })} step="0.25" />
+          <Field label="Seasoned Max Age (m)" testid="band-seasoned-max-age-input"
+                 hint="Upper bound of the SEASONED band (PumpSwap AMM only). Tokens that graduated further back than this fall off the scanner. The high-EV window is typically 0–30 min post-graduation."
+                 value={local.band_seasoned_max_age_min ?? 60}
+                 onChange={(v) => setLocal({ ...local, band_seasoned_max_age_min: Math.max(0, parseFloat(v) || 0) })} step="1" />
           <Field label="Scan every (s)" testid="scanner-interval-input"
                  hint="How often the scanner loop re-evaluates all tracked tokens. Backend enforces a 5s minimum — values below 5 are clamped to 5 to avoid frontend OOM from rapid metric broadcasts. SL/TP reactions on open positions are NOT controlled by this — they use LaserStream WSS push events."
                  value={local.scanner_interval_s}

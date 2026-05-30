@@ -90,6 +90,49 @@ class BotState:
         cfg = await self.db.bot_config.find_one({"_id": "current"}, {"_id": 0})
         if cfg:
             self.config = BotConfig(**cfg)
+            # Band-config migration: if the persisted config predates the
+            # per-band age fields (band_new_*/band_seasoned_*), they'll be
+            # at their defaults (15min new / 60min seasoned). Older deploys
+            # had a single "Min Age (h)" + "Window (h)" pair stored in
+            # scanner_min_age_minutes + scanner_window_hours. Translate
+            # those into the new fields ONCE on first load so the user's
+            # existing setup is preserved.
+            #
+            # Detection: legacy values are non-default AND the new band_*
+            # fields are at defaults (never touched). Persist back so the
+            # migration is one-shot.
+            need_migration = (
+                "band_new_max_age_min" not in cfg
+                and "band_seasoned_max_age_min" not in cfg
+                and (cfg.get("scanner_min_age_minutes") != 180
+                     or cfg.get("scanner_window_hours") != 4)
+            )
+            if need_migration:
+                legacy_min_age = float(cfg.get("scanner_min_age_minutes") or 180)
+                legacy_window_min = float(cfg.get("scanner_window_hours") or 4) * 60.0
+                self.config.band_new_min_age_min = 0.0
+                self.config.band_new_max_age_min = legacy_min_age
+                self.config.band_seasoned_min_age_min = 0.0
+                # The seasoned upper bound previously equalled the full
+                # window; preserve that until the user dials it in.
+                self.config.band_seasoned_max_age_min = max(
+                    legacy_min_age, legacy_window_min
+                )
+                await self.db.bot_config.update_one(
+                    {"_id": "current"},
+                    {"$set": {
+                        "band_new_min_age_min": self.config.band_new_min_age_min,
+                        "band_new_max_age_min": self.config.band_new_max_age_min,
+                        "band_seasoned_min_age_min": self.config.band_seasoned_min_age_min,
+                        "band_seasoned_max_age_min": self.config.band_seasoned_max_age_min,
+                    }},
+                    upsert=True,
+                )
+                logger.info(
+                    "Band-config migrated from legacy fields: "
+                    f"new=[0, {self.config.band_new_max_age_min}] min, "
+                    f"seasoned=[0, {self.config.band_seasoned_max_age_min}] min"
+                )
         rules = await self.db.classifier_rules.find_one({"_id": "current"}, {"_id": 0})
         if rules:
             self.rules = ClassifierRules(**rules)
@@ -836,6 +879,14 @@ class BotState:
             "launch_id": launch.id,
             "creator": launch.creator,
             "start": time.time(),
+            # Protocol tag — new launches are ALWAYS on the Pump.fun bonding
+            # curve. Flipped to "pumpswap" by on_trade when the curve completes
+            # (graduation event). The scanner uses this to gate band eligibility:
+            # New band = pumpfun-only, Seasoned band = pumpswap-only.
+            "protocol": "pumpfun",
+            # Graduation timestamp — None until on_trade observes curve.complete.
+            # This is the Seasoned band's age clock origin.
+            "graduated_at": None,
             "buyers": set(),
             "buy_events": deque(maxlen=500),  # (ts, sol_lamports, user)
             "sol_inflow_lamports": 0,
@@ -1497,6 +1548,13 @@ class BotState:
             try:
                 state = await pumpfun.fetch_bonding_curve_state(mint)
                 if state and state["complete"]:
+                    # Flip in-memory bucket to pumpswap so the scanner's
+                    # Seasoned band can pick it up. graduated_at is set to
+                    # NOW since 60s-tick observation is our best estimate of
+                    # the graduation moment (we don't see the exact tx).
+                    b["protocol"] = "pumpswap"
+                    b["graduated_at"] = time.time()
+                    b["curve_fill_pct"] = 100.0
                     await mark_outcome(self.db, b["creator"], "graduated")
                     # Derive per-launch behavioral signatures so the
                     # creator's repeatability aggregator sees consistent
@@ -2407,6 +2465,15 @@ class BotState:
         slot["protocol"] = "pumpswap"
         slot["pumpswap_pool"] = pool
         slot["_graduation_detected_ts"] = time.time()
+        # Also flip the tracking bucket (if still around) so the scanner's
+        # band classification stays consistent across in-flight and tracked
+        # views of this mint.
+        bucket = getattr(self, "tracking", {}).get(mint) if hasattr(self, "tracking") else None
+        if bucket and bucket.get("protocol") != "pumpswap":
+            bucket["protocol"] = "pumpswap"
+            bucket["graduated_at"] = bucket.get("graduated_at") or time.time()
+            bucket["pumpswap_pool"] = pool
+            bucket["curve_fill_pct"] = 100.0
         # Clear any null-curve grace timer that was running
         slot.pop("_graduation_grace_start", None)
         # Stamp graduated_at on the launch doc — the SEASONED scanner band's

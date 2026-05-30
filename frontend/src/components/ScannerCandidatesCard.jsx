@@ -58,9 +58,15 @@ function Band({ title, Icon, accentClass, items, emptyText }) {
 }
 
 export default function ScannerCandidatesCard({ candidates, config }) {
-  const winH = config?.scanner_window_hours ?? 4;
-  const minAge = config?.scanner_min_age_minutes ?? 180;
-  const minAgeLabel = minAge >= 60 ? `${(minAge / 60).toFixed(minAge % 60 ? 1 : 0)}h` : `${minAge}m`;
+  // Protocol-aware bands: NEW = pumpfun [band_new_min_age_min, band_new_max_age_min] min
+  //                        SEASONED = pumpswap [band_seasoned_min_age_min, band_seasoned_max_age_min] min
+  const newMin = config?.band_new_min_age_min ?? 0;
+  const newMax = config?.band_new_max_age_min ?? 15;
+  const seasonedMin = config?.band_seasoned_min_age_min ?? 0;
+  const seasonedMax = config?.band_seasoned_max_age_min ?? 60;
+  const fmt = (m) => (m >= 60 ? `${(m / 60).toFixed(m % 60 ? 1 : 0)}h` : `${m % 1 ? m.toFixed(2) : m}m`);
+  const newRange = newMin > 0 ? `${fmt(newMin)}–${fmt(newMax)}` : `< ${fmt(newMax)}`;
+  const seasonedRange = seasonedMin > 0 ? `${fmt(seasonedMin)}–${fmt(seasonedMax)}` : `< ${fmt(seasonedMax)}`;
   const newBand = candidates.filter((c) => c.band === "new");
   const seasonedBand = candidates.filter((c) => c.band === "seasoned");
   const totalPassing = candidates.filter((c) => c.passes).length;
@@ -71,24 +77,24 @@ export default function ScannerCandidatesCard({ candidates, config }) {
         <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-neutral-500">
           <Telescope className="w-3 h-3" /> Momentum Scanner ({candidates.length})
           <HelpHint label="Momentum Scanner">
-            Live feed of tokens passing your per-band gates. Tokens split into two bands by age: <span className="text-amber-300">New</span> (live mempool signals) and <span className="text-cyan-300">Seasoned</span> (Pump.fun API signals). Only "Passing" rows are eligible for entry.
+            Live feed of tokens passing your per-band gates. Bands are <strong>protocol-segregated</strong>: <span className="text-amber-300">New</span> = Pump.fun bonding curve only, <span className="text-cyan-300">Seasoned</span> = PumpSwap AMM (graduated) only. Only "Passing" rows are eligible for entry.
           </HelpHint>
         </div>
         <span className="text-[10px] font-mono text-neutral-600">
-          window {minAgeLabel} · {winH}h · {totalPassing} passing
+          new {newRange} · seasoned {seasonedRange} · {totalPassing} passing
         </span>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <Band
-          title={`New Momentum (< ${minAgeLabel})`}
+          title={`New (Pump.fun · ${newRange})`}
           Icon={Sparkles}
           accentClass="text-amber-300"
           items={newBand}
           emptyText="no fresh tokens meeting momentum criteria"
         />
         <Band
-          title={`Seasoned Momentum (${minAgeLabel}–${winH}h)`}
+          title={`Seasoned (PumpSwap · ${seasonedRange})`}
           Icon={Hourglass}
           accentClass="text-cyan-300"
           items={seasonedBand}
