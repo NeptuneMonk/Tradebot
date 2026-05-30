@@ -1220,3 +1220,72 @@ if not already_in_feed:
 | Header vs DOM count match | 46 vs 69 | Match (50 == 50) |
 
 Symptom is fully resolved. New mints flow into the top of the feed without manual refresh.
+
+
+## 2026-05-29 (late) — Greylist Snipes: stop reentry-leg killing the position via std rules
+
+### User report (production)
+> "The Greylist is being terminated by the maxtime, sl, tp, etc.. settings when it has its own. Also when its pinned and grey the feed stops pulling in new mints."
+
+### Root cause (Greylist exits)
+The original greylist snipe DOES correctly use the pattern-based exit ladder
+(curve fill / peak MC / profit ripcord / velocity decay) via `_is_snipe()`
+gates in both `_check_fast_exit` and `_monitor_position`. BUT: when the snipe
+exited profitably, `_exit_impl` ALWAYS queued the mint into `reentry_watch`.
+A few seconds later `_attempt_reentry_impl` would fire a follow-up trade
+with `classifier_action="reentry"` — and `_is_snipe()` returns False for
+"reentry", so the follow-up trade ran the STANDARD SL/TP/max-hold ladder.
+
+The user then saw the reentry leg in Trade History exit with reasons like
+"stop-loss" / "max-hold timeout" / "take-profit" and reasonably concluded
+that "the greylist snipe got killed by std rules."
+
+### Fix #1 — `bot.py::_exit_impl` (line ~3758)
+Exclude `greylist_snipe` from the reentry-watch enqueue:
+```python
+classifier_action = trade_doc.get("classifier_action") or ""
+is_snipe_trade = classifier_action == "greylist_snipe"
+if (self.config.reentry_enabled and not self.stopping_gracefully
+    and not is_snipe_trade and total_pnl_sol > 0
+    and not state.get("complete", False)):
+    self.reentry_watch[mint] = {...}
+```
+Snipes are now one-and-done — if the creator pumps again, the next launch
+fires a fresh `greylist_snipe` (different mint, different pattern). No more
+"reentry trade exits via std SL/TP" surprise.
+
+### Fix #2 — restart-survival for `snipe_pattern_ctx`
+Defense-in-depth: previously the snipe context lived ONLY on the in-memory
+`slot["snipe_pattern_ctx"]`, set in `_enter_impl`. A backend restart would
+drop it; the reconciler reattachment path (line ~511) tried to read
+`t.get("snipe_pattern_ctx")` but the field wasn't persisted onto the trade
+doc → restored snipes had `ctx=None` → `_check_snipe_pattern_exit` short-
+circuited on the None guard → snipe sat with NO ACTIVE EXIT (std exits
+were also bypassed via `_is_snipe()`).
+
+Fix:
+- Added `Trade.snipe_pattern_ctx: Optional[dict] = None` to `models.py`
+- `_enter_impl` now writes ctx into the Trade doc at entry time
+- `_load_active_trades` now restores it (along with peak_price_sol /
+  first_seen_price_sol / partial_done / _entry_ts_mono — orphan
+  recovery state that was also missing on initial load)
+
+### Fix #3 — feed stall when a pinned grey launch is present
+Same root-cause as the earlier dedup bug — pinned/grey events are exactly
+the case where the same mint id can re-broadcast (snipe entry → trade_enter
+→ frontend re-fetches `/launches/recent` → pinned launch comes back at top;
+discovery seed of the same mint later also broadcasts). The frontend dedup
+shipped earlier this session handles this; backend `_seed_token` skip is
+the secondary defense. Verified on mobile viewport: top mint now rotates,
+zero React duplicate-key warnings.
+
+### Tests
+`tests/test_greylist_snipe_lifecycle.py` — 3 new cases:
+- Trade model round-trips `snipe_pattern_ctx` through model_dump/validate
+- Non-snipe trades have `snipe_pattern_ctx=None` by default
+- Reentry gating: snipes (incl. research snipes) are excluded; momentum
+  and reentry-leg trades are still eligible for chained reentries
+
+### Production note
+User reported these symptoms in PRODUCTION (https://micro-stake-trader.emergent.host),
+not preview. They will need to **redeploy** to push these fixes live.

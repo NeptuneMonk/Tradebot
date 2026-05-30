@@ -444,6 +444,14 @@ class Trade(BaseModel):
     # Strategy Doctor uses this to bucket research vs primary snipes
     # separately for promotion analysis.
     is_research_snipe: bool = False
+    # Snapshot of the snipe pattern context (expected peak MC, rug curve %,
+    # std-dev, pattern label) at the moment of entry. Persisted so a
+    # backend restart can restore the snipe ladder's frame of reference —
+    # without this, `_check_snipe_pattern_exit()` returns "no ctx → False"
+    # for restart-survived snipes and they would silently fall back to
+    # whatever exit logic remained. Only set for `classifier_action ==
+    # "greylist_snipe"`; None for momentum / reentry trades.
+    snipe_pattern_ctx: Optional[dict] = None
 
 
 class WalletInfo(BaseModel):

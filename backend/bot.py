@@ -176,6 +176,21 @@ class BotState:
                 # "the position keeps the params it opened with" contract.
                 "greylist_overrides": t.get("greylist_overrides_at_entry") or {},
                 "greylist_strategy": t.get("greylist_strategy_at_entry"),
+                # Restore the snipe pattern context for `classifier_action ==
+                # "greylist_snipe"` trades that survived restart. Without
+                # this, `_check_snipe_pattern_exit()` short-circuits on
+                # `ctx is None` and the snipe sits with NO active exit
+                # mechanism at all (standard exits are also bypassed via
+                # `_is_snipe()`). Persisted at entry time onto the trade
+                # doc — see Trade.snipe_pattern_ctx.
+                "snipe_pattern_ctx": t.get("snipe_pattern_ctx"),
+                # Restore orphan-recovery state (matches reattach path at
+                # line ~511 in `_active_trades_reconciler`).
+                "peak_price_sol": t.get("peak_price_sol")
+                or t.get("entry_price_sol") or 0,
+                "first_seen_price_sol": t.get("first_seen_price_sol") or 0,
+                "partial_done": bool(t.get("partial_done", False)),
+                "_entry_ts_mono": t.get("_entry_ts_mono") or time.time(),
             }
         # Sweep duplicate active rows in DB. Concurrent _enter races (now fixed
         # via the entry_gate_lock) could have created multiple `status=active`
@@ -2300,6 +2315,20 @@ class BotState:
             greylist_pattern_at_entry=greylist_ctx.get("pattern"),
             greylist_pattern_suggested_tp_pct=greylist_ctx.get("pattern_tp_pct"),
             is_research_snipe=is_research_snipe,
+            # Persist the snipe ctx on the trade doc itself so a restart
+            # can restore the slot without losing the pattern frame of
+            # reference. `_load_active_trades` reads this back into the
+            # slot under the same key (see startup reconciler at line 511).
+            snipe_pattern_ctx=(
+                {
+                    "expected_peak_mc_usd": greylist_ctx.get("expected_peak_mc_usd"),
+                    "expected_peak_mc_stddev": greylist_ctx.get("expected_peak_mc_stddev"),
+                    "expected_rug_curve_pct": greylist_ctx.get("expected_rug_curve_pct"),
+                    "pattern": greylist_ctx.get("pattern"),
+                }
+                if action == "greylist_snipe"
+                else None
+            ),
         )
         # Stash protocol on the trade dict (kept in active_trades) so _exit can route
         trade_extras = {
@@ -3755,9 +3784,21 @@ class BotState:
         # Re-entry watchlist: if we exited profitably and curve hasn't graduated, watch for a pullback.
         # During a graceful stop we don't queue any new re-entries — the user
         # is winding down, the watchlist would just open another position.
+        #
+        # Greylist snipes are EXCLUDED — they follow the pattern-based exit
+        # ladder (profit ripcord / peak MC / curve fill / rip-cord). A
+        # standard-rules re-entry on a greylisted creator would then exit
+        # via SL/TP/max-hold — which the user perceives as "the greylist
+        # snipe got killed by std rules" because Trade History shows the
+        # reentry leg with those exit reasons. Snipes are one-and-done by
+        # design; if the creator pumps again the next launch will trigger
+        # a fresh greylist_snipe_fire (different mint, different pattern).
+        classifier_action = trade_doc.get("classifier_action") or ""
+        is_snipe_trade = classifier_action == "greylist_snipe"
         if (
             self.config.reentry_enabled
             and not self.stopping_gracefully
+            and not is_snipe_trade
             and total_pnl_sol > 0
             and not state.get("complete", False)
         ):
