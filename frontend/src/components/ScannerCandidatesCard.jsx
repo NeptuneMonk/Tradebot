@@ -180,11 +180,15 @@ function CandidateRow({ c, passing }) {
               <span className={`${(c.mc_velocity_5m_pct ?? 0) >= 0 ? "text-emerald-300" : "text-red-300"}`}>
                 {(c.mc_velocity_5m_pct ?? 0) >= 0 ? "+" : ""}{(c.mc_velocity_5m_pct ?? 0).toFixed(1)}%
               </span>
-              <HelpHint label="MC vel(5m)">% change in market cap over the last 5 minutes (polled from Pump.fun API). Primary Seasoned-band momentum signal.</HelpHint>
+              <HelpHint label="MC vel(5m)">
+                % change in market cap over the last 5 minutes (computed locally from PumpSwap pool reserves + SOL price for graduated tokens; Pump.fun API for un-graduated). Primary Seasoned-band momentum signal.
+              </HelpHint>
             </span>
             <span className="inline-flex items-center gap-1">
-              buys <span className="text-neutral-200">{c.buy_count ?? 0}</span>
-              <HelpHint label="buys">Cumulative buy count from the Pump.fun coin API.</HelpHint>
+              growth(1h) <span className={`${(c.growth_pct_rolling ?? 0) >= 0 ? "text-emerald-300" : "text-red-300"}`}>
+                {(c.growth_pct_rolling ?? 0) >= 0 ? "+" : ""}{(c.growth_pct_rolling ?? 0).toFixed(1)}%
+              </span>
+              <HelpHint label="growth(1h)">Price change over the rolling growth-lookback window (default 1h). Computed from PumpSwap pool reserves for graduated tokens — independent of the Pump.fun API.</HelpHint>
             </span>
           </>
         )}

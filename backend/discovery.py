@@ -111,19 +111,42 @@ class PumpfunDiscovery:
             return
         now = time.time()
         url = f"{PUMPFUN_API}/coins"
+        # SOL price cached per-cycle so we don't refetch per-mint.
+        try:
+            from solana_client import get_sol_usd_price
+            sol_usd = await get_sol_usd_price()
+        except Exception:
+            sol_usd = 0.0
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             for mint, bucket in targets:
+                # Pump.fun's per-mint coin endpoint returns HTTP 200 with an
+                # EMPTY BODY for graduated tokens. Treat that as "no fresh
+                # API data" — DO NOT bail out (the previous behaviour caused
+                # a permanent silent skip → mc_samples never grew → MC
+                # velocity stayed 0% forever → PumpSwap candidates never
+                # passed the seasoned gate → "PumpSwap never gets tapped").
+                # Fall through to pool-state-based metrics below.
+                c: dict = {}
                 try:
                     r = await client.get(f"{url}/{mint}", headers={"accept": "application/json"})
-                    if r.status_code != 200:
-                        continue
-                    c = r.json() or {}
+                    if r.status_code == 200 and r.content:
+                        try:
+                            c = r.json() or {}
+                        except Exception:
+                            c = {}
                 except Exception as e:
                     logger.debug(f"refresh fetch failed for {mint}: {e}")
-                    continue
                 usd_mc = float(c.get("usd_market_cap") or 0.0)
                 last_trade_ms = int(c.get("last_trade_timestamp") or 0)
-                is_graduated = bool(c.get("complete"))
+                # `complete` flag from the API is authoritative when we have
+                # a response; otherwise infer from the bucket's current
+                # protocol (set at seed time / by the bot's tracker on
+                # graduation observation).
+                is_graduated = (
+                    bool(c.get("complete"))
+                    if c
+                    else bucket.get("protocol") == "pumpswap"
+                )
                 # Resolve current price per protocol
                 cur_price = 0.0
                 if is_graduated:
@@ -139,6 +162,29 @@ class PumpfunDiscovery:
                                 # band gate sees the correct liquidity.
                                 bucket["last_real_sol_lamports"] = ps_state["quote_reserves"]
                                 bucket["last_vsr_lamports"] = ps_state["quote_reserves"]  # legacy compat
+                                # Fallback MC computation when Pump.fun API gave
+                                # us nothing (the usual case for graduated tokens).
+                                # Pump.fun's standard MC formula is `price * 1B`
+                                # (the full token supply). Compute it directly
+                                # from pool reserves so the seasoned gate has
+                                # live USD data instead of a stale seed value.
+                                #   MC_SOL  = (quote / base) * total_supply_raw
+                                #           = (quote/base) * 1e15 / 1e9 lamports/SOL
+                                #           = quote * 1e6 / base                 (in SOL)
+                                #   MC_USD  = MC_SOL * sol_usd
+                                if usd_mc <= 0 and sol_usd > 0:
+                                    base = float(ps_state.get("base_reserves") or 0)
+                                    quote = float(ps_state.get("quote_reserves") or 0)
+                                    if base > 0 and quote > 0:
+                                        mc_sol = quote * 1e6 / base
+                                        usd_mc = mc_sol * sol_usd
+                                # Same proxy for `last_trade_timestamp` — when
+                                # the API gives us nothing we use NOW (we
+                                # successfully fetched live pool state, so
+                                # the token is reachable). Inaccurate by up
+                                # to the refresh interval (~60s) but bounded.
+                                if last_trade_ms <= 0:
+                                    last_trade_ms = int(now * 1000)
                         except Exception as e:
                             logger.debug(f"refresh pool fetch failed for {mint}: {e}")
                 else:
@@ -152,9 +198,14 @@ class PumpfunDiscovery:
                         # coin doc — prefer it over the legacy vsr-30 estimate.
                         if real_sol > 0:
                             bucket["last_real_sol_lamports"] = real_sol
-                # Update bucket
-                bucket["usd_market_cap"] = usd_mc
-                bucket["last_trade_ms"] = last_trade_ms
+                # Update bucket — ONLY overwrite when we have a meaningful
+                # value. The Pump.fun API returns 0 for usd_market_cap on
+                # graduated tokens (or empty body, parsed as 0); never
+                # overwrite a healthy seed value with 0.
+                if usd_mc > 0:
+                    bucket["usd_market_cap"] = usd_mc
+                if last_trade_ms > 0:
+                    bucket["last_trade_ms"] = last_trade_ms
                 # Graduation transition — if the bucket is still tagged
                 # pumpfun but the API now reports complete=True, migrate it
                 # to pumpswap and stamp `graduated_at` so the scanner's
@@ -188,23 +239,33 @@ class PumpfunDiscovery:
                         )
                     except Exception:
                         pass
-                # Refresh social proof fields (creator can add twitter/telegram
-                # later, reply_count climbs over time)
-                bucket["reply_count"] = int(c.get("reply_count") or 0)
-                bucket["twitter"] = (c.get("twitter") or "").strip()
-                bucket["telegram"] = (c.get("telegram") or "").strip()
-                bucket["website"] = (c.get("website") or "").strip()
-                # Cumulative buyer count from the Pump.fun coin endpoint.
-                # PumpSwap pools don't generate Helius mempool events, so the
-                # in-memory `buyers` set stays empty — `buy_count` is the only
-                # signal we have for "how many people are buying this thing"
-                # on seasoned/graduated tokens. Used by min_buyers_for_entry.
-                bucket["buy_count"] = int(c.get("buy_count") or 0)
+                # Refresh social proof fields ONLY when API gave us data.
+                # Without this guard, graduated tokens (empty API response)
+                # would have their seed socials silently nuked to "" / 0.
+                if c:
+                    bucket["reply_count"] = int(c.get("reply_count") or 0)
+                    bucket["twitter"] = (c.get("twitter") or "").strip()
+                    bucket["telegram"] = (c.get("telegram") or "").strip()
+                    bucket["website"] = (c.get("website") or "").strip()
+                    # Cumulative buyer count from the Pump.fun coin endpoint
+                    # (only refreshed when API responded — empty body would
+                    # have zeroed this out for graduated tokens). PumpSwap
+                    # pools don't generate Helius mempool events, so the
+                    # in-memory `buyers` set stays empty — `buy_count` is
+                    # one signal we have for "how many people are buying"
+                    # on seasoned tokens, though Pump.fun's API doesn't
+                    # track post-graduation buys (the value plateaus at
+                    # the graduation snapshot).
+                    if "buy_count" in c:
+                        bucket["buy_count"] = int(c.get("buy_count") or 0)
                 if cur_price > 0:
                     bucket["last_price_sol"] = cur_price
-                # Append rolling MC sample
-                mc_samples = bucket.setdefault("mc_samples", deque(maxlen=MC_SAMPLE_KEEP))
-                mc_samples.append((now, usd_mc))
+                # Append rolling MC sample. Skip zero values so the velocity
+                # window doesn't get poisoned with a "MC dropped to 0" data
+                # point when Pump.fun's API has a transient failure.
+                if usd_mc > 0:
+                    mc_samples = bucket.setdefault("mc_samples", deque(maxlen=MC_SAMPLE_KEEP))
+                    mc_samples.append((now, usd_mc))
                 # Append rolling price sample (used by the entry-velocity gate)
                 if cur_price > 0:
                     price_samples = bucket.setdefault("price_samples", deque(maxlen=120))
@@ -407,12 +468,27 @@ class PumpfunDiscovery:
             "last_trade_ms": last_trade_ms,
             "protocol": "pumpswap" if is_pumpswap else "pumpfun",
             "pumpswap_pool": pool_address if is_pumpswap else "",
+            # Rolling MC samples (used by scanner._mc_velocity for the
+            # seasoned-band gate). Pre-seeded below so the first refresh
+            # cycle produces a non-zero velocity instead of having to
+            # wait for sample #2.
+            "mc_samples": deque(maxlen=MC_SAMPLE_KEEP),
             # Social proof fields (used by gate_socials_required entry gate)
             "reply_count": int(coin.get("reply_count") or 0),
             "twitter": (coin.get("twitter") or "").strip(),
             "telegram": (coin.get("telegram") or "").strip(),
             "website": (coin.get("website") or "").strip(),
         }
+        # Seed the rolling sample deques with the values we already have
+        # at seed time. Without this, the refresh loop has to do at least
+        # 2 cycles (~2 minutes) before `growth_pct_rolling` /
+        # `mc_velocity_5m_pct` produce non-zero readings — meaning newly
+        # discovered seasoned tokens silently stall for the first 2 mins
+        # of life (the user-reported "PumpSwap never gets tapped" symptom).
+        if usd_mc > 0:
+            bucket["mc_samples"].append((time.time(), usd_mc))
+        if cur_price > 0:
+            bucket["price_samples"].append((time.time(), cur_price))
         st.tracking[mint] = bucket
         # Also push a synthetic launch into the recent feed so the UI shows it
         synthetic = Launch(

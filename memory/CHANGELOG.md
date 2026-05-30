@@ -1395,3 +1395,105 @@ Pin invariant remains: **PINNED ⇔ snipe ladder applies to this trade**.
 ### Action for user
 Redeploy preview → production to push option C live. The Elon bug class
 is structurally fixed by the lockstep gates above.
+
+
+## 2026-05-30 (later) — PumpSwap never gets tapped: fix seasoned-band data starvation
+
+### User report (PREVIEW)
+> "The pumpswap never gets tapped. The data looks bad. Also make sure
+> its not being gated by things that only relate to pumpfun."
+
+Screenshot showed multiple PumpSwap (graduated) candidates with:
+- `MC vel(5m) +0.0%` — every single one
+- `buys 0` — every single one
+- `last trade 35s ago` — clearly trading active, yet gate metrics flat
+
+### Root cause
+Pump.fun's per-mint endpoint `GET /coins/{mint}` returns **HTTP 200 with
+EMPTY BODY** for graduated tokens (the live trading venue is PumpSwap,
+so Pump.fun no longer tracks them). Verified directly:
+```
+GET /coins/2SfzZDGa...pump → 200, content-length: 0
+```
+Old `_refresh_once`: `r.json()` on empty body → `JSONDecodeError` →
+caught by `except` → `continue` → entire bucket update skipped → no
+`mc_samples` append → MC velocity stuck at 0.0% → seasoned MC-velocity
+gate ALWAYS fails → PumpSwap never gets tapped.
+
+### Fix — `discovery.py::_refresh_once`
+- Don't bail on empty body — treat `c = {}` and fall through
+- For graduated tokens: ALWAYS fetch PumpSwap pool state, even when API
+  returns nothing. Compute `cur_price`, `real_sol_reserves`, AND
+  `usd_market_cap` directly from pool reserves + SOL/USD price:
+    ```python
+    MC_SOL = (quote_lamports / base_raw) * 1e15 / 1e9 = quote * 1e6 / base
+    MC_USD = MC_SOL * sol_usd_price
+    ```
+  Pump.fun's MC convention is `price × 1B` (full supply), so this matches
+  the legacy reading exactly.
+- Never overwrite a healthy seed value with 0 (`if usd_mc > 0:` guards)
+- Use `now * 1000` as `last_trade_ms` proxy when API gives nothing
+- Skip social-proof overwrites when API response is empty (would nuke
+  seeds to "" / 0 otherwise)
+
+### Fix — `discovery.py::_seed_token`
+Pre-seed `mc_samples` and `price_samples` deques at seed time with the
+values from `_fetch_aged_coins` (the LIST endpoint, which still works
+for graduated tokens). Without this, even after fixing the refresh, the
+first 2 minutes of a token's tracked life produces velocity = 0% because
+1 sample isn't enough. Pre-seeding means the first refresh cycle (60s)
+yields a real velocity reading instead of cycle #2 (120s).
+
+### Frontend — `ScannerCandidatesCard.jsx`
+- Removed misleading "buys 0" pill for seasoned cards (Pump.fun's
+  `buy_count` plateaus at graduation; not useful for seasoned signal)
+- Added `growth(1h) +X.X%` pill — computed from PumpSwap pool reserves,
+  fully independent of Pump.fun API
+- Updated `MC vel(5m)` tooltip to clarify the data path (PumpSwap pool
+  reserves for graduated, Pump.fun API for un-graduated)
+
+### Verified live (90s after backend restart)
+| Metric | Before | After |
+|---|---|---|
+| `growth_pct_rolling` (13 seasoned) | All `+0.0%` | -1.7% to +191.7% (real) |
+| `mc_velocity_5m_pct` | All `+0.00%` | -3.44% to +191.42% (real) |
+| `last_trade_age_s` | Stale at seed (75-115s) | Refresh-fresh (55-65s) |
+| Seasoned candidates **passing** gates | **0** | **2** ✅ |
+
+The two passing candidates would trigger an entry on the next scanner
+pass (PumpSwap path).
+
+### Tests
+`tests/test_seasoned_metrics.py` — 8 cases:
+- `_mc_usd_from_pool` formula sanity (realistic pool / deep liquidity / zero safety)
+- `_mc_velocity` correctness (2-sample, 1-sample warmup, empty, negative
+  change, oldest-in-window selection)
+
+### Gating audit re user request "make sure it's not being gated by
+### things that only relate to pumpfun"
+
+Seasoned gates currently applied (`scanner.py::loop` line ~358):
+1. `growth_pct_rolling >= min_growth_pct` ✅ (computed from PumpSwap pool
+   price samples)
+2. `real_sol_reserves >= min_liquidity_sol` ✅ (PumpSwap `quote_reserves`)
+3. `usd_market_cap >= scanner_min_mc_usd_seasoned` ✅ (now computed from
+   PumpSwap pool when API gives nothing)
+4. `mc_velocity_5m_pct >= scanner_min_mc_velocity_5m_pct_seasoned` ✅
+   (now properly populated)
+5. `distribution_vacuum` gate ✅ (holder velocity check; benign for
+   seasoned since PumpSwap trades don't generate holder events anyway
+   → `unique_buyers_total == 0` skips the vacuum check)
+
+NO Pump.fun-specific gates (curve fill %, bonding-curve liquidity floor,
+curve completion check) are applied to seasoned. The bonding-curve
+liquidity floor uses `min_curve_liquidity_sol_new` for new band and a
+different threshold for seasoned via `_gates(cfg, "seasoned")`. Confirmed
+clean separation. The scanner also short-circuits with:
+```python
+if band == "new" and protocol != "pumpfun":  continue
+if band == "seasoned" and protocol != "pumpswap":  continue
+```
+so cross-protocol contamination is impossible.
+
+### Action for user
+Redeploy preview → production to push to https://micro-stake-trader.emergent.host
