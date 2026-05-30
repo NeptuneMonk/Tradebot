@@ -427,6 +427,14 @@ class PumpfunDiscovery:
         doc = synthetic.model_dump()
         doc["detected_at"] = doc["detected_at"].isoformat()
         doc["discovered"] = True
-        st.recent_launches.insert(0, doc)
-        st.recent_launches = st.recent_launches[:50]
-        await hub.broadcast("launch", doc)
+        # Skip re-broadcasting if this mint is already in the recent feed.
+        # A discovered token can be re-seeded over time (LRU eviction from
+        # `tracking` → next discovery cycle re-adds it), and each re-seed
+        # would otherwise emit another `launch` WS event with the SAME
+        # `disc-{mint8}` id. Frontend dedupes by id now, but skipping the
+        # send is cheaper and avoids client churn.
+        already_in_feed = any(r.get("mint") == mint for r in st.recent_launches)
+        if not already_in_feed:
+            st.recent_launches.insert(0, doc)
+            st.recent_launches = st.recent_launches[:50]
+            await hub.broadcast("launch", doc)

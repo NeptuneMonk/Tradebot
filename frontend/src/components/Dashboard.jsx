@@ -95,10 +95,37 @@ export default function Dashboard() {
         // 1. Merge updates against current state
         let next = prev.map((l) => (updates.has(l.id) ? { ...l, ...updates.get(l.id) } : l));
         // Drop any updates that hit mints we never displayed — keeps state tight
-        // 2. Prepend brand-new launches, dropping dupes
+        // 2. Prepend brand-new launches, dropping dupes (BOTH against `next`
+        //    AND within `newOnes` itself — the backend can re-broadcast a
+        //    `launch` event for the same id when a token gets evicted from
+        //    in-memory tracking and re-seeded by discovery a few minutes
+        //    later. Without internal dedup, React throws duplicate-key
+        //    warnings and the rendered DOM silently desyncs from state —
+        //    top of the feed appears to "freeze" at the first dupe).
+        //    We also dedup by mint as a belt-and-braces defense (different
+        //    code paths can mint different ids for the same on-chain mint:
+        //    organic `on_launch` UUID vs discovery's `disc-{mint8}` synth id).
         if (newOnes.length) {
-          const incomingIds = new Set(newOnes.map((d) => d.id));
-          next = [...newOnes, ...next.filter((l) => !incomingIds.has(l.id))];
+          const dedupedNew = [];
+          const seenIds = new Set();
+          const seenMints = new Set();
+          for (const d of newOnes) {
+            if (!d?.id) continue;
+            if (seenIds.has(d.id)) continue;
+            if (d.mint && seenMints.has(d.mint)) continue;
+            seenIds.add(d.id);
+            if (d.mint) seenMints.add(d.mint);
+            dedupedNew.push(d);
+          }
+          if (dedupedNew.length) {
+            next = [
+              ...dedupedNew,
+              ...next.filter(
+                (l) =>
+                  !seenIds.has(l.id) && !(l.mint && seenMints.has(l.mint))
+              ),
+            ];
+          }
         }
         const pinned = next.filter((l) => l.pinned);
         const unpinned = next.filter((l) => !l.pinned);

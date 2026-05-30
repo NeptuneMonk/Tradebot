@@ -1181,3 +1181,42 @@ Why: removes ambiguity (5h-old non-graduated pumpfun token can never sneak into 
 
 ### Backwards-compat
 - Legacy `scanner_min_age_minutes` / `scanner_window_hours` fields are NO LONGER read by scanner logic but remain in `BotConfig` to preserve persisted documents. A one-shot migration on `BotState.load()` populates the new fields from legacy values when needed.
+
+
+## 2026-05-29 — Recent Launches feed "stops cycling at 50" bug (mobile Chrome)
+
+### Bug
+User reported on Samsung mobile Chrome: "Once it hits 50 recent launches it stops cycling in new ones — I have to click refresh to see beyond 4 seconds." WS LIVE indicator stayed green throughout, so the connection itself wasn't dying.
+
+### Root cause (two compounding)
+1. **Backend re-broadcasts duplicate `launch` events** — Discovery's `_seed_token` always emits `hub.broadcast("launch", doc)` with id `disc-{mint8}`. When a tracked mint gets evicted by the `MAX_TRACKED_MINTS=500` LRU and a later discovery cycle re-seeds it, the SAME id ships again over the wire.
+2. **Frontend coalesced flush did not dedupe `newOnes` within itself** — `incomingIds = new Set(newOnes.map(d => d.id))` filtered from `next`, but `[...newOnes, ...]` still spread the buffer raw. A buffer containing `[A, A, B]` resulted in two `A`-keyed children → **React threw "two children with the same key" warnings hundreds of times**, top mint never rotated, and the DOM silently desynced from React state (header read 46 while DOM had 69 rows). The 50-cap math was correct; React just gave up rendering reliably.
+
+### Fix
+**Frontend (`Dashboard.jsx`, primary defense)** — coalesced flush now dedupes `newOnes` by **both id and mint** before prepending, and the `next.filter` step removes any mint OR id that's in the deduped set:
+```js
+for (const d of newOnes) {
+  if (!d?.id || seenIds.has(d.id)) continue;
+  if (d.mint && seenMints.has(d.mint)) continue;
+  seenIds.add(d.id); if (d.mint) seenMints.add(d.mint);
+  dedupedNew.push(d);
+}
+next = [...dedupedNew, ...next.filter(l => !seenIds.has(l.id) && !(l.mint && seenMints.has(l.mint)))];
+```
+
+**Backend (`discovery.py::_seed_token`, secondary)** — skip the `recent_launches` push + WS broadcast if the mint is already in the feed:
+```python
+already_in_feed = any(r.get("mint") == mint for r in st.recent_launches)
+if not already_in_feed:
+    st.recent_launches.insert(0, doc); ... await hub.broadcast("launch", doc)
+```
+
+### Verified live on 412×915 mobile viewport (120s observation)
+| | Before | After |
+|---|---|---|
+| Unique top mints across 120s | **1** (frozen on `6Xh3XEgu`) | **12** (rotating) |
+| React key-collision console errors | 100+ per flush | **0** |
+| Row count behavior | Drifted past cap (32→57→74→84→95→115) | Stable at 50 |
+| Header vs DOM count match | 46 vs 69 | Match (50 == 50) |
+
+Symptom is fully resolved. New mints flow into the top of the feed without manual refresh.
