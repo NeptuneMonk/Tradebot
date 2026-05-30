@@ -2410,12 +2410,23 @@ class BotState:
                 return
 
         await self._persist_trade(trade)
-        # Phase 2.9 — pin the mint in the scanner feed when entered on a
-        # greylisted creator. Card stays pinned (at top, with a badge) until
-        # manually unpinned, surviving the normal scanner aging logic.
+        # Phase 2.9 — pin the mint in the scanner feed when entered as an
+        # ACTUAL greylist snipe. Pinning was previously gated on
+        # `greylist_ctx.strategy != standard` which is a property of the
+        # CREATOR, not the entry path. That caused scanner momentum_new
+        # entries on greylisted creators to get pinned, then exit via the
+        # standard TP/SL ladder (because action != "greylist_snipe", so
+        # `_is_snipe()` returns False). User reported it as "Elon pinned
+        # which means its sniper but it exited at TP" — the pin was
+        # misleading; the trade was never a snipe.
+        #
+        # New invariant: PINNED == SNIPE. A momentum entry on a greylisted
+        # creator is just a momentum entry — no pin, no snipe ladder.
+        # Card stays pinned (at top, with a badge) until manually unpinned,
+        # surviving the normal scanner aging logic.
         # `pin_exited` flips later in `_exit` so the card greys out.
         launch_update = {"entered": True, "entry_action": action}
-        if greylist_ctx.get("strategy") and greylist_ctx["strategy"] != "standard":
+        if action == "greylist_snipe":
             launch_update.update({
                 "pinned": True,
                 "pinned_at": datetime.now(timezone.utc).isoformat(),

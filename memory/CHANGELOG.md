@@ -1289,3 +1289,57 @@ zero React duplicate-key warnings.
 ### Production note
 User reported these symptoms in PRODUCTION (https://micro-stake-trader.emergent.host),
 not preview. They will need to **redeploy** to push these fixes live.
+
+
+## 2026-05-30 — Pin invariant: PINNED == SNIPE (fixes "Elon pinned but exited at TP")
+
+### User report (PREVIEW)
+> "TP is set at 10 and this is the second time this has happened... Mint Elon is pinned which means its sniper but it exited at TP."
+
+Trade History tooltip showed:
+- exit reason: `take-profit hit (+11.3%)`
+- **entered via: `momentum_new`**
+
+### Diagnosis
+The trade was NEVER a snipe. It was a scanner momentum_new entry that
+landed on a greylisted creator. The bug was in the pin gate:
+
+```python
+# OLD (buggy)
+if greylist_ctx.get("strategy") and greylist_ctx["strategy"] != "standard":
+    launch_update.update({"pinned": True, ...})
+```
+
+The gate checked the CREATOR's greylist strategy, which is a creator-level
+property. Any entry (snipe / momentum_new / reentry) on a greylisted
+creator would get pinned. But only `action == "greylist_snipe"` goes
+through the pattern-based exit ladder (`_is_snipe()`); the rest run
+standard SL/TP/max-hold. So the user correctly read "pinned == sniper"
+in the UI, then saw it exit via standard TP, and concluded the snipe
+ladder was being overridden.
+
+### Fix
+`bot.py::_enter_impl` (line ~2418):
+```python
+# NEW — pin invariant: PINNED == SNIPE
+if action == "greylist_snipe":
+    launch_update.update({"pinned": True, ...})
+```
+
+Now the pin is strictly tied to the entry path, not the creator.
+Momentum entries on greylisted creators run their standard exit ladder
+(correct behavior — they're momentum trades, not snipes) and are NOT
+pinned. The user's mental model — "pinned card → snipe ladder applies"
+— is now enforced by code.
+
+### Tests
+`tests/test_pin_invariant.py` — 4 cases:
+- Snipe actions are pinned (greylist_snipe with hot/warm/research strategies)
+- Momentum actions on greylisted creators are NOT pinned (momentum_new/seasoned)
+- Reentry actions are NOT pinned
+- Standard (non-greylisted) creator → never pinned
+
+### Open architectural question
+Should the scanner enter momentum trades on greylisted creators at all,
+given the user expected them to be snipes? This is a separate decision
+from the pin gate — flagged for follow-up.
