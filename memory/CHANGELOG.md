@@ -1343,3 +1343,55 @@ pinned. The user's mental model — "pinned card → snipe ladder applies"
 Should the scanner enter momentum trades on greylisted creators at all,
 given the user expected them to be snipes? This is a separate decision
 from the pin gate — flagged for follow-up.
+
+
+## 2026-05-30 (option C) — Force snipe ladder on ANY greylisted-creator entry
+
+### User decision
+After the pin-invariant fix, user chose **option C**: "Force snipe ladder
+on any greylisted-creator entry — momentum_new on a greylisted creator
+gets shoehorned into the pattern exit ladder, using the creator's pattern
+even though entry wasn't a snipe."
+
+### Architecture
+The single source of truth is `_make_snipe_ctx(greylist_ctx, action)` in
+`bot.py`. It returns a populated ctx (snipe ladder applies) when EITHER:
+  (a) `action == "greylist_snipe"` — explicit snipe path, OR
+  (b) the creator's pattern is in `SNIPE_LADDER_PATTERNS`:
+        - `slow_rug_tradeable`
+        - `predictable_dump_tradeable`
+        - `fake_hype_tradeable`
+        - `bimodal_tradeable`
+
+Returns `None` (standard exits apply) for:
+  - `unknown` pattern — insufficient data for pattern anchors
+  - `unpredictable_rug` — no stable anchor; research-mode snipes still
+    get ctx via the action gate, but pure-momentum entries do not
+  - Non-greylisted creators (pattern is None/missing)
+
+### Three gates now move in lockstep
+1. **`Trade.snipe_pattern_ctx`** — persisted on the trade doc by
+   `_enter_impl`, populated via `_make_snipe_ctx`
+2. **`_is_snipe(slot)`** — returns True iff `snipe_pattern_ctx` is set
+   (and the master toggle `greylist_snipe_pattern_exits` is enabled)
+3. **Pin gate** in `_enter_impl` — pins iff `trade.snipe_pattern_ctx is not None`
+
+Pin invariant remains: **PINNED ⇔ snipe ladder applies to this trade**.
+
+### Why this fixes the Elon-style reports
+- ELON was a `momentum_new` entry on a greylisted creator with (presumably)
+  a tradeable pattern.
+- Old code: ctx=None → `_is_snipe` False → standard 10% TP fired
+- New code: ctx populated from the creator's pattern data → `_is_snipe`
+  True → pattern ladder fires (profit ripcord at +30%, peak MC, curve
+  fill, velocity decay, stale exit) instead of the 10% TP
+
+### Tests (94 cases pass; 11 new in test_pin_invariant.py, 4 updated)
+- `test_pin_invariant.py` — 11 cases covering ctx population for snipe /
+  momentum / reentry × tradeable / non-tradeable patterns
+- `test_snipe_exit_ladder.py` — updated `_is_snipe` tests for the new
+  ctx-presence semantics (was: action-based; now: ctx-based)
+
+### Action for user
+Redeploy preview → production to push option C live. The Elon bug class
+is structurally fixed by the lockstep gates above.

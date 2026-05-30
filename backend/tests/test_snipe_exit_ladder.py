@@ -82,20 +82,46 @@ def _slot(*, classifier_action="greylist_snipe", entry_price=0.0001,
 
 
 # ===== _is_snipe ==========================================================
+# Updated for option C (2026-05-30): _is_snipe returns True iff the slot
+# has a non-None snipe_pattern_ctx (which can come from EITHER an explicit
+# greylist_snipe action OR a momentum entry on a creator with a tradeable
+# pattern). The classifier_action alone is no longer sufficient; the trade
+# must also carry the snipe ctx.
 
-def test_is_snipe_true_for_greylist_action():
+def test_is_snipe_true_when_ctx_present():
+    """Snipe ladder fires whenever ctx is present, regardless of action."""
     stub = _Stub()
-    assert _bind(stub, "_is_snipe")(_slot(classifier_action="greylist_snipe")) is True
+    slot = _slot(classifier_action="greylist_snipe",
+                 snipe_ctx={"pattern": "slow_rug_tradeable",
+                            "expected_peak_mc_usd": 100_000,
+                            "expected_rug_curve_pct": 70})
+    assert _bind(stub, "_is_snipe")(slot) is True
 
 
-def test_is_snipe_false_for_momentum():
+def test_is_snipe_true_for_momentum_with_pattern_ctx():
+    """Option C: momentum entry on a greylisted-tradeable creator inherits
+    the snipe ladder via its persisted ctx."""
+    stub = _Stub()
+    slot = _slot(classifier_action="momentum_new",
+                 snipe_ctx={"pattern": "fake_hype_tradeable",
+                            "expected_peak_mc_usd": 80_000,
+                            "expected_rug_curve_pct": 65})
+    assert _bind(stub, "_is_snipe")(slot) is True
+
+
+def test_is_snipe_false_for_momentum_without_ctx():
+    """Pure momentum entry (no greylist pattern) uses standard exits."""
     stub = _Stub()
     assert _bind(stub, "_is_snipe")(_slot(classifier_action="momentum_new")) is False
 
 
 def test_is_snipe_false_when_pattern_exits_disabled():
+    """Master toggle still works — flips off ALL pattern exits even when
+    ctx is populated."""
     stub = _Stub(greylist_snipe_pattern_exits=False)
-    assert _bind(stub, "_is_snipe")(_slot()) is False
+    slot = _slot(classifier_action="greylist_snipe",
+                 snipe_ctx={"pattern": "slow_rug_tradeable"})
+    assert _bind(stub, "_is_snipe")(slot) is False
 
 
 # ===== Peak-MC proximity exit ============================================

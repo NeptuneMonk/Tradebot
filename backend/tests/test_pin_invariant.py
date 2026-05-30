@@ -1,20 +1,17 @@
 """
-Tests for the pin invariant: PINNED == SNIPE.
+Tests for the pin invariant (option C, 2026-05-30):
 
-Background: previously a momentum scanner entry on a greylisted creator
-would pin the launch card (because the pin gate checked the creator's
-greylist strategy, not the entry path). The pinned card looked like a
-snipe in the UI, but the trade actually ran the STANDARD SL/TP ladder
-because `classifier_action != "greylist_snipe"` → `_is_snipe()` returns
-False. User reported "Elon pinned which means its sniper but it exited
-at TP" — pin was misleading.
+    PINNED ⇔ this trade follows the SNIPE LADDER
 
-New invariant enforced by `_enter_impl`:
-    pin only if action == "greylist_snipe"
+The snipe ladder fires when EITHER:
+  (a) action == "greylist_snipe", OR
+  (b) the entry is on a greylisted creator with a tradeable pattern
+      (slow_rug_tradeable, predictable_dump_tradeable, fake_hype_tradeable,
+       bimodal_tradeable) — even if the entry path was momentum_new /
+      momentum_seasoned / reentry.
 
-This test verifies the gating logic directly. Full integration coverage
-(actual DB write, recent_launches cache mutation, WS broadcast) is
-exercised by the existing snipe-firing tests in test_greylist_sniper.py.
+Tokens with `unknown` / `unpredictable_rug` patterns DO NOT inherit the
+snipe ladder (we have no stable pattern anchors).
 """
 from __future__ import annotations
 
@@ -33,55 +30,138 @@ os.environ.setdefault("PUMP_GLOBAL", "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxn
 os.environ.setdefault("PUMP_FEE_RECIPIENT", "CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
 os.environ.setdefault("PUMP_EVENT_AUTHORITY", "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
 
+from bot import _make_snipe_ctx, SNIPE_LADDER_PATTERNS  # noqa: E402
 
-def _should_pin(action: str, greylist_strategy: str | None) -> bool:
-    """Mirror of the gate in `bot.py::_enter_impl` line ~2418.
 
-    Old buggy gate (do NOT use):
-        bool(greylist_strategy) and greylist_strategy != "standard"
+def _ctx(pattern=None, peak_mc=200_000, rug_curve=70):
+    return {
+        "pattern": pattern,
+        "expected_peak_mc_usd": peak_mc,
+        "expected_peak_mc_stddev": 30_000,
+        "expected_rug_curve_pct": rug_curve,
+    }
 
-    Fixed gate:
-        action == "greylist_snipe"
+
+# -----------------------------------------------------------------------
+# Direct snipe action: always gets the ladder
+# -----------------------------------------------------------------------
+
+def test_snipe_action_with_known_pattern_gets_ctx():
+    """An explicit greylist_snipe entry with a known pattern populates ctx."""
+    ctx = _make_snipe_ctx(_ctx(pattern="slow_rug_tradeable"), "greylist_snipe")
+    assert ctx is not None
+    assert ctx["pattern"] == "slow_rug_tradeable"
+    assert ctx["expected_peak_mc_usd"] == 200_000
+    assert ctx["via_action"] == "greylist_snipe"
+
+
+def test_snipe_action_with_unknown_pattern_still_gets_ctx():
+    """An explicit greylist_snipe entry ALWAYS gets ctx (the action itself
+    is the highest-priority signal). Pattern can be unknown."""
+    ctx = _make_snipe_ctx(_ctx(pattern="unknown"), "greylist_snipe")
+    assert ctx is not None
+    assert ctx["pattern"] == "unknown"
+    assert ctx["via_action"] == "greylist_snipe"
+
+
+def test_research_snipe_gets_ctx_with_unpredictable_pattern():
+    """Research snipes fire on `unpredictable_rug` creators. They MUST
+    still get ctx — the snipe ladder's profit ripcord / stale exit /
+    velocity decay all work without expected_peak_mc_usd."""
+    ctx = _make_snipe_ctx(_ctx(pattern="unpredictable_rug"), "greylist_snipe")
+    assert ctx is not None
+    assert ctx["pattern"] == "unpredictable_rug"
+
+
+# -----------------------------------------------------------------------
+# Momentum/reentry on greylisted creators: inherits ladder for tradeable patterns
+# -----------------------------------------------------------------------
+
+def test_momentum_new_on_greylisted_creator_inherits_snipe_ladder():
+    """The Elon-bug scenario: scanner momentum_new entry on a greylisted
+    creator with a known tradeable pattern now inherits the snipe ladder
+    (option C, 2026-05-30). Previously this fell through to standard
+    SL/TP exits and the user saw it exit at 10% TP while the card was
+    pinned, which they reasonably reported as "the snipe ladder is being
+    overridden by std rules"."""
+    for pattern in SNIPE_LADDER_PATTERNS:
+        ctx = _make_snipe_ctx(_ctx(pattern=pattern), "momentum_new")
+        assert ctx is not None, f"pattern {pattern!r} should inherit ladder"
+        assert ctx["pattern"] == pattern
+        assert ctx["via_action"] == "momentum_new"
+
+
+def test_momentum_seasoned_on_greylisted_creator_inherits_ladder():
+    """Same rule applies to the Seasoned band."""
+    ctx = _make_snipe_ctx(_ctx(pattern="predictable_dump_tradeable"), "momentum_seasoned")
+    assert ctx is not None
+    assert ctx["via_action"] == "momentum_seasoned"
+
+
+def test_reentry_on_greylisted_creator_inherits_ladder():
+    """Re-entries on greylisted creators (rare path since snipe winners
+    no longer trigger reentry — see test_greylist_snipe_lifecycle.py —
+    but a momentum-winner reentry on a greylisted creator still flows
+    through) get the pattern ladder."""
+    ctx = _make_snipe_ctx(_ctx(pattern="bimodal_tradeable"), "reentry")
+    assert ctx is not None
+
+
+# -----------------------------------------------------------------------
+# Non-tradeable patterns: standard exits apply
+# -----------------------------------------------------------------------
+
+def test_momentum_on_unknown_pattern_creator_uses_standard_exits():
+    """A momentum entry on a creator the greylist has classified as
+    `unknown` (insufficient data) does NOT inherit the snipe ladder —
+    we have no pattern anchors to drive peak-MC / curve-fill exits."""
+    ctx = _make_snipe_ctx(_ctx(pattern="unknown"), "momentum_new")
+    assert ctx is None
+
+
+def test_momentum_on_unpredictable_rug_creator_uses_standard_exits():
+    """Same for `unpredictable_rug` — no stable anchor → standard exits.
+    Research-mode snipes get the ladder via the action gate; momentum
+    entries on the same creator do NOT (action != greylist_snipe AND
+    pattern is not tradeable)."""
+    ctx = _make_snipe_ctx(_ctx(pattern="unpredictable_rug"), "momentum_new")
+    assert ctx is None
+
+
+def test_momentum_on_non_greylisted_creator_uses_standard_exits():
+    """Standard creators (no greylist record) → pattern is None →
+    standard exits."""
+    ctx = _make_snipe_ctx(_ctx(pattern=None), "momentum_new")
+    assert ctx is None
+    ctx = _make_snipe_ctx({}, "momentum_new")
+    assert ctx is None
+
+
+# -----------------------------------------------------------------------
+# Pin invariant test (mirrors the gate in bot.py::_enter_impl)
+# -----------------------------------------------------------------------
+
+def _should_pin(action: str, greylist_ctx: dict | None) -> bool:
+    """Mirror of the gate in `bot.py::_enter_impl` (post-2026-05-30):
+        pinned ⇔ snipe_pattern_ctx is not None
     """
-    return action == "greylist_snipe"
+    return _make_snipe_ctx(greylist_ctx or {}, action) is not None
 
 
-def test_snipe_action_is_pinned():
-    """Actual greylist snipes get pinned (this is the only path that does)."""
-    assert _should_pin("greylist_snipe", "hot") is True
-    assert _should_pin("greylist_snipe", "warm") is True
-    # Even research snipes get pinned (they ARE snipes — research mode is
-    # just the gate for which creators are eligible).
-    assert _should_pin("greylist_snipe", "research") is True
-
-
-def test_momentum_on_greylist_creator_is_not_pinned():
-    """The bug we just fixed: a scanner momentum_new entry on a greylisted
-    creator must NOT be pinned. Pin is the visual marker for snipes."""
-    assert _should_pin("momentum_new", "hot") is False
-    assert _should_pin("momentum_seasoned", "hot") is False
-    assert _should_pin("momentum_new", "warm") is False
-
-
-def test_reentry_on_greylist_creator_is_not_pinned():
-    """Re-entries on greylisted creators (rare, since we now skip reentry
-    for snipe winners — see test_greylist_snipe_lifecycle.py — but
-    possible for momentum-winner reentries that later happen on a
-    greylisted creator) must NOT pin."""
-    assert _should_pin("reentry", "hot") is False
-    assert _should_pin("reentry", "standard") is False
-
-
-def test_standard_creator_never_pinned():
-    """Non-greylisted creators are never pinned regardless of action.
-    The only path that pins is action=="greylist_snipe" which itself
-    requires a greylist context with strategy != standard — so this is
-    a degenerate combination that can't actually occur, but we test it
-    for the gate's purity."""
-    assert _should_pin("momentum_new", "standard") is False
-    assert _should_pin("momentum_seasoned", None) is False
-    assert _should_pin("reentry", "standard") is False
-    # In practice action="greylist_snipe" + strategy="standard" can't co-occur,
-    # but the pin gate is purely action-based — strategy is only stored on
-    # the pin for downstream UI display.
-    assert _should_pin("greylist_snipe", "standard") is True
+def test_pin_invariant_matches_snipe_ladder():
+    """The pin gate and the snipe-ladder gate must move in lockstep."""
+    # Snipes always pinned
+    assert _should_pin("greylist_snipe", _ctx(pattern="slow_rug_tradeable"))
+    assert _should_pin("greylist_snipe", _ctx(pattern="unknown"))
+    # Momentum on greylisted-tradeable: PINNED (option C)
+    assert _should_pin("momentum_new", _ctx(pattern="slow_rug_tradeable"))
+    assert _should_pin("momentum_seasoned", _ctx(pattern="fake_hype_tradeable"))
+    # Momentum on non-tradeable greylist: NOT pinned
+    assert not _should_pin("momentum_new", _ctx(pattern="unknown"))
+    assert not _should_pin("momentum_new", _ctx(pattern="unpredictable_rug"))
+    # Momentum on non-greylisted creator: NOT pinned
+    assert not _should_pin("momentum_new", {})
+    assert not _should_pin("momentum_new", _ctx(pattern=None))
+    # Reentry: same rules
+    assert _should_pin("reentry", _ctx(pattern="predictable_dump_tradeable"))
+    assert not _should_pin("reentry", _ctx(pattern="unknown"))

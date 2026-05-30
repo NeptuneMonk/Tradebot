@@ -40,6 +40,53 @@ PERSIST_INTERVAL_S = 2.0      # how often to flush tracker metrics to DB
 MAX_TRACKED_MINTS = 500       # cap memory
 
 
+# Set of greylist patterns recognised as "tradeable" — i.e. patterns the
+# scorer has gathered enough data on to anchor pattern-based exits (peak
+# MC, expected rug curve %, suggested TP). Entries on creators with any
+# of these patterns inherit the snipe ladder regardless of which action
+# path won the entry race (greylist_snipe / momentum_new / momentum_seasoned).
+# `unknown` and `unpredictable_rug` deliberately excluded — we don't have
+# stable pattern anchors for those, so they fall back to standard exits.
+SNIPE_LADDER_PATTERNS = frozenset({
+    "slow_rug_tradeable",
+    "predictable_dump_tradeable",
+    "fake_hype_tradeable",
+    "bimodal_tradeable",
+})
+
+
+def _make_snipe_ctx(greylist_ctx: dict, action: str) -> dict | None:
+    """Build the snipe pattern context dict (or None if the entry should
+    fall through to the standard exit ladder).
+
+    Population rule (option C, 2026-05-30): the snipe ladder applies to
+    any entry where EITHER
+      (a) action == "greylist_snipe" (the primary path — always pin/ladder), OR
+      (b) the creator has a tradeable pattern (a momentum_new /
+          momentum_seasoned / reentry entry on a greylisted creator with
+          a known pattern still gets the pattern ladder because that's
+          the highest-quality information we have about how this creator
+          tends to die / pump).
+
+    Returns None when neither condition holds → standard exits apply.
+    """
+    pattern = (greylist_ctx or {}).get("pattern")
+    is_snipe_action = action == "greylist_snipe"
+    has_tradeable_pattern = pattern in SNIPE_LADDER_PATTERNS
+    if not (is_snipe_action or has_tradeable_pattern):
+        return None
+    return {
+        "expected_peak_mc_usd": greylist_ctx.get("expected_peak_mc_usd"),
+        "expected_peak_mc_stddev": greylist_ctx.get("expected_peak_mc_stddev"),
+        "expected_rug_curve_pct": greylist_ctx.get("expected_rug_curve_pct"),
+        "pattern": pattern,
+        # Provenance — useful for analytics ("how often does a momentum
+        # entry on a greylisted creator inherit the snipe ladder?")
+        # and for downstream UI labels.
+        "via_action": action,
+    }
+
+
 class BotState:
     def __init__(self, db):
         self.db = db
@@ -1015,13 +1062,37 @@ class BotState:
         return float(default)
 
     def _is_snipe(self, slot: dict) -> bool:
-        """True iff this position was entered via the Greylist Sniper path.
-        Snipes follow a fundamentally different exit philosophy from
-        momentum trades (pattern-based exits, no entry-loss SL, no max-hold).
-        See `_check_snipe_pattern_exit` for the actual exit logic."""
-        trade = (slot or {}).get("trade") or {}
-        return (trade.get("classifier_action") == "greylist_snipe"
-                and bool(self.config.greylist_snipe_pattern_exits))
+        """True iff this position should follow the pattern-based exit ladder
+        (profit ripcord / stale / peak-MC / curve-fill / velocity decay)
+        instead of the standard SL/TP/max-hold ladder.
+
+        Originally this was a strict `classifier_action == "greylist_snipe"`
+        check. Widened (user choice "C", 2026-05-30) so ANY entry on a
+        greylisted creator with a known pattern gets the snipe ladder —
+        including scanner momentum_new / momentum_seasoned entries that
+        happen on a creator the greylist has already characterised.
+        Pin invariant remains: PINNED ⇔ this returns True for the trade.
+
+        Implementation: existence of `snipe_pattern_ctx` is the single
+        gate. `_enter_impl` populates it whenever the greylist context
+        carries a tradeable pattern, regardless of which entry path won
+        the race. Without ctx → no pattern data → no pattern ladder
+        possible → fall through to standard exits.
+        """
+        if not self.config.greylist_snipe_pattern_exits:
+            return False
+        ctx = (slot or {}).get("snipe_pattern_ctx")
+        if ctx is None:
+            # Restart-survival: snipe_pattern_ctx is persisted on the trade
+            # doc since 2026-05-29 and restored by _load_active_trades onto
+            # the slot. Cross-check the trade doc too in case the slot
+            # was rebuilt by a code path that missed the restore step.
+            trade = (slot or {}).get("trade") or {}
+            ctx = trade.get("snipe_pattern_ctx")
+            if ctx is None:
+                return False
+            slot["snipe_pattern_ctx"] = ctx  # cache for subsequent calls
+        return True
 
     async def _compute_creator_snipe_ctx_fallback(self, creator: str) -> dict | None:
         """Fallback for snipe_pattern_ctx when the creator doc lacks the
@@ -2318,17 +2389,16 @@ class BotState:
             # Persist the snipe ctx on the trade doc itself so a restart
             # can restore the slot without losing the pattern frame of
             # reference. `_load_active_trades` reads this back into the
-            # slot under the same key (see startup reconciler at line 511).
-            snipe_pattern_ctx=(
-                {
-                    "expected_peak_mc_usd": greylist_ctx.get("expected_peak_mc_usd"),
-                    "expected_peak_mc_stddev": greylist_ctx.get("expected_peak_mc_stddev"),
-                    "expected_rug_curve_pct": greylist_ctx.get("expected_rug_curve_pct"),
-                    "pattern": greylist_ctx.get("pattern"),
-                }
-                if action == "greylist_snipe"
-                else None
-            ),
+            # slot under the same key (see startup reconciler at line ~511).
+            #
+            # Population rule (option C, 2026-05-30): any entry on a
+            # creator with a known greylist pattern gets ctx — not just
+            # action=="greylist_snipe". So a scanner momentum_new entry
+            # on a greylisted creator inherits the pattern ladder
+            # (`_is_snipe()` returns True via ctx presence). Creators
+            # without a known pattern (unknown / no greylist record) get
+            # ctx=None → standard exits apply.
+            snipe_pattern_ctx=_make_snipe_ctx(greylist_ctx, action),
         )
         # Stash protocol on the trade dict (kept in active_trades) so _exit can route
         trade_extras = {
@@ -2341,13 +2411,10 @@ class BotState:
             "greylist_strategy": greylist_ctx.get("strategy"),
             # Snipe pattern context — read by `_check_snipe_pattern_exit()`
             # to drive curve-fill / peak-MC / rip-cord exits instead of the
-            # standard SL/TP/trailing ladder.
-            "snipe_pattern_ctx": {
-                "expected_peak_mc_usd": greylist_ctx.get("expected_peak_mc_usd"),
-                "expected_peak_mc_stddev": greylist_ctx.get("expected_peak_mc_stddev"),
-                "expected_rug_curve_pct": greylist_ctx.get("expected_rug_curve_pct"),
-                "pattern": greylist_ctx.get("pattern"),
-            } if action == "greylist_snipe" else None,
+            # standard SL/TP/trailing ladder. See `_make_snipe_ctx` helper
+            # for the population rule (any entry on a creator with a known
+            # pattern, not only action=="greylist_snipe").
+            "snipe_pattern_ctx": _make_snipe_ctx(greylist_ctx, action),
         }
 
         if mode == "live":
@@ -2410,23 +2477,16 @@ class BotState:
                 return
 
         await self._persist_trade(trade)
-        # Phase 2.9 — pin the mint in the scanner feed when entered as an
-        # ACTUAL greylist snipe. Pinning was previously gated on
-        # `greylist_ctx.strategy != standard` which is a property of the
-        # CREATOR, not the entry path. That caused scanner momentum_new
-        # entries on greylisted creators to get pinned, then exit via the
-        # standard TP/SL ladder (because action != "greylist_snipe", so
-        # `_is_snipe()` returns False). User reported it as "Elon pinned
-        # which means its sniper but it exited at TP" — the pin was
-        # misleading; the trade was never a snipe.
-        #
-        # New invariant: PINNED == SNIPE. A momentum entry on a greylisted
-        # creator is just a momentum entry — no pin, no snipe ladder.
-        # Card stays pinned (at top, with a badge) until manually unpinned,
-        # surviving the normal scanner aging logic.
+        # Phase 2.9 — pin the mint in the scanner feed when this position
+        # follows the SNIPE LADDER (pattern-based exits). The gate aligns
+        # with `_make_snipe_ctx` / `_is_snipe`: an explicit greylist_snipe
+        # action ALWAYS pins; a momentum/reentry entry on a greylisted
+        # creator with a tradeable pattern ALSO pins (since it inherits
+        # the pattern ladder via ctx population — option C, 2026-05-30).
+        # Pin invariant: PINNED ⇔ pattern exits apply to this trade.
         # `pin_exited` flips later in `_exit` so the card greys out.
         launch_update = {"entered": True, "entry_action": action}
-        if action == "greylist_snipe":
+        if trade.snipe_pattern_ctx is not None:
             launch_update.update({
                 "pinned": True,
                 "pinned_at": datetime.now(timezone.utc).isoformat(),
