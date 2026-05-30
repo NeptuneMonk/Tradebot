@@ -320,6 +320,13 @@ class PumpfunDiscovery:
             "launch_id": f"disc-{mint[:8]}",
             "creator": coin.get("creator") or "",
             "start": created_s,
+            # For PumpSwap-discovered tokens we don't observe the actual
+            # graduation moment — `created_s` is the launch timestamp, which
+            # can be many hours/days before the graduation. The Seasoned
+            # band's age clock would be massively inflated. Fall back to
+            # "now" so freshly discovered post-grad tokens enter the band
+            # at age 0 (the high-EV window starts when we SEE them).
+            "graduated_at": time.time() if is_pumpswap else None,
             "buyers": set(),
             "buy_events": deque(maxlen=500),
             "sol_inflow_lamports": 0,

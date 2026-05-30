@@ -107,6 +107,28 @@ class BotConfig(BaseModel):
     min_buyers_for_entry_new: int = 8
     # Momentum scanner — 81% of recent profitable trades came from here
     scanner_enabled: bool = True
+    # === Protocol-aware band definitions (2026-02-08) ===
+    # NEW band  = token still on the Pump.fun bonding curve
+    # SEASONED  = token has graduated to the PumpSwap AMM
+    # Each band has an independent [min, max] age window. Tokens outside
+    # both windows are NOT scanned.
+    #
+    # • New age clock = seconds since launch detection
+    # • Seasoned age clock = seconds since `graduated_at` (when the bonding
+    #   curve completed). Falls back to time-since-launch for legacy tokens
+    #   with no graduation timestamp (discovered post-grad before this
+    #   feature shipped).
+    #
+    # Migration: on first load with old config, `band_new_max_age_min` and
+    # `band_seasoned_max_age_min` are auto-populated from
+    # `scanner_min_age_minutes` and `scanner_window_hours * 60` respectively.
+    band_new_min_age_min: float = 0.0          # 0 = scan from launch
+    band_new_max_age_min: float = 15.0         # close at 15min on the curve
+    band_seasoned_min_age_min: float = 0.0     # 0 = scan from graduation
+    band_seasoned_max_age_min: float = 60.0    # close 60min post-graduation
+    # Legacy fields — kept for backwards compatibility with persisted configs.
+    # Used by the upgrade migration in BotState.load(). DO NOT add new code
+    # that reads these directly — use the band_* fields above instead.
     scanner_window_hours: int = 4
     # Rolling growth-% lookback. Replaces since-launch growth as the gate
     # signal — an old token with 5000% lifetime growth tells you nothing

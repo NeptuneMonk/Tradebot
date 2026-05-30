@@ -1521,6 +1521,10 @@ class BotState:
                     update_doc = {
                         "outcome": "graduated",
                         "outcome_at": grad_outcome_at,
+                        # `graduated_at` is THE timestamp the SEASONED band's
+                        # age clock counts from. Aligned with outcome_at on
+                        # this code path (60s-tick observation of curve.complete).
+                        "graduated_at": grad_outcome_at,
                         "final_peak_mc_usd": float(b.get("peak_mc_usd") or 0.0),
                         **sig_fields,
                     }
@@ -2405,6 +2409,21 @@ class BotState:
         slot["_graduation_detected_ts"] = time.time()
         # Clear any null-curve grace timer that was running
         slot.pop("_graduation_grace_start", None)
+        # Stamp graduated_at on the launch doc — the SEASONED scanner band's
+        # age clock counts from here. Idempotent: skipped if already set
+        # (e.g. by the 60s tracker_cleanup tick on this same token).
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            await self.db.launches.update_one(
+                {"mint": mint, "graduated_at": {"$in": [None, ""]}},
+                {"$set": {
+                    "graduated_at": now_iso,
+                    "outcome": "graduated",
+                    "outcome_at": now_iso,
+                }},
+            )
+        except Exception:
+            pass
         # Persist to Mongo so the reconciler-rebuilt slot inherits the new
         # protocol on monitor respawn (otherwise a respawn would revert to
         # the pumpfun protocol stored at entry).
