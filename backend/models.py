@@ -19,6 +19,22 @@ class BotConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = False
     live_trading: bool = False
+    # Master Helius kill-switch. When False, the bot pauses ALL traffic that
+    # consumes Helius credits:
+    #   - logsSubscribe listener disconnects (largest credit consumer)
+    #   - account-event-bus subscriptions paused
+    #   - Scanner's protocol-aware pool/curve RPC fetches skipped → no new
+    #     entries
+    #   - Discovery's near-graduation pool poll skipped (HTTP API to
+    #     pump.fun continues — that's NOT Helius)
+    #   - Bot's `_tracker_cleanup` RPC graduation polls skipped
+    #   - New trade entries blocked
+    # Existing open positions CONTINUE monitoring (they still need RPC to
+    # detect exits — without this, positions would silently miss SL/TP and
+    # the user could lose real money). The footprint of monitor traffic is
+    # bounded by `max_concurrent_positions` (default 8) so it's tiny.
+    # Default True so behaviour is unchanged for existing users.
+    helius_tracker_enabled: bool = True
     # Sizing
     min_trade_usd: float = 0.50
     max_trade_usd: float = 1.00

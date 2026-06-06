@@ -134,6 +134,16 @@ class WalletGraphHunter:
         await asyncio.sleep(60)  # let startup settle
         while not self._stop:
             try:
+                # Helius kill switch — wallet-graph hunter makes Helius API
+                # calls (`_helius_fetch_recent_txs`). Pause when the user
+                # has flipped the master toggle OFF.
+                try:
+                    from helius_gate import is_helius_paused
+                    if is_helius_paused():
+                        await asyncio.sleep(300)
+                        continue
+                except Exception:
+                    pass
                 if not await self._is_enabled():
                     await asyncio.sleep(300)
                     continue

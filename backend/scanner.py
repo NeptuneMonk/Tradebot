@@ -320,6 +320,16 @@ class MomentumScanner:
                     continue
                 if not cfg.enabled or st.kill_switch_tripped:
                     continue
+                # Helius kill switch — when the tracker is paused the scanner
+                # path that fetches authoritative pool/curve state would burn
+                # credits with no possibility of an entry (we block trade
+                # entry too). Skip the entire loop iteration.
+                try:
+                    from helius_gate import is_helius_paused
+                    if is_helius_paused():
+                        continue
+                except Exception:
+                    pass
                 if len(st.active_trades) >= cfg.max_concurrent_positions:
                     continue
                 if await st.check_kill_switch():

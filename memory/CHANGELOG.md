@@ -1497,3 +1497,84 @@ so cross-protocol contamination is impossible.
 
 ### Action for user
 Redeploy preview → production to push to https://micro-stake-trader.emergent.host
+
+
+## 2026-06-06 — Helius kill switch (P0: stop credit drain when not actively trading)
+
+### User report (PREVIEW)
+> "Id like you to put an off switch on helius so I can make sure the
+> tracker doesn't run when I dont want it too. Pretty sure the
+> combination of preview and production drained my 10million credits."
+
+Confirmed in logs: backend was getting HTTP 429s from Helius (`Too Many
+Requests`) on WSS connect + RPC POST — both preview and production were
+hammering the same API key concurrently.
+
+### Implementation
+**Single source of truth**: new `helius_gate.py` module with
+`is_helius_paused()` / `set_paused(bool)`. Tiny, dep-free so every
+consumer can import without circular-import gymnastics.
+
+**Config flag**: `BotConfig.helius_tracker_enabled: bool = True`
+(default preserves current behaviour).
+
+**Gate-sync points**:
+1. `BotState.load()` on startup + every config reload
+2. `PUT /api/bot/config` immediately on toggle write (without this, the
+   listener wouldn't pick up the new value until the next `load()`)
+
+**Consumers gated** (all check `is_helius_paused()` before issuing
+Helius traffic):
+- `listener.py::PumpFunListener._run` — disconnects WSS + idles; checks
+  gate at top of loop AND mid-stream AND during reconnect-backoff sleep
+  (chunked 1s polls so OFF takes effect within ~1s instead of waiting
+  for the full 30s backoff window)
+- `account_event_bus.py::AccountEventBus._run` — same pattern
+- `scanner.py::MomentumScanner.loop` — skips entire iteration when paused
+  (no RPC for pool/curve state, no entries)
+- `discovery.py::_refresh_once` — skips the PumpSwap pool-state fetch for
+  near-graduation tokens; Pump.fun HTTP API continues (free)
+- `bot.py::_tracker_cleanup` — skips the graduation poll RPC
+- `bot.py::_enter` — refuses new entries
+- `wallet_graph.py::WalletGraphHunter._loop` — idles its Helius API
+  consumption
+
+**Out-of-scope when paused (still runs)**:
+- Active position monitoring (necessary to detect exits and protect funds)
+- Pump.fun HTTP discovery (free, not a Helius endpoint)
+- All UI / DB / WS broadcast flows
+
+### Frontend
+`BotControlCard.jsx` — prominent toggle button right under Start/Stop
+- Visual: green-radio when LIVE, amber-pause when PAUSED
+- Wires through `onUpdate` (the same Dashboard handler that wires
+  `save()`) so the Dashboard config-refetch fires in lockstep —
+  prevents a polling race from clobbering the optimistic local state
+- Toast feedback: "Helius tracker paused — credit consumption halted"
+  / "Helius tracker resumed — listener reconnecting…"
+- Detailed `HelpHint` explaining exactly what stops vs continues
+
+### Verified live (PREVIEW)
+- Default state: `LIVE` (config: `helius_tracker_enabled=true`)
+- After click 1: button shows **PAUSED** (amber), toast fires, API
+  reflects `false`, backend logs:
+  > "Helius tracker disabled by user — keeping listener idle"
+- 10s after flip OFF: **0 new `Connecting to Helius WSS` log lines**
+  (was averaging ~10/sec under the 429 reconnect loop pre-fix)
+- After click 2: button back to **LIVE** (green), listener reconnects
+  on next 1s gate-poll cycle
+
+### Tests
+`tests/test_helius_kill_switch.py` — 7 cases:
+- Default config enables tracker
+- Config field optional in payload (legacy configs default to True)
+- Config field persists False
+- Gate default not paused
+- `set_paused` flips state
+- Truthiness coercion (1/0/strings)
+- Idempotent
+
+### Action for user
+Redeploy preview → production to push the toggle live. After that, you
+can pause the environment you're NOT actively trading on and halt its
+credit consumption immediately.

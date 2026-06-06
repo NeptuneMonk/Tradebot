@@ -137,6 +137,17 @@ class BotState:
         cfg = await self.db.bot_config.find_one({"_id": "current"}, {"_id": 0})
         if cfg:
             self.config = BotConfig(**cfg)
+        # Sync the Helius gate with the loaded config on every reload.
+        # `helius_tracker_enabled=True` → gate NOT paused (Helius traffic
+        # flows). False → gate paused (listener / scanner RPC / new entries
+        # all stop). The module-level gate is checked by listener.py,
+        # discovery.py, scanner.py, account_event_bus.py, and bot.py.
+        try:
+            from helius_gate import set_paused as _set_helius_paused
+            _set_helius_paused(not self.config.helius_tracker_enabled)
+        except Exception as e:
+            logger.warning(f"helius gate sync failed: {e}")
+        if cfg:
             # Band-config migration: if the persisted config predates the
             # per-band age fields (band_new_*/band_seasoned_*), they'll be
             # at their defaults (15min new / 60min seasoned). Older deploys
@@ -1631,6 +1642,16 @@ class BotState:
         # failure detection to the background sweep below.
         b = self.tracking.get(mint)
         if b:
+            # Helius kill switch — graduation poll is a fetch_bonding_curve_state
+            # RPC call. Skip when paused. The bot's `_active_trades_reconciler`
+            # + discovery's near-grad poll handle protocol-flip detection
+            # when the switch is back ON.
+            try:
+                from helius_gate import is_helius_paused
+                if is_helius_paused():
+                    return
+            except Exception:
+                pass
             try:
                 state = await pumpfun.fetch_bonding_curve_state(mint)
                 if state and state["complete"]:
@@ -1870,6 +1891,15 @@ class BotState:
         # Smart-stop: refuse new entries while we're winding down
         if self.stopping_gracefully:
             return
+        # Helius kill switch — when the tracker is paused we block new
+        # entries. Existing positions continue to be monitored (necessary
+        # to detect their exits — see _monitor_position).
+        try:
+            from helius_gate import is_helius_paused
+            if is_helius_paused():
+                return
+        except Exception:
+            pass
         # Doctor circuit-breaker: refuse new entries while the Doctor (or the
         # user manually via the UI) has paused trading. Existing positions
         # continue to be monitored normally — only NEW entries are blocked.

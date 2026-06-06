@@ -427,6 +427,15 @@ async def update_config(cfg: BotConfig):
             logger.warning(f"advisory→enforced trail reset failed: {e}")
     bot_state.config = cfg
     await bot_state.save_config()
+    # Sync the Helius gate with the new config value. Without this, the
+    # listener / scanner / discovery wouldn't know the user just toggled
+    # the switch until the next `bot_state.load()` (which only fires on
+    # startup or after a doctor write).
+    try:
+        from helius_gate import set_paused as _set_helius_paused
+        _set_helius_paused(not cfg.helius_tracker_enabled)
+    except Exception as e:
+        logger.warning(f"helius gate sync after PUT /bot/config failed: {e}")
     return cfg
 
 

@@ -158,7 +158,21 @@ class AccountEventBus:
 
     async def _run(self):
         backoff = 1
+        gate_check_interval_s = 5
         while not self._stop:
+            # Helius kill switch — keep the WSS idle when paused. Same
+            # pattern as the Pump.fun listener (see listener.py::_run).
+            try:
+                from helius_gate import is_helius_paused
+                if is_helius_paused():
+                    if self._connected.is_set():
+                        logger.info("AccountEventBus paused by helius kill switch")
+                    self._connected.clear()
+                    self._ws = None
+                    await asyncio.sleep(gate_check_interval_s)
+                    continue
+            except Exception:
+                pass
             try:
                 logger.info("AccountEventBus connecting to Helius WSS…")
                 async with websockets.connect(
@@ -175,6 +189,17 @@ class AccountEventBus:
                     async for raw in ws:
                         if self._stop:
                             break
+                        # Re-check the gate inside the loop so a mid-stream
+                        # toggle drops the connection immediately.
+                        try:
+                            from helius_gate import is_helius_paused
+                            if is_helius_paused():
+                                logger.info(
+                                    "AccountEventBus: helius gate flipped OFF mid-stream — closing"
+                                )
+                                break
+                        except Exception:
+                            pass
                         await self._handle_message(raw)
             except asyncio.CancelledError:
                 break
@@ -189,7 +214,17 @@ class AccountEventBus:
                 self._connected.clear()
             if self._stop:
                 break
-            await asyncio.sleep(backoff)
+            # Chunked sleep — poll the helius gate every 1s during the
+            # reconnect backoff so OFF toggles take effect within ~1s
+            # instead of waiting for the full 30s backoff window.
+            for _ in range(backoff):
+                await asyncio.sleep(1)
+                try:
+                    from helius_gate import is_helius_paused
+                    if is_helius_paused():
+                        break
+                except Exception:
+                    pass
             backoff = min(backoff * 2, 30)
 
     async def _handle_message(self, raw):

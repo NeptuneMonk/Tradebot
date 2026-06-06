@@ -113,7 +113,26 @@ class PumpFunListener:
 
     async def _run(self):
         backoff = 1
+        # Poll interval for the helius_gate when paused — we don't want to
+        # busy-wait, but we also want toggling the switch ON to take effect
+        # within a few seconds (not minutes).
+        gate_check_interval_s = 5
         while not self._stop:
+            # Helius kill switch — when the user toggles tracker OFF, we
+            # disconnect (or never connect) and idle here. Polling every
+            # 5s gets us back online quickly when the switch flips ON.
+            try:
+                from helius_gate import is_helius_paused
+                if is_helius_paused():
+                    if self.connected:
+                        logger.info(
+                            "Helius tracker disabled by user — keeping listener idle"
+                        )
+                    self.connected = False
+                    await asyncio.sleep(gate_check_interval_s)
+                    continue
+            except Exception:
+                pass
             try:
                 logger.info("Connecting to Helius WSS for logsSubscribe...")
                 async with websockets.connect(
@@ -135,13 +154,35 @@ class PumpFunListener:
                     async for raw in ws:
                         if self._stop:
                             break
+                        # Re-check the gate inside the message loop too —
+                        # the user could toggle OFF mid-stream and we want
+                        # to drop the connection immediately rather than
+                        # keep consuming credits until the next reconnect.
+                        try:
+                            from helius_gate import is_helius_paused
+                            if is_helius_paused():
+                                logger.info("Helius gate flipped OFF mid-stream — closing WSS")
+                                break
+                        except Exception:
+                            pass
                         await self._handle_message(raw)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 self.connected = False
                 logger.warning(f"WSS connection error: {e}; retrying in {backoff}s")
-                await asyncio.sleep(backoff)
+                # Chunked sleep — poll the helius gate every 1s during the
+                # reconnect backoff. Without this, an OFF toggle issued
+                # while the listener is in a 30s backoff would take up to
+                # 30s to take effect; with chunking it bites within ~1s.
+                for _ in range(backoff):
+                    await asyncio.sleep(1)
+                    try:
+                        from helius_gate import is_helius_paused
+                        if is_helius_paused():
+                            break
+                    except Exception:
+                        pass
                 backoff = min(backoff * 2, 30)
         self.connected = False
 

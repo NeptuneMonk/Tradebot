@@ -149,7 +149,17 @@ class PumpfunDiscovery:
                 )
                 # Resolve current price per protocol
                 cur_price = 0.0
-                if is_graduated:
+                # Helius kill-switch — pool state fetch hits PumpSwap via
+                # RPC (Helius credits). Skip when paused; the rest of the
+                # refresh (Pump.fun HTTP API, MC update from cached values)
+                # is free and continues to run.
+                helius_ok = True
+                try:
+                    from helius_gate import is_helius_paused
+                    helius_ok = not is_helius_paused()
+                except Exception:
+                    pass
+                if is_graduated and helius_ok:
                     pool = bucket.get("pumpswap_pool") or c.get("pump_swap_pool") or ""
                     if pool:
                         try:

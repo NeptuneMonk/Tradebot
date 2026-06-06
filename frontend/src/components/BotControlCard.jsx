@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Power, Zap, Settings2, ChevronDown, ChevronRight } from "lucide-react";
+import { Power, Zap, Settings2, ChevronDown, ChevronRight, Radio, Pause } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import SpeedModeSlider from "./SpeedModeSlider";
@@ -134,6 +134,61 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
           </button>
         );
       })()}
+
+      {/* Helius tracker kill switch — single-click save (no need to hit
+          "Save Config" first). This is intentionally placed right under
+          the Start/Stop button because it's the user's primary tool for
+          throttling Helius credit consumption when running preview +
+          production simultaneously. */}
+      <button
+        type="button"
+        data-testid="helius-tracker-toggle"
+        onClick={async () => {
+          const next = !(local.helius_tracker_enabled ?? true);
+          // Route through `onUpdate` (provided by Dashboard) so the
+          // dashboard's config refetch fires in lockstep — without it,
+          // a poll racing the PUT can re-deliver stale config and clobber
+          // the toggle back to its previous value from the user's POV.
+          // We MERGE the toggle into the current edit-in-progress so
+          // unrelated unsaved edits aren't lost.
+          try {
+            await onUpdate({ ...local, helius_tracker_enabled: next });
+            setLocal((cur) => ({ ...cur, helius_tracker_enabled: next }));
+            setBaseline((b) => (b ? { ...b, helius_tracker_enabled: next } : b));
+            toast.success(next
+              ? "Helius tracker resumed — listener reconnecting…"
+              : "Helius tracker paused — credit consumption halted");
+          } catch {
+            toast.error("Toggle failed");
+          }
+        }}
+        className={`w-full flex items-center justify-between px-3 py-2 border text-xs uppercase tracking-[0.15em] font-mono transition-colors duration-100 ${
+          (local.helius_tracker_enabled ?? true)
+            ? "border-emerald-800 text-emerald-300 bg-emerald-950/40 hover:bg-emerald-900/50"
+            : "border-amber-700 text-amber-200 bg-amber-950/50 hover:bg-amber-900/50"
+        }`}
+      >
+        <span className="flex items-center gap-2">
+          {(local.helius_tracker_enabled ?? true) ? (
+            <Radio className="w-3 h-3" />
+          ) : (
+            <Pause className="w-3 h-3" />
+          )}
+          Helius Tracker
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className={`text-[10px] ${(local.helius_tracker_enabled ?? true) ? "text-emerald-300" : "text-amber-300"}`}>
+            {(local.helius_tracker_enabled ?? true) ? "LIVE" : "PAUSED"}
+          </span>
+          <HelpHint label="Helius Tracker">
+            <div className="space-y-1.5">
+              <div><span className="text-emerald-300">LIVE</span>: listener subscribes to Pump.fun via Helius WSS; scanner can fetch pool/curve state to fire entries; account-event bus subscribes to position events. Burns Helius credits proportional to chain activity.</div>
+              <div><span className="text-amber-300">PAUSED</span>: listener disconnects, scanner skips RPC fetches, new entries are blocked, account-event bus idles, wallet-graph hunter idles. <strong>Open positions continue monitoring</strong> (small footprint — required to detect exits and protect funds). HTTP discovery from pump.fun&apos;s API continues (not a Helius endpoint).</div>
+              <div className="text-neutral-400">Use this when running preview + production simultaneously to throttle credit consumption on the environment you&apos;re not actively trading on.</div>
+            </div>
+          </HelpHint>
+        </span>
+      </button>
 
       {/* Speed Mode slider — controls priority fee + slippage as a bundle */}
       <SpeedModeSlider
