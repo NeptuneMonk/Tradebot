@@ -35,6 +35,16 @@ class BotConfig(BaseModel):
     # bounded by `max_concurrent_positions` (default 8) so it's tiny.
     # Default True so behaviour is unchanged for existing users.
     helius_tracker_enabled: bool = True
+    # Paper-mode realism knobs (2026-06-06). Applied only when
+    # `trade_doc["mode"] != "live"`. Purpose: stop paper sim from
+    # marking near-decision-price fills — bots that looked profitable
+    # in paper were losing live because paper ignored the ~500ms of
+    # signature-to-landing latency during which Pump.fun dumps drop
+    # 15-30%. Also lets us apply the priority-fee cost paper was
+    # previously getting for free.
+    paper_exit_latency_ms: int = 600
+    paper_entry_latency_ms: int = 400
+    paper_apply_priority_fee: bool = True
     # Sizing
     min_trade_usd: float = 0.50
     max_trade_usd: float = 1.00
@@ -49,11 +59,12 @@ class BotConfig(BaseModel):
     # When set to anything other than "manual", the resolved values overwrite
     # priority_fee_microlamports / slippage_bps / exit_slippage_bps at runtime.
     speed_mode: str = "manual"
-    hold_max_seconds: int = 45       # data: timeouts WIN; give them room
+    hold_max_seconds: int = 35       # 2026-06-06: 45→35 — Pump.fun dumps
+                                     # accelerate past the old window
     take_profit_pct: float = 20.0    # data: 12% was cutting winners; 20% balanced
-    stop_loss_pct: float = 15.0      # data: -15 tighter than -20 cuts bleeders faster
-    trailing_stop_pct: float = 8.0   # tighter trail once armed
-    trailing_arm_pct: float = 15.0   # only arm trailing AFTER +15% gain
+    stop_loss_pct: float = 12.0      # 2026-06-06: 15→12 — tighter live risk cap
+    trailing_stop_pct: float = 6.0   # 2026-06-06: 8→6 — lock gains sooner
+    trailing_arm_pct: float = 12.0   # 2026-06-06: 15→12 — arm at a lower peak
     # Partial take-profit: sell partial_tp_pct of the position at TP, ride the
     # remainder with a tightened trailing stop.
     partial_tp_pct: float = 50.0          # sell 50% at TP
@@ -80,19 +91,20 @@ class BotConfig(BaseModel):
     # SL/TS persistence — exit only fires after this many ms of CONTINUOUS
     # breach (cleared on any recovery, restart on next breach). Kills false
     # exits from millisecond dips during volatile microstructure.
-    sl_persistence_ms: int = 1200
-    ts_persistence_ms: int = 1500
+    sl_persistence_ms: int = 500     # 2026-06-06: 1200→500 — live dumps
+                                     # bleed 15-30% waiting the old window
+    ts_persistence_ms: int = 600     # 2026-06-06: 1500→600
     # TP persistence — same wick-protection as SL/TS but for take-profit.
     # 2026-02-08 paper data showed TP firing on momentary +15-23% wicks
     # that vanished by the time the sell settled (final PnL near 0% or
-    # negative). Requiring the breach to persist N ms (default 800 — shorter
+    # negative). Requiring the breach to persist N ms (default 400 — shorter
     # than SL so we don't miss real moves) ensures TP only fires on
     # genuine moves, not single-tick spikes from one outsized buy event.
-    tp_persistence_ms: int = 800
+    tp_persistence_ms: int = 400     # 2026-06-06: 800→400
     # Defense-in-depth: require N price samples during persistence window
     # before firing, so a single bad RPC quote can't single-handedly cause exit.
-    sl_persistence_min_samples: int = 3
-    ts_persistence_min_samples: int = 3
+    sl_persistence_min_samples: int = 2   # 2026-06-06: 3→2
+    ts_persistence_min_samples: int = 2   # 2026-06-06: 3→2
     tp_persistence_min_samples: int = 2
     # Auto-slip formula (when intelligent_exit_v2 is on, replaces panic_exit_slippage_bps
     # for exit-side sells; entry-side already has its own depth-aware ladder)
@@ -295,22 +307,26 @@ class BotConfig(BaseModel):
     #   4. Pattern-suggested TP hits (locks profit on parabolic moves)
     # `_check_snipe_pattern_exit()` in bot.py is the single source of truth.
     greylist_snipe_pattern_exits: bool = True
-    greylist_snipe_peak_mc_proximity_pct: float = 85.0  # exit when MC ≥ X% of expected peak
-    greylist_snipe_curve_buffer_pct: float = 5.0        # exit when curve ≥ rug_pct - X pp
-    greylist_snipe_ripcord_drawdown_pct: float = 40.0   # emergency exit X% from peak observed (lowered from 60 — snipes rug fast)
-    greylist_snipe_ripcord_grace_seconds: int = 3       # ripcord requires Xs above threshold first (lowered from 8)
+    greylist_snipe_peak_mc_proximity_pct: float = 75.0  # 2026-06-06: 85→75 —
+                                                        # exit earlier vs expected peak MC
+    greylist_snipe_curve_buffer_pct: float = 8.0        # 2026-06-06: 5→8 —
+                                                        # exit further BEFORE expected rug curve fill
+    greylist_snipe_ripcord_drawdown_pct: float = 45.0   # 2026-06-06: 40→45 —
+                                                        # bail earlier after peak dump (grace also tightened)
+    greylist_snipe_ripcord_grace_seconds: int = 4       # 2026-06-06: 3→4 (kept short for fast dumps)
     # Profit ripcord — a SEPARATE TP from pattern_suggested_tp. Always fires
     # when the position is up X% from entry, regardless of pattern. Rationale:
     # paper data showed snipes hitting +29-33% TP then giving the gain back
-    # to a partial-trail runner that got rugged. A full-exit ripcord at +30%
-    # locks the realistic win before reversion. Set to 0 to disable.
-    greylist_snipe_profit_ripcord_pct: float = 30.0
+    # to a partial-trail runner that got rugged. Set to 0 to disable.
+    greylist_snipe_profit_ripcord_pct: float = 20.0     # 2026-06-06: 30→20 —
+                                                        # lock full exit earlier
     # Stale-snipe time fail-safe — if a snipe has been held > stale_seconds
     # AND has not climbed at least stale_min_profit_pct above entry, exit.
-    # Paper data: 10-30 min holds drifted to -20-45%. Snipes that haven't
-    # popped within ~90s are almost always going to die. Set seconds=0 to disable.
-    greylist_snipe_stale_seconds: int = 90
-    greylist_snipe_stale_min_profit_pct: float = 25.0
+    # Paper data: 10-30 min holds drifted to -20-45%. Set seconds=0 to disable.
+    greylist_snipe_stale_seconds: int = 60              # 2026-06-06: 90→60 —
+                                                        # snipes must show life fast
+    greylist_snipe_stale_min_profit_pct: float = 5.0    # 2026-06-06: 25→5 —
+                                                        # even small green counts as "alive"
     # Require classified pattern — when True, the sniper REFUSES to fire on
     # creators whose pattern is `unknown` or null. Paper data showed 45/45
     # snipes fired on unknown patterns with 4/45 (9%) win rate — the

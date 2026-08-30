@@ -1,0 +1,34 @@
+{
+  "summary": "Verified all 4 surgical backend fixes to Pump.fun bot. Wrote focused pytest (test_iter8_surgical_fixes.py: 11/11 passed) covering BotConfig() constructor defaults (FIX 2/3/4), curve-fill guard preservation (FIX 2 sanity), PUT/GET round-trip for new paper_* fields (persists correctly), and code-presence checks for the trailing-stop insert in _monitor_position (FIX 1) and paper-latency block + PAPER_FILL log in _exit_impl (FIX 4). Ran all 11 requested regression suites (151 tests total): ALL PASS. Confirmed the greylist-snipe instant-exit guard (rug_curve > buffer+5.0) is preserved with new defaults.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/bot/config", "issue": "Endpoint returns the persisted bot_config document in Mongo which still contains OLD defaults (stop_loss_pct=15, trailing_stop_pct=8, etc.) and is MISSING the new paper_exit_latency_ms / paper_entry_latency_ms / paper_apply_priority_fee keys. This is expected behavior (new BotConfig defaults only apply when constructing fresh), but it means the running bot process still uses the OLD defaults for existing installations until the config doc is migrated. Verified via pytest that BotConfig() with no args DOES produce the new defaults, so models.py is correct. Recommendation for main agent: add a startup migration that merges new default fields into the persisted doc, OR wipe bot_config to force new defaults."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter8_surgical_fixes.py",
+    "/app/test_reports/pytest/iter8_regression.xml"
+  ],
+  "action_items": [
+    "Consider adding a one-shot migration in server startup to merge new BotConfig default fields (paper_*, tighter risk ladder, tighter persistence, tighter greylist_snipe_*) into the persisted /api/bot/config doc — otherwise existing deployments retain the OLD values until user manually re-saves the config from the UI. Not a regression from these changes, just a UX gap.",
+    "PUT round-trip works and persists new paper fields correctly, so a manual save from the UI is sufficient to pick up new defaults."
+  ],
+  "critical_code_review_comments": [
+    "FIX 1 (_monitor_position TS block, bot.py:2845-2988): Implementation matches spec exactly — peak_price_sol is updated on every tick (line 2853-2855), snipes short-circuit via is_snipe→_check_snipe_pattern_exit before TS block, TS block uses _exit_param for trail_pct/trail_arm_pct, honors partial_tp_trail_tighten_pct post-partial, uses _check_breach_persistence(kind='ts'), and the exit reason string omits the [fast] suffix. Clears ts_breached_since when trail is not armed. Clean mirror of _check_fast_exit.",
+    "FIX 2 (greylist_snipe_* defaults in models.py:308-328): All 7 values match spec. Curve-fill instant-exit guard (bot.py:1333) is intact: `if float(rug_curve) > buffer_pp + 5.0` — with new default buffer=8, rug=10 → 10>13=False (blocked, correct); rug=20, curve=12 → fires (correct).",
+    "FIX 3 (risk-ladder + persistence defaults, models.py:45-108): All values match spec. intelligent_exit_v2 remains True.",
+    "FIX 4 (paper realism in _exit_impl, bot.py:3458-3494, 3743-3756): decision-price snapshot → asyncio.sleep(latency_ms/1000.0) → re-fetch pool state → fee zeroing when paper_apply_priority_fee=False → PAPER_FILL log line only fires when trade_doc['mode'] != 'live' and paper_latency_ms > 0. Live path is untouched (guarded by mode check). Log format matches spec (mint, reason, decision_px, fill_px, slip_bps, latency_ms, fee_sol)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter8_surgical_fixes.py (new — 11 tests)"
+  ],
+  "success_rate": {"backend": "100% (11/11 new + 151/151 regression = 162/162)", "frontend": "N/A (skipped per request)"},
+  "test_credentials": "Seeded then cleaned mongo session tester_iter8_tok/user tester_iter8 with email nbobby79@gmail.com — cleaned up after run.",
+  "seed_data_creation": "Temporary session doc in user_sessions collection; deleted post-test.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "test_iter8_surgical_fixes.py is a lightweight regression file that pins the 4 fixes' expected constants + code presence. Safe to re-run any time. Note: /api/bot/config returns persisted Mongo doc, NOT BotConfig() defaults — for future default-value tests either wipe bot_config first or assert against BotConfig() directly (like the tests here do).",
+  "rca of the issue": "N/A — no bugs found. All 4 surgical fixes are correctly implemented per spec."
+}

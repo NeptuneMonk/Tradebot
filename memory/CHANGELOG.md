@@ -1578,3 +1578,69 @@ Helius traffic):
 Redeploy preview → production to push the toggle live. After that, you
 can pause the environment you're NOT actively trading on and halt its
 credit consumption immediately.
+
+
+## 2026-06-06 (later) — Four surgical fixes: monitor-trail, snipe tightening, live-realism, paper realism
+
+### Files touched
+- `backend/bot.py` — `_monitor_position` (peak tracking + trailing block), `_exit_impl` (paper latency + PAPER_FILL log + optional fee zeroing)
+- `backend/models.py` — BotConfig defaults for risk ladder, persistence, greylist_snipe_*, plus new paper_* fields
+
+### FIX 1 — trailing-stop in _monitor_position (CRITICAL)
+Was: only `_check_fast_exit` had trailing. When on_trade events fell silent (quiet mint, WSS blip, 429s from Helius), the monitor loop never checked trailing → positions rode from peak all the way down to SL or max-hold. Now: monitor tick updates `slot['peak_price_sol']` and runs the same trail block as fast-path (persistence + arm gate + partial-trail tighten + snipe short-circuit).
+
+### FIX 2 — greylist snipe defaults (exit earlier vs historical rug)
+| Field | Old | New |
+|---|---|---|
+| `greylist_snipe_peak_mc_proximity_pct` | 85 | **75** |
+| `greylist_snipe_curve_buffer_pct` | 5 | **8** |
+| `greylist_snipe_ripcord_drawdown_pct` | 40 | **45** |
+| `greylist_snipe_ripcord_grace_seconds` | 3 | **4** |
+| `greylist_snipe_profit_ripcord_pct` | 30 | **20** |
+| `greylist_snipe_stale_seconds` | 90 | **60** |
+| `greylist_snipe_stale_min_profit_pct` | 25 | **5** |
+
+Instant-exit guard `rug_curve > buffer + 5.0` preserved.
+
+### FIX 3 — risk ladder + persistence defaults (faster live exits)
+| Field | Old | New |
+|---|---|---|
+| `stop_loss_pct` | 15.0 | **12.0** |
+| `trailing_stop_pct` | 8.0 | **6.0** |
+| `trailing_arm_pct` | 15.0 | **12.0** |
+| `hold_max_seconds` | 45 | **35** |
+| `sl_persistence_ms` | 1200 | **500** |
+| `ts_persistence_ms` | 1500 | **600** |
+| `tp_persistence_ms` | 800 | **400** |
+| `sl_persistence_min_samples` | 3 | **2** |
+| `ts_persistence_min_samples` | 3 | **2** |
+
+`intelligent_exit_v2` stays True. Severity override untouched.
+
+### FIX 4 — paper realism
+New BotConfig fields:
+- `paper_exit_latency_ms: int = 600`
+- `paper_entry_latency_ms: int = 400`
+- `paper_apply_priority_fee: bool = True`
+
+In `_exit_impl` when `mode != "live"`: snapshot decision price, `await asyncio.sleep(600ms)`, re-fetch pool/curve, quote sell on NEW state — paper fills reflect post-latency price, not decision-time price. `paper_apply_priority_fee=False` zeroes exit_fee_sol. Emits diagnostic:
+```
+PAPER_FILL mint=... reason=... decision_px=... fill_px=... slip_bps=... latency_ms=... fee_sol=...
+```
+
+Live path unchanged. NO real transactions in paper.
+
+### Testing (testing_agent verified — iteration_8.json)
+- 11/11 new tests in `test_iter8_surgical_fixes.py` PASS
+- 151/151 regression tests PASS (test_greylist_snipe_lifecycle, test_pin_invariant, test_scanner_band_protocol, test_snipe_exit_ladder, test_helius_kill_switch, test_seasoned_metrics, test_greylist_sniper, test_graduation_migration, test_creator_greylist, test_creator_pattern, test_bimodal_pattern)
+- 0 critical issues
+- 1 minor UX gap noted: existing Mongo bot_config docs retain OLD values until user Save Config (spec requested defaults-only, no forced migration)
+
+### How to test in UI
+1. **Paper mode first**: hit Save Config in Bot Control to pick up new defaults (or reset). Watch backend logs for `PAPER_FILL` lines on exits — verify `fill_px` differs from `decision_px` (post-latency market moved).
+2. **Trailing-stop from monitor**: open a paper position, let it run +15% then let price drop. Trade History should show exit reason `trailing-stop hit (peak +X.X%, now +Y.Y%)` WITHOUT `[fast]` suffix — confirms it came from the monitor loop (not the fast-path).
+3. **Snipe tightening**: with a greylisted creator, watch for exit reasons `snipe peak-MC exit` at 75% (not 85%) and `profit-ripcord` at +20% (not +30%).
+4. **Live tiny size**: only after paper confirms sane behavior. Set `max_trade_usd=0.50` and let one live position work through the full monitor-trail path.
+
+### Action for user
+Redeploy preview → production. On the new-defaults question: existing users need to click **Save Config** once to pick up the tighter risk ladder + paper knobs. New installs get them automatically.

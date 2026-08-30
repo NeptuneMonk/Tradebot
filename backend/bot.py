@@ -2842,6 +2842,18 @@ class BotState:
                 # state on every poll.
                 slot["_last_price_sol"] = cur_price_sol
 
+                # Track running peak — mirrors `_check_fast_exit` so that
+                # trailing-stop works whether the peak was set by an on_trade
+                # event or by this monitor tick (previously the monitor loop
+                # never updated peak_price_sol and never checked trailing,
+                # meaning positions bled through the trail level when
+                # on_trade fell silent — the CRITICAL bug).
+                entry_p_mon = float(trade_doc["entry_price_sol"] or 0.0)
+                peak_mon = float(slot.get("peak_price_sol") or entry_p_mon)
+                if cur_price_sol > peak_mon:
+                    peak_mon = cur_price_sol
+                    slot["peak_price_sol"] = cur_price_sol
+
                 # Bail out of this tick if another exit (fast-exit path or a
                 # prior monitor tick) is already in flight — they're operating
                 # on the same slot and would race for the same wallet balance,
@@ -2934,6 +2946,52 @@ class BotState:
                         persistence_ms=self.config.sl_persistence_ms,
                         min_samples=self.config.sl_persistence_min_samples,
                     )
+
+                # Trailing stop — CRITICAL: was missing from this loop
+                # entirely, meaning quiet mints (no on_trade events during
+                # the drawdown) would ride the peak all the way down to SL
+                # or max-hold. Mirrors the fast-path logic in
+                # `_check_fast_exit` (lines ~1505-1544) 1:1. Snipes were
+                # already short-circuited above; standard TP/SL branches
+                # above return on fire so we only reach this block when
+                # the position is still open past those gates.
+                m_trail_pct_cfg = self._exit_param(slot, "trail_pct", self.config.trailing_stop_pct)
+                m_trail_arm_pct_cfg = self._exit_param(slot, "trail_arm_pct", self.config.trailing_arm_pct)
+                m_trail_pct = (
+                    self.config.partial_tp_trail_tighten_pct
+                    if slot.get("partial_done") and self.config.partial_tp_trail_tighten_pct > 0
+                    else m_trail_pct_cfg
+                )
+                m_peak_pct = (peak_mon - entry_p_mon) / entry_p_mon * 100 if entry_p_mon > 0 else 0.0
+                m_arm_pct = m_trail_arm_pct_cfg if not slot.get("partial_done") else 0.0
+                if m_trail_pct > 0 and peak_mon > entry_p_mon and m_peak_pct >= m_arm_pct:
+                    m_trail_drop = (peak_mon - cur_price_sol) / peak_mon * 100
+                    m_ts_breached = m_trail_drop >= m_trail_pct
+                    m_ts_should_fire = False
+                    if self.config.intelligent_exit_v2:
+                        m_ts_should_fire = self._check_breach_persistence(
+                            slot, kind="ts", breached=m_ts_breached,
+                            persistence_ms=self.config.ts_persistence_ms,
+                            min_samples=self.config.ts_persistence_min_samples,
+                        )
+                    else:
+                        m_ts_should_fire = m_ts_breached
+                    if m_ts_should_fire:
+                        slot["exit_in_progress"] = True
+                        try:
+                            await self._exit(
+                                mint,
+                                reason=f"trailing-stop hit (peak +{m_peak_pct:.1f}%, now +{pct_change:.1f}%)",
+                            )
+                            return
+                        finally:
+                            slot["exit_in_progress"] = False
+                else:
+                    # Trail not armed yet → clear any pending TS breach state
+                    # so a subsequent arming doesn't start with a stale count.
+                    if slot.get("ts_breached_since") is not None:
+                        slot["ts_breached_since"] = None
+                        slot["ts_breached_samples"] = 0
 
                 # Classifier monitoring applies only to NEW band entries (fresh
                 # mempool launches). Seasoned/PumpSwap trades skip it because
@@ -3397,6 +3455,44 @@ class BotState:
         else:
             exit_slip = self._exit_slip_for(reason, eff_exit_slip)
 
+        # Paper-mode realism (2026-06-06) — simulate signature-to-landing
+        # latency + apply exit slip on the POST-latency pool state instead
+        # of the decision-time state. Without this, paper marks fills
+        # ~equal to the price at the moment of decision; live drops
+        # 15-30% during that window on Pump.fun rugs and blows past the
+        # slip band, so paper-profitable strategies were losing real
+        # money. Live path is unchanged — its actual tx timing already
+        # bakes in latency.
+        paper_decision_price_sol = 0.0
+        paper_latency_ms = 0
+        if trade_doc["mode"] != "live":
+            latency_ms = int(self.config.paper_exit_latency_ms or 0)
+            if latency_ms > 0:
+                # Snapshot the decision-time price for the log line
+                if protocol == "pumpswap" and pumpswap_state:
+                    paper_decision_price_sol = pumpswap.price_sol_per_raw_token(pumpswap_state)
+                elif state:
+                    try:
+                        paper_decision_price_sol = state["virtual_sol_reserves"] / state["virtual_token_reserves"] / LAMPORTS_PER_SOL
+                    except Exception:
+                        paper_decision_price_sol = 0.0
+                await asyncio.sleep(latency_ms / 1000.0)
+                # Re-fetch pool/curve state so the sell quote is priced at
+                # the market the bot would ACTUALLY hit ~600ms after
+                # decision, not the market it saw when it decided.
+                if protocol == "pumpswap":
+                    pool = slot.get("pumpswap_pool") or ""
+                    if pool:
+                        refreshed = await pumpswap.fetch_pool_state(pool)
+                        if refreshed:
+                            pumpswap_state = refreshed
+                            state = refreshed
+                else:
+                    refreshed = await pumpfun.fetch_bonding_curve_state(mint)
+                    if refreshed:
+                        state = refreshed
+                paper_latency_ms = latency_ms
+
         # For live trades, size the sell by the ACTUAL wallet balance — fees
         # taken at buy time mean our balance is usually a touch lower than
         # entry_tokens, and trying to sell more than we hold reverts the tx
@@ -3640,7 +3736,24 @@ class BotState:
 
         cu = CU_PUMPSWAP if protocol == "pumpswap" else CU_PUMPFUN
         exit_fee_sol = estimate_tx_fee_sol(eff_priority, cu)
+        # Paper-mode: honor `paper_apply_priority_fee` toggle. When False,
+        # paper fills are booked without deducting the priority fee (useful
+        # for A/B comparing gross vs net paper PnL). Default True (deducted)
+        # to keep paper realistic.
+        if trade_doc["mode"] != "live" and not self.config.paper_apply_priority_fee:
+            exit_fee_sol = 0.0
         trade_doc["exit_fee_sol"] = exit_fee_sol
+        # One-line paper-fill diagnostic (2026-06-06). Silent for live mode
+        # to keep the log volume down — live mode has its own EXIT_DECISION
+        # / EXIT_SENT / EXIT_FILLED lines with tx signatures.
+        if trade_doc["mode"] != "live" and paper_latency_ms > 0:
+            logger.info(
+                f"PAPER_FILL mint={mint[:8]}… reason={reason!r} "
+                f"decision_px={paper_decision_price_sol:.10f} "
+                f"fill_px={exit_price_sol:.10f} "
+                f"slip_bps={exit_slip} latency_ms={paper_latency_ms} "
+                f"fee_sol={exit_fee_sol:.6f}"
+            )
 
         # ----- PHANTOM-PNL GUARD -----
         # If we attempted a live sell but the tx never landed (exit_sig is None),
