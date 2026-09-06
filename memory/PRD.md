@@ -10,7 +10,7 @@ For learning and experimentation only — no deployment outside preview.
 - "Helius RPC: https://beta.helius-rpc.com/?api-key=c8d03259-d874-42eb-bbbb-22b6750bcc6e"
 - "Generate fresh keypair in sandbox — store in backend .env"
 - Daily kill switch: $20
-- "Allow me to increase trades with UI functions if needed" — UI configurable; server-side hard cap at $5/trade
+- "Allow me to increase trades with UI functions if needed" — UI configurable; server-side hard cap raised to $100/trade (2026-09-06, was $5)
 - Classifier defaults: curve fill > 30% in 10s → exit_early; unique buyers > 15 in 5s → hold_briefly
 - Visual: "Simple and functional. Built for speed"
 - "No simulated launches. Real launches"

@@ -298,7 +298,7 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                value={local.min_trade_usd}
                onChange={(v) => setLocal({ ...local, min_trade_usd: parseFloat(v) || 0 })} step="0.1" />
         <Field label="Max Trade ($)" testid="max-trade-input"
-               hint="Hard cap on USD size per buy. The bot scales position by liquidity/score but never exceeds this."
+               hint="Hard cap on USD size per buy (server ceiling $100). The bot scales position by liquidity/score but never exceeds this."
                value={local.max_trade_usd}
                onChange={(v) => setLocal({ ...local, max_trade_usd: parseFloat(v) || 0 })} step="0.1" />
         {showAdvancedFees && (

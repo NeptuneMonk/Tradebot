@@ -350,8 +350,8 @@ async def update_config(body: dict = Body(...)):
         cfg = BotConfig(**{**bot_state.config.model_dump(), **(body or {})})
     except Exception as e:
         raise HTTPException(422, f"invalid config: {e}")
-    if cfg.max_trade_usd > 5.0:
-        cfg.max_trade_usd = 5.0
+    if cfg.max_trade_usd > 100.0:
+        cfg.max_trade_usd = 100.0
     if cfg.min_trade_usd < 0.10:
         cfg.min_trade_usd = 0.10
     if cfg.max_trade_usd < cfg.min_trade_usd:

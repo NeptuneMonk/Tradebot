@@ -98,7 +98,7 @@ class TestBotConfig:
             "enabled": False,
             "live_trading": False,
             "min_trade_usd": 0.05,   # below 0.10 floor -> 0.10
-            "max_trade_usd": 10.0,    # above 5.0 cap -> 5.0
+            "max_trade_usd": 250.0,   # above 100.0 cap -> 100.0
             "slippage_bps": 10,        # below 50 -> 50
             "daily_kill_switch_usd": 500.0,  # above 100 -> 100
             "priority_fee_microlamports": 500000,
@@ -109,7 +109,7 @@ class TestBotConfig:
         r = client.put(f"{API}/bot/config", json=payload)
         assert r.status_code == 200, r.text
         d = r.json()
-        assert d["max_trade_usd"] == 5.0, f"max_trade_usd not clamped: {d['max_trade_usd']}"
+        assert d["max_trade_usd"] == 100.0, f"max_trade_usd not clamped: {d['max_trade_usd']}"
         assert d["min_trade_usd"] == 0.10, f"min_trade_usd not clamped: {d['min_trade_usd']}"
         assert d["slippage_bps"] == 50, f"slippage_bps not clamped low: {d['slippage_bps']}"
         assert d["daily_kill_switch_usd"] == 100, f"kill switch not clamped: {d['daily_kill_switch_usd']}"
