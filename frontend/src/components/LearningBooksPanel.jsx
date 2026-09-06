@@ -3,7 +3,9 @@ import { FlaskConical, BookOpen, Undo2 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 
-const fmtSol = (v) => (v == null ? "—" : `${v >= 0 ? "+" : ""}${Number(v).toFixed(5)} SOL`);
+const fmtUsd = (v) => (v == null ? "—" : `${v >= 0 ? "+" : ""}$${Number(v).toFixed(3)}`);
+const BOOKS = ["momentum", "greylist_snipe", "reentry", "rh_pons"];
+const LABEL = { momentum: "Momentum book", greylist_snipe: "Greylist snipe book", reentry: "Re-entry book", rh_pons: "RH · PONS book (paper)" };
 const pct = (v, d = 0) => (v == null ? "—" : `${Number(v).toFixed(d)}%`);
 
 export default function LearningBooksPanel() {
@@ -40,7 +42,7 @@ export default function LearningBooksPanel() {
           <FlaskConical className="w-3 h-3" /> Learning loop
         </div>
         <span className="text-[9px] font-mono text-neutral-500">
-          optimises expectancy after fill, not a green streak · one change at a time · paper-first canary
+          audits every book (SOL + RH) on $ expectancy per fill — profit, not win rate · one change at a time · paper-first canary
         </span>
       </div>
 
@@ -50,7 +52,7 @@ export default function LearningBooksPanel() {
           <span>
             Canary running: <span className="text-lime-300">{canary.proposal?.key}={String(canary.proposal?.value)}</span>
             {" "}on <span className="uppercase">{canary.book}</span> · started {new Date(canary.started_at).toLocaleTimeString()}
-            {" "}· promotes after {canary.n_req ?? "N"} trades / time window if fill expectancy beats {fmtSol(canary.baseline_expectancy_sol)}
+            {" "}· promotes after {canary.n_req ?? "N"} trades / time window if fill expectancy beats {fmtUsd(canary.baseline_expectancy_usd ?? canary.baseline_expectancy_sol)}
           </span>
           <button type="button" disabled={busy} data-testid="learning-revert-btn"
                   onClick={() => act(api.doctorLearningRevert, "Canary reverted — baseline restored, proposal blacklisted 24h")}
@@ -64,32 +66,44 @@ export default function LearningBooksPanel() {
         <div className={`px-3 py-1.5 text-[10px] font-mono border ${canary.state === "promote" ? "border-emerald-900 text-emerald-300" : "border-neutral-800 text-neutral-400"}`}
              data-testid="learning-canary-last">
           Last canary {canary.proposal?.key}={String(canary.proposal?.value)} → <span className="uppercase">{canary.state}</span>
-          {canary.expectancy_since != null && <> · expectancy since {fmtSol(canary.expectancy_since)} (n={canary.n_since}) vs baseline {fmtSol(canary.baseline_expectancy_sol)}</>}
+          {canary.expectancy_since != null && <> · expectancy since {fmtUsd(canary.expectancy_since)} (n={canary.n_since}) vs baseline {fmtUsd(canary.baseline_expectancy_usd ?? canary.baseline_expectancy_sol)}</>}
           {canary.revert_reason && <> · {canary.revert_reason}</>}
         </div>
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        {["momentum", "greylist_snipe"].map((b) => {
+        {BOOKS.map((b) => {
           const s = books[b] || { n: 0 };
-          const pos = (s.expectancy_sol ?? 0) >= 0;
+          const pos = (s.expectancy_usd ?? 0) >= 0;
+          const bt = s.by_trigger || {};
           return (
             <div key={b} className="border border-neutral-800 p-2.5" data-testid={`learning-book-${b}`}>
               <div className="flex items-center justify-between">
                 <span className="text-[10px] uppercase tracking-[0.15em] text-neutral-300 inline-flex items-center gap-1.5">
-                  <BookOpen className="w-3 h-3" /> {b === "momentum" ? "Momentum book" : "Greylist snipe book"}
+                  <BookOpen className="w-3 h-3" /> {LABEL[b]}
                 </span>
                 <span className="text-[9px] font-mono text-neutral-500">n={s.n ?? 0} (24h) · {s.n_7d ?? 0} (7d)</span>
               </div>
               <div className="mt-1.5 grid grid-cols-3 gap-2 text-[10px] font-mono">
                 <div><div className="text-neutral-600 text-[9px]">expectancy / fill</div>
-                  <div className={pos ? "text-emerald-300" : "text-rose-300"} data-testid={`learning-exp-${b}`}>{fmtSol(s.expectancy_sol)}</div></div>
-                <div><div className="text-neutral-600 text-[9px]">win rate</div><div className="text-neutral-200">{pct(s.winrate)}</div></div>
+                  <div className={pos ? "text-emerald-300" : "text-rose-300"} data-testid={`learning-exp-${b}`}>{fmtUsd(s.expectancy_usd)}</div></div>
+                <div><div className="text-neutral-600 text-[9px]">win rate · payoff</div><div className="text-neutral-200">{pct(s.winrate)} · {s.payoff_ratio == null ? "—" : `${s.payoff_ratio.toFixed(2)}x`}</div></div>
+                <div><div className="text-neutral-600 text-[9px]">total (24h)</div><div className={pos ? "text-emerald-300/80" : "text-rose-300/80"}>{fmtUsd(s.total_usd)}</div></div>
+                <div><div className="text-neutral-600 text-[9px]">exits SL · TP</div><div className="text-neutral-200">{pct(s.sl_share)} · {pct(s.tp_share)}</div></div>
                 <div><div className="text-neutral-600 text-[9px]">giveback (med)</div><div className="text-neutral-200">{s.median_giveback == null ? "—" : `${s.median_giveback.toFixed(1)}pp`}</div></div>
                 <div><div className="text-neutral-600 text-[9px]">hold (med)</div><div className="text-neutral-200">{s.median_hold_s == null ? "—" : `${Math.round(s.median_hold_s)}s`}</div></div>
                 <div><div className="text-neutral-600 text-[9px]">latency tax</div><div className="text-neutral-200">{s.median_latency_tax == null ? "—" : `${s.median_latency_tax.toFixed(1)}pp`}</div></div>
                 <div><div className="text-neutral-600 text-[9px]">stale/timeout</div><div className="text-neutral-200">{pct(s.stale_timeout_share)}</div></div>
               </div>
+              {b === "reentry" && Object.keys(bt).length > 0 && (
+                <div className="mt-1.5 flex flex-wrap gap-2 text-[9px] font-mono" data-testid="learning-reentry-triggers">
+                  {Object.entries(bt).map(([k, v]) => (
+                    <span key={k} className={`px-1.5 py-0.5 border ${v.expectancy_usd >= 0 ? "border-emerald-900 text-emerald-300" : "border-rose-900 text-rose-300"}`}>
+                      {k}: {fmtUsd(v.expectancy_usd)}/fill · n={v.n} · {pct(v.winrate)} wr
+                    </span>
+                  ))}
+                </div>
+              )}
               {p && p.book === b && !running && (
                 <div className="mt-1.5 text-[9px] font-mono text-lime-300/90">last proposal: {p.key} → {String(p.value)}</div>
               )}

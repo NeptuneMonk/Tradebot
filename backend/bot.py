@@ -28,7 +28,7 @@ from discovery import PumpfunDiscovery
 from rh_discovery import RHDiscovery
 from rh_paper import RHPaperTrader
 from doctor_learning import book_size_mult
-from reentry_logic import decide_reentry, recent_buyers_and_inflow
+from reentry_logic import decide_reentry, recent_buyers_and_inflow, trigger_context
 from speed_modes import (
     speed_mode_resolve, estimate_tx_fee_sol, auto_tuner,
     CU_PUMPFUN, CU_PUMPSWAP,
@@ -829,6 +829,7 @@ class BotState:
                     trigger = decide_reentry(w, cur_price, now, n_buyers, inflow_ok, self.config)
                     if trigger:
                         w["last_trigger"] = trigger
+                        w["last_ctx"] = trigger_context(w, cur_price, n_buyers, trigger)
                         try:
                             await self._attempt_reentry(w)
                         except Exception as e:
@@ -950,6 +951,8 @@ class BotState:
             speed_mode_at_entry=self.config.speed_mode,
             risk_score=40,
             classifier_action="reentry",
+            reentry_trigger=w.get("last_trigger"),
+            reentry_ctx=w.get("last_ctx"),
             protocol=protocol,
             pumpswap_pool=(w.get("pumpswap_pool") or None) if protocol == "pumpswap" else None,
         )

@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 
 from models import Trade, now_utc
 from ws_hub import hub
-from reentry_logic import decide_reentry, recent_buyers_and_inflow
+from reentry_logic import decide_reentry, recent_buyers_and_inflow, trigger_context
 
 if TYPE_CHECKING:
     from bot import BotState
@@ -202,11 +202,13 @@ class RHPaperTrader:
             trigger = decide_reentry(w, price, now, n_buyers, inflow_ok, cfg)
             if trigger is None:
                 continue
+            w["last_ctx"] = trigger_context(w, price, n_buyers, trigger)
             w["attempts"] += 1
             w["last_trigger"] = trigger
             self.entered.discard(token)
             self._pending_entries.add(token)
-            asyncio.create_task(self._enter(token, size_mult=w["size_multiplier"], reentry=w["last_trigger"]))
+            asyncio.create_task(self._enter(token, size_mult=w["size_multiplier"], reentry=w["last_trigger"],
+                                            reentry_ctx=w.get("last_ctx")))
 
     async def manual_enter(self, token: str) -> dict:
         """Operator override: skip the momentum gates, keep only the position cap."""
@@ -232,7 +234,7 @@ class RHPaperTrader:
         return {"ok": False, "reason": "paper entry did not open (unpriced quote or no price yet)"}
 
     async def _enter(self, token: str, size_mult: float = 1.0, reentry: str | None = None,
-                     manual: bool = False):
+                     manual: bool = False, reentry_ctx: dict | None = None):
         cfg = self.state.config
         try:
             await asyncio.sleep(max(0, cfg.paper_entry_latency_ms) / 1000.0)
@@ -261,6 +263,8 @@ class RHPaperTrader:
             doc["launch_id"] = b["launch_id"]
             if reentry:
                 doc["reentry"] = reentry
+                doc["reentry_trigger"] = reentry
+                doc["reentry_ctx"] = reentry_ctx
                 doc["classifier_action"] = "rh_pons_reentry"
             if manual:
                 doc["classifier_action"] = "rh_pons_manual"

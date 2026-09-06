@@ -39,6 +39,18 @@ function summarizeExit(t) {
   return { label: r.split(/[\s(]/).slice(0, 3).join(" "), tint: "text-neutral-400" };
 }
 
+const reentryTitle = (t) => {
+  const c = t.reentry_ctx;
+  if (!c) return `re-entry · ${t.reentry_trigger || t.reentry}`;
+  const f = (v, d = 1) => (v == null ? "—" : `${v >= 0 ? "+" : ""}${Number(v).toFixed(d)}%`);
+  return [
+    `Re-entry fired: ${c.trigger} (attempt ${c.attempt ?? "?"})`,
+    `ran on after exit: ${f(c.run_on_pct, 0)} · pulled back from peak: ${c.pullback_pct == null ? "—" : `-${Number(c.pullback_pct).toFixed(0)}%`}`,
+    `bounce off trough: ${f(c.bounce_pct)} · buyers in window: ${c.buyers ?? "—"}`,
+    `entry vs prior exit: ${f(c.vs_exit_pct)}`,
+  ].join("\n");
+};
+
 function TradeHistoryTable({ history }) {
   const partialCount = history.filter((t) => t.partial_done).length;
   const partialBanked = history.reduce((sum, t) => sum + (t.partial_realized_usd || 0), 0);
@@ -110,6 +122,11 @@ function TradeHistoryTable({ history }) {
                             entered via <span className="text-neutral-300">{t.classifier_action}</span>
                           </div>
                         )}
+                        {t.reentry_ctx && (
+                          <div className="mt-1 text-[10px] text-neutral-500 whitespace-pre-line" data-testid={`reentry-ctx-${t.id}`}>
+                            {reentryTitle(t)}
+                          </div>
+                        )}
                       </TooltipContent>
                     </Tooltip>
                   </td>
@@ -124,6 +141,27 @@ function TradeHistoryTable({ history }) {
                     )}
                     <span className="mr-1.5 align-middle inline-flex"><ChainBadge chain={t.chain} mint={t.mint} /></span>
                     {t.symbol || "?"} <span className="text-neutral-600 text-[10px]">{short(t.mint)}</span>
+                    {(t.reentry_trigger || t.reentry) && (
+                      <span
+                        data-testid={`reentry-badge-${t.id}`}
+                        className={`ml-1.5 inline-block px-1 py-0 border text-[9px] font-mono uppercase align-middle ${
+                          (t.reentry_trigger || t.reentry) === "pullback"
+                            ? "border-amber-800 text-amber-300"
+                            : "border-fuchsia-800 text-fuchsia-300"
+                        }`}
+                        title={reentryTitle(t)}
+                      >
+                        re-entry · {t.reentry_trigger || t.reentry}
+                        {t.reentry_ctx && (
+                          <span className="ml-1 normal-case text-neutral-400">
+                            {t.reentry_ctx.run_on_pct != null && <>↑{t.reentry_ctx.run_on_pct.toFixed(0)}% </>}
+                            {t.reentry_ctx.pullback_pct != null && <>↓{t.reentry_ctx.pullback_pct.toFixed(0)}% </>}
+                            {t.reentry_ctx.bounce_pct != null && <>⤴{t.reentry_ctx.bounce_pct.toFixed(1)}% </>}
+                            {t.reentry_ctx.buyers != null && <>· {t.reentry_ctx.buyers}b</>}
+                          </span>
+                        )}
+                      </span>
+                    )}
                   </td>
                   <td className="text-right font-mono text-[10px] uppercase text-neutral-500">{t.mode}</td>
                   <td className="text-right font-mono">${t.entry_usd?.toFixed(2)}</td>

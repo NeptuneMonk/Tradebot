@@ -75,3 +75,23 @@ def recent_buyers_and_inflow(buy_events, now: float, window_s: float) -> tuple[i
             wallets.add(wl)
             amt += float(q or 0)
     return len(wallets), amt
+
+
+def trigger_context(w: dict, price: float, buyers_recent: int, trigger: str) -> dict:
+    """Audit record stored on the re-entry trade: why it fired."""
+    exit_price = float(w.get("exit_price_quote") or w.get("exit_price_sol") or 0)
+    peak = float(w.get("peak_price_after_exit") or 0)
+    trough = float(w.get("trough_after_peak") or price)
+    return {
+        "trigger": trigger,
+        "exit_price": exit_price,
+        "peak": peak,
+        "trough": trough,
+        "entry_price": price,
+        "run_on_pct": round((peak / exit_price - 1.0) * 100.0, 2) if exit_price else None,
+        "pullback_pct": round((peak - trough) / peak * 100.0, 2) if peak else None,
+        "bounce_pct": round((price / trough - 1.0) * 100.0, 2) if trough else None,
+        "vs_exit_pct": round((price / exit_price - 1.0) * 100.0, 2) if exit_price else None,
+        "buyers": int(buyers_recent),
+        "attempt": int(w.get("attempts") or 0) + 1,
+    }

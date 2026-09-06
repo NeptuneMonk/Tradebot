@@ -15,10 +15,13 @@ from models import BotConfig  # noqa: E402
 NOW = datetime.now(timezone.utc)
 
 
-def t(pnl_sol, book="momentum", mfe=None, pnl_pct=None, reason="trailing-stop hit", hold=40, exit_ago_s=600, dec=None, fill=None):
+SOL_USD = 150.0
+
+
+def t(pnl_sol, book="momentum", mfe=None, pnl_pct=None, reason="trailing-stop hit", hold=40, exit_ago_s=600, dec=None, fill=None, **extra):
     d = {
         "book": book, "classifier_action": "greylist_snipe" if book == "greylist_snipe" else "momentum_new",
-        "pnl_sol": pnl_sol, "pnl_pct": pnl_pct if pnl_pct is not None else pnl_sol * 1000,
+        "pnl_sol": pnl_sol, "pnl_usd": pnl_sol * SOL_USD, "pnl_pct": pnl_pct if pnl_pct is not None else pnl_sol * 1000,
         "exit_reason": reason, "status": "closed",
         "entry_time": (NOW - timedelta(seconds=exit_ago_s + hold)).isoformat(),
         "exit_time": (NOW - timedelta(seconds=exit_ago_s)).isoformat(),
@@ -28,6 +31,7 @@ def t(pnl_sol, book="momentum", mfe=None, pnl_pct=None, reason="trailing-stop hi
         d["peak_price_sol"] = 1e-6 * (1 + mfe / 100)
     if dec is not None:
         d["decision_price_sol"], d["fill_price_sol"] = dec, fill
+    d.update(extra)
     return d
 
 
@@ -179,7 +183,9 @@ def test_size_mult_zero_skips_book():
     assert dl.book_size_mult(BotConfig(book_snipe_size_mult=0.0), "momentum_new") == 1.0
     assert dl.book_size_mult({"book_momentum_size_mult": 0.5}, "reentry") == 0.5
     assert dl.book_size_mult({}, "momentum_new") == 1.0
-    assert dl.book_of({"chain": "rh"}) is None
+    assert dl.book_of({"chain": "rh", "classifier_action": "rh_pons_paper"}) == "rh_pons"
+    assert dl.book_of({"classifier_action": "reentry"}) == "reentry"
+    assert dl.book_of({"classifier_action": "manual"}) is None and dl.book_of({"classifier_action": "rh_pons_manual"}) is None
     assert dl.book_of({"classifier_action": "greylist_snipe"}) == "greylist_snipe"
     assert dl.book_of({"book": "momentum", "classifier_action": "greylist_snipe"}) == "momentum"
 
@@ -187,3 +193,63 @@ def test_size_mult_zero_skips_book():
 def test_whitelist_never_contains_forbidden_keys():
     assert not (dl.ALLOWED_KEYS & dl.FORBIDDEN_KEYS)
     assert "max_trade_usd" not in dl.ALLOWED_KEYS and "live_trading" not in dl.ALLOWED_KEYS
+
+
+def _re(pnl, trig, **k):
+    return t(pnl, "reentry", classifier_action="reentry", reentry_trigger=trig, **k)
+
+
+def test_reentry_book_cuts_losing_trigger_before_disabling():
+    trades = [_re(-0.002, "breakout") for _ in range(10)] + [_re(0.001, "pullback") for _ in range(8)]
+    stats = {"reentry": dl.book_stats(trades)}
+    assert stats["reentry"]["by_trigger"]["breakout"]["expectancy_usd"] < 0 < stats["reentry"]["by_trigger"]["pullback"]["expectancy_usd"]
+    p = dl.propose({"reentry_enabled": True, "reentry_breakout_pct": 5.0}, stats, 15)
+    assert p["key"] == "reentry_breakout_pct" and p["value"] == 15.0 and p["book"] == "reentry"
+    # pullbacks losing → raise the run-on bar, then buyers, then switch off
+    trades = [_re(-0.002, "pullback") for _ in range(16)]
+    stats = {"reentry": dl.book_stats(trades)}
+    assert dl.propose({"reentry_enabled": True, "reentry_min_bounce_pct": 5.0}, stats, 15)["key"] == "reentry_min_bounce_pct"
+    assert dl.propose({"reentry_enabled": True, "reentry_min_bounce_pct": 30.0, "reentry_min_buyers": 2}, stats, 15)["key"] == "reentry_min_buyers"
+    p = dl.propose({"reentry_enabled": True, "reentry_min_bounce_pct": 30.0, "reentry_min_buyers": 5}, stats, 15)
+    assert p["key"] == "reentry_enabled" and p["value"] is False
+    assert dl.propose({"reentry_enabled": False}, stats, 15) is None
+
+
+def test_rh_book_is_audited_and_tightens_gates():
+    trades = [t(-0.001, "rh_pons", classifier_action="rh_pons_paper", chain="rh") for _ in range(16)]
+    for x in trades:
+        x["pnl_usd"] = -0.2
+    stats = {"rh_pons": dl.book_stats(trades)}
+    p = dl.propose({"rh_min_growth_pct": 30.0}, stats, 15)
+    assert p["key"] == "rh_min_growth_pct" and p["value"] == 40.0 and p["book"] == "rh_pons"
+    assert dl.propose({"rh_min_growth_pct": 100.0, "rh_min_inflow_usd": 300.0}, stats, 15)["key"] == "rh_min_inflow_usd"
+
+
+def test_global_profit_shape_rules_sl_and_tp():
+    # winners small, losers big, mostly stop-loss exits → tighten SL
+    trades = [t(0.001, reason="take_profit") for _ in range(8)] + [t(-0.004, reason="stop-loss hit (-20%)") for _ in range(8)]
+    stats = {"momentum": {"n": 0}, "global": dl.book_stats(trades, {"take_profit_pct": 45})}
+    p = dl.propose({"stop_loss_pct": 20.0}, stats, 15)
+    assert p["key"] == "stop_loss_pct" and p["value"] == 17.0 and p["book"] == "global"
+    assert dl.propose({"stop_loss_pct": 10.0}, stats, 15) is None  # floor
+    # winners run far past TP and most exits are TP → let winners run
+    trades = [t(0.002, mfe=90, pnl_pct=45, reason="take_profit") for _ in range(16)]
+    stats = {"momentum": {"n": 0}, "global": dl.book_stats(trades, {"take_profit_pct": 45})}
+    p = dl.propose({"take_profit_pct": 45.0, "stop_loss_pct": 20.0}, stats, 15)
+    assert p["key"] == "take_profit_pct" and p["value"] == 50.0
+
+
+def test_scales_a_profitable_book():
+    trades = [t(0.002, mfe=6, pnl_pct=5) for _ in range(24)] + [t(-0.001, mfe=1, pnl_pct=-1) for _ in range(8)]
+    st = dl.book_stats(trades)
+    st["expectancy_7d"], st["n_7d"] = 0.1, 60
+    p = dl.propose({"book_momentum_size_mult": 1.0, "trailing_stop_pct": 6}, {"momentum": st}, 15)
+    assert p["key"] == "book_momentum_size_mult" and p["value"] == 1.25
+    assert dl.propose({"book_momentum_size_mult": 2.0}, {"momentum": st}, 15) is None  # cap
+
+
+def test_book_stats_is_usd_based_and_exit_classes():
+    rows = [t(0.001, reason="take_profit hit"), t(-0.002, reason="stop-loss hit (-20%)"), {"pnl_sol": 1.0, "status": "closed"}]
+    st = dl.book_stats(rows)
+    assert st["n"] == 2 and abs(st["expectancy_usd"] - (-0.0005 * SOL_USD)) < 1e-9
+    assert st["sl_share"] == 50.0 and st["tp_share"] == 50.0 and st["payoff_ratio"] == 0.5

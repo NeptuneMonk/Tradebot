@@ -538,6 +538,8 @@ class Trade(BaseModel):
     # Classifier snapshot
     risk_score: int = 50
     classifier_action: Optional[str] = None
+    reentry_trigger: Optional[str] = None   # "pullback" | "breakout" (re-entry legs only)
+    reentry_ctx: Optional[dict] = None      # audit: peak/trough/bounce/buyers at trigger
     # Creator greylist (Phase 2) — strategy tier & score AT THE TIME OF ENTRY.
     # Stored per-trade so analytics can correlate live overrides to outcomes.
     # `greylist_strategy_at_entry`: "aggressive" | "hybrid" | "standard" | None.

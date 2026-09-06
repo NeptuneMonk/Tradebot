@@ -1362,3 +1362,13 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - Root cause: the public Robinhood RPC (Cloudflare edge) now returns **429 for every JSON-RPC batch** (even 2× eth_blockNumber in one body) while single requests succeed. `poll_once` sent one batched request per poll → ~80% 429s → backoff → "4 consecutive 429s, resync to head" every minute → feed appeared dead.
 - Fix in `rh_discovery.py::_rpc`: one HTTP request per call (`RPC_CONCURRENCY=1`), per-call cool-off retries on 429 (0.6/1.2/2/3s — the edge limiter is bursty), `META_PER_POLL=6` name/symbol lookups per poll. Stats now expose `rate_limited_calls` (per-call 429s absorbed by retries) separately from `rate_limited` (poll failures).
 - Verified live: poll-level 429s 0, no resyncs, head keeps pace (~10 blocks/s), launches/trades flowing.
+
+
+## 2026-09-06 — Doctor v3: profit auditor over ALL books + re-entry reason log
+- ✅ `doctor_learning.py` now scores **four books** — momentum, greylist_snipe, **reentry**, **rh_pons** (RH paper) — plus a `global` aggregate, all in **USD expectancy per fill** (`pnl_usd`, shared unit for SOL + RH). Manual buys are excluded from tuning (operator decisions) but stay in P/L.
+- ✅ New per-book stats: `winner_mean_usd`, `loser_mean_usd`, `payoff_ratio`, `sl_share`, `tp_share`, `winners_median_mfe`, `mfe_over_tp_share`, `by_trigger` (re-entry pullback vs breakout).
+- ✅ Proposal ladder (first match; all expectancy-driven): (1) losing book → momentum/snipe size 0 · reentry: cut losing trigger first (`reentry_breakout_pct` +10 → `reentry_min_bounce_pct` +5 → `reentry_min_buyers` +1 → `reentry_enabled` False) · rh_pons: `rh_min_growth_pct` +10 → `rh_min_inflow_usd` +100; (2) **profit shape** on shared keys (book="global"): avg loser >1.5× avg winner & SL share >30% → `stop_loss_pct` −3 (floor 10); >40% winners ran ≥1.5×TP & TP share >40% → `take_profit_pct` +5 (cap 100); (3) giveback → trail; (4) stale/timeout; (5) latency; (6) **scale winners**: positive 24h+7d expectancy, payoff ≥1, n ≥ 2·min → size mult +0.25 (cap 2) / `reentry_size_multiplier` +0.1 (cap 1).
+- ✅ Canary baseline/verdict now `baseline_expectancy_usd` / `max_drawdown_usd` (falls back to old `_sol` keys for an in-flight canary).
+- ✅ Re-entry reason log: `reentry_trigger` + `reentry_ctx` {run_on_pct, pullback_pct, bounce_pct, vs_exit_pct, buyers, attempt, peak, trough} stored on every SOL/RH re-entry trade (`reentry_logic.trigger_context`). Trade History shows a `RE-ENTRY · pullback ↑x% ↓y% ⤴z% · Nb` badge + full breakdown in the exit tooltip.
+- ✅ LearningBooksPanel: 4 books, $ formatting, total (24h), win rate·payoff, SL·TP exit shares, per-trigger chips on the re-entry book.
+- Tests: `test_doctor_learning.py` 15 (5 new), reentry/rh suites green.
