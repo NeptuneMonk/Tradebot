@@ -51,7 +51,13 @@ class BankrollEngine:
             except Exception as e:
                 logger.warning(f"bankroll: wallet read failed ({e}); falling back to paper bankroll")
         realised = await self._pnl_since(None, mode="paper")
-        return max(0.0, float(cfg.paper_bankroll_usd) + realised), "paper"
+        swept = 0.0
+        try:
+            async for d in self.db.profit_sweeps.find({"mode": "paper", "status": "done"}, {"_id": 0, "amount_usd": 1}):
+                swept += float(d.get("amount_usd") or 0.0)
+        except Exception:
+            pass
+        return max(0.0, float(cfg.paper_bankroll_usd) + realised - swept), "paper"
 
     async def _pnl_since(self, hours: float | None, mode: str) -> float:
         q: dict = {"status": "closed", "mode": mode}

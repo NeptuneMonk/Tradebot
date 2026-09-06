@@ -320,6 +320,15 @@ class BotConfig(BaseModel):
     governor_drawdown_pct: float = 5.0     # 24h loss worse than this % of bankroll → governor
     governor_hours: float = 6.0
     governor_size_mult: float = 0.5
+    # ---- Profit sweep (skim growth above baseline to a cold wallet) ----
+    sweep_enabled: bool = False
+    sweep_cold_wallet: str = ""
+    sweep_pct_of_profit: float = 50.0      # slice of profit above baseline moved each period
+    sweep_interval_days: int = 7
+    sweep_min_usd: float = 10.0
+    sweep_reserve_sol: float = 0.05        # always keep this much SOL in the hot wallet (fees/rent)
+    sweep_baseline_usd: float = 0.0        # starting bankroll; 0 = set to current bankroll on first enable
+    sweep_started_ts: float = 0.0
     # Structure flags the Doctor may flip. 0 disables that book.
     book_momentum_size_mult: float = 1.0
     book_snipe_size_mult: float = 1.0

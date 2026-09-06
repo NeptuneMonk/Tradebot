@@ -1382,3 +1382,10 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - Defaults: 2% / 25% / 10% / governor 5% for 6h at 0.5×. Config clamps: risk 0.1–10, exposure 1–100, daily loss 1–50.
 - Tests: `tests/test_autopilot.py` (5), doctor 15; testing agent iteration_11 all pass. User config restored (autopilot OFF, $100/$90/8/$47).
 - NOTE for user: wallet currently 0 SOL; live bankroll sizing is skipped while bankroll is 0.
+
+
+## 2026-09-06 — Profit Sweep (autopilot skims growth to a cold wallet)
+- ✅ `profit_sweep.py` ProfitSweeper (10-min loop, `bot_state.sweeper`): every `sweep_interval_days` (7) move `sweep_pct_of_profit` (50%) of bankroll growth above `sweep_baseline_usd` to `sweep_cold_wallet`. Baseline auto-anchors to the current bankroll on first enable; after each sweep baseline := post-sweep bankroll (retained share compounds, only new growth sliced). Live → SOL system transfer via `pumpfun.send_versioned_tx` keeping `sweep_reserve_sol` (0.05); paper → ledger entry in `profit_sweeps` (subtracted from paper bankroll in `bankroll.py`). `sweep_min_usd` (10) floor. `last_sweep_ts` persisted in `autopilot_state`.
+- ✅ API: `GET /api/autopilot/sweep` (preview + history + total), `POST /api/autopilot/sweep/run-now` (manual; skips schedule, keeps safety checks; 409 with reason), `POST /api/autopilot/sweep/reset-baseline`. Config clamps + validation: cold wallet must be a valid Solana pubkey and ≠ hot wallet; cannot enable without a wallet.
+- ✅ UI: ProfitSweepPanel inside AutopilotCard — cold wallet, % / days / min inputs, on/off, baseline / profit / projected / next due, Sweep now, Reset baseline, total swept, history.
+- Tests: `tests/test_profit_sweep.py` (6). Self-tested via curl + screenshot. LIVE TRANSFER PATH NOT EXERCISED (wallet has 0 SOL) — first real sweep should be watched.

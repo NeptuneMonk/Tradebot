@@ -3,6 +3,7 @@ import { Bot, ShieldAlert, FlaskConical, Wallet, TrendingUp, Clock } from "lucid
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import HelpHint from "./HelpHint";
+import ProfitSweepPanel from "./ProfitSweepPanel";
 
 const usd = (v, d = 2) => (v == null ? "—" : `${v < 0 ? "-" : ""}$${Math.abs(Number(v)).toFixed(d)}`);
 const signedUsd = (v) => (v == null ? "—" : `${v >= 0 ? "+" : "-"}$${Math.abs(Number(v)).toFixed(2)}`);
@@ -160,6 +161,8 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
           {s.kill_switch_tripped && <span className="text-rose-300"> · kill switch tripped</span>}
         </div>
       </div>
+
+      <ProfitSweepPanel config={config} onConfigUpdate={onConfigUpdate} />
     </div>
   );
 }

@@ -111,6 +111,9 @@ async def lifespan(app: FastAPI):
     from bankroll import BankrollEngine
     bot_state.bankroll = BankrollEngine(bot_state, db)
     bot_state.bankroll.start()
+    from profit_sweep import ProfitSweeper
+    bot_state.sweeper = ProfitSweeper(bot_state, db, bot_state.bankroll)
+    bot_state.sweeper.start()
     doctor = StrategyDoctor(db=db, hub=hub)
     doctor.reload_cb = bot_state.load
     doctor.learning.reload_cb = bot_state.load
@@ -417,6 +420,26 @@ async def update_config(body: dict = Body(...)):
     cfg.governor_hours = max(0.5, min(48.0, float(cfg.governor_hours)))
     cfg.governor_size_mult = max(0.1, min(1.0, float(cfg.governor_size_mult)))
     cfg.paper_bankroll_usd = max(10.0, min(1_000_000.0, float(cfg.paper_bankroll_usd)))
+    cfg.sweep_pct_of_profit = max(1.0, min(100.0, float(cfg.sweep_pct_of_profit)))
+    cfg.sweep_interval_days = max(1, min(90, int(cfg.sweep_interval_days)))
+    cfg.sweep_min_usd = max(1.0, min(100_000.0, float(cfg.sweep_min_usd)))
+    cfg.sweep_reserve_sol = max(0.01, min(10.0, float(cfg.sweep_reserve_sol)))
+    cfg.sweep_baseline_usd = max(0.0, float(cfg.sweep_baseline_usd))
+    cfg.sweep_cold_wallet = (cfg.sweep_cold_wallet or "").strip()
+    if cfg.sweep_cold_wallet:
+        from profit_sweep import valid_pubkey
+        if not valid_pubkey(cfg.sweep_cold_wallet):
+            raise HTTPException(status_code=400, detail="sweep_cold_wallet is not a valid Solana address")
+        import wallet as _w
+        try:
+            if cfg.sweep_cold_wallet == _w.get_pubkey_str():
+                raise HTTPException(status_code=400, detail="cold wallet must differ from the hot trading wallet")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+    if cfg.sweep_enabled and not cfg.sweep_cold_wallet:
+        raise HTTPException(status_code=400, detail="set a cold wallet address before enabling the profit sweep")
     cfg.reentry_min_bounce_pct = max(0.0, min(200.0, float(cfg.reentry_min_bounce_pct)))
     cfg.reentry_bounce_confirm_pct = max(0.0, min(50.0, float(cfg.reentry_bounce_confirm_pct)))
     cfg.reentry_min_buyers = max(0, min(50, int(cfg.reentry_min_buyers)))
@@ -1895,6 +1918,33 @@ async def autopilot_status():
         "next_review_ts": next_review,
         "kill_switch_tripped": bool(bot_state.kill_switch_tripped),
     }
+
+
+@api.get("/autopilot/sweep")
+async def autopilot_sweep_status():
+    sw = bot_state.sweeper
+    pv = await sw.preview()
+    pv["history"] = await sw.history(20)
+    pv["total_swept_usd"] = await sw.total_swept_usd(pv["mode"])
+    return pv
+
+
+@api.post("/autopilot/sweep/run-now")
+async def autopilot_sweep_run_now():
+    """Manual sweep — skips the weekly schedule, keeps every safety check."""
+    res = await bot_state.sweeper.sweep_now(force=True)
+    if not res.get("ok"):
+        raise HTTPException(status_code=409, detail=res.get("reason") or "sweep refused")
+    return res
+
+
+@api.post("/autopilot/sweep/reset-baseline")
+async def autopilot_sweep_reset_baseline():
+    """Re-anchor the baseline to the current bankroll (e.g. after a deposit)."""
+    bankroll, _ = await bot_state.bankroll.bankroll_usd()
+    bot_state.config.sweep_baseline_usd = round(bankroll, 2)
+    await bot_state.save_config()
+    return await bot_state.sweeper.preview()
 
 
 @api.post("/autopilot/governor/release")
