@@ -50,6 +50,8 @@ logger = logging.getLogger("strategy_doctor")
 ANALYSIS_LOOKBACK_HOURS = 24
 # Minimum closed trades before any sizing/exit suggestion fires
 MIN_TRADES_FOR_SUGGESTION = 30
+# MFE-based (peak-vs-entry) rules need fewer trades per chain scope
+MIN_TRADES_MFE_RULES = 20
 # How long a dismissed suggestion stays hidden before being re-evaluated
 DISMISS_COOLDOWN_HOURS = 24
 # Suggestions auto-expire after this if neither applied nor dismissed
@@ -60,6 +62,48 @@ DEFAULT_INTERVAL_MINUTES = 30
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _mfe_pct(t: dict) -> float | None:
+    """Max favourable excursion: peak price vs entry, either chain."""
+    if t.get("chain") == "rh":
+        ep, pk = t.get("entry_price_quote") or 0, t.get("peak_price_quote") or 0
+    else:
+        ep, pk = t.get("entry_price_sol") or 0, t.get("peak_price_sol") or 0
+    if not ep or not pk:
+        return None
+    return (pk / ep - 1.0) * 100.0
+
+
+def _exit_class(t: dict) -> str:
+    """Normalise SOL ("stop-loss hit (-14%)") and RH ("stop_loss") vocabularies."""
+    r = (t.get("exit_reason") or "").lower()
+    if "no-momentum" in r or r == "no_momentum":
+        return "no_momentum"
+    if "stop-loss" in r or r == "stop_loss":
+        return "sl"
+    if "take-profit" in r or "partial-tp" in r or r == "take_profit":
+        return "tp"
+    if "trailing" in r:
+        return "trail"
+    if "timeout" in r or r == "max_hold":
+        return "timeout"
+    if "exit_early" in r or "classifier abort" in r:
+        return "churn"
+    return "other"
+
+
+def _hold_s(t: dict) -> float | None:
+    try:
+        e = datetime.fromisoformat(str(t["entry_time"]).replace("Z", "+00:00"))
+        x = datetime.fromisoformat(str(t["exit_time"]).replace("Z", "+00:00"))
+        return (x - e).total_seconds()
+    except Exception:
+        return None
+
+
+def _scope_label(scope: str) -> str:
+    return "RH · PONS (paper)" if scope == "rh" else "Solana"
 
 
 def _hash_signature(category: str, action_keys: list[str], action_values: dict | None = None) -> str:
@@ -134,6 +178,15 @@ class StrategyDoctor:
 
         # No-data case: surface a single "need more data" card
         if len(trades) < MIN_TRADES_FOR_SUGGESTION:
+            # Keep ONE card and refresh its counter in place (the signature
+            # dedup would otherwise freeze the first "0/30" forever).
+            await self.db.strategy_suggestions.update_many(
+                {"status": "pending", "category": "needs_more_data"},
+                {"$set": {
+                    "title": f"Need more trade data ({len(trades)}/{MIN_TRADES_FOR_SUGGESTION})",
+                    "metrics": {"n_trades": len(trades)},
+                }},
+            )
             suggestions.append({
                 "category": "needs_more_data",
                 "title": f"Need more trade data ({len(trades)}/{MIN_TRADES_FOR_SUGGESTION})",
@@ -148,7 +201,15 @@ class StrategyDoctor:
                 "metrics": {"n_trades": len(trades)},
             })
         else:
-            # Run each rule. Each returns 0+ suggestion dicts.
+            # Enough data now — retire any lingering "need more data" card.
+            await self.db.strategy_suggestions.update_many(
+                {"status": "pending", "category": "needs_more_data"},
+                {"$set": {"status": "expired"}},
+            )
+            # Legacy rules are Solana-vocabulary ("stop-loss hit", "trailing-stop
+            # hit", partial_sig …) — feed them SOL trades only.
+            sol_trades = [t for t in trades if t.get("chain") != "rh"]
+            rh_trades = [t for t in trades if t.get("chain") == "rh"]
             for rule in (
                 self._rule_sizing_advantage,
                 self._rule_stop_loss_tightness,
@@ -163,11 +224,30 @@ class StrategyDoctor:
                 self._rule_greylist_sniper_tuning,
             ):
                 try:
-                    rule_out = rule(trades, cfg_doc)
+                    rule_out = rule(sol_trades, cfg_doc)
                     if rule_out:
                         suggestions.extend(rule_out)
                 except Exception as e:
                     logger.exception(f"rule {rule.__name__} failed: {e}")
+            # MFE-based rules (2026-06 review) — chain-aware, run per scope so
+            # PONS dynamics never contaminate Pump.fun conclusions.
+            for scope, scoped in (("sol", sol_trades), ("rh", rh_trades)):
+                if len(scoped) < MIN_TRADES_MFE_RULES:
+                    continue
+                for rule in (
+                    self._rule_sl_too_wide,
+                    self._rule_tp_unreachable,
+                    self._rule_flat_bleeders,
+                    self._rule_trailing_giveback,
+                    self._rule_churn_exits,
+                    self._rule_source_edge,
+                ):
+                    try:
+                        rule_out = rule(scoped, cfg_doc, scope)
+                        if rule_out:
+                            suggestions.extend(rule_out)
+                    except Exception as e:
+                        logger.exception(f"rule {rule.__name__}[{scope}] failed: {e}")
 
         # Deduplicate against pending + dismissed signatures
         fresh = []
@@ -343,7 +423,14 @@ class StrategyDoctor:
         tp_rate = tp_hits / n * 100
         cur_tp = float(cfg.get("take_profit_pct", 12))
         if tp_rate < 8 and cur_tp > 8:
+            # Data-driven target: 75th percentile of observed peaks (MFE), not
+            # "current minus 4" — with TP=120 that used to propose 116.
+            peaks = sorted(m for m in (_mfe_pct(t) for t in trades) if m is not None and m > 0)
             new_tp = max(6, cur_tp - 4)
+            if len(peaks) >= 10:
+                new_tp = max(15.0, round(peaks[int(len(peaks) * 0.75)]))
+            if new_tp >= cur_tp:
+                return []
             return [{
                 "category": "tp",
                 "title": f"Take-profit rarely fires ({tp_rate:.0f}%) — lower to {new_tp:.0f}%",
@@ -787,6 +874,180 @@ class StrategyDoctor:
                 "proposed_min_score": new,
                 "direction": direction,
             },
+        }]
+
+
+
+
+    # ============== MFE-BASED RULES (2026-06 review; chain-scoped) ==============
+
+    def _rule_sl_too_wide(self, trades, cfg, scope):
+        """Stops set so wide they only fire on rugs. If SL exits account for
+        most of the gross loss AND the configured SL > 25%, propose 20%."""
+        sl = [t for t in trades if _exit_class(t) == "sl"]
+        cur_sl = float(cfg.get("stop_loss_pct", 12))
+        if len(sl) < 3 or cur_sl <= 25:
+            return []
+        losses = [t.get("pnl_usd") or 0 for t in trades if (t.get("pnl_usd") or 0) < 0]
+        sl_loss = sum(t.get("pnl_usd") or 0 for t in sl)
+        gross_loss = sum(losses)
+        if gross_loss >= 0 or sl_loss / gross_loss < 0.4:
+            return []
+        med_sl = statistics.median(t.get("pnl_pct") or 0 for t in sl)
+        saved = sum(max(0.0, (abs(t.get("pnl_pct") or 0) - 20.0) / 100.0 * (t.get("entry_usd") or 0)) for t in sl)
+        return [{
+            "category": "sl",
+            "title": f"[{_scope_label(scope)}] SL {cur_sl:.0f}% is a rug detector, not a stop — set 20%",
+            "rationale": (
+                f"{len(sl)} stop-loss exits (median {med_sl:+.0f}%) produced ${sl_loss:+.2f} — "
+                f"{sl_loss / gross_loss * 100:.0f}% of all losses in the window. At -20% the same "
+                f"trades would have lost ~${saved:.2f} less. Wick protection already comes from "
+                f"sl_persistence ({cfg.get('sl_persistence_ms', 500)}ms / "
+                f"{cfg.get('sl_persistence_min_samples', 2)} samples), so the stop itself can be tight."
+            ),
+            "actions": {"stop_loss_pct": 20.0},
+            "confidence": "high" if len(sl) >= 5 else "med",
+            "metrics": {"scope": scope, "n_sl": len(sl), "sl_loss_usd": round(sl_loss, 2),
+                        "share_of_losses_pct": round(sl_loss / gross_loss * 100, 1), "median_sl_pct": round(med_sl, 1)},
+        }]
+
+    def _rule_tp_unreachable(self, trades, cfg, scope):
+        """TP above anything the market actually delivered → set it to the
+        75th percentile of observed peaks so it fires on real runners."""
+        peaks = sorted(m for m in (_mfe_pct(t) for t in trades) if m is not None)
+        cur_tp = float(cfg.get("take_profit_pct", 12))
+        if len(peaks) < 20:
+            return []
+        p90 = peaks[int(len(peaks) * 0.9)]
+        p75 = peaks[int(len(peaks) * 0.75)]
+        hits = sum(1 for t in trades if _exit_class(t) == "tp")
+        if hits > 0 or cur_tp <= p90 * 1.3 or p75 < 15:
+            return []
+        new_tp = float(max(15, round(p75)))
+        if new_tp >= cur_tp:
+            return []
+        return [{
+            "category": "tp",
+            "title": f"[{_scope_label(scope)}] TP {cur_tp:.0f}% never reached — set {new_tp:.0f}%",
+            "rationale": (
+                f"0 of {len(trades)} trades hit take-profit. 90th-percentile peak gain was "
+                f"{p90:+.0f}%, 75th was {p75:+.0f}%. A TP at the 75th percentile fires on the top "
+                f"quarter of runners (and arms partial-TP at {cfg.get('partial_tp_pct', 50):.0f}% size), "
+                "instead of letting every peak round-trip into the trailing stop."
+            ),
+            "actions": {"take_profit_pct": new_tp},
+            "confidence": "high" if len(peaks) >= 40 else "med",
+            "metrics": {"scope": scope, "n": len(trades), "p75_mfe": round(p75, 1), "p90_mfe": round(p90, 1), "current_tp": cur_tp},
+        }]
+
+    def _rule_flat_bleeders(self, trades, cfg, scope):
+        """Positions that never moved (MFE <= 3%) yet lost >10% — the
+        no-momentum exit exists for exactly these."""
+        flat = [t for t in trades if (_mfe_pct(t) or 0) <= 3.0 and (t.get("pnl_pct") or 0) < -10]
+        if len(flat) < 5:
+            return []
+        loss = sum(t.get("pnl_usd") or 0 for t in flat)
+        enabled = bool(cfg.get("no_momentum_exit_enabled", True))
+        after = int(cfg.get("no_momentum_after_s", 30))
+        if not enabled:
+            actions = {"no_momentum_exit_enabled": True, "no_momentum_after_s": 30, "no_momentum_min_mfe_pct": 5.0}
+            title = f"[{_scope_label(scope)}] {len(flat)} flat positions bled ${loss:+.2f} — enable no-momentum exit"
+        else:
+            slow = [t for t in flat if (_hold_s(t) or 0) >= after + 15]
+            if len(slow) < 4 or after <= 15:
+                return []
+            actions = {"no_momentum_after_s": max(15, after - 10)}
+            title = f"[{_scope_label(scope)}] {len(slow)} flat positions still held {after + 15}s+ — check earlier ({actions['no_momentum_after_s']}s)"
+        return [{
+            "category": "hold",
+            "title": title,
+            "rationale": (
+                f"{len(flat)} trades peaked at +3% or less and still closed below -10% "
+                f"(total ${loss:+.2f}). These never had momentum; every second held was pure "
+                "bleed. The no-momentum exit cuts them at the check time unless they've shown "
+                f"at least +{cfg.get('no_momentum_min_mfe_pct', 5):.0f}% MFE."
+            ),
+            "actions": actions,
+            "confidence": "high" if len(flat) >= 8 else "med",
+            "metrics": {"scope": scope, "n_flat": len(flat), "flat_loss_usd": round(loss, 2), "no_momentum_after_s": after},
+        }]
+
+    def _rule_trailing_giveback(self, trades, cfg, scope):
+        """Runners (MFE >= 20%) handing back > 45% of their peak → tighten trail."""
+        runners = [(m, t.get("pnl_pct") or 0) for t in trades for m in [_mfe_pct(t)] if m is not None and m >= 20]
+        if len(runners) < 8:
+            return []
+        avg_mfe = statistics.mean(m for m, _ in runners)
+        avg_real = statistics.mean(p for _, p in runners)
+        giveback = (avg_mfe - avg_real) / avg_mfe * 100 if avg_mfe > 0 else 0
+        cur_trail = float(cfg.get("trailing_stop_pct", 6))
+        if giveback < 45 or cur_trail <= 3:
+            return []
+        new_trail = max(3.0, round(cur_trail - 2))
+        return [{
+            "category": "tp",
+            "title": f"[{_scope_label(scope)}] Runners give back {giveback:.0f}% of their peak — tighten trail to {new_trail:.0f}%",
+            "rationale": (
+                f"{len(runners)} trades peaked at +20% or more (avg peak {avg_mfe:+.0f}%) but "
+                f"realised only {avg_real:+.0f}% on average. Trailing stop is {cur_trail:.0f}% below "
+                f"peak (armed at +{cfg.get('trailing_arm_pct', 12):.0f}%). Tightening by 2pp locks "
+                "more of the move on curves that reverse inside a couple of blocks."
+            ),
+            "actions": {"trailing_stop_pct": new_trail},
+            "confidence": "med",
+            "metrics": {"scope": scope, "n_runners": len(runners), "avg_mfe": round(avg_mfe, 1),
+                        "avg_realised": round(avg_real, 1), "giveback_pct": round(giveback, 1)},
+        }]
+
+    def _rule_churn_exits(self, trades, cfg, scope):
+        """Enter → classifier flips → exit inside 10s. Free in paper, fee-negative live."""
+        churn = [t for t in trades if _exit_class(t) == "churn" and (_hold_s(t) or 99) <= 10]
+        if len(churn) < 8 or len(churn) / len(trades) < 0.2:
+            return []
+        net = sum(t.get("pnl_usd") or 0 for t in churn)
+        live_fee_est = len(churn) * 0.20
+        return [{
+            "category": "classifier",
+            "title": f"[{_scope_label(scope)}] {len(churn)} churn trades ({len(churn) / len(trades) * 100:.0f}%) — classifier exits within 10s",
+            "rationale": (
+                f"{len(churn)} entries were exited by the classifier within 10 seconds "
+                f"(net ${net:+.2f} in paper). Live, each round-trip costs roughly $0.15–0.25 in "
+                f"priority fee + slippage → ~${live_fee_est:.2f} drag. The 'fast pump' rule is right "
+                "but fires one step late. **Informational** — the fix is a pre-entry veto "
+                "(curve filled >40% in <10s ⇒ skip), which needs a code change; in the meantime "
+                "raising min_buyers_for_entry_new by 2 filters some of these."
+            ),
+            "actions": {},
+            "confidence": "med",
+            "metrics": {"scope": scope, "n_churn": len(churn), "share_pct": round(len(churn) / len(trades) * 100, 1),
+                        "paper_net_usd": round(net, 2)},
+        }]
+
+    def _rule_source_edge(self, trades, cfg, scope):
+        """Re-entry sized at half while being the best source → size it up."""
+        if scope != "sol":
+            return []
+        re = [t for t in trades if t.get("classifier_action") == "reentry"]
+        rest = [t for t in trades if t.get("classifier_action") != "reentry"]
+        if len(re) < 6 or len(rest) < 10:
+            return []
+        wr_re = sum(1 for t in re if (t.get("pnl_pct") or 0) > 0) / len(re) * 100
+        wr_rest = sum(1 for t in rest if (t.get("pnl_pct") or 0) > 0) / len(rest) * 100
+        mult = float(cfg.get("reentry_size_multiplier", 0.5))
+        if wr_re < 65 or wr_re - wr_rest < 10 or mult >= 1.0:
+            return []
+        return [{
+            "category": "sizing",
+            "title": f"Re-entry is your best source (WR {wr_re:.0f}%) but sized ×{mult:.1f} — size to ×1.0",
+            "rationale": (
+                f"Re-entries: {len(re)} trades, WR {wr_re:.0f}%, "
+                f"${sum(t.get('pnl_usd') or 0 for t in re):+.2f}. Everything else: {len(rest)} trades, "
+                f"WR {wr_rest:.0f}%. Buying the pullback on a token that already proved it can run "
+                "is the highest-quality signal in the data; it shouldn't get half a stake."
+            ),
+            "actions": {"reentry_size_multiplier": 1.0},
+            "confidence": "high" if len(re) >= 10 else "med",
+            "metrics": {"scope": scope, "n_reentry": len(re), "wr_reentry": round(wr_re, 1), "wr_rest": round(wr_rest, 1)},
         }]
 
 

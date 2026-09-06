@@ -1771,3 +1771,24 @@ lines in `bot.py` (import + construct + start for `RHDiscovery`, `RHPaperTrader`
 - Not built (declined for now): pre-entry fast-pump veto, growth ceilings,
   RH-specific TP/SL, source-aware sizing.
 - Tests: test_no_momentum_exit.py (3), test_rh_paper.py (+1) — pass.
+
+### 2026-06 — Strategy Doctor: 500 fix + re-entrant load() + MFE rules
+- 500 on Apply/Revert: `BotState.load()` referenced `was_running_before_restart`
+  which is only bound on first load → UnboundLocalError on every doctor apply.
+  Worse, each re-load re-ran the restart-only block: restored active trades
+  from DB over live slots AND spawned a second `_monitor_position` per open
+  position (double exits) + a duplicate reconciler loop. Fix: `first_load`
+  flag; restore/sweep/respawn/reconciler only run once per process.
+- Stale "Need more trade data (0/30)" card: counter now refreshed in place and
+  the card is expired automatically once ≥30 trades exist.
+- Legacy rules now receive SOL trades only (their exit_reason vocabulary is
+  Solana-specific). New chain-scoped MFE rules (per scope, ≥20 trades):
+  `_rule_sl_too_wide` (SL>25% & SL exits ≥40% of losses → 20%),
+  `_rule_tp_unreachable` (0 TP hits & TP > 1.3×p90 MFE → p75 MFE),
+  `_rule_flat_bleeders` (≥5 trades MFE≤3% & <-10% → enable / tighten
+  no-momentum), `_rule_trailing_giveback` (runners give back >45% → trail −2),
+  `_rule_churn_exits` (informational), `_rule_source_edge` (reentry WR≥65 &
+  size<1.0 → ×1.0). `_rule_take_profit_frequency` now proposes p75 MFE
+  instead of "current − 4" (which produced the 116% card; that card expired).
+- Verified: apply + revert both 200; tests/test_strategy_doctor_v2.py (8) pass.
+- Note: user cleared paper history mid-session (16 trades in window now).

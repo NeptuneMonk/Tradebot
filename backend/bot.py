@@ -210,7 +210,9 @@ class BotState:
         # `load()` call after import). Subsequent calls (e.g. from
         # live_doctor.py to pick up freshly-written config) MUST NOT
         # auto-disable, or the doctor flips the bot off every cycle.
-        if not getattr(self, "_initial_load_done", False):
+        first_load = not getattr(self, "_initial_load_done", False)
+        was_running_before_restart = False
+        if first_load:
             was_running_before_restart = self.config.enabled
             if was_running_before_restart:
                 self.config.enabled = False
@@ -224,55 +226,60 @@ class BotState:
                     "for safety. Press Start in the UI to resume trading."
                 )
             self._initial_load_done = True
-        async for t in self.db.trades.find({"status": "active", "chain": {"$ne": "rh"}}, {"_id": 0}):
-            # Persist legacy active trades that lack the new protocol field —
-            # we can't safely respawn a monitor for them since price polling
-            # needs the protocol routing. They get force-closed below.
-            self.active_trades[t["mint"]] = {
-                "trade": t,
-                "protocol": t.get("protocol", "pumpfun"),
-                "pumpswap_pool": t.get("pumpswap_pool") or "",
-                # Restore per-trade greylist overrides for resumed positions.
-                # Without this, a backend restart mid-trade would silently
-                # revert that position to BotConfig defaults — breaking the
-                # "the position keeps the params it opened with" contract.
-                "greylist_overrides": t.get("greylist_overrides_at_entry") or {},
-                "greylist_strategy": t.get("greylist_strategy_at_entry"),
-                # Restore the snipe pattern context for `classifier_action ==
-                # "greylist_snipe"` trades that survived restart. Without
-                # this, `_check_snipe_pattern_exit()` short-circuits on
-                # `ctx is None` and the snipe sits with NO active exit
-                # mechanism at all (standard exits are also bypassed via
-                # `_is_snipe()`). Persisted at entry time onto the trade
-                # doc — see Trade.snipe_pattern_ctx.
-                "snipe_pattern_ctx": t.get("snipe_pattern_ctx"),
-                # Restore orphan-recovery state (matches reattach path at
-                # line ~511 in `_active_trades_reconciler`).
-                "peak_price_sol": t.get("peak_price_sol")
-                or t.get("entry_price_sol") or 0,
-                "first_seen_price_sol": t.get("first_seen_price_sol") or 0,
-                "partial_done": bool(t.get("partial_done", False)),
-                "_entry_ts_mono": t.get("_entry_ts_mono") or time.time(),
-            }
-        # Sweep duplicate active rows in DB. Concurrent _enter races (now fixed
-        # via the entry_gate_lock) could have created multiple `status=active`
-        # rows for the same mint in the past. The dict above naturally
-        # de-duplicates in memory (only the last-loaded row wins), but the
-        # orphaned DB rows would otherwise count toward portfolio limits and
-        # never get monitored. Mark them as zombies so they're out of the way.
-        await self._sweep_duplicate_active_rows()
-        # Sweep legacy active trades that lack the `protocol` field. These
-        # were opened before protocol was persisted, so a respawned monitor
-        # would default-route to pumpfun and potentially mis-trade. Safer to
-        # mark them as exit_failed_terminal — the user retains the tokens and
-        # can recover them manually via their wallet UI.
-        await self._sweep_legacy_active_without_protocol()
-        # Respawn monitor tasks for surviving active trades. After a backend
-        # restart, in-memory monitors are gone; without this, positions sit
-        # with status='active' forever, with nothing watching their TP/SL.
-        for mint in list(self.active_trades.keys()):
-            asyncio.create_task(self._monitor_position(mint))
-            logger.info(f"respawned monitor for active position {mint}")
+        # Restart-only work. `load()` is also called by the Strategy Doctor /
+        # Live Doctor to pick up config changes — re-running this block then
+        # would spawn a SECOND _monitor_position per open trade (double exits)
+        # and clobber in-memory monitor state.
+        if first_load:
+            async for t in self.db.trades.find({"status": "active", "chain": {"$ne": "rh"}}, {"_id": 0}):
+                # Persist legacy active trades that lack the new protocol field —
+                # we can't safely respawn a monitor for them since price polling
+                # needs the protocol routing. They get force-closed below.
+                self.active_trades[t["mint"]] = {
+                    "trade": t,
+                    "protocol": t.get("protocol", "pumpfun"),
+                    "pumpswap_pool": t.get("pumpswap_pool") or "",
+                    # Restore per-trade greylist overrides for resumed positions.
+                    # Without this, a backend restart mid-trade would silently
+                    # revert that position to BotConfig defaults — breaking the
+                    # "the position keeps the params it opened with" contract.
+                    "greylist_overrides": t.get("greylist_overrides_at_entry") or {},
+                    "greylist_strategy": t.get("greylist_strategy_at_entry"),
+                    # Restore the snipe pattern context for `classifier_action ==
+                    # "greylist_snipe"` trades that survived restart. Without
+                    # this, `_check_snipe_pattern_exit()` short-circuits on
+                    # `ctx is None` and the snipe sits with NO active exit
+                    # mechanism at all (standard exits are also bypassed via
+                    # `_is_snipe()`). Persisted at entry time onto the trade
+                    # doc — see Trade.snipe_pattern_ctx.
+                    "snipe_pattern_ctx": t.get("snipe_pattern_ctx"),
+                    # Restore orphan-recovery state (matches reattach path at
+                    # line ~511 in `_active_trades_reconciler`).
+                    "peak_price_sol": t.get("peak_price_sol")
+                    or t.get("entry_price_sol") or 0,
+                    "first_seen_price_sol": t.get("first_seen_price_sol") or 0,
+                    "partial_done": bool(t.get("partial_done", False)),
+                    "_entry_ts_mono": t.get("_entry_ts_mono") or time.time(),
+                }
+            # Sweep duplicate active rows in DB. Concurrent _enter races (now fixed
+            # via the entry_gate_lock) could have created multiple `status=active`
+            # rows for the same mint in the past. The dict above naturally
+            # de-duplicates in memory (only the last-loaded row wins), but the
+            # orphaned DB rows would otherwise count toward portfolio limits and
+            # never get monitored. Mark them as zombies so they're out of the way.
+            await self._sweep_duplicate_active_rows()
+            # Sweep legacy active trades that lack the `protocol` field. These
+            # were opened before protocol was persisted, so a respawned monitor
+            # would default-route to pumpfun and potentially mis-trade. Safer to
+            # mark them as exit_failed_terminal — the user retains the tokens and
+            # can recover them manually via their wallet UI.
+            await self._sweep_legacy_active_without_protocol()
+            # Respawn monitor tasks for surviving active trades. After a backend
+            # restart, in-memory monitors are gone; without this, positions sit
+            # with status='active' forever, with nothing watching their TP/SL.
+            for mint in list(self.active_trades.keys()):
+                asyncio.create_task(self._monitor_position(mint))
+                logger.info(f"respawned monitor for active position {mint}")
         # Start re-entry watcher
         if self._reentry_task is None or self._reentry_task.done():
             self._reentry_task = asyncio.create_task(self._reentry_watcher())
@@ -299,7 +306,8 @@ class BotState:
         # Periodically reconcile in-memory active_trades against DB so any
         # mints leaked by an unhandled exit exception get re-attached to a
         # monitor instead of sitting orphaned in DB.
-        asyncio.create_task(self._active_trades_reconciler_loop())
+        if first_load:
+            asyncio.create_task(self._active_trades_reconciler_loop())
         # Surface the auto-disable to any WS clients listening — front-end
         # will show "Bot auto-disabled on restart" toast if connected.
         if was_running_before_restart:
