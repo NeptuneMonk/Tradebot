@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { Sparkles, Hourglass, Repeat, TrendingUp, TrendingDown, Layers, Archive, Crosshair } from "lucide-react";
+import { Sparkles, Hourglass, Repeat, TrendingUp, TrendingDown, Layers, Archive, Crosshair, Eye } from "lucide-react";
 import { api } from "@/lib/api";
 
 const ICONS = {
@@ -7,6 +7,7 @@ const ICONS = {
   seasoned: Hourglass,
   reentry: Repeat,
   greylist_snipe: Crosshair,
+  rh_pons: Eye,
   legacy: Archive,
 };
 
@@ -15,6 +16,7 @@ const COLORS = {
   seasoned: "text-cyan-300 border-cyan-900/60 bg-cyan-950/30",
   reentry: "text-fuchsia-300 border-fuchsia-900/60 bg-fuchsia-950/30",
   greylist_snipe: "text-rose-300 border-rose-900/60 bg-rose-950/30",
+  rh_pons: "text-lime-300 border-lime-900/60 bg-lime-950/30",
   legacy: "text-neutral-400 border-neutral-800 bg-neutral-950/30",
 };
 

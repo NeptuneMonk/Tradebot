@@ -1644,3 +1644,80 @@ Live path unchanged. NO real transactions in paper.
 
 ### Action for user
 Redeploy preview → production. On the new-defaults question: existing users need to click **Save Config** once to pick up the tighter risk ladder + paper knobs. New installs get them automatically.
+
+## 2026-06 — Robinhood Chain (PONS) feed + paper trader (Phase A + B)
+
+Additive multi-chain data. Solana/Pump.fun paths untouched except 4 wiring
+lines in `bot.py` (import + construct + start for `RHDiscovery`, `RHPaperTrader`).
+
+### Phase A — watch-only feed (`backend/rh_discovery.py`)
+- Polls RH public RPC (`RH_RPC_URL` in backend/.env, `https://rpc.mainnet.chain.robinhood.com`)
+  every 2s with ONE batched JSON-RPC request: blockNumber + factory logs
+  (`TokenLaunched`/`LaunchSwept`/`PoolGraduated` on PONS V2 factory
+  `0x7ed598bc…`) + all `CurveBuy`/`CurveSell` logs + queued `name()`/`symbol()` lookups.
+- ZERO Helius usage. Public RPC sheds ~10% of requests (429) — retried
+  transparently from `_next_from`; `/api/rh/status` exposes `rate_limited`.
+- Quote assets: ETH / USDG priced to USD; cbBTC + tokenized stocks (NVDA, TSLA…)
+  decoded but MC left 0 (no oracle yet).
+- RH tokens live in `RHDiscovery.tracking`, NEVER in `BotState.tracking` → the
+  Solana scanner/entry path can't see them.
+- Launch docs: `chain:"rh"`, `protocol:"pons"`, `quote_symbol`, `quote_inflow`,
+  `price_quote`, `usd_market_cap`, `graduated`. `Launch.chain` defaults to "sol"
+  (no migration for legacy docs). RH launch docs auto-GC after 24h.
+- `/api/launches/recent` now returns up to `limit` SOL + `limit` RH rows.
+- `/api/scanner/candidates` appends band `rh_new` (`watch_only:true`).
+- Toggle `rh_feed_enabled` (BotControlCard).
+
+### Phase B — paper trader (`backend/rh_paper.py`)
+- Runs only while `config.enabled` (bot Running) AND `rh_paper_enabled` (default OFF).
+  Open positions keep being monitored regardless so exits land.
+- Separate gate set `rh_*` (max_positions 3, min_age 5s, max_age 15m, growth ≥30%,
+  new buyers/1m ≥5, holders ≥8, inflow ≥$300, curve 5–70%, MC $5K–$60K,
+  last trade ≤20s). Stake = `max_trade_usd`. Exits reuse TP/SL/trailing/hold_max
+  + forced `graduated` exit.
+- Realism: 1% PONS curve fee both legs, launch snipe tax (9900bps>>…), $0.02 gas,
+  `paper_entry_latency_ms` / `paper_exit_latency_ms` with post-delay fill price.
+- Trades stored in `db.trades` with `chain:"rh"`, `mode:"paper"`,
+  `classifier_action:"rh_pons_paper"`, `quote_symbol`, `entry_quote`,
+  `entry_price_quote`, `exit_price_quote`, `fees_usd`. `entry_time` kept as BSON
+  date (matches bot.py) so history sorts correctly.
+- P/L-by-source: new source `rh_pons` "RH · PONS (paper)". Headline P/L summary
+  already includes paper trades, so RH paper rolls in like SOL paper.
+- Manual exit (`POST /trades/{id}/exit`) routes RH trades to `rh_paper.exit`.
+- Observed in first live paper run: PONS curves can drop 40–60% inside the 1s
+  monitor tick + 600ms latency → realised SL far below the 15% setting. Standard
+  SL cadence is too slow for PONS micro-liquidity; tune `rh_*` gates before live.
+
+### Frontend
+- `ChainBadge.jsx` (SOL teal / RH lime, `ChainFilterChips`).
+- RecentLaunchesFeed: All|SOL|RH chips (localStorage `ui.launches.chain`), badges,
+  RH stats (inflow in quote asset, MC $), WATCH / PAPER action badges.
+- Dashboard flush: per-chain 50-row caps so RH volume can't evict SOL rows.
+- ScannerCandidatesCard: third band "Robinhood (PONS)" (`scanner-band-robinhood`).
+- BotControlCard: `rh-feed-toggle`, `rh-paper-toggle`, `rh-paper-gates` (12 fields).
+- Trade History / Active Trades: chain badges; RH ENTRY column in quote units.
+- PLBySourceCard: `rh_pons` icon/colour.
+
+### Tests
+- `tests/test_rh_discovery.py` (11), `tests/test_rh_paper.py` (7),
+  `tests/test_rh_integration_api_v9.py` (testing agent, 17) — all pass.
+- testing_agent iteration_9.json: backend 100%, frontend 100%, 0 critical.
+- Pre-existing unrelated failures (also fail on stash): test_partial_tp (collection),
+  test_intelligent_exit::test_severity_override…, test_iter8::TestPaperFieldsRoundTrip,
+  test_panic_slip_and_guards::test_sell_ix_shape.
+
+### Phase C (live on RH) — wallet changes required (analysis only, not built)
+- RH is EVM (Arbitrum Orbit, chainId 4663, ETH gas). Solana keypair/`solders` can't
+  sign EVM txs → new `evm_wallet.py` (eth-account secp256k1 key, persisted like
+  wallet.json at `EVM_WALLET_SECRET_PATH`), `RH_CHAIN_ID=4663`.
+- Funding: Robinhood Bridge accepts SOL/USDC/USDT from Solana but delivers ETH on
+  RH; no SOL pair on-chain. WalletCard needs an "RH wallet" panel: address, ETH
+  balance (`eth_getBalance`), bridge deep-link, send/withdraw ETH.
+- Execution: PONS V2 curve `buy`/`sell` via the launch router
+  `0xe33e9e47…` / per-token curve contract (need ABI from verified source on
+  Blockscout), post-grad Uniswap v4 swap through PoolManager `0x8366a39c…` with
+  PonsV2MemeHook `0xe5e70264…`; nonce management, EIP-1559 gas, ~100ms blocks.
+- Reliability: public RPC 429s make it unfit for tx submission → Alchemy key
+  (`RH_RPC_URL` swap) for the live path; keep public RPC for the feed.
+- Risk plumbing: daily-loss meter, kill switch, cost tracker currently SOL/lamport
+  based → add USD-normalised branch for `chain:"rh"` trades.

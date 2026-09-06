@@ -1312,3 +1312,24 @@ These are exactly the high-confidence snipe targets the sniper was designed for 
 - 7 new pytest cases in `test_launch_signatures.py` covering: peak-MC primary, sol-inflow fallback, peak-MC-preferred-over-inflow, clamps at 100, no-data returns None, negligible inflow handling, realistic examples (graduation MC, $8k peak).
 - **157 tests pass.**
 
+
+## 2026-06 — Robinhood Chain (PONS) — Phase A feed + Phase B paper (DONE, tested iteration_9)
+- User intent: add other platforms' data ADDITIVELY to the Pump.fun bot without
+  spending Helius credits; cards show chain (SOL / RH). Chosen: Robinhood public
+  RPC, PONS first (Long.xyz later), unified feed + filter chip, MC in USD / price
+  in ETH, Phase A watch-only, Phase B paper with separate `rh_*` gates, standard
+  exits, stake = max_trade_usd, runs only while bot Running, P/L in by-source row
+  ("RH · PONS (paper)") + Trade History (+ headline via existing paper inclusion).
+- Files: backend/rh_discovery.py, backend/rh_paper.py, frontend ChainBadge.jsx;
+  details in CHANGELOG.md.
+- Status: Phase A user-verified; Phase B implemented + testing_agent verified;
+  user verification pending. `rh_paper_enabled` default OFF (opt-in).
+
+### Backlog (RH)
+- P1: Long.xyz launchpad feed (Airlock `0xeb7c0347…`, stock-token numeraire → needs
+  stock/USD pricing).
+- P1: Stock-token + cbBTC quote pricing for MC (oracle) so those launches get MC/gates.
+- P2: Faster RH exit cadence (event-driven SL on each CurveSell) — paper showed
+  40–60% drops within one 1s tick.
+- P2: Phase C live execution (see CHANGELOG "Phase C wallet changes").
+- P3: FOMO app — no public API; skipped.

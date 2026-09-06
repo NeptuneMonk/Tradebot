@@ -1,9 +1,16 @@
-import { memo } from "react";
-import { Radio, Users, Droplets, Flame, Pin, PinOff, X } from "lucide-react";
+import { memo, useState } from "react";
+import { Radio, Users, Droplets, Flame, Pin, PinOff, X, DollarSign } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { ChainBadge, ChainFilterChips } from "./ChainBadge";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
+const fmtUsd = (n) => {
+  const v = Number(n) || 0;
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
+  if (v >= 1_000) return `$${(v / 1_000).toFixed(1)}K`;
+  return `$${v.toFixed(0)}`;
+};
 const timeAgo = (iso) => {
   if (!iso) return "—";
   const sec = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -12,11 +19,20 @@ const timeAgo = (iso) => {
   return `${Math.floor(sec / 3600)}h ago`;
 };
 
-function RecentLaunchesFeed({ launches, onUnpin }) {
+const CHAIN_FILTER_KEY = "ui.launches.chain";
+
+function RecentLaunchesFeed({ launches: allLaunches, onUnpin }) {
+  const [chainFilter, setChainFilter] = useState(() => localStorage.getItem(CHAIN_FILTER_KEY) || "all");
+  const setFilter = (k) => { localStorage.setItem(CHAIN_FILTER_KEY, k); setChainFilter(k); };
+  const counts = { all: allLaunches.length, sol: 0, rh: 0 };
+  for (const l of allLaunches) counts[l.chain === "rh" ? "rh" : "sol"]++;
+  const launches = chainFilter === "all"
+    ? allLaunches
+    : allLaunches.filter((l) => (l.chain === "rh" ? "rh" : "sol") === chainFilter);
   const pinnedCount = launches.filter((l) => l.pinned).length;
   return (
     <div className="control-card flex flex-col" data-testid="recent-launches-card">
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
         <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-neutral-500">
           <Radio className="w-3 h-3" /> Recent Launches ({launches.length})
           {pinnedCount > 0 && (
@@ -29,8 +45,11 @@ function RecentLaunchesFeed({ launches, onUnpin }) {
             </span>
           )}
         </div>
-        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.2em] text-emerald-500">
-          <span className="pulse-dot"></span> LIVE
+        <div className="flex items-center gap-2">
+          <ChainFilterChips value={chainFilter} onChange={setFilter} counts={counts} />
+          <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.2em] text-emerald-500">
+            <span className="pulse-dot"></span> LIVE
+          </div>
         </div>
       </div>
       <div className="overflow-y-auto max-h-[280px] md:max-h-[480px] [contain:layout] [overscroll-behavior:contain]" data-testid="launches-list">
@@ -43,6 +62,7 @@ function RecentLaunchesFeed({ launches, onUnpin }) {
           {launches.map((l) => {
             const isPinned = !!l.pinned;
             const isPinExited = !!l.pin_exited;
+            const isRh = l.chain === "rh";
             return (
             <li
               key={l.id}
@@ -68,6 +88,7 @@ function RecentLaunchesFeed({ launches, onUnpin }) {
                     {isPinned && (
                       <PinBadge l={l} exited={isPinExited} onUnpin={onUnpin} />
                     )}
+                    <ChainBadge chain={l.chain} protocol={isRh ? l.protocol : null} mint={l.mint} />
                     <span className="font-mono font-semibold text-sm truncate">
                       {l.symbol || "?"}
                     </span>
@@ -75,18 +96,28 @@ function RecentLaunchesFeed({ launches, onUnpin }) {
                     {l.entered && (
                       <span className="text-[10px] font-mono px-1 py-0 border border-blue-700 text-blue-300 uppercase">ENT</span>
                     )}
+                    {isRh && l.graduated && (
+                      <span className="text-[10px] font-mono px-1 py-0 border border-lime-700 text-lime-300 uppercase" data-testid={`launch-graduated-${l.mint}`}>grad</span>
+                    )}
                   </div>
                   <div className="text-[10px] font-mono text-neutral-500 mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                    <span>mint <span className="text-neutral-300">{short(l.mint)}</span></span>
+                    <span>{isRh ? "token" : "mint"} <span className="text-neutral-300">{short(l.mint)}</span></span>
                     <span>·</span>
                     <span>creator <span className="text-neutral-300">{short(l.creator)}</span></span>
                     <CreatorBadge l={l} />
                   </div>
-                  <div className="mt-1.5 flex items-center gap-2 text-[10px] font-mono">
+                  <div className="mt-1.5 flex items-center gap-2 text-[10px] font-mono flex-wrap">
                     <Stat icon={<Users className="w-3 h-3" />} value={l.unique_buyers ?? 0} label="buyers" data-testid={`launch-buyers-${l.mint}`} />
-                    <Stat icon={<Droplets className="w-3 h-3" />} value={(l.sol_inflow ?? 0).toFixed(2)} suffix="SOL" label="inflow" data-testid={`launch-inflow-${l.mint}`} />
+                    {isRh ? (
+                      <Stat icon={<Droplets className="w-3 h-3" />} value={Number(l.quote_inflow ?? 0).toFixed(l.quote_symbol === "USDG" ? 0 : 3)} suffix={l.quote_symbol || "ETH"} label="inflow" data-testid={`launch-inflow-${l.mint}`} />
+                    ) : (
+                      <Stat icon={<Droplets className="w-3 h-3" />} value={(l.sol_inflow ?? 0).toFixed(2)} suffix="SOL" label="inflow" data-testid={`launch-inflow-${l.mint}`} />
+                    )}
                     <Stat icon={<Flame className="w-3 h-3" />} value={(l.curve_fill_pct ?? 0).toFixed(0)} suffix="%" label="curve" data-testid={`launch-curve-${l.mint}`} />
-                    <SocialBadge score={l.social_score} sources={l.social_sources} mint={l.mint} />
+                    {isRh && (l.usd_market_cap ?? 0) > 0 && (
+                      <Stat icon={<DollarSign className="w-3 h-3" />} value={fmtUsd(l.usd_market_cap)} label="MC" data-testid={`launch-mc-${l.mint}`} />
+                    )}
+                    {!isRh && <SocialBadge score={l.social_score} sources={l.social_sources} mint={l.mint} />}
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1 shrink-0">
@@ -244,10 +275,20 @@ function ActionBadge({ action, risk, entered, entryAction }) {
       </div>
     );
   }
+  if (entered && entryAction === "rh_pons_paper") {
+    return (
+      <div className="flex items-center gap-1" data-testid="launch-rh-paper-badge">
+        <span className="px-1.5 py-0.5 border text-[10px] font-mono uppercase border-lime-700 text-lime-300 bg-lime-950/40">
+          PAPER
+        </span>
+      </div>
+    );
+  }
   let cls = "border-neutral-700 text-neutral-400";
   if (action === "abort_trade") cls = "border-red-800 text-red-400 bg-red-950/40";
   else if (action === "exit_early") cls = "border-amber-800 text-amber-400 bg-amber-950/40";
   else if (action === "hold_briefly") cls = "border-emerald-800 text-emerald-400 bg-emerald-950/40";
+  else if (action === "watch") cls = "border-lime-800 text-lime-400 bg-lime-950/30";
   return (
     <div className="flex items-center gap-1">
       <span className={`px-1.5 py-0.5 border text-[10px] font-mono uppercase ${cls}`}>

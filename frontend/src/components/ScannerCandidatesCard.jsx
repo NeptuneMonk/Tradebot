@@ -1,5 +1,6 @@
-import { Telescope, TrendingUp, Sparkles, Hourglass } from "lucide-react";
+import { Telescope, TrendingUp, Sparkles, Hourglass, Eye } from "lucide-react";
 import HelpHint from "./HelpHint";
+import { ChainBadge } from "./ChainBadge";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const fmtAge = (s) => {
@@ -14,11 +15,11 @@ const fmtUsd = (n) => {
   return `$${v.toFixed(0)}`;
 };
 
-function Band({ title, Icon, accentClass, items, emptyText }) {
+function Band({ title, Icon, accentClass, items, emptyText, testId }) {
   const passing = items.filter((c) => c.passes);
   const watching = items.filter((c) => !c.passes).slice(0, 8);
   return (
-    <div className="border border-neutral-800 p-3" data-testid={`scanner-band-${title.toLowerCase().split(" ")[0]}`}>
+    <div className="border border-neutral-800 p-3" data-testid={testId || `scanner-band-${title.toLowerCase().split(" ")[0]}`}>
       <div className={`flex items-center justify-between mb-2 ${accentClass}`}>
         <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.2em]">
           <Icon className="w-3 h-3" /> {title}
@@ -69,7 +70,8 @@ export default function ScannerCandidatesCard({ candidates, config }) {
   const seasonedRange = seasonedMin > 0 ? `${fmt(seasonedMin)}–${fmt(seasonedMax)}` : `< ${fmt(seasonedMax)}`;
   const newBand = candidates.filter((c) => c.band === "new");
   const seasonedBand = candidates.filter((c) => c.band === "seasoned");
-  const totalPassing = candidates.filter((c) => c.passes).length;
+  const rhBand = candidates.filter((c) => c.band === "rh_new");
+  const totalPassing = candidates.filter((c) => c.passes && c.band !== "rh_new").length;
 
   return (
     <div className="control-card" data-testid="scanner-card">
@@ -77,7 +79,7 @@ export default function ScannerCandidatesCard({ candidates, config }) {
         <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-neutral-500">
           <Telescope className="w-3 h-3" /> Momentum Scanner ({candidates.length})
           <HelpHint label="Momentum Scanner">
-            Live feed of tokens passing your per-band gates. Bands are <strong>protocol-segregated</strong>: <span className="text-amber-300">New</span> = Pump.fun bonding curve only, <span className="text-cyan-300">Seasoned</span> = PumpSwap AMM (graduated) only. Only "Passing" rows are eligible for entry.
+            Live feed of tokens passing your per-band gates. Bands are <strong>protocol-segregated</strong>: <span className="text-amber-300">New</span> = Pump.fun bonding curve only, <span className="text-cyan-300">Seasoned</span> = PumpSwap AMM (graduated) only. Only "Passing" rows are eligible for entry. <span className="text-lime-300">Robinhood</span> = PONS bonding curves on Robinhood Chain — <strong>watch-only</strong>, never traded.
           </HelpHint>
         </div>
         <span className="text-[10px] font-mono text-neutral-600">
@@ -85,7 +87,7 @@ export default function ScannerCandidatesCard({ candidates, config }) {
         </span>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         <Band
           title={`New (Pump.fun · ${newRange})`}
           Icon={Sparkles}
@@ -100,6 +102,14 @@ export default function ScannerCandidatesCard({ candidates, config }) {
           items={seasonedBand}
           emptyText="no seasoned tokens meeting momentum criteria"
         />
+        <Band
+          title={`Robinhood (PONS · ${newRange})`}
+          testId="scanner-band-robinhood"
+          Icon={Eye}
+          accentClass="text-lime-300"
+          items={rhBand}
+          emptyText="no robinhood chain launches in band"
+        />
       </div>
     </div>
   );
@@ -110,6 +120,7 @@ function CandidateRow({ c, passing }) {
   const growthCls = growth >= 0 ? "text-emerald-400" : "text-red-400";
   const discovered = c.discovered === true;
   const isPumpSwap = c.protocol === "pumpswap";
+  const isRh = c.chain === "rh";
   return (
     <li
       data-testid={`scanner-row-${c.mint}`}
@@ -118,6 +129,7 @@ function CandidateRow({ c, passing }) {
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
+            <ChainBadge chain={c.chain} protocol={isRh ? c.protocol : null} mint={c.mint} />
             <span className="font-mono font-semibold text-sm truncate">{c.symbol || "?"}</span>
             <span className="text-[10px] font-mono text-neutral-500 truncate">{c.name || ""}</span>
             <span
@@ -146,7 +158,8 @@ function CandidateRow({ c, passing }) {
             )}
           </div>
           <div className="text-[10px] font-mono text-neutral-500 mt-0.5">
-            mint <span className="text-neutral-300">{short(c.mint)}</span>
+            {isRh ? "token" : "mint"} <span className="text-neutral-300">{short(c.mint)}</span>
+            {isRh && <span className="ml-2 text-lime-500/80" data-testid={`scanner-row-watchonly-${c.mint}`}>watch-only</span>}
           </div>
         </div>
         <div className={`text-right font-mono text-sm ${growthCls}`} title="Growth from first-seen price">
@@ -154,7 +167,24 @@ function CandidateRow({ c, passing }) {
         </div>
       </div>
       <div className="flex items-center gap-x-3 gap-y-0.5 mt-1.5 text-[10px] font-mono text-neutral-400 flex-wrap">
-        {c.band === "new" ? (
+        {c.band === "rh_new" ? (
+          <>
+            <span className="inline-flex items-center gap-1">
+              inflow(5m) <span className="text-neutral-200">{Number(c.recent_inflow_quote ?? 0).toFixed(c.quote_symbol === "USDG" ? 0 : 3)}</span> {c.quote_symbol || "ETH"}
+              <HelpHint label="inflow(5m)">Net quote asset flowing into the PONS bonding curve over the inflow window (decoded from CurveBuy events on Robinhood Chain).</HelpHint>
+            </span>
+            <span className="inline-flex items-center gap-1">
+              new buyers(1m) <span className="text-neutral-200">{c.new_buyers_recent ?? 0}</span>
+            </span>
+            <span className="inline-flex items-center gap-1">
+              holders <span className="text-neutral-200">{c.unique_buyers_total ?? 0}</span>
+            </span>
+            <span className="inline-flex items-center gap-1">
+              curve <span className="text-neutral-200">{(c.curve_fill_pct ?? 0).toFixed(0)}%</span>
+              <HelpHint label="curve">Graduation progress — quote collected vs the 4.2 ETH (or per-asset) threshold. Graduates into a locked Uniswap v4 pool.</HelpHint>
+            </span>
+          </>
+        ) : c.band === "new" ? (
           <>
             <span className="inline-flex items-center gap-1">
               inflow(5m) <span className="text-neutral-200">{(c.recent_inflow_sol ?? 0).toFixed(2)}</span> SOL
@@ -195,7 +225,7 @@ function CandidateRow({ c, passing }) {
         {c.usd_market_cap > 0 && (
           <span className="inline-flex items-center gap-1">
             MC <span className="text-neutral-200">{fmtUsd(c.usd_market_cap)}</span>
-            <HelpHint label="MC">Current USD market cap (Pump.fun API).</HelpHint>
+            <HelpHint label="MC">{isRh ? "Current USD market cap (last curve trade price × 1B supply × quote/USD)." : "Current USD market cap (Pump.fun API)."}</HelpHint>
           </span>
         )}
         {c.last_trade_age_s != null && (

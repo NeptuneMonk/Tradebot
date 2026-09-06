@@ -1480,9 +1480,19 @@ async def launches_recent(limit: int = 30):
     ).sort([("pin_exited", 1), ("pinned_at", -1)])
     pinned = await pinned_cur.to_list(200)
     pinned_mints = {p["mint"] for p in pinned}
-    unpinned = await db.launches.find(
-        {"mint": {"$nin": list(pinned_mints)}}, {"_id": 0},
+    # Per-chain limits so the high-volume Robinhood Chain feed can't push
+    # every Solana launch out of the window (and vice versa).
+    unpinned_sol = await db.launches.find(
+        {"mint": {"$nin": list(pinned_mints)}, "chain": {"$ne": "rh"}}, {"_id": 0},
     ).sort("detected_at", -1).to_list(limit)
+    unpinned_rh = await db.launches.find(
+        {"mint": {"$nin": list(pinned_mints)}, "chain": "rh"}, {"_id": 0},
+    ).sort("detected_at", -1).to_list(limit)
+    unpinned = sorted(
+        unpinned_sol + unpinned_rh,
+        key=lambda r: str(r.get("detected_at") or ""),
+        reverse=True,
+    )
     out = pinned + unpinned
     # Stamp LIVE PnL% on every open position so the operator can rip the
     # cord manually from the feed/active-trades cards. Cheap: in-memory
@@ -1491,6 +1501,9 @@ async def launches_recent(limit: int = 30):
     # so this is always fresh-ish (~500ms max staleness).
     for row in out:
         if not row.get("entered") or row.get("pin_exited"):
+            continue
+        if row.get("chain") == "rh":
+            bot_state.rh_paper.augment_launch(row)
             continue
         slot = bot_state.active_trades.get(row.get("mint"))
         if not slot:
@@ -1544,6 +1557,9 @@ async def trades_active():
     # most-important question — "am I in profit?" — so we surface it
     # right on the active-trades row.
     for d in docs:
+        if d.get("chain") == "rh":
+            bot_state.rh_paper.augment_trade(d)
+            continue
         slot = bot_state.active_trades.get(d["mint"])
         if not slot:
             continue
@@ -1589,6 +1605,9 @@ async def trades_manual_exit(trade_id: str):
         raise HTTPException(404, "Trade not found")
     if trade["status"] != "active":
         raise HTTPException(400, "Trade not active")
+    if trade.get("chain") == "rh":
+        await bot_state.rh_paper.exit(trade["mint"], reason="manual exit")
+        return {"ok": True}
     await bot_state._exit(trade["mint"], reason="manual exit")
     return {"ok": True}
 
@@ -1792,7 +1811,13 @@ async def reentry_remove(mint: str):
 # ---------- Scanner candidates ----------
 @api.get("/scanner/candidates")
 async def scanner_candidates():
-    return bot_state.scanner.candidates_snapshot()
+    return bot_state.scanner.candidates_snapshot() + bot_state.rh_discovery.candidates_snapshot()
+
+
+@api.get("/rh/status")
+async def rh_status():
+    """Robinhood Chain feed health — head block, tracked tokens, RPC usage."""
+    return {**bot_state.rh_discovery.status(), "paper": bot_state.rh_paper.status()}
 
 
 @api.get("/diagnostics/tracking-summary")

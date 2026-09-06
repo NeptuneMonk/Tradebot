@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Power, Zap, Settings2, ChevronDown, ChevronRight, Radio, Pause } from "lucide-react";
+import { Power, Zap, Settings2, ChevronDown, ChevronRight, Radio, Pause, Eye } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import SpeedModeSlider from "./SpeedModeSlider";
@@ -185,6 +185,88 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
               <div><span className="text-emerald-300">LIVE</span>: listener subscribes to Pump.fun via Helius WSS; scanner can fetch pool/curve state to fire entries; account-event bus subscribes to position events. Burns Helius credits proportional to chain activity.</div>
               <div><span className="text-amber-300">PAUSED</span>: listener disconnects, scanner skips RPC fetches, new entries are blocked, account-event bus idles, wallet-graph hunter idles. <strong>Open positions continue monitoring</strong> (small footprint — required to detect exits and protect funds). HTTP discovery from pump.fun&apos;s API continues (not a Helius endpoint).</div>
               <div className="text-neutral-400">Use this when running preview + production simultaneously to throttle credit consumption on the environment you&apos;re not actively trading on.</div>
+            </div>
+          </HelpHint>
+        </span>
+      </button>
+
+      {/* Robinhood Chain feed toggle — watch-only PONS launch feed polled
+          from the RH public RPC. Zero Helius credits either way; this just
+          stops the 1-req/2s poll when the user doesn't care about RH. */}
+      <button
+        type="button"
+        data-testid="rh-feed-toggle"
+        onClick={async () => {
+          const next = !(local.rh_feed_enabled ?? true);
+          try {
+            await onUpdate({ ...local, rh_feed_enabled: next });
+            setLocal((cur) => ({ ...cur, rh_feed_enabled: next }));
+            setBaseline((b) => (b ? { ...b, rh_feed_enabled: next } : b));
+            toast.success(next ? "Robinhood Chain feed resumed" : "Robinhood Chain feed paused");
+          } catch {
+            toast.error("Toggle failed");
+          }
+        }}
+        className={`w-full flex items-center justify-between px-3 py-2 border text-xs uppercase tracking-[0.15em] font-mono transition-colors duration-100 ${
+          (local.rh_feed_enabled ?? true)
+            ? "border-lime-800 text-lime-300 bg-lime-950/30 hover:bg-lime-900/40"
+            : "border-neutral-700 text-neutral-400 bg-neutral-900/50 hover:bg-neutral-800/60"
+        }`}
+      >
+        <span className="flex items-center gap-2">
+          {(local.rh_feed_enabled ?? true) ? <Radio className="w-3 h-3" /> : <Pause className="w-3 h-3" />}
+          Robinhood Chain Feed
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className={`text-[10px] ${(local.rh_feed_enabled ?? true) ? "text-lime-300" : "text-neutral-400"}`}>
+            {(local.rh_feed_enabled ?? true) ? "WATCHING" : "OFF"}
+          </span>
+          <HelpHint label="Robinhood Chain Feed">
+            <div className="space-y-1.5">
+              <div>Polls Robinhood Chain&apos;s public RPC (one batched request every 2s) for PONS launchpad events — new launches, curve buys/sells, graduations. Tokens appear in Recent Launches with an <span className="text-lime-300">RH</span> badge and in the scanner&apos;s Robinhood band.</div>
+              <div><strong>Watch-only.</strong> The bot never enters RH tokens — execution there needs an EVM wallet funded with bridged ETH (Phase C).</div>
+              <div className="text-neutral-400">Uses zero Helius credits in either state.</div>
+            </div>
+          </HelpHint>
+        </span>
+      </button>
+
+      {/* Robinhood Chain PAPER trader — Phase B. Opt-in; only fires while
+          the bot is Running. Separate rh_* gates live below the re-entry
+          block; exits reuse the standard TP/SL/trailing/hold config. */}
+      <button
+        type="button"
+        data-testid="rh-paper-toggle"
+        onClick={async () => {
+          const next = !(local.rh_paper_enabled ?? false);
+          try {
+            await onUpdate({ ...local, rh_paper_enabled: next });
+            setLocal((cur) => ({ ...cur, rh_paper_enabled: next }));
+            setBaseline((b) => (b ? { ...b, rh_paper_enabled: next } : b));
+            toast.success(next ? "RH paper trading ON — fires while bot is running" : "RH paper trading OFF");
+          } catch {
+            toast.error("Toggle failed");
+          }
+        }}
+        className={`w-full flex items-center justify-between px-3 py-2 border text-xs uppercase tracking-[0.15em] font-mono transition-colors duration-100 ${
+          (local.rh_paper_enabled ?? false)
+            ? "border-lime-700 text-lime-200 bg-lime-950/50 hover:bg-lime-900/50"
+            : "border-neutral-700 text-neutral-400 bg-neutral-900/50 hover:bg-neutral-800/60"
+        }`}
+      >
+        <span className="flex items-center gap-2">
+          <Zap className="w-3 h-3" />
+          RH Paper Trading
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className={`text-[10px] ${(local.rh_paper_enabled ?? false) ? "text-lime-200" : "text-neutral-400"}`}>
+            {(local.rh_paper_enabled ?? false) ? (local.enabled ? "ARMED" : "ON · BOT STOPPED") : "OFF"}
+          </span>
+          <HelpHint label="RH Paper Trading">
+            <div className="space-y-1.5">
+              <div>Simulates entries on PONS launches that pass the <strong>RH Paper Gates</strong> (below). Stake = Max Trade USD. Exits reuse your TP / SL / trailing / max-hold.</div>
+              <div>Realism: 1% PONS curve fee both legs, launch-window snipe tax, RH gas, and your paper entry/exit latency — fills use the price seen <em>after</em> the delay.</div>
+              <div className="text-neutral-400">Paper only. No wallet, no Helius. Trades land in Trade History / Active Trades / P&amp;L-by-source with an RH badge.</div>
             </div>
           </HelpHint>
         </span>
@@ -657,6 +739,39 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                  hint="Position size multiplier for re-entries (e.g., 0.5 = half size). Risk control on a token you already exited once."
                  value={local.reentry_size_multiplier}
                  onChange={(v) => setLocal({ ...local, reentry_size_multiplier: parseFloat(v) || 0 })} step="0.1" />
+        </div>
+      </div>
+
+      <div className="border border-lime-900/60 p-3 space-y-2" data-testid="rh-paper-gates">
+        <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-lime-300">
+          <Eye className="w-3 h-3" /> RH Paper Gates (PONS)
+          <HelpHint label="RH Paper Gates">Entry filters for the Robinhood Chain paper trader. Independent from the Pump.fun bands — PONS launches graduate at 4.2 ETH and carry a 99% snipe tax in the first 3 seconds, so the defaults skip the launch window and the graduation sweep.</HelpHint>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+          <Field label="Max Positions" testid="rh-max-positions-input" hint="Concurrent RH paper positions."
+                 value={local.rh_max_positions ?? 3} onChange={(v) => setLocal({ ...local, rh_max_positions: parseInt(v, 10) || 0 })} step="1" />
+          <Field label="Min Age (s)" testid="rh-min-age-input" hint="Skip the launch window. Snipe tax is 99% at t=0 and zero after 3s."
+                 value={local.rh_min_age_s ?? 5} onChange={(v) => setLocal({ ...local, rh_min_age_s: parseInt(v, 10) || 0 })} step="1" />
+          <Field label="Max Age (m)" testid="rh-max-age-input" hint="Oldest launch (minutes since TokenLaunched) still eligible."
+                 value={local.rh_max_age_min ?? 15} onChange={(v) => setLocal({ ...local, rh_max_age_min: parseFloat(v) || 0 })} step="1" />
+          <Field label="Min Growth %" testid="rh-min-growth-input" hint="Price growth from the first curve trade we observed."
+                 value={local.rh_min_growth_pct ?? 30} onChange={(v) => setLocal({ ...local, rh_min_growth_pct: parseFloat(v) || 0 })} step="5" />
+          <Field label="New Buyers (1m)" testid="rh-min-new-buyers-input" hint="Distinct wallets buying on the curve in the last 60s."
+                 value={local.rh_min_new_buyers_1m ?? 5} onChange={(v) => setLocal({ ...local, rh_min_new_buyers_1m: parseInt(v, 10) || 0 })} step="1" />
+          <Field label="Min Holders" testid="rh-min-holders-input" hint="Total unique curve buyers since launch."
+                 value={local.rh_min_unique_buyers ?? 8} onChange={(v) => setLocal({ ...local, rh_min_unique_buyers: parseInt(v, 10) || 0 })} step="1" />
+          <Field label="Min Inflow $ (5m)" testid="rh-min-inflow-input" hint="Net quote flowing into the curve over the inflow window, converted to USD (ETH- and USDG-quoted launches only)."
+                 value={local.rh_min_inflow_usd ?? 300} onChange={(v) => setLocal({ ...local, rh_min_inflow_usd: parseFloat(v) || 0 })} step="50" />
+          <Field label="Min Curve %" testid="rh-min-curve-input" hint="Graduation progress floor."
+                 value={local.rh_min_curve_pct ?? 5} onChange={(v) => setLocal({ ...local, rh_min_curve_pct: parseFloat(v) || 0 })} step="5" />
+          <Field label="Max Curve %" testid="rh-max-curve-input" hint="Graduation progress ceiling — the curve is swept at 100% and the position is force-closed."
+                 value={local.rh_max_curve_pct ?? 70} onChange={(v) => setLocal({ ...local, rh_max_curve_pct: parseFloat(v) || 0 })} step="5" />
+          <Field label="Min MC $" testid="rh-min-mc-input" hint="USD market cap floor (last curve price × 1B supply)."
+                 value={local.rh_min_mc_usd ?? 5000} onChange={(v) => setLocal({ ...local, rh_min_mc_usd: parseFloat(v) || 0 })} step="500" />
+          <Field label="Max MC $" testid="rh-max-mc-input" hint="USD market cap ceiling."
+                 value={local.rh_max_mc_usd ?? 60000} onChange={(v) => setLocal({ ...local, rh_max_mc_usd: parseFloat(v) || 0 })} step="5000" />
+          <Field label="Max Last Trade (s)" testid="rh-max-last-trade-input" hint="Skip curves with no trade in this many seconds."
+                 value={local.rh_max_last_trade_age_s ?? 20} onChange={(v) => setLocal({ ...local, rh_max_last_trade_age_s: parseInt(v, 10) || 0 })} step="5" />
         </div>
       </div>
 

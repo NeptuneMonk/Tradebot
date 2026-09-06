@@ -1,0 +1,36 @@
+{
+  "summary": "Iteration 9 - Robinhood Chain (PONS) additive feature testing complete. Backend: 17/17 new integration tests PASS; 50/50 unit tests (test_rh_discovery, test_rh_paper, test_scanner_band_protocol, test_helius_kill_switch, test_pin_invariant) PASS. Frontend: Recent Launches chain filter (All/SOL/RH) with counts + localStorage persistence works; Scanner has 3 bands (new/seasoned/robinhood) with watch-only rows; Bot Control has rh-feed-toggle, rh-paper-toggle, rh-paper-gates (12 inputs) all wired; toggles persist via config API. Bot state fully restored (enabled=false, rh_feed=true, rh_paper=false, helius=true). RH feed head advancing (55.8M+), tracked=60+, rpc_requests increasing, rate_limited handled gracefully.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/rh/status", "issue": "Occasionally returns head=0 immediately after rh_feed_enabled toggled back to true (before first successful poll ~2s window). Not a bug per spec — retry passes."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard", "issues": ["Non-blocking Recharts warning: 'The width(-1) and height(-1) of chart should be greater than 0' (likely mini P/L sparkline when container briefly zero-sized on mount)", "WebSocket /api/ws warning in console (pre-existing, unrelated to RH work)"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_rh_integration_api_v9.py",
+    "/app/test_reports/pytest/pytest_results_v9.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ScannerCandidatesCard.Band derives testid from title.toLowerCase().split(' ')[0]. Works for 'Robinhood (PONS · ...)' -> 'scanner-band-robinhood' but is fragile — a future title change (e.g. 'Robinhood Chain') would silently break tests. Recommend explicit `testid` prop.",
+    "test_rh_integration_api_v9.py::TestRHStatus::test_status_healthy is transiently flaky on first-run if config was just PUT with rh_feed_enabled=true and feed loop hasn't polled yet. Passes on retry; consider adding a short retry inside status handler or in test.",
+    "During earlier UI exploration, clicking the first <button> inside section-bot-control triggered the LIVE toggle / START BOT (not the section-expand chevron). Test scripts that rely on 'first button' will accidentally toggle bot state. Consider adding data-testid=\"section-bot-control-toggle\" on the collapse header for stable expansion."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_rh_integration_api_v9.py (new integration test file)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Authorization: Bearer test_session_1788677619688 (Emergent OAuth whitelisted email nbobby79@gmail.com; seeded per /app/memory/test_credentials.md)",
+  "seed_data_creation": "None (used pre-seeded session token). No new users, launches, or trades created outside the running RH feed's own live data.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend integration tests live at /app/backend/tests/test_rh_integration_api_v9.py — safe to rerun; they auto-restore BotConfig at end of session. RH feed is public and volatile so rate_limited counter is expected to be non-zero. Paper trading live-check (~2 min POST /api/bot/start with rh_paper_enabled=true) was NOT run to keep bot stopped/paper-off as required; skipped intentionally per task guidance ('optional live check' + strict restore requirement). Final config verified: enabled=false, rh_feed_enabled=true, rh_paper_enabled=false, helius_tracker_enabled=true.",
+  "rca of the issue": "N/A — no bugs found in this iteration."
+}

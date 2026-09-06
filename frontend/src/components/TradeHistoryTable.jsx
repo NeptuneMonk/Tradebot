@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { History, CircleDot, Search } from "lucide-react";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
+import { ChainBadge } from "./ChainBadge";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const fmtTime = (iso) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—");
@@ -121,6 +122,7 @@ function TradeHistoryTable({ history }) {
                         title={t.partial_reason || "partial TP fired"}
                       >½TP</span>
                     )}
+                    <span className="mr-1.5 align-middle inline-flex"><ChainBadge chain={t.chain} mint={t.mint} /></span>
                     {t.symbol || "?"} <span className="text-neutral-600 text-[10px]">{short(t.mint)}</span>
                   </td>
                   <td className="text-right font-mono text-[10px] uppercase text-neutral-500">{t.mode}</td>

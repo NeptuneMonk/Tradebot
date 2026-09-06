@@ -20,6 +20,7 @@ export const api = {
   rules: () => client.get("/classifier/rules").then(r => r.data),
   updateRules: (rules) => client.put("/classifier/rules", rules).then(r => r.data),
   launches: (limit = 30) => client.get(`/launches/recent?limit=${limit}`).then(r => r.data),
+  rhStatus: () => client.get("/rh/status").then(r => r.data),
   activeTrades: () => client.get("/trades/active").then(r => r.data),
   tradeHistory: (limit = 100) => client.get(`/trades/history?limit=${limit}`).then(r => r.data),
   exitTrade: (id) => client.post(`/trades/${id}/exit`).then(r => r.data),

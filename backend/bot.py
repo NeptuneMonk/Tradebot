@@ -25,6 +25,8 @@ from ws_hub import hub
 from creator_history import record_new_launch, mark_outcome, get_creator, derive_rug_count
 from scanner import MomentumScanner, velocity_pct_strict
 from discovery import PumpfunDiscovery
+from rh_discovery import RHDiscovery
+from rh_paper import RHPaperTrader
 from speed_modes import (
     speed_mode_resolve, estimate_tx_fee_sol, auto_tuner,
     CU_PUMPFUN, CU_PUMPSWAP,
@@ -131,6 +133,8 @@ class BotState:
         self._greylist_snipe_fires: list[float] = []
         self.scanner = MomentumScanner(self)
         self.discovery = PumpfunDiscovery(self)
+        self.rh_discovery = RHDiscovery(self)
+        self.rh_paper = RHPaperTrader(self)
         self.pnl_reconciler = PnLReconciler(self)
 
     async def load(self):
@@ -277,6 +281,9 @@ class BotState:
             self._scanner_task = asyncio.create_task(self.scanner.loop())
         # Start Pump.fun discovery (aged tokens)
         self.discovery.start()
+        # Robinhood Chain watch-only feed (no Helius, no entries)
+        self.rh_discovery.start()
+        self.rh_paper.start()
         # Start priority-fee auto-tuner (only consulted when speed_mode='auto')
         auto_tuner.start()
         # Start the account-event bus: one persistent Helius WSS that

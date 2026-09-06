@@ -129,7 +129,15 @@ export default function Dashboard() {
         }
         const pinned = next.filter((l) => l.pinned);
         const unpinned = next.filter((l) => !l.pinned);
-        return [...pinned.slice(0, 200), ...unpinned.slice(0, 50)];
+        // Per-chain caps: the Robinhood Chain feed (~12 launches/min) must
+        // never evict Solana launches from the window, and vice versa.
+        const keep = new Set();
+        let nSol = 0, nRh = 0;
+        for (const l of unpinned) {
+          if (l.chain === "rh") { if (nRh < 50) { keep.add(l.id); nRh++; } }
+          else if (nSol < 50) { keep.add(l.id); nSol++; }
+        }
+        return [...pinned.slice(0, 200), ...unpinned.filter((l) => keep.has(l.id))];
       });
     }, 400);
   }, []);

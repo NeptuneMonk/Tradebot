@@ -1,5 +1,6 @@
 import { memo } from "react";
 import { Activity, X } from "lucide-react";
+import { ChainBadge } from "./ChainBadge";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 
@@ -47,6 +48,7 @@ function ActiveTradesTable({ trades, onExit }) {
                       title={`Partial TP done — runner on tightened trail. Banked $${(t.partial_realized_usd || 0).toFixed(2)}`}
                     >RUNNER · +${(t.partial_realized_usd || 0).toFixed(2)}</span>
                   )}
+                  <span className="mr-1.5 align-middle inline-flex"><ChainBadge chain={t.chain} mint={t.mint} /></span>
                   {t.symbol ? <span className="text-neutral-200">{t.symbol}</span> : <span className="text-neutral-500">—</span>}
                   <span className="text-neutral-600 ml-2 text-[10px]">{short(t.mint)}</span>
                 </td>
@@ -55,7 +57,11 @@ function ActiveTradesTable({ trades, onExit }) {
                     {t.mode}
                   </span>
                 </td>
-                <td className="text-right font-mono">{t.entry_sol.toFixed(5)}</td>
+                <td className="text-right font-mono" data-testid={`active-entry-${t.mint}`}>
+                  {t.chain === "rh"
+                    ? <>{(t.entry_quote ?? 0).toFixed(5)} <span className="text-neutral-600 text-[10px]">{t.quote_symbol || "ETH"}</span></>
+                    : t.entry_sol.toFixed(5)}
+                </td>
                 <PnlCell pnl={t.unrealized_pnl_pct} drawdown={t.drawdown_from_peak_pct} mint={t.mint} />
                 <CurveCell live={t.live_curve_fill_pct} target={t.snipe_pattern_ctx?.expected_rug_curve_pct} liveMc={t.live_usd_market_cap} peakMc={t.snipe_pattern_ctx?.expected_peak_mc_usd} mint={t.mint} />
                 <td className="text-right font-mono">

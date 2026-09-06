@@ -35,6 +35,26 @@ class BotConfig(BaseModel):
     # bounded by `max_concurrent_positions` (default 8) so it's tiny.
     # Default True so behaviour is unchanged for existing users.
     helius_tracker_enabled: bool = True
+    # Robinhood Chain (PONS) watch-only feed. Polls the RH public RPC —
+    # zero Helius credits. Off = rh_discovery loop idles.
+    rh_feed_enabled: bool = True
+    # Robinhood Chain PAPER trader (Phase B). Off by default; runs only while
+    # the bot is Running. Separate gate set — PONS dynamics (4.2 ETH grad,
+    # 99% launch snipe tax) differ from Pump.fun. Exits reuse the standard
+    # TP/SL/trailing/hold settings; stake reuses `max_trade_usd`.
+    rh_paper_enabled: bool = False
+    rh_max_positions: int = 3
+    rh_min_age_s: int = 5                 # snipe tax is 0 after 3s
+    rh_max_age_min: float = 15.0
+    rh_min_growth_pct: float = 30.0       # from first observed curve price
+    rh_min_new_buyers_1m: int = 5
+    rh_min_unique_buyers: int = 8
+    rh_min_inflow_usd: float = 300.0      # net quote inflow over inflow window, in USD
+    rh_min_curve_pct: float = 5.0
+    rh_max_curve_pct: float = 70.0        # avoid the graduation sweep gap
+    rh_min_mc_usd: float = 5000.0
+    rh_max_mc_usd: float = 60000.0
+    rh_max_last_trade_age_s: int = 20
     # Paper-mode realism knobs (2026-06-06). Applied only when
     # `trade_doc["mode"] != "live"`. Purpose: stop paper sim from
     # marking near-decision-price fills — bots that looked profitable
@@ -389,6 +409,10 @@ class Launch(BaseModel):
     classifier_risk: Optional[int] = None
     classifier_reasons: list[str] = []
     signature: Optional[str] = None  # tx that created it
+    # Chain provenance — "sol" (Pump.fun/PumpSwap, default for every legacy
+    # doc) or "rh" (Robinhood Chain, watch-only feed).
+    chain: str = "sol"
+    protocol: Optional[str] = None
     # Live mempool metrics (updated for ~30s after detection)
     unique_buyers: int = 0
     sol_inflow: float = 0.0
@@ -449,8 +473,16 @@ class Trade(BaseModel):
     # Protocol routing fields — persisted so monitors can resume after a
     # backend restart. Without these, a re-spawned _monitor_position can't
     # route price polls / sell builds correctly.
-    protocol: str = "pumpfun"  # "pumpfun" or "pumpswap"
+    protocol: str = "pumpfun"  # "pumpfun" or "pumpswap" (or "pons" on chain="rh")
     pumpswap_pool: Optional[str] = None
+    # Chain provenance + quote-denominated legs for non-Solana (paper) trades.
+    chain: str = "sol"
+    quote_symbol: Optional[str] = None
+    entry_quote: float = 0.0
+    exit_quote: float = 0.0
+    entry_price_quote: float = 0.0
+    exit_price_quote: float = 0.0
+    fees_usd: float = 0.0
     # Classifier snapshot
     risk_score: int = 50
     classifier_action: Optional[str] = None
