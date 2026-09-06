@@ -24,6 +24,7 @@ export const api = {
   activeTrades: () => client.get("/trades/active").then(r => r.data),
   tradeHistory: (limit = 100) => client.get(`/trades/history?limit=${limit}`).then(r => r.data),
   exitTrade: (id) => client.post(`/trades/${id}/exit`).then(r => r.data),
+  scannerManualBuy: (mint) => client.post(`/scanner/manual-buy/${mint}`).then(r => r.data),
   plSummary: (days = 7) => client.get(`/pl/summary?days=${days}`).then(r => r.data),
   plBySource: (days = 7) => client.get(`/pl/by-source?days=${days}`).then(r => r.data),
   insights: () => client.get(`/bot/insights`).then(r => r.data),
@@ -87,6 +88,8 @@ export const api = {
     client.get(`/creator-greylist/${creator}`).then(r => r.data),
   creatorGreylistRunSweep: () =>
     client.post(`/creator-greylist/failure-sweep/run-now`).then(r => r.data),
+  creatorGreylistPruneInactive: () =>
+    client.post(`/creator-greylist/prune-inactive`).then(r => r.data),
   creatorBlacklist: (limit = 50) =>
     client.get(`/creator-greylist/blacklist`, { params: { limit } }).then(r => r.data),
   creatorPatternAnalytics: (days = 30, mode = null) =>

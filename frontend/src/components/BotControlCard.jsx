@@ -190,7 +190,7 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
         </span>
       </button>
 
-      {/* Robinhood Chain feed toggle — watch-only PONS launch feed polled
+      {/* Robinhood Chain feed toggle — PONS launch feed polled
           from the RH public RPC. Zero Helius credits either way; this just
           stops the 1-req/2s poll when the user doesn't care about RH. */}
       <button
@@ -219,12 +219,12 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
         </span>
         <span className="flex items-center gap-1.5">
           <span className={`text-[10px] ${(local.rh_feed_enabled ?? true) ? "text-lime-300" : "text-neutral-400"}`}>
-            {(local.rh_feed_enabled ?? true) ? "WATCHING" : "OFF"}
+            {(local.rh_feed_enabled ?? true) ? "LIVE" : "OFF"}
           </span>
           <HelpHint label="Robinhood Chain Feed">
             <div className="space-y-1.5">
               <div>Polls Robinhood Chain&apos;s public RPC (one batched request every 2s) for PONS launchpad events — new launches, curve buys/sells, graduations. Tokens appear in Recent Launches with an <span className="text-lime-300">RH</span> badge and in the scanner&apos;s Robinhood band.</div>
-              <div><strong>Watch-only.</strong> The bot never enters RH tokens — execution there needs an EVM wallet funded with bridged ETH (Phase C).</div>
+              <div><strong>Paper execution.</strong> RH tokens are paper-traded (auto + manual buy). Live execution needs an EVM wallet funded with bridged ETH (Phase C).</div>
               <div className="text-neutral-400">Uses zero Helius credits in either state.</div>
             </div>
           </HelpHint>
@@ -444,6 +444,27 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                  hint="After a stop-loss exit on a token, ignore that mint for this many minutes. Prevents re-buying into a continuing dump."
                  value={local.sl_cooldown_minutes}
                  onChange={(v) => setLocal({ ...local, sl_cooldown_minutes: parseFloat(v) || 0 })} step="0.5" />
+        </div>
+
+        {/* Seasoned supply: recently-graduated feed */}
+        <div className="mt-3 border-t border-neutral-800 pt-2.5">
+          <label className="flex items-center justify-between text-[10px] font-mono uppercase tracking-[0.15em] text-neutral-400 cursor-pointer">
+            <span className="flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                data-testid="scanner-graduated-feed-checkbox"
+                checked={local.scanner_graduated_feed_enabled !== false}
+                onChange={(e) => setLocal({ ...local, scanner_graduated_feed_enabled: e.target.checked })}
+              />
+              Graduated feed (Seasoned supply)
+              <HelpHint label="Graduated feed">
+                Every 60s pull Pump.fun's recently-graduated tokens and seed them as PumpSwap candidates so the Seasoned band has supply beyond the ~1% of launches the bot watched graduate.
+              </HelpHint>
+            </span>
+            <span className="text-neutral-600 normal-case tracking-normal">
+              poll every 60s · up to 30 mints/cycle
+            </span>
+          </label>
         </div>
 
         {/* Distribution-vacuum gate (insider pre-distribution filter) */}

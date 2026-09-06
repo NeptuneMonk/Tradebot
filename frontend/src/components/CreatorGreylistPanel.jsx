@@ -466,6 +466,9 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
   const [backfillRunning, setBackfillRunning] = useState(false);
   const [modeToggling, setModeToggling] = useState(false);
   const [minScore, setMinScore] = useState(30);
+  const [inactiveCount, setInactiveCount] = useState(null);
+  const [inactiveDays, setInactiveDays] = useState(config?.creator_greylist_inactive_days ?? 30);
+  const [pruning, setPruning] = useState(false);
   const [expanded, setExpanded] = useState(null);
   // Panel-open state — kept closed by default so the 924-row list doesn't
   // load into the DOM (or trigger the 60s background poll) unless the
@@ -485,6 +488,7 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
           .catch(() => null),
       ]);
       setItems(g?.items || []);
+      if (typeof g?.inactive_count === "number") setInactiveCount(g.inactive_count);
       setBlacklist(b?.items || []);
       setAnalytics(a);
     } catch (e) {
@@ -587,6 +591,36 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
 
   const enabled = !!config?.creator_greylist_enabled;
   const mode = config?.creator_greylist_mode || "telemetry";
+
+  useEffect(() => {
+    if (config?.creator_greylist_inactive_days != null) setInactiveDays(config.creator_greylist_inactive_days);
+  }, [config?.creator_greylist_inactive_days]);
+
+  const saveInactiveDays = async () => {
+    const v = Math.max(1, Math.min(365, Number(inactiveDays) || 30));
+    if (v === (config?.creator_greylist_inactive_days ?? 30)) return;
+    try {
+      const updated = await api.updateConfig({ creator_greylist_inactive_days: v });
+      toast.success(`Inactive window → ${v}d`);
+      onConfigUpdate && onConfigUpdate(updated);
+    } catch (e) {
+      toast.error("Save failed: " + (e?.response?.data?.detail || e.message));
+    }
+  };
+
+  const runPrune = async () => {
+    setPruning(true);
+    try {
+      const r = await api.creatorGreylistPruneInactive();
+      toast.success(`Pruned ${r.flagged} inactive · revived ${r.revived}`);
+      await refresh();
+    } catch (e) {
+      toast.error("Prune failed: " + (e?.response?.data?.detail || e.message));
+    } finally {
+      setPruning(false);
+    }
+  };
+
   const tierCounts = useMemo(() => {
     const c = { aggressive: 0, hybrid: 0, standard: 0 };
     for (const r of items) {
@@ -712,6 +746,36 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
         </span>
         <span className="text-neutral-500">
           standard <span className="text-neutral-300 tabular-nums">{tierCounts.standard}</span>
+        </span>
+        <span
+          className="text-neutral-600 border-l border-neutral-800 pl-3 flex items-center gap-1.5"
+          title={`Living list: creators with no launch in ${inactiveDays}d are hidden from the greylist + sniper. They come back automatically on their next launch.`}
+          data-testid="greylist-inactive-chip"
+        >
+          inactive · <span className="text-neutral-400 tabular-nums" data-testid="greylist-inactive-count">{inactiveCount ?? "…"}</span> pruned
+          <span className="text-neutral-700">/</span>
+          <input
+            type="number"
+            min="1"
+            max="365"
+            value={inactiveDays}
+            onChange={(e) => setInactiveDays(e.target.value)}
+            onBlur={saveInactiveDays}
+            onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+            className="w-10 px-1 py-0 bg-neutral-950 border border-neutral-800 text-neutral-300 font-mono text-[10px] tabular-nums"
+            data-testid="greylist-inactive-days-input"
+          />
+          d
+          <button
+            type="button"
+            onClick={runPrune}
+            disabled={pruning}
+            className="ml-1 px-1 border border-neutral-800 hover:bg-neutral-800 disabled:opacity-50 text-neutral-400 lowercase"
+            title="Run the inactivity prune now (normally every 6h)"
+            data-testid="greylist-prune-now-btn"
+          >
+            {pruning ? "…" : "prune"}
+          </button>
         </span>
         {mode === "live" && (
           <span className="ml-auto text-rose-400" data-testid="greylist-live-warn">
@@ -933,7 +997,7 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
         scoring: profitability 28% · predictability 20% · peak mc 25% · activity 13% · volume 9% · links 5% ·
         decay ~1%/hr · tiers at 45 (hybrid) and 70 (aggressive) ·
         F-band <span className="text-neutral-400">{config?.creator_greylist_min_fails ?? 2}–{config?.creator_greylist_max_fails ?? 100}</span>{" "}
-        (outside band → stats kept, score suppressed)
+        (outside band → stats kept, score suppressed) · living list: silent &gt;{inactiveDays}d → hidden, revived on next launch
       </div>
         </>
       )}

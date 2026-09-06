@@ -1,6 +1,6 @@
 export const CHAIN_META = {
   sol: { label: "SOL", cls: "border-teal-700 text-teal-300 bg-teal-950/40", title: "Solana · Pump.fun / PumpSwap" },
-  rh: { label: "RH", cls: "border-lime-700 text-lime-300 bg-lime-950/40", title: "Robinhood Chain · PONS (watch-only)" },
+  rh: { label: "RH", cls: "border-lime-700 text-lime-300 bg-lime-950/40", title: "Robinhood Chain · PONS (paper)" },
 };
 
 export function ChainBadge({ chain, protocol, mint }) {

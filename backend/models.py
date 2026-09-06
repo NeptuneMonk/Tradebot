@@ -221,6 +221,7 @@ class BotConfig(BaseModel):
     # Discovery: only seed tokens whose last trade is fresher than this (minutes).
     # Set 0 to disable the freshness gate.
     scanner_discovery_max_idle_minutes: int = 5
+    scanner_graduated_feed_enabled: bool = True
     # Entry velocity gate (pattern-mining insight: "stop-loss exits dominate
     # losers 39% vs winners 2%" → most losers are "dead cat" entries where the
     # token already peaked). Require >= scanner_entry_velocity_min_pct change
@@ -340,6 +341,9 @@ class BotConfig(BaseModel):
     # (so the moment they cross into the band, the score "wakes up") — only
     # the composite score is forced to 0 so they don't surface in the UI.
     creator_greylist_min_fails: int = 2
+    # Living list: creators silent for this many days are flagged inactive
+    # (hidden from the sniper + UI) until they launch again.
+    creator_greylist_inactive_days: int = 30
     creator_greylist_max_fails: int = 100
     # Greylist Sniper — opens a SECOND entry path alongside the momentum
     # scanner. Fires on every NEW launch where the creator scored ≥

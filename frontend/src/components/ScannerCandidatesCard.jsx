@@ -1,6 +1,9 @@
-import { Telescope, TrendingUp, Sparkles, Hourglass, Eye } from "lucide-react";
+import { useState } from "react";
+import { Telescope, TrendingUp, Sparkles, Hourglass, Eye, Zap } from "lucide-react";
+import { toast } from "sonner";
 import HelpHint from "./HelpHint";
 import { ChainBadge } from "./ChainBadge";
+import { api } from "@/lib/api";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const fmtAge = (s) => {
@@ -79,7 +82,7 @@ export default function ScannerCandidatesCard({ candidates, config }) {
         <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-neutral-500">
           <Telescope className="w-3 h-3" /> Momentum Scanner ({candidates.length})
           <HelpHint label="Momentum Scanner">
-            Live feed of tokens passing your per-band gates. Bands are <strong>protocol-segregated</strong>: <span className="text-amber-300">New</span> = Pump.fun bonding curve only, <span className="text-cyan-300">Seasoned</span> = PumpSwap AMM (graduated) only. Only "Passing" rows are eligible for entry. <span className="text-lime-300">Robinhood</span> = PONS bonding curves on Robinhood Chain — <strong>watch-only</strong>, never traded.
+            Live feed of tokens passing your per-band gates. Bands are <strong>protocol-segregated</strong>: <span className="text-amber-300">New</span> = Pump.fun bonding curve only, <span className="text-cyan-300">Seasoned</span> = PumpSwap AMM (graduated) only. Only "Passing" rows are eligible for entry — each has a <strong>buy</strong> button to enter manually, skipping the gates (max positions still applies). <span className="text-lime-300">Robinhood</span> = PONS bonding curves on Robinhood Chain, paper-traded.
           </HelpHint>
         </div>
         <span className="text-[10px] font-mono text-neutral-600">
@@ -112,6 +115,39 @@ export default function ScannerCandidatesCard({ candidates, config }) {
         />
       </div>
     </div>
+  );
+}
+
+function ManualBuyButton({ c, isRh }) {
+  const [busy, setBusy] = useState(false);
+  const buy = async (e) => {
+    e.stopPropagation();
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await api.scannerManualBuy(c.mint);
+      toast.success(`Bought ${r.symbol || short(c.mint)} · ${(r.mode || "").toUpperCase()}${r.chain === "rh" ? " · RH" : ""} — SL/TP now managing it`);
+    } catch (err) {
+      toast.error(`Buy refused: ${err?.response?.data?.detail || err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={buy}
+      disabled={busy}
+      data-testid={`scanner-row-buy-${c.mint}`}
+      title="Manual buy — skips the momentum gates (max positions + kill switches still apply). Exits via normal SL/TP/trail."
+      className={`flex items-center gap-1 px-2 py-1 border text-[10px] font-mono uppercase tracking-wider transition disabled:opacity-50 ${
+        isRh
+          ? "border-lime-700 text-lime-300 hover:bg-lime-950/60"
+          : "border-emerald-700 text-emerald-300 hover:bg-emerald-950/60"
+      }`}
+    >
+      <Zap className="w-3 h-3" /> {busy ? "…" : isRh ? "paper buy" : "buy"}
+    </button>
   );
 }
 
@@ -156,14 +192,25 @@ function CandidateRow({ c, passing }) {
                 pumpswap
               </span>
             )}
+            {c.graduated_feed === true && (
+              <span
+                className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-fuchsia-800 text-fuchsia-300 bg-fuchsia-950/40"
+                data-testid={`scanner-row-gradfeed-${c.mint}`}
+                title="Seeded from Pump.fun's recently-graduated list (Seasoned supply feed)"
+              >
+                grad feed
+              </span>
+            )}
           </div>
           <div className="text-[10px] font-mono text-neutral-500 mt-0.5">
             {isRh ? "token" : "mint"} <span className="text-neutral-300">{short(c.mint)}</span>
-            {isRh && <span className="ml-2 text-lime-500/80" data-testid={`scanner-row-watchonly-${c.mint}`}>watch-only</span>}
           </div>
         </div>
-        <div className={`text-right font-mono text-sm ${growthCls}`} title="Growth from first-seen price">
-          {growth >= 0 ? "+" : ""}{growth.toFixed(1)}%
+        <div className="flex items-center gap-2">
+          <div className={`text-right font-mono text-sm ${growthCls}`} title="Growth from first-seen price">
+            {growth >= 0 ? "+" : ""}{growth.toFixed(1)}%
+          </div>
+          {passing && <ManualBuyButton c={c} isRh={isRh} />}
         </div>
       </div>
       <div className="flex items-center gap-x-3 gap-y-0.5 mt-1.5 text-[10px] font-mono text-neutral-400 flex-wrap">

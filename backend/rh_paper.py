@@ -199,7 +199,31 @@ class RHPaperTrader:
             self._pending_entries.add(token)
             asyncio.create_task(self._enter(token, size_mult=w["size_multiplier"], reentry=w["last_trigger"]))
 
-    async def _enter(self, token: str, size_mult: float = 1.0, reentry: str | None = None):
+    async def manual_enter(self, token: str) -> dict:
+        """Operator override: skip the momentum gates, keep only the position cap."""
+        cfg = self.state.config
+        b = self.state.rh_discovery.tracking.get(token)
+        if not b:
+            return {"ok": False, "reason": "token not tracked"}
+        if b.get("graduated"):
+            return {"ok": False, "reason": "graduated — curve closed"}
+        if token in self.positions or token in self._pending_entries:
+            return {"ok": False, "reason": "already in an active position"}
+        if len(self.positions) + len(self._pending_entries) >= cfg.rh_max_positions:
+            return {"ok": False, "reason": f"RH max positions reached ({cfg.rh_max_positions})"}
+        if self._quote_usd(b["quote_symbol"]) <= 0:
+            return {"ok": False, "reason": f"quote asset {b['quote_symbol']} has no USD price — can't size the paper stake"}
+        if (b.get("last_price_quote") or 0) <= 0:
+            return {"ok": False, "reason": "no curve price yet (waiting for first trade)"}
+        self.entered.discard(token)
+        self._pending_entries.add(token)
+        await self._enter(token, manual=True)
+        if token in self.positions:
+            return {"ok": True, "mint": token, "symbol": b.get("symbol"), "mode": "paper", "chain": CHAIN}
+        return {"ok": False, "reason": "paper entry did not open (unpriced quote or no price yet)"}
+
+    async def _enter(self, token: str, size_mult: float = 1.0, reentry: str | None = None,
+                     manual: bool = False):
         cfg = self.state.config
         try:
             await asyncio.sleep(max(0, cfg.paper_entry_latency_ms) / 1000.0)
@@ -229,6 +253,8 @@ class RHPaperTrader:
             if reentry:
                 doc["reentry"] = reentry
                 doc["classifier_action"] = "rh_pons_reentry"
+            if manual:
+                doc["classifier_action"] = "rh_pons_manual"
             await self.state.db.trades.update_one({"_id": trade.id}, {"$set": {**doc, "_id": trade.id}}, upsert=True)
             self.positions[token] = {"trade": doc, "peak_price": price, "_last_price": price, "opened": now}
             self.entered.add(token)

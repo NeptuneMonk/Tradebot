@@ -38,6 +38,9 @@ REFRESH_INTERVAL_S = 60      # how often to re-poll MC for already-tracked disco
 MC_SAMPLE_KEEP = 12          # 12 × 60s = 12min of MC samples for velocity calc
 COINS_PER_CYCLE = 50
 HTTP_TIMEOUT = 12.0
+GRADUATED_INTERVAL_S = 60    # recently-graduated feed poll cadence (Seasoned supply)
+GRADUATED_PAGE_SIZE = 100
+GRADUATED_PER_CYCLE = 30
 
 
 class PumpfunDiscovery:
@@ -45,12 +48,101 @@ class PumpfunDiscovery:
         self.state = state
         self._task: asyncio.Task | None = None
         self._refresh_task: asyncio.Task | None = None
+        self._graduated_task: asyncio.Task | None = None
+        self._graduated_seen: set[str] = set()
 
     def start(self):
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._loop())
         if self._refresh_task is None or self._refresh_task.done():
             self._refresh_task = asyncio.create_task(self._refresh_loop())
+        if self._graduated_task is None or self._graduated_task.done():
+            self._graduated_task = asyncio.create_task(self._graduated_loop())
+
+    async def _graduated_loop(self):
+        """Seasoned-band supply: poll Pump.fun's recently-graduated list every
+        GRADUATED_INTERVAL_S and seed those mints as `pumpswap` buckets. The
+        creation-time band in `run_once` only ever catches the ~1% of tokens
+        that graduate AND were created in-band, which starved the band."""
+        await asyncio.sleep(10.0)
+        while True:
+            try:
+                if getattr(self.state.config, "scanner_graduated_feed_enabled", True):
+                    await self.graduated_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"graduated feed error: {e}")
+            await asyncio.sleep(GRADUATED_INTERVAL_S)
+
+    async def fetch_recent_graduated(self, limit: int = GRADUATED_PAGE_SIZE) -> list[dict]:
+        """Most recently CREATED tokens that have `complete=true` — a close
+        proxy for 'recently graduated' since graduation follows creation by
+        minutes-to-hours. Each row carries `pool_address` (PumpSwap pool)."""
+        params = {
+            "offset": 0, "limit": limit, "sort": "created_timestamp",
+            "order": "DESC", "includeNsfw": "true", "complete": "true",
+        }
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            r = await client.get(f"{PUMPFUN_API}/coins", params=params,
+                                 headers={"accept": "application/json"})
+            r.raise_for_status()
+            page = r.json()
+        if isinstance(page, dict):
+            page = page.get("data") or page.get("coins") or []
+        return [c for c in (page or []) if isinstance(c, dict) and c.get("mint") and c.get("complete")]
+
+    async def graduated_once(self) -> int:
+        """Seed newly-graduated tokens into tracking as pumpswap buckets.
+        Returns the number seeded. Helius-aware: skips the cycle when the
+        kill-switch is paused (seeding fetches pool state via RPC)."""
+        st = self.state
+        try:
+            from helius_gate import is_helius_paused
+            if is_helius_paused():
+                return 0
+        except Exception:
+            pass
+        coins = await self.fetch_recent_graduated()
+        now = time.time()
+        band_max_s = float(getattr(st.config, "band_seasoned_max_age_min", 240.0)) * 60.0
+        # Drop feed tokens that aged out of the Seasoned band — otherwise the
+        # refresh loop keeps spending a pool-state RPC per minute on each.
+        for mint in [m for m, b in st.tracking.items()
+                     if b.get("graduated_feed") and m not in st.active_trades
+                     and now - (b.get("graduated_at") or now) > band_max_s + 300]:
+            st.tracking.pop(mint, None)
+        max_created_age_s = band_max_s + 6 * 3600.0
+        seeded = 0
+        for c in coins:
+            if seeded >= GRADUATED_PER_CYCLE:
+                break
+            mint = c["mint"]
+            if not c.get("complete"):
+                continue
+            if mint in st.tracking or mint in st.active_trades or mint in st.entered_mints:
+                continue
+            if mint in self._graduated_seen:
+                continue
+            created_s = (c.get("created_timestamp") or 0) / 1000.0
+            if created_s and now - created_s > max_created_age_s:
+                continue
+            if not (c.get("pool_address") or c.get("pump_swap_pool")):
+                continue
+            try:
+                await self._seed_token(c, created_s or now, True)
+                st.tracking[mint]["graduated_feed"] = True
+                self._graduated_seen.add(mint)
+                seeded += 1
+            except Exception as e:
+                logger.debug(f"graduated seed failed for {mint}: {e}")
+            await asyncio.sleep(0.1)
+        if len(self._graduated_seen) > 5000:
+            self._graduated_seen = set(list(self._graduated_seen)[-2500:])
+        logger.info(f"graduated feed: {len(coins)} recent graduates, seeded {seeded}")
+        if seeded:
+            await hub.broadcast("discovery", {"seeded": seeded, "source": "graduated", "ts": now})
+        return seeded
 
     async def _loop(self):
         # Stagger first run by 5s so listener has time to settle

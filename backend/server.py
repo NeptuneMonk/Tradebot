@@ -106,6 +106,8 @@ async def lifespan(app: FastAPI):
     # Persists suggestions to Mongo so the user can wake up to a set of
     # auto-generated, pre-validated config tweaks.
     from strategy_doctor import StrategyDoctor, set_doctor
+    from creator_greylist import inactivity_prune_loop
+    asyncio.create_task(inactivity_prune_loop(db, lambda: bot_state.config.creator_greylist_inactive_days))
     doctor = StrategyDoctor(db=db, hub=hub)
     doctor.reload_cb = bot_state.load
     doctor.learning.reload_cb = bot_state.load
@@ -403,6 +405,7 @@ async def update_config(body: dict = Body(...)):
     cfg.greylist_snipe_curve_buffer_pct = max(0.0, min(40.0, cfg.greylist_snipe_curve_buffer_pct))
     cfg.greylist_snipe_ripcord_drawdown_pct = max(20.0, min(95.0, cfg.greylist_snipe_ripcord_drawdown_pct))
     cfg.greylist_snipe_ripcord_grace_seconds = max(0, min(60, cfg.greylist_snipe_ripcord_grace_seconds))
+    cfg.creator_greylist_inactive_days = max(1, min(365, int(cfg.creator_greylist_inactive_days)))
     # Advisory→Enforced reset: when the user flips Advisory OFF, reset the
     # Doctor trail-stop's peak so it doesn't immediately slam a pause based
     # on historical regime drift. Fresh baseline = fresh decisions.
@@ -1826,6 +1829,20 @@ async def scanner_candidates():
     return bot_state.scanner.candidates_snapshot() + bot_state.rh_discovery.candidates_snapshot()
 
 
+@api.post("/scanner/manual-buy/{mint}")
+async def scanner_manual_buy(mint: str):
+    """Operator override: buy a scanner candidate now, bypassing the momentum
+    gates (max positions + kill switches still apply). RH tokens route to the
+    paper engine; SOL tokens follow the normal live/paper mode."""
+    if mint in bot_state.rh_discovery.tracking:
+        res = await bot_state.rh_paper.manual_enter(mint)
+    else:
+        res = await bot_state.manual_enter(mint)
+    if not res.get("ok"):
+        raise HTTPException(status_code=409, detail=res.get("reason") or "entry refused")
+    return res
+
+
 @api.get("/doctor/learning")
 async def doctor_learning_status():
     """Learning loop: per-book fill expectancy, current proposal, canary state."""
@@ -2255,7 +2272,17 @@ async def creator_greylist(limit: int = 25, min_score: float = 30.0):
     profitability + predictability + activity + volume. Phase 1 — read-only;
     Phase 2 will use `recommended_strategy` to flip live trading behavior."""
     from creator_greylist import top_greylisted
-    return {"items": await top_greylisted(db, limit=limit, min_score=min_score)}
+    items = await top_greylisted(db, limit=limit, min_score=min_score)
+    inactive_count = await db.creators.count_documents({"greylist_inactive": True})
+    return {"items": items, "inactive_count": inactive_count,
+            "inactive_days": int(bot_state.config.creator_greylist_inactive_days)}
+
+
+@api.post("/creator-greylist/prune-inactive")
+async def creator_greylist_prune_inactive():
+    """Run the living-list inactivity prune now (normally every 6h)."""
+    from creator_greylist import prune_inactive_creators
+    return await prune_inactive_creators(db, int(bot_state.config.creator_greylist_inactive_days))
 
 
 @api.post("/creator-greylist/backfill-all")

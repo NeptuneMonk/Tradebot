@@ -252,6 +252,7 @@ class MomentumScanner:
             m["launch_id"] = b.get("launch_id")
             m["band"] = band
             m["discovered"] = bool(b.get("discovered"))
+            m["graduated_feed"] = bool(b.get("graduated_feed"))
             m["protocol"] = b.get("protocol") or "pumpfun"
             m["graduated_at"] = b.get("graduated_at")
             m["usd_market_cap"] = float(b.get("usd_market_cap") or 0.0)

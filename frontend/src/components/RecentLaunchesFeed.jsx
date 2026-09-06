@@ -288,7 +288,7 @@ function ActionBadge({ action, risk, entered, entryAction }) {
   if (action === "abort_trade") cls = "border-red-800 text-red-400 bg-red-950/40";
   else if (action === "exit_early") cls = "border-amber-800 text-amber-400 bg-amber-950/40";
   else if (action === "hold_briefly") cls = "border-emerald-800 text-emerald-400 bg-emerald-950/40";
-  else if (action === "watch") cls = "border-lime-800 text-lime-400 bg-lime-950/30";
+  else if (action === "tracking") cls = "border-lime-800 text-lime-400 bg-lime-950/30";
   return (
     <div className="flex items-center gap-1">
       <span className={`px-1.5 py-0.5 border text-[10px] font-mono uppercase ${cls}`}>

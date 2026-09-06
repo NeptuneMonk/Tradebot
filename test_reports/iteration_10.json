@@ -1,0 +1,35 @@
+{
+  "summary": "Iteration 10 — Living Greylist / Seasoned Supply (graduated feed) / Manual Buy features tested. Backend pytest: 9 passed, 1 skipped (SOL manual buy — no passing SOL candidates present in current session, which is expected). Frontend: greylist chip/count/days input/prune button all wired with correct toasts; scanner-graduated-feed-checkbox present + checked + correct label; scanner-row-buy-* 'paper buy' buttons on passing RH rows; no scanner-row-watchonly-* elements exist; clicking paper buy successfully entered RH paper position (TRENCHERS, classifier_action=rh_pons_manual, visible in /api/trades/active); Recent Launches RH rows show 'TRACKING' (0 'WATCH'). Config restored: creator_greylist_inactive_days=30, rh_feed_enabled=false, live_trading=false, enabled=false, scanner_graduated_feed_enabled=true.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard", "issues": ["Pre-existing non-blocking Recharts 'width(-1)/height(-1)' warning on mount", "Pre-existing WebSocket /api/ws connection warning", "One 401 on initial resource load (auth race before cookie applied — non-blocking)"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter10_features.py",
+    "/app/test_reports/pytest/iter10.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Manual buy backend returns 409 with different reasons ('mint not tracked', 'already in an active position', 'quote asset X has no USD price') — frontend toast should surface the reason clearly; current 'Buy refused: ...' path in ScannerCandidatesCard handles it but a smoke visual check for a refused case would be nice.",
+    "Bands are collapsible but Bot Control / Scanner sections default to collapsed on load; e2e tests must expand them via text click (no data-testid on section headers for e.g. section-scanner-candidates-toggle). Recommend adding data-testid=\"section-<name>-toggle\" for stability (same finding as iter9).",
+    "GET /api/scanner/candidates response schema: currently a flat list is returned; frontend groups by band. graduated_feed flag correctly present on SOL rows. RH rows do not include graduated_feed (expected, only SOL/pumpswap).",
+    "test_iter10_features.py::test_manual_buy_sol will remain skipped whenever the momentum scanner has no passing SOL candidate; consider seeding a fake passing SOL candidate for deterministic coverage."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter10_features.py"
+  ],
+  "success_rate": {"backend": "100% (9/9 executable; 1 skipped due to no live SOL candidate)", "frontend": "100%"},
+  "test_credentials": "Authorization: Bearer test_session_1788718227979 (email nbobby79@gmail.com per /app/memory/test_credentials.md)",
+  "seed_data_creation": "One RH paper position opened during UI test (TRENCHERS mint 0x425a6c38... quote ETH) via manual-buy; classifier_action=rh_pons_manual. Backend will manage exit via SL/TP as designed; no manual cleanup performed to avoid altering trade lifecycle.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Final config state left: enabled=false, live_trading=false, rh_feed_enabled=false, creator_greylist_inactive_days=30, scanner_graduated_feed_enabled=true, helius_tracker_enabled=false (intentionally off per user). rh_feed_enabled was toggled TRUE briefly to make RH candidates visible for manual-buy UI test, then restored to FALSE. If retesting SOL manual-buy path, temporarily start the bot in paper mode or seed a passing SOL scanner candidate. Backend log line 'graduated feed: N recent graduates, seeded M' is emitted every ~40s in /var/log/supervisor/backend.err.log — confirms discovery._graduated_loop is running.",
+  "rca of the issue": "N/A — no bugs identified in this iteration."
+}

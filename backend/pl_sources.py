@@ -17,6 +17,7 @@ SOURCE_LABELS = {
     "reentry": "Winner Re-entry",
     "greylist_snipe": "Greylist Sniper",
     "rh_pons": "RH · PONS (paper)",
+    "manual": "Manual Buy",
     "legacy": "Legacy Sniper",
 }
 
@@ -32,6 +33,8 @@ def classify_source(classifier_action: str | None) -> str:
         return "greylist_snipe"
     if classifier_action in ("rh_pons_paper", "rh_pons_reentry"):
         return "rh_pons"
+    if classifier_action in ("manual", "rh_pons_manual"):
+        return "manual"
     return "legacy"
 
 
@@ -97,6 +100,6 @@ async def compute_pl_by_source(db, days: int = 7) -> dict:
 
     return {
         "days": days,
-        "sources": [_finalize(buckets[s]) for s in ("new", "seasoned", "reentry", "greylist_snipe", "rh_pons", "legacy")],
+        "sources": [_finalize(buckets[s]) for s in ("new", "seasoned", "reentry", "greylist_snipe", "rh_pons", "manual", "legacy")],
         "total": _finalize(total),
     }

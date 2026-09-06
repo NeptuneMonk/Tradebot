@@ -28,7 +28,7 @@ with profitable snipes before flipping `creator_greylist_mode=live`.
 from __future__ import annotations
 import logging
 import statistics
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger("creator_greylist")
 
@@ -134,15 +134,55 @@ def _activity_component(creator_doc: dict) -> float:
     weeks_active = max(1.0, (now - first_seen_ts) / (7 * 86400)) if first_seen_ts else 1.0
     launches_per_week = created / weeks_active
     base = min(100.0, launches_per_week * 25)  # 4 launches/wk = max
-    # Recency boost: <24h = 1.0, 24h-7d = 0.6, >7d = 0.3
+    # Recency boost: <24h = 1.0, 24h-7d = 0.6, 7d-30d = 0.3, >30d = dead.
+    # Serial shady creators drop something every weekend; a wallet silent
+    # for a month is a different (or abandoned) operation.
     recency = 1.0
     if last_seen_ts:
         hours_idle = (now - last_seen_ts) / 3600.0
-        if hours_idle > 168:
+        if hours_idle > 24 * INACTIVE_DAYS_DEFAULT:
+            recency = 0.0
+        elif hours_idle > 168:
             recency = 0.3
         elif hours_idle > 24:
             recency = 0.6
     return base * recency
+
+
+INACTIVE_DAYS_DEFAULT = 30
+
+
+async def prune_inactive_creators(db, inactive_days: int = INACTIVE_DAYS_DEFAULT) -> dict:
+    """Living list: flag creators with no launch in `inactive_days` as
+    `greylist_inactive` (excluded from the sniper's Stage-1 and the UI surface)
+    and un-flag anyone who launched again. History is kept — a creator who
+    resurfaces is scored fresh on their next launch."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, int(inactive_days)))).isoformat()
+    flagged = await db.creators.update_many(
+        {"last_seen": {"$lt": cutoff}, "greylist_inactive": {"$ne": True}},
+        {"$set": {"greylist_inactive": True, "greylist_inactive_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    revived = await db.creators.update_many(
+        {"last_seen": {"$gte": cutoff}, "greylist_inactive": True},
+        {"$unset": {"greylist_inactive": "", "greylist_inactive_at": ""}},
+    )
+    out = {"flagged": flagged.modified_count, "revived": revived.modified_count, "cutoff": cutoff}
+    logger.info(f"greylist inactivity prune: {out}")
+    return out
+
+
+async def inactivity_prune_loop(db, days_getter):
+    """Runs at startup and then every 6h."""
+    import asyncio
+    await asyncio.sleep(5)
+    while True:
+        try:
+            await prune_inactive_creators(db, int(days_getter()))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"greylist prune failed: {e}")
+        await asyncio.sleep(6 * 3600)
 
 
 def _volume_component(creator_doc: dict) -> float:
@@ -403,6 +443,8 @@ def stage1_filter(creator_doc: dict | None,
     """
     creator_doc = creator_doc or {}
     failed_launches = failed_launches or []
+    if creator_doc.get("greylist_inactive"):
+        return False, "inactive: no launch in the inactivity window"
     tokens_failed = int(creator_doc.get("tokens_failed") or 0)
     if tokens_failed >= 2:
         return True, f"≥2 fails ({tokens_failed})"
@@ -611,6 +653,7 @@ async def top_greylisted(db, limit: int = 20, min_score: float = 30.0) -> list[d
     large `creators` collection."""
     cur = db.creators.find(
         {"greylist_score": {"$gte": min_score},
+         "greylist_inactive": {"$ne": True},
          "$or": [
              {"greylist_out_of_band": {"$exists": False}},
              {"greylist_out_of_band": False},

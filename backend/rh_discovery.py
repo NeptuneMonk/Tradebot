@@ -468,7 +468,7 @@ class RHDiscovery:
             protocol=PROTOCOL,
         )
         launch.id = b["launch_id"]
-        launch.classifier_action = "watch"
+        launch.classifier_action = "tracking"
         launch.detected_at = datetime.fromtimestamp(b["start"], timezone.utc)
         doc = launch.model_dump()
         doc["detected_at"] = doc["detected_at"].isoformat()

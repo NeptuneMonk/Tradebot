@@ -1333,3 +1333,15 @@ These are exactly the high-confidence snipe targets the sniper was designed for 
   40–60% drops within one 1s tick.
 - P2: Phase C live execution (see CHANGELOG "Phase C wallet changes").
 - P3: FOMO app — no public API; skipped.
+
+
+## 2026-09-06 — Living Greylist UI · Seasoned Supply (graduated feed) · Manual Buy
+- ✅ **Living Greylist finished** — backend prune loop (startup + 6h, `creator_greylist_inactive_days`, clamped 1–365) + on-launch revival already existed; added `inactive_count`/`inactive_days` to `GET /api/creator-greylist`, `POST /api/creator-greylist/prune-inactive`, and a panel chip `inactive · N pruned / [days] d [prune]` (`greylist-inactive-chip`, `greylist-inactive-days-input`, `greylist-prune-now-btn`).
+- ✅ **Seasoned Supply** — `discovery.py` `_graduated_loop` polls Pump.fun `/coins?complete=true&sort=created_timestamp` every 60s, seeds up to 30 new graduates/cycle as `pumpswap` buckets (`graduated_feed: True`, `graduated_at=now` so they enter the Seasoned band after `band_seasoned_min_age_min`), drops them once past `band_seasoned_max_age_min`+5m (saves refresh-loop RPC). Config `scanner_graduated_feed_enabled` (Bot Control checkbox). Eviction key in `bot.py` now `graduated_at or start`. Scanner rows carry `graduated_feed` → fuchsia "grad feed" badge. Root cause of starvation: `run_once` only kept tokens *created* in the 3–4h band; graduation-age band never got supply.
+- ✅ **Manual Buy** — `POST /api/scanner/manual-buy/{mint}`: SOL → `BotState.manual_enter` (action `manual`, bypasses doctor pause, cooldowns, re-entry lockout and all momentum gates; keeps Helius pause, daily kill switch, max positions). RH → `rh_paper.manual_enter` (action `rh_pons_manual`, paper). 409 with reason on refusal. Per-row `buy` / `paper buy` buttons on passing scanner rows (`scanner-row-buy-<mint>`). `pl_sources` has a `manual` bucket ("Manual Buy").
+- ✅ Removed "watch-only" badge/copy; RH launch badge is now `TRACKING`; RH feed toggle reads LIVE/OFF.
+- Tests: `tests/test_graduated_feed.py` (5), living-list + greylist suites green (33). Testing agent iteration_10: all pass.
+
+### Backlog (unchanged priorities)
+- P1 Robinhood Phase C live EVM execution · P2 greylist 1-hop linked wallets · P2 age-tiered Seasoned gates · P2 Telegram alerts · P3 Jito bundles
+- Idea: a "Deferred Exit Log" marker on trade rows (how long SL/TP was held on momentum and what it gained/lost)

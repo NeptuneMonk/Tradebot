@@ -963,6 +963,12 @@ class BotState:
                 and (creator_doc.get("tokens_failed") or 0) >= int(self.config.creator_greylist_min_fails)):
             try:
                 from creator_greylist import update_creator_score
+                if creator_doc.get("greylist_inactive"):
+                    # resurfaced after the inactivity window — back on the living list
+                    await self.db.creators.update_one(
+                        {"_id": launch.creator},
+                        {"$unset": {"greylist_inactive": "", "greylist_inactive_at": ""}},
+                    )
                 await update_creator_score(
                     self.db, launch.creator,
                     min_fails=int(self.config.creator_greylist_min_fails),
@@ -1048,7 +1054,7 @@ class BotState:
         }
         # LRU-style cap: drop oldest if over the limit
         if len(self.tracking) > MAX_TRACKED_MINTS:
-            oldest = min(self.tracking.items(), key=lambda kv: kv[1]["start"])[0]
+            oldest = min(self.tracking.items(), key=lambda kv: kv[1].get("graduated_at") or kv[1]["start"])[0]
             self.tracking.pop(oldest, None)
 
         asyncio.create_task(self._compute_social(launch.mint))
@@ -1946,9 +1952,37 @@ class BotState:
             logger.exception(f"greylist_snipe failed for {launch.mint}: {e}")
 
     # ---------- Entry / exit (live + paper) ----------
+    async def manual_enter(self, mint: str) -> dict:
+        """Operator override from the scanner card. Bypasses momentum gates;
+        honours Helius pause, daily kill switch and max positions. Once open
+        the position is monitored like any other (SL/TP/trail)."""
+        b = self.tracking.get(mint)
+        if not b:
+            return {"ok": False, "reason": "mint not tracked (scanner no longer sees it)"}
+        if mint in self.active_trades:
+            return {"ok": False, "reason": "already in an active position"}
+        if self.kill_switch_tripped:
+            return {"ok": False, "reason": "daily kill switch tripped"}
+        cap = max(1, self.config.max_concurrent_positions)
+        if len(self.active_trades) + len(self._pending_entry_mints) >= cap:
+            return {"ok": False, "reason": f"max positions reached ({cap})"}
+        launch = Launch(mint=mint, creator=b.get("creator") or "", bonding_curve="",
+                        name=b.get("name"), symbol=b.get("symbol"))
+        launch.id = b.get("launch_id") or launch.id
+        launch.classifier_action = "manual"
+        await self._enter(launch, 50, "manual")
+        if mint in self.active_trades:
+            t = self.active_trades[mint].get("trade") or {}
+            return {"ok": True, "mint": mint, "symbol": b.get("symbol"),
+                    "mode": (t.get("mode") if isinstance(t, dict) else getattr(t, "mode", None))}
+        return {"ok": False, "reason": "entry did not open — check backend log (pool/curve state, quote, helius pause)"}
+
     async def _enter(self, launch: Launch, risk_score: int, action: str):
+        # Manual buy (operator clicked a candidate): bypass everything except
+        # the Helius kill-switch, the daily kill switch and max positions.
+        is_manual = action == "manual"
         # Smart-stop: refuse new entries while we're winding down
-        if self.stopping_gracefully:
+        if self.stopping_gracefully and not is_manual:
             return
         # Helius kill switch — when the tracker is paused we block new
         # entries. Existing positions continue to be monitored (necessary
@@ -1967,7 +2001,8 @@ class BotState:
         # is actively supervising and decides when to stop.
         pause_until = float(getattr(self.config, "doctor_pause_until_ts", 0) or 0)
         if (pause_until and time.time() < pause_until
-                and not getattr(self.config, "doctor_advisory_only", False)):
+                and not getattr(self.config, "doctor_advisory_only", False)
+                and not is_manual):
             logger.debug(
                 f"doctor pause: skipping entry for {launch.mint[:8]}… "
                 f"({int(pause_until - time.time())}s remaining)"
@@ -1994,14 +2029,14 @@ class BotState:
             # re-enter for the configured window. Buying back into a freshly
             # SL-tripped mint is the textbook "buy the exit" anti-pattern.
             cd_until = self.sl_cooldown_until.get(launch.mint, 0.0)
-            if cd_until and time.time() < cd_until:
+            if cd_until and time.time() < cd_until and not is_manual:
                 return
             # Universal post-exit cooldown — prevents re-entry on the SAME
             # mint within the cooldown window after ANY exit. Fixes the
             # "4 GSD positions in 3 min" pattern where monitors for stale
             # slots raced against the new position's exits.
             rx_until = self.recent_exit_until.get(launch.mint, 0.0)
-            if rx_until and time.time() < rx_until:
+            if rx_until and time.time() < rx_until and not is_manual:
                 return
             # Re-entry watchlist lockout: if this mint just exited profitably
             # and is being watched for a pullback re-entry, the regular scanner
@@ -2009,7 +2044,7 @@ class BotState:
             # watcher owns this mint until the window expires (or `_attempt_reentry`
             # fires, which routes through this same gate and is allowed because
             # the watcher removes the mint from `reentry_watch` before calling).
-            if launch.mint in self.reentry_watch:
+            if launch.mint in self.reentry_watch and not is_manual:
                 return
             # Reserve a slot — released in the finally below
             self._pending_entry_mints.add(launch.mint)
@@ -2205,13 +2240,15 @@ class BotState:
 
         # Resolve band-specific gates: "new" (action=momentum_new) uses tighter
         # thresholds, "seasoned" (action=scanner_momentum) uses base thresholds.
-        is_new_band = action == "momentum_new"
+        is_new_band = action == "momentum_new" or (action == "manual" and protocol == "pumpfun")
         # Greylist Sniper bypasses MOMENTUM-side gates entirely. The whole
         # point of the greylist is sniping creators on predictable curves,
         # so growth/inflow/buyer/velocity gates would defeat the strategy.
         # SAFETY gates already ran in `_enter()` (kill switch, max_concurrent,
         # cooldowns, doctor pause). Pool state checks above also already ran.
         is_greylist_snipe = action == "greylist_snipe"
+        # Manual buys (operator override) skip the same momentum-side gates.
+        bypass_gates = is_greylist_snipe or action == "manual"
         if is_greylist_snipe:
             logger.info(
                 f"greylist_snipe: bypassing momentum gates for {launch.mint[:8]}… "
@@ -2222,7 +2259,7 @@ class BotState:
         # actions are allowed to enter. Strategy Doctor populates this when
         # a clear outperforming bucket emerges (rule_classifier_bucket_focus).
         wl = self.config.classifier_action_whitelist or []
-        if wl and action not in wl and not is_greylist_snipe:
+        if wl and action not in wl and not bypass_gates:
             logger.info(f"skip {launch.mint} [{action}]: action not in whitelist {wl}")
             await hub.broadcast("scanner_skip", {
                 "mint": launch.mint, "symbol": launch.symbol,
@@ -2240,7 +2277,7 @@ class BotState:
         # haven't had time to accumulate liquidity but the snipe is on the
         # creator pattern, not the curve depth.
         real_sol = state["real_sol_reserves"] / LAMPORTS_PER_SOL
-        effective_min_liq = 0.1 if is_greylist_snipe else min_liq
+        effective_min_liq = 0.1 if bypass_gates else min_liq
         if real_sol < effective_min_liq:
             logger.info(f"skip {launch.mint} [{action}]: liquidity {real_sol:.2f} SOL < min {effective_min_liq}")
             return
@@ -2253,7 +2290,7 @@ class BotState:
         #   refreshed by discovery polling).
         # Both signal "real interest" but at different time scales — that's OK;
         # `min_buyers_for_entry` should be set higher than `_new` accordingly.
-        if min_buyers > 0 and not is_greylist_snipe:
+        if min_buyers > 0 and not bypass_gates:
             b = self.tracking.get(launch.mint, {})
             if is_new_band:
                 buyers = len(b.get("buyers", set()))
@@ -2274,7 +2311,7 @@ class BotState:
         # abort them). If the classifier would abort/exit_early *immediately*
         # post-entry, refuse to enter — saves entry fees + exit slippage on a
         # certain loser.
-        if is_new_band and protocol == "pumpfun" and not is_greylist_snipe:
+        if is_new_band and protocol == "pumpfun" and not bypass_gates:
             b = self.tracking.get(launch.mint, {})
             metrics = {
                 "elapsed_s": time.time() - b.get("start", time.time()),
@@ -2318,7 +2355,7 @@ class BotState:
         samples = b.get("price_samples")
         vel_window = max(5, int(self.config.scanner_entry_velocity_window_s))
         velocity = velocity_pct_strict(samples, time.time(), vel_window) if samples else None
-        if not is_greylist_snipe and velocity is not None and velocity < self.config.scanner_entry_velocity_min_pct:
+        if not bypass_gates and velocity is not None and velocity < self.config.scanner_entry_velocity_min_pct:
             logger.info(
                 f"skip {launch.mint} [{action}]: entry velocity "
                 f"{velocity:+.2f}% over {vel_window}s < min "
@@ -2342,7 +2379,7 @@ class BotState:
         # completed yet. If we have no metadata, BLOCK for up to 3s to do
         # a synchronous fetch — better to wait briefly than silently reject
         # every fresh launch.
-        if self.config.gate_socials_required and not is_greylist_snipe:
+        if self.config.gate_socials_required and not bypass_gates:
             b = self.tracking.get(launch.mint, {})
             reply_count = int(b.get("reply_count") or 0)
             has_social = bool((b.get("twitter") or b.get("telegram") or b.get("website") or "").strip())
