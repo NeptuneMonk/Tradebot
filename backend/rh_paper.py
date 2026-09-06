@@ -214,6 +214,26 @@ class RHPaperTrader:
         dd_from_peak = (pos["peak_price"] - price) / pos["peak_price"] * 100.0 if pos["peak_price"] > 0 else 0.0
         if b.get("graduated"):
             return "graduated"
+        # Buy-momentum gate (buyers-only on RH — quote assets differ): defer
+        # SL/TP while >= exit_momentum_min_buyers distinct wallets bought in
+        # the window, bounded by max_defer_s and the hard SL floor.
+        def _mom_holds(kind: str) -> bool:
+            if not getattr(cfg, "exit_momentum_gate_enabled", True):
+                return False
+            if kind == "sl" and pnl_pct <= -float(getattr(cfg, "exit_momentum_hard_sl_pct", 60.0)):
+                return False
+            cutoff = now - float(getattr(cfg, "exit_momentum_window_s", 10))
+            buyers = {w for ts, _q, w in b.get("buy_events", ()) if ts >= cutoff}
+            key = f"_mom_defer_{kind}"
+            if len(buyers) < int(getattr(cfg, "exit_momentum_min_buyers", 3)):
+                pos.pop(key, None)
+                return False
+            started = pos.setdefault(key, now)
+            return now - started < float(getattr(cfg, "exit_momentum_max_defer_s", 20))
+        if pnl_pct >= cfg.take_profit_pct and _mom_holds("tp"):
+            return None
+        if pnl_pct <= -cfg.stop_loss_pct and _mom_holds("sl"):
+            return None
         if (
             cfg.no_momentum_exit_enabled
             and not pos.get("_nm_checked")

@@ -331,6 +331,18 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                hint="Minimum peak gain (max favourable excursion) the position must have shown by the check time to be allowed to keep running."
                value={local.no_momentum_min_mfe_pct ?? 5}
                onChange={(v) => setLocal({ ...local, no_momentum_min_mfe_pct: parseFloat(v) || 0 })} step="1" />
+        <Field label="Mom Gate Buyers" testid="exit-momentum-buyers-input"
+               hint="Buy-momentum exit gate: SL and TP are DEFERRED while at least this many distinct wallets bought in the momentum window AND the inflow floor is met — so you don't sell into a dip that buyers are still absorbing. Set 0 to disable."
+               value={local.exit_momentum_min_buyers ?? 3}
+               onChange={(v) => { const n = parseInt(v, 10) || 0; setLocal({ ...local, exit_momentum_min_buyers: n, exit_momentum_gate_enabled: n > 0 }); }} step="1" />
+        <Field label="Mom Gate SOL" testid="exit-momentum-inflow-input"
+               hint="Minimum SOL bought in the momentum window (default 10s) for buy pressure to count as 'still strong'."
+               value={local.exit_momentum_min_inflow_sol ?? 0.25}
+               onChange={(v) => setLocal({ ...local, exit_momentum_min_inflow_sol: parseFloat(v) || 0 })} step="0.05" />
+        <Field label="Mom Defer Max (s)" testid="exit-momentum-defer-input"
+               hint="Longest an SL/TP can be deferred on momentum before it fires anyway. SL also always fires past the hard floor (exit_momentum_hard_sl_pct, default 60%)."
+               value={local.exit_momentum_max_defer_s ?? 20}
+               onChange={(v) => setLocal({ ...local, exit_momentum_max_defer_s: parseInt(v, 10) || 0 })} step="5" />
         {showAdvancedFees && (
           <Field label="Priority µLamp" testid="prio-input"
                  hint="Compute-unit price in micro-lamports. Higher = better landing odds, higher fee. Speed Mode handles this; manual override only."

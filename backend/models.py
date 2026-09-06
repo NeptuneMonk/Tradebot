@@ -88,6 +88,17 @@ class BotConfig(BaseModel):
     no_momentum_exit_enabled: bool = True
     no_momentum_after_s: int = 30
     no_momentum_min_mfe_pct: float = 5.0
+    # Buy-momentum exit gate (2026-06): SL/TP only fire when buy pressure has
+    # faded. If, in the last `exit_momentum_window_s`, >= min_buyers distinct
+    # wallets bought AND >= min_inflow_sol flowed in, the exit is DEFERRED
+    # (re-checked every tick) for at most `exit_momentum_max_defer_s`.
+    # Hard floor: SL always fires past `exit_momentum_hard_sl_pct`.
+    exit_momentum_gate_enabled: bool = True
+    exit_momentum_window_s: int = 10
+    exit_momentum_min_buyers: int = 3
+    exit_momentum_min_inflow_sol: float = 0.25
+    exit_momentum_max_defer_s: int = 20
+    exit_momentum_hard_sl_pct: float = 60.0
     take_profit_pct: float = 20.0    # data: 12% was cutting winners; 20% balanced
     stop_loss_pct: float = 12.0      # 2026-06-06: 15→12 — tighter live risk cap
     trailing_stop_pct: float = 6.0   # 2026-06-06: 8→6 — lock gains sooner

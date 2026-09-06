@@ -173,7 +173,7 @@ def test_event_driven_stop_fires_on_breaching_trade_and_fills_after_latency():
     """A dump inside one poll batch: SL must trigger on the first breaching
     sell (block-accurate) and fill `latency_blocks` later — NOT at the
     end-of-batch price the 1s tick would have used."""
-    st = make_state(stop_loss_pct=12.0, paper_exit_latency_ms=600)
+    st = make_state(stop_loss_pct=12.0, paper_exit_latency_ms=600, exit_momentum_gate_enabled=False)
     now = time.time()
     b = hot_bucket(st.rh_discovery, now, price=1e-9, first=5e-10)
     asyncio.run(st.rh_paper._enter(TOKEN))
@@ -248,3 +248,25 @@ def test_no_momentum_exit_one_shot():
     st.config = BotConfig(enabled=True, rh_paper_enabled=True, no_momentum_exit_enabled=False, stop_loss_pct=50, hold_max_seconds=999)
     pos3 = {"trade": dict(pos["trade"]), "peak_price": 1e-9, "_last_price": 1e-9, "opened": time.time() - 90}
     assert st.rh_paper._decide_exit(pos3, b, time.time()) is None
+
+
+def test_rh_momentum_gate_defers_sl_until_buyers_fade_or_budget():
+    st = make_state(stop_loss_pct=12.0, no_momentum_exit_enabled=False, hold_max_seconds=999)
+    now = time.time()
+    b = hot_bucket(st.rh_discovery, now, price=1e-9, first=5e-10)
+    asyncio.run(st.rh_paper._enter(TOKEN))
+    pos = st.rh_paper.positions[TOKEN]
+    b["last_price_quote"] = 0.85e-9                      # -15%
+    b["buy_events"].clear()
+    for i in range(4):                                   # 4 fresh buyers → strong
+        b["buy_events"].append((time.time() - 1, 0.05, f"0x{i:040x}"))
+    assert st.rh_paper._decide_exit(pos, b, time.time()) is None
+    assert "_mom_defer_sl" in pos
+    pos["_mom_defer_sl"] = time.time() - 25              # budget spent
+    assert st.rh_paper._decide_exit(pos, b, time.time()) == "stop_loss"
+    pos.pop("_mom_defer_sl", None)
+    b["last_price_quote"] = 0.35e-9                      # -65% past hard floor
+    assert st.rh_paper._decide_exit(pos, b, time.time()) == "stop_loss"
+    b["last_price_quote"] = 0.85e-9
+    b["buy_events"].clear()                              # buyers gone
+    assert st.rh_paper._decide_exit(pos, b, time.time()) == "stop_loss"

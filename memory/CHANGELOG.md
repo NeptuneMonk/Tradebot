@@ -1847,3 +1847,18 @@ lines in `bot.py` (import + construct + start for `RHDiscovery`, `RHPaperTrader`
 - Verified live: proposal book_momentum_size_mult=0 (27 trades, −0.0027 SOL),
   manual apply → canary running (2nd apply 409) → manual revert restored 1.0 and
   blacklisted the fingerprint.
+
+### 2026-06 — Buy-momentum exit gate (SL/TP defer while buyers still piling in)
+- User saw tokens run +40–100% right after 40% SL exits. New gate: SL and TP
+  are DEFERRED (re-checked each tick) while, in the last `exit_momentum_window_s`
+  (10s), ≥ `exit_momentum_min_buyers` (3) distinct wallets bought AND
+  ≥ `exit_momentum_min_inflow_sol` (0.25) flowed in. Bounded: max deferral
+  `exit_momentum_max_defer_s` (20s) then the exit fires anyway; SL always fires
+  past `exit_momentum_hard_sl_pct` (60%). Trailing stop untouched.
+- bot.py: `_buy_momentum_holds(mint, slot, kind, pct_change)` reads the
+  discovery bucket's buy_events; guards all 5 exit sites (fast TP, fast SL v2 +
+  legacy, main TP, main SL). Persistence/severity/partial-TP logic unchanged.
+- rh_paper.py `_decide_exit`: buyers-only variant (quote assets differ).
+- UI: Bot Control fields "Mom Gate Buyers" (0 disables), "Mom Gate SOL",
+  "Mom Defer Max (s)".
+- Tests: tests/test_exit_momentum_gate.py (5), test_rh_paper +1 — pass.

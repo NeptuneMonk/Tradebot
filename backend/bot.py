@@ -415,6 +415,44 @@ class BotState:
             return (state.get("quote_reserves") or 0) / LAMPORTS_PER_SOL
         return (state.get("virtual_sol_reserves") or 0) / LAMPORTS_PER_SOL
 
+    def _buy_momentum_holds(self, mint: str, slot: dict, kind: str, pct_change: float) -> bool:
+        """True ⇒ DEFER this SL/TP exit because buyers are still piling in.
+        Pure read of the discovery bucket's buy_events (ts, lamports, wallet);
+        bounded by exit_momentum_max_defer_s and the hard SL floor so a
+        position can never be held indefinitely on 'momentum'."""
+        cfg = self.config
+        if not cfg.exit_momentum_gate_enabled:
+            return False
+        if kind == "sl" and pct_change <= -float(cfg.exit_momentum_hard_sl_pct):
+            return False
+        bucket = self.tracking.get(mint) or {}
+        events = bucket.get("buy_events") or ()
+        now = time.time()
+        cutoff = now - float(cfg.exit_momentum_window_s)
+        buyers: set = set()
+        lamports = 0
+        for ts, lam, user in events:
+            if ts >= cutoff:
+                buyers.add(user)
+                lamports += int(lam or 0)
+        strong = len(buyers) >= int(cfg.exit_momentum_min_buyers) and \
+            lamports / LAMPORTS_PER_SOL >= float(cfg.exit_momentum_min_inflow_sol)
+        key = f"_mom_defer_{kind}"
+        if not strong:
+            slot.pop(key, None)
+            return False
+        started = slot.get(key)
+        if started is None:
+            slot[key] = now
+            logger.info(
+                f"{kind.upper()} deferred on {mint[:8]}… at {pct_change:+.1f}% — buy momentum: "
+                f"{len(buyers)} buyers / {lamports / LAMPORTS_PER_SOL:.2f} SOL in {cfg.exit_momentum_window_s}s"
+            )
+            return True
+        if now - started >= float(cfg.exit_momentum_max_defer_s):
+            return False  # deferral budget spent — let the exit fire
+        return True
+
     def _check_breach_persistence(self, slot: dict, *, kind: str, breached: bool,
                                   persistence_ms: int, min_samples: int,
                                   severity_pct: float = 0.0,
@@ -1472,7 +1510,7 @@ class BotState:
                 persistence_ms=self.config.tp_persistence_ms,
                 min_samples=self.config.tp_persistence_min_samples,
             )
-        if tp_should_fire:
+        if tp_should_fire and not self._buy_momentum_holds(mint, slot, "tp", pct_change):
             slot["exit_in_progress"] = True
             try:
                 ptp = self.config.partial_tp_pct
@@ -1509,14 +1547,14 @@ class BotState:
                 min_samples=self.config.sl_persistence_min_samples,
                 severity_pct=sl_severity,
                 severity_threshold_pct=5.0,
-            ):
+            ) and not self._buy_momentum_holds(mint, slot, "sl", pct_change):
                 slot["exit_in_progress"] = True
                 try:
                     await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%) [fast]")
                     return
                 finally:
                     slot["exit_in_progress"] = False
-        elif pct_change <= -sl_pct:
+        elif pct_change <= -sl_pct and not self._buy_momentum_holds(mint, slot, "sl", pct_change):
             slot["exit_in_progress"] = True
             try:
                 await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%) [fast]")
@@ -2948,7 +2986,8 @@ class BotState:
                 m_tp_pct = self._exit_param(slot, "tp_pct", self.config.take_profit_pct)
                 m_sl_pct = self._exit_param(slot, "sl_pct", self.config.stop_loss_pct)
 
-                if pct_change >= m_tp_pct and not slot.get("partial_done"):
+                if pct_change >= m_tp_pct and not slot.get("partial_done") \
+                        and not self._buy_momentum_holds(mint, slot, "tp", pct_change):
                     slot["exit_in_progress"] = True
                     try:
                         ptp = self.config.partial_tp_pct
@@ -2980,7 +3019,7 @@ class BotState:
                         )
                     else:
                         fire = True
-                    if fire:
+                    if fire and not self._buy_momentum_holds(mint, slot, "sl", pct_change):
                         slot["exit_in_progress"] = True
                         try:
                             await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%)")
