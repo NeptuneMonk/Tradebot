@@ -1329,7 +1329,7 @@ These are exactly the high-confidence snipe targets the sniper was designed for 
 - P1: Long.xyz launchpad feed (Airlock `0xeb7c0347…`, stock-token numeraire → needs
   stock/USD pricing).
 - P1: Stock-token + cbBTC quote pricing for MC (oracle) so those launches get MC/gates.
-- P2: Faster RH exit cadence (event-driven SL on each CurveSell) — paper showed
+- DONE: event-driven RH exits (block-accurate trigger + latency fill).
   40–60% drops within one 1s tick.
 - P2: Phase C live execution (see CHANGELOG "Phase C wallet changes").
 - P3: FOMO app — no public API; skipped.

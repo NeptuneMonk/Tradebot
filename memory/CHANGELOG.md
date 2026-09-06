@@ -1721,3 +1721,17 @@ lines in `bot.py` (import + construct + start for `RHDiscovery`, `RHPaperTrader`
   (`RH_RPC_URL` swap) for the live path; keep public RPC for the feed.
 - Risk plumbing: daily-loss meter, kill switch, cost tracker currently SOL/lamport
   based → add USD-normalised branch for `chain:"rh"` trades.
+
+### 2026-06 — Event-driven RH paper stops (block-accurate)
+- `rh_discovery._ingest_trade_logs` now calls `rh_paper.on_trade()` for every
+  CurveBuy/CurveSell applied to a held token, in block order. SL/TP/trail is
+  evaluated at the exact breaching trade; the fill is scheduled
+  `latency_blocks = paper_exit_latency_ms / 100ms` (600ms → 6 blocks) later and
+  resolved by `rh_paper.resolve_pending(head)` after each poll at the last curve
+  price at/before the fill block (`bucket.block_prices`).
+- Trade doc gains `exit_mode` ("event" | "tick"), `exit_trigger_block`,
+  `exit_fill_block`, `exit_trigger_price_quote`. Tick path (max_hold,
+  tracking_lost, manual, no-trade periods) unchanged.
+- Live paper check: event exits land 6 blocks after trigger; a -47% SL still
+  occurred → that is the honest cost of 600ms latency on PONS micro-curves.
+- Tests: `test_rh_paper.py` +2 (9 total) — all pass.

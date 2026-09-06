@@ -37,6 +37,7 @@ CURVE_FEE_BPS = 100
 SNIPE_TAX_START_BPS = 9900
 SNIPE_TAX_SECONDS = 3
 RH_GAS_USD = 0.02
+RH_BLOCK_TIME_S = 0.1
 MONITOR_INTERVAL_S = 1.0
 
 
@@ -233,7 +234,50 @@ class RHPaperTrader:
                 pos["_exiting"] = True
                 asyncio.create_task(self.exit(token, reason))
 
-    async def exit(self, token: str, reason: str):
+    # ---------- event-driven exits (per curve trade, block-accurate) ----------
+    def latency_blocks(self) -> int:
+        return max(1, int(round(self.state.config.paper_exit_latency_ms / 1000.0 / RH_BLOCK_TIME_S)))
+
+    def on_trade(self, token: str, b: dict, tr: dict, now: float):
+        """Called by rh_discovery for EVERY CurveBuy/CurveSell applied to a
+        token we hold, in block order. Evaluates SL/TP/trail at the exact
+        trade that breaches, then schedules the fill `latency_blocks` later
+        instead of waiting for the 1s tick (by which time the dump has
+        usually finished)."""
+        pos = self.positions.get(token)
+        if not pos or pos.get("_exiting"):
+            return
+        reason = self._decide_exit(pos, b, now)
+        if not reason:
+            return
+        pos["_exiting"] = True
+        pos["exit_trigger"] = {
+            "reason": reason,
+            "block": tr["block"],
+            "price": tr["price"] or b["last_price_quote"],
+            "fill_block": tr["block"] + self.latency_blocks(),
+        }
+
+    def resolve_pending(self, head: int):
+        """After each poll: fill any triggered exit whose fill block has
+        landed, at the last curve price seen at/before that block."""
+        for token, pos in list(self.positions.items()):
+            trig = pos.get("exit_trigger")
+            if not trig or pos.get("_fill_task"):
+                continue
+            if head < trig["fill_block"]:
+                continue
+            b = self.state.rh_discovery.tracking.get(token)
+            fill = trig["price"]
+            if b:
+                for blk, px in reversed(b.get("block_prices", ())):
+                    if blk <= trig["fill_block"] and px > 0:
+                        fill = px
+                        break
+            pos["_fill_task"] = True
+            asyncio.create_task(self.exit(token, trig["reason"], fill_price=fill, trigger=trig))
+
+    async def exit(self, token: str, reason: str, fill_price: float | None = None, trigger: dict | None = None):
         pos = self.positions.get(token)
         if not pos:
             return
@@ -241,13 +285,19 @@ class RHPaperTrader:
         cfg = self.state.config
         t = pos["trade"]
         try:
-            await asyncio.sleep(max(0, cfg.paper_exit_latency_ms) / 1000.0)
-            b = self.state.rh_discovery.tracking.get(token)
-            price = (b["last_price_quote"] if b else 0.0) or pos["_last_price"] or t["entry_price_quote"]
+            if fill_price is None:
+                await asyncio.sleep(max(0, cfg.paper_exit_latency_ms) / 1000.0)
+                b = self.state.rh_discovery.tracking.get(token)
+                price = (b["last_price_quote"] if b else 0.0) or pos["_last_price"] or t["entry_price_quote"]
+            else:
+                price = fill_price
             quote_usd = self._quote_usd(t.get("quote_symbol") or "ETH") or 0.0
             if quote_usd <= 0:
                 quote_usd = t["entry_usd"] / t["entry_quote"] if t.get("entry_quote") else 0.0
             fee = CURVE_FEE_BPS / 10_000.0
+            bk = self.state.rh_discovery.tracking.get(token) or {}
+            if not t.get("symbol") and bk.get("symbol"):
+                t["symbol"], t["name"] = bk.get("symbol"), bk.get("name")
             proceeds_quote = t["entry_tokens"] * price * (1.0 - fee)
             exit_usd = max(0.0, proceeds_quote * quote_usd - RH_GAS_USD)
             pnl_usd = exit_usd - t["entry_usd"]
@@ -258,7 +308,14 @@ class RHPaperTrader:
                 "pnl_usd": round(pnl_usd, 6), "pnl_pct": round(pnl_pct, 4),
                 "fees_usd": round((t.get("fees_usd") or 0.0) + proceeds_quote / (1 - fee) * fee * quote_usd + RH_GAS_USD, 6),
                 "peak_price_quote": pos["peak_price"],
+                "exit_mode": "event" if trigger else "tick",
             })
+            if trigger:
+                t.update({
+                    "exit_trigger_block": trigger["block"],
+                    "exit_fill_block": trigger["fill_block"],
+                    "exit_trigger_price_quote": trigger["price"],
+                })
             await self.state.db.trades.update_one({"_id": t["id"]}, {"$set": t}, upsert=True)
             launch_update = {"pin_exited": True, "exit_pnl_pct": t["pnl_pct"], "exit_reason": reason}
             await self.state.db.launches.update_one({"_id": t.get("launch_id")}, {"$set": launch_update})
@@ -269,6 +326,7 @@ class RHPaperTrader:
             self.positions.pop(token, None)
         except asyncio.CancelledError:
             pos.pop("_exiting", None)
+            pos.pop("_fill_task", None)
             raise
         except Exception as e:
             logger.warning(f"rh_paper exit failed {token[:10]}: {e}")

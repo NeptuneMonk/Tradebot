@@ -40,9 +40,10 @@ class FakeCol:
 
 
 def make_state(**cfg):
+    base = dict(enabled=True, rh_paper_enabled=True, paper_entry_latency_ms=0, paper_exit_latency_ms=0, max_trade_usd=10.0)
+    base.update(cfg)
     st = SimpleNamespace(
-        config=BotConfig(enabled=True, rh_paper_enabled=True, paper_entry_latency_ms=0, paper_exit_latency_ms=0,
-                         max_trade_usd=10.0, **cfg),
+        config=BotConfig(**base),
         db=SimpleNamespace(launches=FakeCol(), trades=FakeCol()),
         tracking={}, active_trades={}, entered_mints=set(),
     )
@@ -165,3 +166,58 @@ def test_max_positions_gate():
     b2["buyers"] = set(st.rh_discovery.tracking[TOKEN]["buyers"])
     b2["buy_events"] = deque(st.rh_discovery.tracking[TOKEN]["buy_events"])
     assert st.rh_paper._gates(other, b2, now) == "max-positions"
+
+
+def test_event_driven_stop_fires_on_breaching_trade_and_fills_after_latency():
+    """A dump inside one poll batch: SL must trigger on the first breaching
+    sell (block-accurate) and fill `latency_blocks` later — NOT at the
+    end-of-batch price the 1s tick would have used."""
+    st = make_state(stop_loss_pct=12.0, paper_exit_latency_ms=600)
+    now = time.time()
+    b = hot_bucket(st.rh_discovery, now, price=1e-9, first=5e-10)
+    asyncio.run(st.rh_paper._enter(TOKEN))
+    pos = st.rh_paper.positions[TOKEN]
+    assert st.rh_paper.latency_blocks() == 6
+    disc = st.rh_discovery
+
+    def sell(block, price):
+        tr = {"side": "sell", "wallet": "0x" + "9" * 40, "quote": price * 1e6, "tokens": 1e6, "price": price, "block": block}
+        disc.apply_trade(b, tr, now)
+        st.rh_paper.on_trade(TOKEN, b, tr, now)
+
+    sell(1000, 0.95e-9)            # -5%  hold
+    assert "exit_trigger" not in pos
+    sell(1001, 0.85e-9)            # -15% breach → trigger here
+    trig = pos["exit_trigger"]
+    assert trig["reason"] == "stop_loss" and trig["block"] == 1001 and trig["fill_block"] == 1007
+    sell(1004, 0.70e-9)            # dump continues (within latency window)
+    sell(1010, 0.30e-9)            # after fill block — must NOT affect fill
+    assert pos["_exiting"] is True and "exit_trigger" in pos   # no second trigger
+    # head hasn't reached fill block yet → nothing resolves
+    async def run():
+        st.rh_paper.resolve_pending(1005)
+        assert "_fill_task" not in pos
+        # head past fill block → fills at last price at/before block 1007 (=0.70e-9)
+        st.rh_paper.resolve_pending(1012)
+        assert pos.get("_fill_task") is True
+        await asyncio.sleep(0.05)
+    asyncio.run(run())
+    doc = st.db.trades.docs[pos["trade"]["id"]]
+    assert doc["exit_mode"] == "event" and doc["exit_trigger_block"] == 1001 and doc["exit_fill_block"] == 1007
+    assert abs(doc["exit_price_quote"] - 0.70e-9) < 1e-20
+    assert abs(doc["exit_trigger_price_quote"] - 0.85e-9) < 1e-20
+    # realised loss reflects 0.70 fill (-30% gross) rather than 0.30 (-70%)
+    assert -35 < doc["pnl_pct"] < -28
+
+
+def test_tick_exit_marked_and_event_path_ignored_when_no_position():
+    st = make_state()
+    now = time.time()
+    b = hot_bucket(st.rh_discovery, now)
+    # no position → on_trade is a no-op
+    st.rh_paper.on_trade(TOKEN, b, {"side": "sell", "price": 1e-12, "block": 5}, now)
+    assert TOKEN not in st.rh_paper.positions
+    asyncio.run(st.rh_paper._enter(TOKEN))
+    asyncio.run(st.rh_paper.exit(TOKEN, "manual exit"))
+    doc = st.db.trades.docs[next(iter(st.db.trades.docs))]
+    assert doc["exit_mode"] == "tick" and doc["exit_reason"] == "manual exit"

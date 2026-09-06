@@ -289,6 +289,9 @@ class RHDiscovery:
         self._meta_pending = self._meta_pending[len(meta_tokens):] + new_tokens
         self._next_from = max_block + 1
         self.stats["last_poll_ts"] = now
+        paper = getattr(self.state, "rh_paper", None)
+        if paper is not None:
+            paper.resolve_pending(head)
         await self._flush_updates(now)
         self._gc(now)
         if now - self._last_db_gc > 600:
@@ -341,6 +344,7 @@ class RHDiscovery:
             "first_price_quote": 0.0,
             "last_price_quote": 0.0,
             "price_samples": deque(maxlen=120),
+            "block_prices": deque(maxlen=400),
             "last_price_sample_ts": 0.0,
             "mc_samples": deque(maxlen=MC_SAMPLE_KEEP),
             "usd_market_cap": 0.0,
@@ -363,6 +367,9 @@ class RHDiscovery:
             self.stats["trades_seen"] += 1
             self.apply_trade(b, tr, now)
             self._dirty.add(token)
+            paper = getattr(self.state, "rh_paper", None)
+            if paper is not None:
+                paper.on_trade(token, b, tr, now)
 
     def apply_trade(self, b: dict, tr: dict, now: float):
         if tr["side"] == "buy":
@@ -380,6 +387,7 @@ class RHDiscovery:
             if b["first_price_quote"] <= 0:
                 b["first_price_quote"] = tr["price"]
             b["last_price_quote"] = tr["price"]
+            b["block_prices"].append((tr.get("block") or 0, tr["price"]))
             if now - b["last_price_sample_ts"] >= 1.0:
                 b["price_samples"].append((now, tr["price"]))
                 b["last_price_sample_ts"] = now
