@@ -68,6 +68,9 @@ export const api = {
   doctorLiveRunNow: () => longClient.post("/doctor/live/run-now").then(r => r.data),
   doctorTrailResume: () => client.post("/doctor/trail/resume").then(r => r.data),
   doctorAppliedHistory: () => client.get("/doctor/applied-history").then(r => r.data),
+  doctorLearning: () => client.get("/doctor/learning").then(r => r.data),
+  doctorLearningApply: () => client.post("/doctor/learning/apply").then(r => r.data),
+  doctorLearningRevert: () => client.post("/doctor/learning/revert").then(r => r.data),
   doctorRevertApplied: (id) => client.post(`/doctor/applied-history/${id}/revert`).then(r => r.data),
   // Helius credit budget
   heliusBudget: () => client.get("/diagnostics/helius-budget").then(r => r.data),

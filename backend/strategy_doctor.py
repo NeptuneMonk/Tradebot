@@ -43,6 +43,8 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from doctor_learning import LearningEngine
+
 logger = logging.getLogger("strategy_doctor")
 
 # ---------- Tunables ----------
@@ -125,6 +127,7 @@ class StrategyDoctor:
         self.db = db
         self.hub = hub  # broadcast new suggestions over WS if available
         self.reload_cb = None  # set by server: bot_state.load (re-entrant)
+        self.learning = LearningEngine(db, hub=hub)
         self._task: asyncio.Task | None = None
         self.interval_minutes = DEFAULT_INTERVAL_MINUTES
 
@@ -165,6 +168,19 @@ class StrategyDoctor:
         cfg_doc = await self.db.bot_config.find_one({}, {"_id": 0}) or {}
         trades = await self._fetch_recent_trades()
 
+        # LEARNING LOOP runs first (doctor_learning.py): book scoring, one
+        # structural proposal max, canary promote/revert. If it fired (or a
+        # canary is running) the legacy rules stay quiet this cycle.
+        learning_out: list[dict] = []
+        learning_busy = False
+        try:
+            trades_7d = await self._fetch_recent_trades(hours=24 * 7)
+            learning_out = await self.learning.cycle(cfg_doc, trades, trades_7d)
+            can = await self.learning.canary()
+            learning_busy = bool(can and can.get("state") == "running")
+        except Exception as e:
+            logger.exception(f"learning engine failed: {e}")
+
         existing_pending = await self._existing_pending_signatures()
         existing_dismissed = await self._existing_recently_dismissed_signatures()
         # NEW: also dedup against recently-applied suggestions whose actions
@@ -176,9 +192,12 @@ class StrategyDoctor:
         skip = existing_pending | existing_dismissed | existing_applied
 
         suggestions: list[dict] = []
+        suggestions.extend(learning_out)
 
         # No-data case: surface a single "need more data" card
-        if len(trades) < MIN_TRADES_FOR_SUGGESTION:
+        if learning_out or learning_busy:
+            pass  # one change at a time — legacy rules yield to the learning loop
+        elif len(trades) < MIN_TRADES_FOR_SUGGESTION:
             # Keep ONE card and refresh its counter in place (the signature
             # dedup would otherwise freeze the first "0/30" forever).
             await self.db.strategy_suggestions.update_many(
@@ -317,9 +336,14 @@ class StrategyDoctor:
     async def _auto_apply(self, fresh: list[dict], cfg_doc: dict, trades: list[dict]):
         if not cfg_doc.get("doctor_auto_apply_enabled"):
             return
+        if not LearningEngine.auto_apply_allowed(cfg_doc):
+            return  # live without doctor_auto_apply_live, or advisory-only
+        can = await self.learning.canary()
+        if can and can.get("state") == "running":
+            return  # never fight a running canary
         baseline_wr = self._wr(trades)
         for s in fresh:
-            if s.get("confidence") != "high" or not s.get("actions"):
+            if s.get("confidence") != "high" or not s.get("actions") or s.get("learning"):
                 continue
             if s.get("category") in self.AUTO_APPLY_BLOCKED_CATEGORIES:
                 continue
@@ -391,8 +415,8 @@ class StrategyDoctor:
                 )
 
     # ---------- data fetch ----------
-    async def _fetch_recent_trades(self) -> list[dict]:
-        since = (datetime.now(timezone.utc) - timedelta(hours=ANALYSIS_LOOKBACK_HOURS)).isoformat()
+    async def _fetch_recent_trades(self, hours: float = ANALYSIS_LOOKBACK_HOURS) -> list[dict]:
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
         # Include both modes — paper data is honest for strategy analysis;
         # live data is what we ultimately care about. Strategy logic is
         # mode-independent (only execution differs).

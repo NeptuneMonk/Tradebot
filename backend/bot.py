@@ -27,6 +27,7 @@ from scanner import MomentumScanner, velocity_pct_strict
 from discovery import PumpfunDiscovery
 from rh_discovery import RHDiscovery
 from rh_paper import RHPaperTrader
+from doctor_learning import book_size_mult
 from speed_modes import (
     speed_mode_resolve, estimate_tx_fee_sol, auto_tuner,
     CU_PUMPFUN, CU_PUMPSWAP,
@@ -826,7 +827,10 @@ class BotState:
         mint = w["mint"]
         sol_price = await get_sol_usd_price()
         base_usd = max(self.config.min_trade_usd, self.config.max_trade_usd)
-        trade_usd = max(self.config.min_trade_usd, base_usd * w["size_multiplier"])
+        _book_mult = book_size_mult(self.config, "reentry")
+        if _book_mult <= 0:
+            return
+        trade_usd = max(self.config.min_trade_usd, base_usd * w["size_multiplier"] * _book_mult)
         trade_sol = trade_usd / sol_price if sol_price > 0 else 0
         sol_in_lamports = int(trade_sol * LAMPORTS_PER_SOL)
         if sol_in_lamports <= 0:
@@ -2126,7 +2130,12 @@ class BotState:
         if is_research_snipe:
             size_mult *= float(self.config.greylist_snipe_research_size_mult or 0.5)
         size_mult = min(size_mult, 2.0)
-        base_usd = self.config.max_trade_usd * size_mult
+        # Learning-loop book multiplier (0 ⇒ book disabled by the Doctor)
+        _book_mult = book_size_mult(self.config, action)
+        if _book_mult <= 0:
+            logger.info(f"skip {launch.mint[:8]} — book {'greylist_snipe' if action == 'greylist_snipe' else 'momentum'} disabled (size_mult=0)")
+            return
+        base_usd = self.config.max_trade_usd * size_mult * _book_mult
         trade_usd = max(self.config.min_trade_usd, base_usd)
         trade_sol = trade_usd / sol_price if sol_price > 0 else 0
         sol_in_lamports = int(trade_sol * LAMPORTS_PER_SOL)
@@ -2413,6 +2422,7 @@ class BotState:
         trade = Trade(
             mint=launch.mint,
             creator=trade_creator,
+            book="greylist_snipe" if action == "greylist_snipe" else "momentum",
             name=launch.name,
             symbol=launch.symbol,
             status="active",
@@ -3785,6 +3795,8 @@ class BotState:
         # to keep the log volume down — live mode has its own EXIT_DECISION
         # / EXIT_SENT / EXIT_FILLED lines with tx signatures.
         if trade_doc["mode"] != "live" and paper_latency_ms > 0:
+            trade_doc["decision_price_sol"] = paper_decision_price_sol
+            trade_doc["fill_price_sol"] = exit_price_sol
             logger.info(
                 f"PAPER_FILL mint={mint[:8]}… reason={reason!r} "
                 f"decision_px={paper_decision_price_sol:.10f} "

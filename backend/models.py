@@ -285,6 +285,17 @@ class BotConfig(BaseModel):
     # pre-apply baseline within `doctor_auto_revert_hours`. Classifier
     # whitelists are never auto-applied (they gate entries wholesale).
     doctor_auto_apply_enabled: bool = False
+    # Learning policy loop (doctor_learning.py). Paper-first canary; live
+    # auto-apply needs doctor_auto_apply_live=True explicitly.
+    doctor_learning_enabled: bool = True
+    doctor_learning_min_trades_per_book: int = 15
+    doctor_learning_canary_trades: int = 12
+    doctor_learning_canary_hours: float = 6.0
+    doctor_auto_apply_live: bool = False
+    doctor_learning_optimize: str = "expectancy_sol"
+    # Structure flags the Doctor may flip. 0 disables that book.
+    book_momentum_size_mult: float = 1.0
+    book_snipe_size_mult: float = 1.0
     doctor_auto_revert_hours: int = 24
     doctor_auto_revert_wr_drop_pp: float = 10.0
     doctor_auto_revert_min_trades: int = 12
@@ -499,6 +510,11 @@ class Trade(BaseModel):
     entry_price_quote: float = 0.0
     exit_price_quote: float = 0.0
     fees_usd: float = 0.0
+    # Learning-loop attribution: "momentum" | "greylist_snipe" (set at entry);
+    # paper decision-vs-fill prices for latency-tax measurement.
+    book: str = "momentum"
+    decision_price_sol: Optional[float] = None
+    fill_price_sol: Optional[float] = None
     # Classifier snapshot
     risk_score: int = 50
     classifier_action: Optional[str] = None

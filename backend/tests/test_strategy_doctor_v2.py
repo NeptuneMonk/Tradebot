@@ -129,6 +129,8 @@ def test_run_once_retires_needs_more_data_card_when_enough_trades():
     db.strategy_suggestions = _Coll()
     db.bot_config = _Coll()
     db.trades = _Coll(trades)
+    db.doctor_canary = _Coll()
+    db.doctor_blacklist = _Coll()
     d = sd.StrategyDoctor(db=db)
     asyncio.run(d.run_once())
     retired = [c for c in db.strategy_suggestions.calls
@@ -186,6 +188,8 @@ def _doctor_with(cfg, trades, suggestions=None):
     db.strategy_suggestions = _Sugg(suggestions or [])
     db.bot_config = _Cfg(cfg)
     db.trades = _Coll(trades)
+    db.doctor_canary = _Coll()
+    db.doctor_blacklist = _Coll()
     d = sd.StrategyDoctor(db=db)
     d.reloads = 0
     async def reload():

@@ -1814,3 +1814,36 @@ lines in `bot.py` (import + construct + start for `RHDiscovery`, `RHPaperTrader`
   testing and restored from /app/memory/cfg_restored_2026-06_after_wipe.json
   (SL 20, TP 20, hold 90, max_trade 5, RH gates from review).
 - Tests: test_strategy_doctor_v2.py (10) pass.
+
+### 2026-06 — Strategy Doctor LEARNING POLICY LOOP (doctor_learning.py)
+- New module `backend/doctor_learning.py` (imported by strategy_doctor): per-BOOK
+  scoring (momentum vs greylist_snipe; RH excluded) on FILL expectancy
+  (mean pnl_sol after fees), WR, median hold/MFE/giveback, latency tax
+  (decision−fill), stale/timeout share. ONE proposal per cycle via priority
+  ladder: (1) book expectancy<0 → `book_*_size_mult=0` (large slightly-negative
+  snipe sample → `greylist_snipe_min_score` +5 cap 80 first); (3) giveback>10pp →
+  `trailing_stop_pct` −1 floor 4; (4) >40% stale/timeout with mean<0 → snipe
+  stale −15 floor 30 / momentum hold_max −5 floor 20; (5) latency tax>8pp →
+  speed_mode "fast" if eco/manual else `scanner_interval_s` +5 (never loosens TP).
+  Whitelisted keys only; live_trading/enabled/daily_kill/max_trade_usd untouchable.
+- Canary state machine (Mongo `doctor_canary` _id "current"): running →
+  promote (n≥canary_trades or hours≥canary_hours, expectancy improved, drawdown
+  ≤ +15%) or reverted (restore baseline subset, fingerprint → `doctor_blacklist`
+  24h). While running no other apply (legacy auto-apply also yields).
+- Gates: auto-apply only if doctor_auto_apply_enabled ∧ ¬doctor_advisory_only ∧
+  (¬live_trading ∨ doctor_auto_apply_live). Legacy rules emit only if the
+  learning loop produced nothing and no canary runs.
+- models: doctor_learning_* fields, doctor_auto_apply_live=False,
+  book_momentum_size_mult / book_snipe_size_mult; Trade.book, decision_price_sol,
+  fill_price_sol.
+- bot.py (4 small edits): Trade(book=…) at entry; `book_size_mult()` applied in
+  `_enter` sizing and reentry sizing (0 ⇒ skip); PAPER_FILL block persists
+  decision/fill prices. pumpfun.py / pumpswap.py / wallet.py / live send path untouched.
+- API: GET /doctor/learning, POST /doctor/learning/apply, POST /doctor/learning/revert.
+- UI: LearningBooksPanel (two book cards, canary banner + Revert now, proposal +
+  Apply, last-canary line) inside Strategy Doctor; category "learning" label.
+- Fixed during test: baseline for never-persisted keys = BotConfig default.
+- Tests: tests/test_doctor_learning.py (10) + doctor_v2 (10) + no_momentum (3) pass.
+- Verified live: proposal book_momentum_size_mult=0 (27 trades, −0.0027 SOL),
+  manual apply → canary running (2nd apply 409) → manual revert restored 1.0 and
+  blacklisted the fingerprint.

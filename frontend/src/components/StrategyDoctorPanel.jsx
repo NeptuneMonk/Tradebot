@@ -4,9 +4,11 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import HelpHint from "./HelpHint";
 import DoctorLivePanels from "./DoctorLivePanels";
+import LearningBooksPanel from "./LearningBooksPanel";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
 const CATEGORY_LABEL = {
+  learning: "Learning loop — structural change run as a canary, kept only if fill expectancy improves",
   sizing: "Position size — how much capital is committed per buy",
   sl: "Stop-loss tuning — exits when PnL goes against you",
   tp: "Take-profit tuning — exits when PnL hits the target",
@@ -237,6 +239,7 @@ export default function StrategyDoctorPanel({ onApplied, config, onConfigUpdate 
       </div>
 
       {/* Doctor Live: trailing-stop circuit breaker, helius budget, applied history */}
+      <LearningBooksPanel />
       <DoctorLivePanels />
     </div>
   );

@@ -108,6 +108,7 @@ async def lifespan(app: FastAPI):
     from strategy_doctor import StrategyDoctor, set_doctor
     doctor = StrategyDoctor(db=db, hub=hub)
     doctor.reload_cb = bot_state.load
+    doctor.learning.reload_cb = bot_state.load
     set_doctor(doctor)
     await doctor.start()
     # Live Doctor — real-time archetype scorer + trailing-stop circuit
@@ -1821,6 +1822,51 @@ async def reentry_remove(mint: str):
 @api.get("/scanner/candidates")
 async def scanner_candidates():
     return bot_state.scanner.candidates_snapshot() + bot_state.rh_discovery.candidates_snapshot()
+
+
+@api.get("/doctor/learning")
+async def doctor_learning_status():
+    """Learning loop: per-book fill expectancy, current proposal, canary state."""
+    from strategy_doctor import get_doctor
+    d = get_doctor()
+    if not d:
+        raise HTTPException(503, "doctor not initialised")
+    return {**(await d.learning.status()), "auto_apply_allowed": d.learning.auto_apply_allowed(bot_state.config.model_dump())}
+
+
+@api.post("/doctor/learning/apply")
+async def doctor_learning_apply():
+    """Manually start the canary for the current proposal (one change at a time)."""
+    from strategy_doctor import get_doctor
+    d = get_doctor()
+    if not d or not d.learning.last.get("proposal"):
+        raise HTTPException(400, "no proposal pending")
+    cfg = await db.bot_config.find_one({}, {"_id": 0}) or {}
+    try:
+        can = await d.learning.apply(d.learning.last["proposal"], cfg, auto=False)
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    await db.strategy_suggestions.update_many(
+        {"status": "pending", "category": "learning", "metrics.fingerprint": can["proposal"].get("fingerprint")},
+        {"$set": {"status": "applied", "applied_at": _now_iso_srv(), "applied_before": can["baseline_config_subset"]}},
+    )
+    return {"ok": True, "canary": can}
+
+
+@api.post("/doctor/learning/revert")
+async def doctor_learning_revert():
+    from strategy_doctor import get_doctor
+    d = get_doctor()
+    if not d:
+        raise HTTPException(503, "doctor not initialised")
+    done = await d.learning.revert(reason="manual")
+    if not done:
+        raise HTTPException(400, "no canary running")
+    return {"ok": True, "canary": done}
+
+
+def _now_iso_srv() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 @api.get("/rh/status")
