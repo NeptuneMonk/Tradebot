@@ -30,7 +30,7 @@ def classify_source(classifier_action: str | None) -> str:
         return "reentry"
     if classifier_action == "greylist_snipe":
         return "greylist_snipe"
-    if classifier_action == "rh_pons_paper":
+    if classifier_action in ("rh_pons_paper", "rh_pons_reentry"):
         return "rh_pons"
     return "legacy"
 

@@ -61,6 +61,7 @@ class RHPaperTrader:
         self.state = state
         self.positions: dict[str, dict] = {}
         self.entered: set[str] = set()
+        self.watch: dict[str, dict] = {}   # re-entry watch after winning exits
         self._task: asyncio.Task | None = None
         self._pending_entries: set[str] = set()
         self.stats = {"entries": 0, "exits": 0, "skipped": 0, "last_scan_ts": 0.0}
@@ -81,6 +82,7 @@ class RHPaperTrader:
                 now = time.time()
                 if self._active():
                     self._scan_entries(now)
+                    self._scan_reentries(now)
                 await self._monitor(now)
             except asyncio.CancelledError:
                 raise
@@ -155,7 +157,49 @@ class RHPaperTrader:
     def _quote_usd(self, sym: str) -> float:
         return self.state.rh_discovery._quote_usd(sym)
 
-    async def _enter(self, token: str):
+    # ---------- re-entry watch (winners only; same knobs as the SOL watcher) ----------
+    def _watch_after_exit(self, token: str, t: dict, price: float, b: dict | None, now: float):
+        cfg = self.state.config
+        if not getattr(cfg, "reentry_enabled", True) or (t.get("pnl_pct") or 0) <= 0 or price <= 0:
+            return
+        if not b or b.get("graduated"):
+            return
+        self.watch[token] = {
+            "mint": token, "chain": CHAIN, "name": t.get("name"), "symbol": t.get("symbol"),
+            "exit_price_quote": price, "exit_price_sol": 0.0, "quote_symbol": t.get("quote_symbol"),
+            "exit_time": now, "attempts": 0, "max_attempts": int(cfg.reentry_max_attempts),
+            "window_s": int(cfg.reentry_window_seconds), "pullback_pct": float(cfg.reentry_pullback_pct),
+            "size_multiplier": float(cfg.reentry_size_multiplier), "original_pnl_usd": t.get("pnl_usd") or 0.0,
+            "peak_price_after_exit": price, "creator": t.get("creator"),
+        }
+
+    def _scan_reentries(self, now: float):
+        cfg = self.state.config
+        for token, w in list(self.watch.items()):
+            if now - w["exit_time"] > w["window_s"] or w["attempts"] >= w["max_attempts"]:
+                self.watch.pop(token, None)
+                continue
+            b = self.state.rh_discovery.tracking.get(token)
+            if not b or b.get("graduated"):
+                self.watch.pop(token, None)
+                continue
+            price = b["last_price_quote"]
+            if price <= 0 or token in self.positions or token in self._pending_entries:
+                continue
+            w["peak_price_after_exit"] = max(w["peak_price_after_exit"], price)
+            cutoff = now - float(getattr(cfg, "exit_momentum_window_s", 10))
+            buyers = {wl for ts, _q, wl in b["buy_events"] if ts >= cutoff}
+            pullback = price <= w["peak_price_after_exit"] * (1 - w["pullback_pct"] / 100.0) and len(buyers) >= 1
+            breakout = price > w["exit_price_quote"] * 1.05 and len(buyers) >= int(getattr(cfg, "exit_momentum_min_buyers", 3))
+            if not (pullback or breakout):
+                continue
+            w["attempts"] += 1
+            w["last_trigger"] = "pullback" if pullback else "breakout"
+            self.entered.discard(token)
+            self._pending_entries.add(token)
+            asyncio.create_task(self._enter(token, size_mult=w["size_multiplier"], reentry=w["last_trigger"]))
+
+    async def _enter(self, token: str, size_mult: float = 1.0, reentry: str | None = None):
         cfg = self.state.config
         try:
             await asyncio.sleep(max(0, cfg.paper_entry_latency_ms) / 1000.0)
@@ -168,7 +212,7 @@ class RHPaperTrader:
                 return
             now = time.time()
             fee = fee_fraction(now - b["start"])
-            stake_usd = float(cfg.max_trade_usd)
+            stake_usd = float(cfg.max_trade_usd) * max(0.1, float(size_mult))
             stake_quote = stake_usd / quote_usd
             tokens = stake_quote * (1.0 - fee) / price
             trade = Trade(
@@ -182,6 +226,9 @@ class RHPaperTrader:
             # entry_time stays a datetime (bot.py stores BSON dates; a string
             # here would sort below every SOL trade in /trades/history).
             doc["launch_id"] = b["launch_id"]
+            if reentry:
+                doc["reentry"] = reentry
+                doc["classifier_action"] = "rh_pons_reentry"
             await self.state.db.trades.update_one({"_id": trade.id}, {"$set": {**doc, "_id": trade.id}}, upsert=True)
             self.positions[token] = {"trade": doc, "peak_price": price, "_last_price": price, "opened": now}
             self.entered.add(token)
@@ -354,6 +401,7 @@ class RHPaperTrader:
             await hub.broadcast("launch_update", {"id": t.get("launch_id"), "mint": token, **launch_update})
             await hub.broadcast("trade_exit", {**t, "entry_time": _iso(t.get("entry_time"))})
             self.stats["exits"] += 1
+            self._watch_after_exit(token, t, price, self.state.rh_discovery.tracking.get(token), time.time())
             logger.info(f"rh_paper EXIT {t.get('symbol')} {token[:10]} {reason} pnl={pnl_pct:+.1f}% (${pnl_usd:+.3f})")
             self.positions.pop(token, None)
         except asyncio.CancelledError:

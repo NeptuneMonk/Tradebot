@@ -1806,12 +1806,14 @@ async def reentry_watchlist():
     now = time.time()
     for w in bot_state.reentry_watch.values():
         out.append({**w, "remaining_window_s": max(0.0, w["window_s"] - (now - w["exit_time"]))})
+    for w in bot_state.rh_paper.watch.values():
+        out.append({**w, "remaining_window_s": max(0.0, w["window_s"] - (now - w["exit_time"]))})
     return out
 
 
 @api.delete("/reentry/watchlist/{mint}")
 async def reentry_remove(mint: str):
-    w = bot_state.reentry_watch.pop(mint, None)
+    w = bot_state.reentry_watch.pop(mint, None) or bot_state.rh_paper.watch.pop(mint, None)
     if not w:
         raise HTTPException(404, "not on watchlist")
     await hub.broadcast("reentry_watch_remove", {"mint": mint})

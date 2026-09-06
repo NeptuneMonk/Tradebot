@@ -1,6 +1,7 @@
 import { Repeat, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
+import { ChainBadge } from "./ChainBadge";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const fmtCountdown = (s) => {
@@ -43,16 +44,17 @@ export default function ReentryWatchCard({ watchlist, onRefresh }) {
             >
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
+                  <ChainBadge chain={w.chain} mint={w.mint} />
                   <span className="font-mono font-semibold text-sm truncate">{w.symbol || "?"}</span>
                   <span className="text-[10px] font-mono text-neutral-500 truncate">{w.name || ""}</span>
                 </div>
                 <div className="text-[10px] font-mono text-neutral-500 mt-0.5">
-                  mint <span className="text-neutral-300">{short(w.mint)}</span>
+                  {w.chain === "rh" ? "token" : "mint"} <span className="text-neutral-300">{short(w.mint)}</span>
                   <span className="mx-1.5">·</span>
                   exit <span className="text-emerald-400">+${(w.original_pnl_usd ?? 0).toFixed(2)}</span>
                 </div>
                 <div className="text-[10px] font-mono text-neutral-500 mt-0.5">
-                  awaiting <span className="text-amber-400">-{w.pullback_pct?.toFixed(0)}%</span> pullback
+                  awaiting <span className="text-amber-400">-{w.pullback_pct?.toFixed(0)}%</span> pullback{w.chain === "rh" && <> or <span className="text-lime-400">+5% breakout</span></>}
                   <span className="mx-1.5">·</span>
                   attempts <span className="text-neutral-300">{w.attempts}/{w.max_attempts}</span>
                   <span className="mx-1.5">·</span>

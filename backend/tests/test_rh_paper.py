@@ -270,3 +270,40 @@ def test_rh_momentum_gate_defers_sl_until_buyers_fade_or_budget():
     b["last_price_quote"] = 0.85e-9
     b["buy_events"].clear()                              # buyers gone
     assert st.rh_paper._decide_exit(pos, b, time.time()) == "stop_loss"
+
+
+def test_rh_reentry_watch_pullback_and_breakout():
+    st = make_state(reentry_enabled=True, reentry_window_seconds=600, reentry_max_attempts=2,
+                    reentry_pullback_pct=20.0, reentry_size_multiplier=1.0, take_profit_pct=10.0,
+                    exit_momentum_gate_enabled=False)
+    now = time.time()
+    b = hot_bucket(st.rh_discovery, now, price=1e-9, first=5e-10)
+    asyncio.run(st.rh_paper._enter(TOKEN))
+    b["last_price_quote"] = 1.3e-9
+    asyncio.run(st.rh_paper.exit(TOKEN, "take_profit"))
+    assert TOKEN in st.rh_paper.watch and TOKEN not in st.rh_paper.positions
+    w = st.rh_paper.watch[TOKEN]
+    assert abs(w["exit_price_quote"] - 1.3e-9) < 1e-20 and w["chain"] == "rh" and w["attempts"] == 0
+    # no move → no re-entry
+    st.rh_paper._scan_reentries(time.time())
+    assert w["attempts"] == 0
+    # 25% pullback from post-exit peak with a fresh buyer → re-entry attempt
+    b["buy_events"].append((time.time(), 0.05, "0x" + "b" * 40))
+    b["last_price_quote"] = 0.97e-9
+
+    async def run():
+        st.rh_paper._scan_reentries(time.time())
+        await asyncio.sleep(0.05)
+    asyncio.run(run())
+    assert w["attempts"] == 1 and w["last_trigger"] == "pullback"
+    assert TOKEN in st.rh_paper.positions
+    assert st.rh_paper.positions[TOKEN]["trade"]["classifier_action"] == "rh_pons_reentry"
+    # losing exit does NOT create a watch entry
+    st.rh_paper.watch.clear()
+    b["last_price_quote"] = 0.5e-9
+    asyncio.run(st.rh_paper.exit(TOKEN, "stop_loss"))
+    assert TOKEN not in st.rh_paper.watch
+    # window expiry drops the entry
+    st.rh_paper.watch[TOKEN] = dict(w, exit_time=time.time() - 700, attempts=0)
+    st.rh_paper._scan_reentries(time.time())
+    assert TOKEN not in st.rh_paper.watch

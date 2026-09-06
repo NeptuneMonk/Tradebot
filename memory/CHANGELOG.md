@@ -1862,3 +1862,18 @@ lines in `bot.py` (import + construct + start for `RHDiscovery`, `RHPaperTrader`
 - UI: Bot Control fields "Mom Gate Buyers" (0 disables), "Mom Gate SOL",
   "Mom Defer Max (s)".
 - Tests: tests/test_exit_momentum_gate.py (5), test_rh_paper +1 — pass.
+
+### 2026-06 — RH paper re-entry watch (winners → watchlist)
+- rh_paper.py: after a WINNING exit (pnl>0, curve not graduated) the token goes
+  on `RHPaperTrader.watch` using the same knobs as the SOL watcher
+  (reentry_enabled/window_seconds/max_attempts/pullback_pct/size_multiplier).
+  Re-enters on a pullback ≥ pullback_pct from the post-exit peak with ≥1 fresh
+  buyer, OR a breakout >5% above exit price with ≥ exit_momentum_min_buyers
+  fresh buyers. Trades stamped classifier_action "rh_pons_reentry" (+`reentry`
+  trigger); P/L source still "rh_pons".
+- /api/reentry/watchlist merges RH entries (chain "rh"); DELETE works for both.
+  ReentryWatchCard shows chain badge + "or +5% breakout" for RH rows.
+- Diagnosis for the user: seasoned band had 0 candidates because it only sees
+  tokens we watched launch that later graduated (~1%); SOL re-entry watch
+  window was set to 30s (default 300) so it never triggered.
+- Tests: test_rh_paper.py +1 (12) pass.
