@@ -210,15 +210,24 @@ class RHDiscovery:
                 self.stats["paused"] = False
                 await self.poll_once()
                 backoff = POLL_INTERVAL_S
+                self._consec_429 = 0
             except asyncio.CancelledError:
                 raise
             except RateLimited:
                 # The public RPC sheds ~1 in 8 requests regardless of pacing.
                 # Nothing is lost (next poll resumes from `_next_from`), so
-                # only back off gently.
-                backoff = min(15.0, backoff + 3.0)
+                # only back off gently — but after a RUN of 429s the cursor
+                # is far behind head; resync (re-backfill from a fresh head)
+                # rather than keep asking for an ever-growing range.
+                self._consec_429 = getattr(self, "_consec_429", 0) + 1
+                backoff = min(30.0, backoff * 1.5 + 2.0)
                 self.stats["rate_limited"] += 1
                 self.stats["last_error"] = "429 rate limited"
+                if self._consec_429 >= 4 and self._next_from:
+                    logger.warning(f"RH RPC: {self._consec_429} consecutive 429s — resyncing cursor to head")
+                    self._next_from = 0
+                    self._consec_429 = 0
+                    self.stats["resyncs"] = self.stats.get("resyncs", 0) + 1
             except Exception as e:
                 backoff = min(30.0, backoff * 2)
                 self.stats["errors"] += 1
@@ -255,14 +264,24 @@ class RHDiscovery:
             self._next_from = fr
             return
         # Bound the range so a post-429 catch-up never asks for a multi-MB
-        # log dump (the public RPC weights responses, not just requests).
-        to_hex = hex(fr + MAX_BLOCK_SPAN) if self.stats["head"] and self.stats["head"] - fr > MAX_BLOCK_SPAN else "latest"
+        # log dump. Estimate the current head from wall-clock (~100ms blocks)
+        # because stats["head"] is stale after a run of failures — the old
+        # check used the stale head and never engaged, so the range grew
+        # every retry and 429s became self-perpetuating.
+        est_head = self.stats["head"] + int(max(0.0, time.time() - (self.stats["last_poll_ts"] or time.time())) / BLOCK_TIME_S)
+        to_hex = hex(fr + MAX_BLOCK_SPAN) if self.stats["head"] and est_head - fr > MAX_BLOCK_SPAN else "latest"
+        # Trade logs only for curves we track (≤300 addresses) — far lighter
+        # than every CurveBuy/CurveSell on the chain.
+        curves = list(self._curve_to_token.keys())[-300:]
+        trade_filter = {"fromBlock": hex(fr), "toBlock": to_hex, "topics": [[T_BUY, T_SELL]]}
+        if curves:
+            trade_filter["address"] = curves
         meta_tokens = self._meta_pending[:40]
         calls: list[tuple[str, list]] = [
             ("eth_blockNumber", []),
             ("eth_getLogs", [{"address": FACTORY, "fromBlock": hex(fr), "toBlock": to_hex,
                               "topics": [[T_LAUNCHED, T_SWEPT, T_GRADUATED]]}]),
-            ("eth_getLogs", [{"fromBlock": hex(fr), "toBlock": to_hex, "topics": [[T_BUY, T_SELL]]}]),
+            ("eth_getLogs", [trade_filter]),
         ]
         for t in meta_tokens:
             calls.append(("eth_call", [{"to": t, "data": SEL_NAME}, "latest"]))
