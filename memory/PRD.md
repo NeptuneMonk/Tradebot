@@ -1372,3 +1372,13 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - ✅ Re-entry reason log: `reentry_trigger` + `reentry_ctx` {run_on_pct, pullback_pct, bounce_pct, vs_exit_pct, buyers, attempt, peak, trough} stored on every SOL/RH re-entry trade (`reentry_logic.trigger_context`). Trade History shows a `RE-ENTRY · pullback ↑x% ↓y% ⤴z% · Nb` badge + full breakdown in the exit tooltip.
 - ✅ LearningBooksPanel: 4 books, $ formatting, total (24h), win rate·payoff, SL·TP exit shares, per-trigger chips on the re-entry book.
 - Tests: `test_doctor_learning.py` 15 (5 new), reentry/rh suites green.
+
+
+## 2026-09-06 — AUTOPILOT ("fund it, the Doctor drives")
+- ✅ `bankroll.py` BankrollEngine (60s loop, started in server lifespan as `bot_state.bankroll`): bankroll = wallet USD (live) or `paper_bankroll_usd` + realised paper P/L (paper). Derives `max_trade_usd` (=bankroll×`risk_per_trade_pct`, ≤$100), `min_trade_usd` (¼ stake), `max_concurrent_positions` (=`max_exposure_pct`/risk, 1–20), `daily_kill_switch_usd` (=bankroll×`daily_loss_limit_pct`, ≤$1000 — server clamp raised from 100). Applies + persists only when `bankroll_sizing_enabled`. **Governor**: 24h realised loss ≤ −`governor_drawdown_pct` of bankroll → `size_mult()`=`governor_size_mult` (0.5) for `governor_hours` (6), applied in `bot._enter_impl` and `rh_paper._enter`; persisted in `autopilot_state`; `POST /api/autopilot/governor/release`.
+- ✅ Doctor risk dial: `risk_per_trade_pct` in ALLOWED_KEYS; rule 1b (global expectancy < 0, 7d ≤ 0 → −0.5, floor 0.5) and rule 7 (global 24h+7d > 0, payoff ≥ 1, n ≥ 2·min → +0.5, cap 5). Only when `bankroll_sizing_enabled`.
+- ✅ `POST /api/autopilot/on|off` (ON = autopilot + learning + auto-apply + auto-apply-live + bankroll sizing, advisory off; OFF = clears autopilot/auto-apply/bankroll flags, leaves learning on, does NOT restore old sizing), `GET /api/autopilot/status` (bankroll snapshot, risk, sizing, per-book mults, canary/proposal/note, last applied change, next review ts, kill switch).
+- ✅ Frontend: header `AutopilotSwitch` (`autopilot-toggle`), lime banner when on, `AutopilotCard` at top of dashboard (bankroll, today's P/L, 24h drawdown, stake·cap·kill, editable risk/exposure/loss %, book chips, canary/last change/next review, governor banner + release, "bot is STOPPED" warning).
+- Defaults: 2% / 25% / 10% / governor 5% for 6h at 0.5×. Config clamps: risk 0.1–10, exposure 1–100, daily loss 1–50.
+- Tests: `tests/test_autopilot.py` (5), doctor 15; testing agent iteration_11 all pass. User config restored (autopilot OFF, $100/$90/8/$47).
+- NOTE for user: wallet currently 0 SOL; live bankroll sizing is skipped while bankroll is 0.

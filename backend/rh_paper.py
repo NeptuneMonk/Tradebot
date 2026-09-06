@@ -247,7 +247,8 @@ class RHPaperTrader:
                 return
             now = time.time()
             fee = fee_fraction(now - b["start"])
-            stake_usd = float(cfg.max_trade_usd) * max(0.1, float(size_mult))
+            _gov = getattr(self.state, "bankroll", None)
+            stake_usd = float(cfg.max_trade_usd) * max(0.1, float(size_mult)) * (_gov.size_mult() if _gov else 1.0)
             stake_quote = stake_usd / quote_usd
             tokens = stake_quote * (1.0 - fee) / price
             trade = Trade(

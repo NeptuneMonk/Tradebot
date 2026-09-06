@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 11 — Autopilot (bankroll sizing + Doctor risk dial + governor) fully validated. Backend: 20/20 unit tests (bankroll math, governor, doctor risk dial, all 4 books) + 8/8 live API tests (status shape, ON applies flags+sizing, OFF clears autopilot flags but keeps learning, bogus→400, config clamps for risk_per_trade_pct & daily_kill_switch_usd, governor/release, doctor/learning 4 books + global). Frontend: header autopilot-toggle initial 'AUTOPILOT OFF' + badge MANUAL + bankroll $1000 + STAKE·CAP·KILL + 3 risk inputs + learning panel with all 4 book cards visible. Toggle ON → banner appears, badge='DOCTOR IS DRIVING', bot-stopped warning shown, sizing reloads to $20 · 12 · $100 within seconds. Risk input 3 then 2 saved via blur. Toggle OFF → banner removed, badge='MANUAL', 'Autopilot OFF — Doctor back to advisory, sizing is yours' toast. Bot remained STOPPED, live_trading remained false. User config restored: autopilot OFF, max_trade_usd=100, min_trade_usd=90, max_concurrent_positions=8, daily_kill_switch_usd=47, risk_per_trade_pct=2.",
+  "backend_issues": {"critical": [], "minor": [
+    {"endpoint": "/api/doctor/learning", "issue": "books dict returns {} on fresh backend boot until the first doctor cycle runs (interval-based). Not a bug per se, but /api/doctor/run-now must be called (or wait ~30 min) to populate books. Frontend LearningBooksPanel handles this gracefully but consider populating an initial empty-book skeleton (with n=0) on startup so the UI/API never returns an empty books map."}
+  ]},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard", "issues": ["Pre-existing 401 on first load (auth race before cookie applied — non-blocking, resolves on retry)", "Strategy Doctor section starts collapsed so learning-panel data-testid is not in the initial DOM until user expands it (adding data-testid=\"section-strategy-doctor-toggle\" would improve testability; consistent with iter9/10 finding)"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_autopilot.py",
+    "/app/backend/tests/test_autopilot_api.py",
+    "/app/backend/tests/test_doctor_learning.py",
+    "/app/test_reports/pytest/iter11_unit.xml",
+    "/app/test_reports/pytest/iter11_api.xml"
+  ],
+  "action_items": [
+    "(Optional) Seed /api/doctor/learning books with empty n=0 shape at startup so the endpoint immediately reports {momentum,greylist_snipe,reentry,rh_pons,global} keys before the first cycle.",
+    "(Optional) Add data-testid section-strategy-doctor-toggle to the collapsible Strategy Doctor header (repeat of iter9/10 recommendation)."
+  ],
+  "critical_code_review_comments": [
+    "server.py autopilot_set correctly clears bankroll_sizing_enabled + doctor_auto_apply_enabled on OFF and preserves doctor_learning_enabled — matches spec.",
+    "BankrollEngine.derive is exercised well; deriving max_concurrent_positions from max_exposure*bankroll/max_trade is correct and the $20/12/$100 shape at $1000 matches (risk 2%, exp 25%, dll 10%).",
+    "risk_per_trade_pct clamp works: 50→10, 0.01→0.1, kill switch 5000→1000 verified against live API.",
+    "AutopilotCard reload latency ≈1–2s after toggle — acceptable but a websocket/broadcast push would remove the poll wait; current UX still shows sizing $20·12·$100 within the review-required ~1s window in most runs."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_autopilot_api.py"
+  ],
+  "success_rate": {"backend": "100% (28/28)", "frontend": "100%"},
+  "test_credentials": "Authorization: Bearer test_session_1788718227979 (email nbobby79@gmail.com per /app/memory/test_credentials.md); cookie session_token=test_session_1788718227979 on micro-stake-trader.preview.emergentagent.com works for /dashboard.",
+  "seed_data_creation": "None. No trades opened. No bot start. live_trading remained false throughout.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Final config state: autopilot_enabled=false, doctor_auto_apply_enabled=false, bankroll_sizing_enabled=false, doctor_learning_enabled=true, max_trade_usd=100, min_trade_usd=90, max_concurrent_positions=8, daily_kill_switch_usd=47, risk_per_trade_pct=2, live_trading=false, enabled=false. Bot STOPPED. helius listener intentionally OFFLINE. /api/doctor/learning books map fills only after a run-now/cycle — trigger POST /api/doctor/run-now before asserting the 4-book shape on a fresh backend. Autopilot ON/OFF toast text: 'Autopilot ON — Doctor is driving…' / 'Autopilot OFF — Doctor back to advisory, sizing is yours'.",
+  "rca of the issue": "N/A — no functional bugs identified. Only minor observation: /api/doctor/learning returns empty books dict on cold start until first cycle populates self.last['books']; UI already tolerates this."
+}

@@ -19,6 +19,7 @@ import CreatorGreylistPanel from "@/components/CreatorGreylistPanel";
 import PLBySourceCard from "@/components/PLBySourceCard";
 import CostTrackerCard from "@/components/CostTrackerCard";
 import CollapsibleSection from "@/components/CollapsibleSection";
+import AutopilotCard, { AutopilotSwitch } from "@/components/AutopilotCard";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Activity, LogOut } from "lucide-react";
 
@@ -297,6 +298,12 @@ export default function Dashboard() {
           </div>
         </div>
         <div className="flex items-center gap-4 text-xs font-mono">
+          {config && (
+            <AutopilotSwitch
+              enabled={!!config.autopilot_enabled}
+              onChange={async () => { try { setConfig(await api.config()); } catch { /* noop */ } refreshAll(); }}
+            />
+          )}
           <span className="flex items-center gap-2" data-testid="ws-status">
             <span className={`w-2 h-2 rounded-full ${wsConnected ? "bg-blue-500 animate-pulse" : "bg-neutral-600"}`}></span>
             <span className="text-neutral-400">{wsConnected ? "WS LIVE" : "WS OFFLINE"}</span>
@@ -357,6 +364,14 @@ export default function Dashboard() {
         {/* TOP KPI STRIP — always visible. Wallet + PnL + DailyLoss.
             Bot Control moved to a collapsible below; the StatusBanner at
             the top of the page already shows running/stopped state. */}
+        {config?.autopilot_enabled && (
+          <div className="border border-lime-800/60 bg-lime-950/20 px-4 py-2 text-[11px] font-mono text-lime-200 flex items-center gap-2" data-testid="autopilot-banner">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-lime-400 animate-pulse" />
+            AUTOPILOT — the Doctor is driving: sizing from bankroll, tuning on $ expectancy, one canary at a time. You keep Start/Stop and live/paper.
+          </div>
+        )}
+        <AutopilotCard config={config} onConfigUpdate={setConfig} />
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
           <WalletCard wallet={wallet} />
           <PLSummaryCard pl={pl} status={status} onReset={refreshAll} />

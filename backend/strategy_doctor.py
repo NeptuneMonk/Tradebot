@@ -33,6 +33,7 @@ Persistence model:
 from __future__ import annotations
 
 import asyncio
+import time
 import hashlib
 import logging
 import math
@@ -162,6 +163,7 @@ class StrategyDoctor:
     async def run_once(self) -> list[dict]:
         """Run all rules, persist new suggestions, expire stale ones.
         Returns the suggestions that were freshly inserted this cycle."""
+        self.last_run_ts = time.time()
         # Expire untouched suggestions older than TTL
         await self._expire_stale()
 

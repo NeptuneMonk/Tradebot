@@ -108,6 +108,9 @@ async def lifespan(app: FastAPI):
     from strategy_doctor import StrategyDoctor, set_doctor
     from creator_greylist import inactivity_prune_loop
     asyncio.create_task(inactivity_prune_loop(db, lambda: bot_state.config.creator_greylist_inactive_days))
+    from bankroll import BankrollEngine
+    bot_state.bankroll = BankrollEngine(bot_state, db)
+    bot_state.bankroll.start()
     doctor = StrategyDoctor(db=db, hub=hub)
     doctor.reload_cb = bot_state.load
     doctor.learning.reload_cb = bot_state.load
@@ -360,8 +363,8 @@ async def update_config(body: dict = Body(...)):
         cfg.slippage_bps = 50
     if cfg.slippage_bps > 5000:
         cfg.slippage_bps = 5000
-    if cfg.daily_kill_switch_usd > 100:
-        cfg.daily_kill_switch_usd = 100
+    if cfg.daily_kill_switch_usd > 1000:
+        cfg.daily_kill_switch_usd = 1000
     if cfg.reentry_max_attempts < 0:
         cfg.reentry_max_attempts = 0
     if cfg.reentry_max_attempts > 5:
@@ -407,6 +410,13 @@ async def update_config(body: dict = Body(...)):
     cfg.greylist_snipe_ripcord_grace_seconds = max(0, min(60, cfg.greylist_snipe_ripcord_grace_seconds))
     cfg.creator_greylist_inactive_days = max(1, min(365, int(cfg.creator_greylist_inactive_days)))
     cfg.reentry_min_wait_s = max(0, min(600, int(cfg.reentry_min_wait_s)))
+    cfg.risk_per_trade_pct = max(0.1, min(10.0, float(cfg.risk_per_trade_pct)))
+    cfg.max_exposure_pct = max(1.0, min(100.0, float(cfg.max_exposure_pct)))
+    cfg.daily_loss_limit_pct = max(1.0, min(50.0, float(cfg.daily_loss_limit_pct)))
+    cfg.governor_drawdown_pct = max(0.5, min(50.0, float(cfg.governor_drawdown_pct)))
+    cfg.governor_hours = max(0.5, min(48.0, float(cfg.governor_hours)))
+    cfg.governor_size_mult = max(0.1, min(1.0, float(cfg.governor_size_mult)))
+    cfg.paper_bankroll_usd = max(10.0, min(1_000_000.0, float(cfg.paper_bankroll_usd)))
     cfg.reentry_min_bounce_pct = max(0.0, min(200.0, float(cfg.reentry_min_bounce_pct)))
     cfg.reentry_bounce_confirm_pct = max(0.0, min(50.0, float(cfg.reentry_bounce_confirm_pct)))
     cfg.reentry_min_buyers = max(0, min(50, int(cfg.reentry_min_buyers)))
@@ -1829,6 +1839,70 @@ async def reentry_remove(mint: str):
 
 
 # ---------- Scanner candidates ----------
+# ---------- Autopilot ----------
+AUTOPILOT_ON = {"autopilot_enabled": True, "doctor_learning_enabled": True, "doctor_auto_apply_enabled": True,
+                "doctor_auto_apply_live": True, "doctor_advisory_only": False, "bankroll_sizing_enabled": True}
+AUTOPILOT_OFF = {"autopilot_enabled": False, "doctor_auto_apply_enabled": False, "doctor_auto_apply_live": False,
+                 "bankroll_sizing_enabled": False}
+
+
+@api.post("/autopilot/{action}")
+async def autopilot_set(action: str):
+    """One switch: learning + auto-apply (paper AND live) + bankroll sizing."""
+    if action not in ("on", "off"):
+        raise HTTPException(status_code=400, detail="action must be on|off")
+    for k, v in (AUTOPILOT_ON if action == "on" else AUTOPILOT_OFF).items():
+        setattr(bot_state.config, k, v)
+    await bot_state.save_config()
+    snap = await bot_state.bankroll.refresh()
+    await hub.broadcast("config", bot_state.config.model_dump())
+    logger.warning(f"AUTOPILOT {action.upper()} — Doctor {'is driving' if action == 'on' else 'back to advisory'}")
+    return {"ok": True, "autopilot_enabled": action == "on", "bankroll": snap}
+
+
+@api.get("/autopilot/status")
+async def autopilot_status():
+    from strategy_doctor import get_doctor
+    cfg = bot_state.config
+    eng = bot_state.bankroll
+    snap = eng.snapshot or await eng.refresh()
+    doctor = get_doctor()
+    learning = await doctor.learning.status() if doctor else {}
+    last = await db.strategy_suggestions.find(
+        {"status": {"$in": ["applied", "reverted"]}}, {"_id": 0, "title": 1, "status": 1, "applied_at": 1,
+                                                       "actions": 1, "auto_applied": 1},
+    ).sort("applied_at", -1).limit(1).to_list(1)
+    next_review = None
+    if doctor and getattr(doctor, "last_run_ts", None):
+        next_review = doctor.last_run_ts + doctor.interval_minutes * 60
+    return {
+        "autopilot_enabled": bool(cfg.autopilot_enabled),
+        "driving": bool(cfg.autopilot_enabled and cfg.doctor_auto_apply_enabled and (not cfg.live_trading or cfg.doctor_auto_apply_live)),
+        "live_trading": bool(cfg.live_trading),
+        "bot_enabled": bool(cfg.enabled),
+        "bankroll": snap,
+        "risk": {"risk_per_trade_pct": cfg.risk_per_trade_pct, "max_exposure_pct": cfg.max_exposure_pct,
+                 "daily_loss_limit_pct": cfg.daily_loss_limit_pct, "governor_drawdown_pct": cfg.governor_drawdown_pct,
+                 "governor_hours": cfg.governor_hours},
+        "sizing": {"max_trade_usd": cfg.max_trade_usd, "min_trade_usd": cfg.min_trade_usd,
+                   "max_concurrent_positions": cfg.max_concurrent_positions, "daily_kill_switch_usd": cfg.daily_kill_switch_usd},
+        "books": {"momentum": cfg.book_momentum_size_mult, "greylist_snipe": cfg.book_snipe_size_mult,
+                  "reentry": (cfg.reentry_size_multiplier if cfg.reentry_enabled else 0.0), "rh_pons": 1.0 if cfg.rh_paper_enabled else 0.0},
+        "canary": learning.get("canary"),
+        "proposal": learning.get("proposal"),
+        "note": learning.get("note"),
+        "last_change": last[0] if last else None,
+        "next_review_ts": next_review,
+        "kill_switch_tripped": bool(bot_state.kill_switch_tripped),
+    }
+
+
+@api.post("/autopilot/governor/release")
+async def autopilot_release_governor():
+    await bot_state.bankroll.release_governor()
+    return await bot_state.bankroll.refresh()
+
+
 @api.get("/scanner/candidates")
 async def scanner_candidates():
     return bot_state.scanner.candidates_snapshot() + bot_state.rh_discovery.candidates_snapshot()

@@ -310,6 +310,16 @@ class BotConfig(BaseModel):
     doctor_learning_canary_hours: float = 6.0
     doctor_auto_apply_live: bool = False
     doctor_learning_optimize: str = "expectancy_sol"
+    # ---- Autopilot: fund it, the Doctor drives ----
+    autopilot_enabled: bool = False
+    bankroll_sizing_enabled: bool = False
+    paper_bankroll_usd: float = 1000.0     # bankroll used for sizing in paper mode (+ realised paper P/L)
+    risk_per_trade_pct: float = 2.0        # stake = bankroll × this (Doctor may steer 0.5–5)
+    max_exposure_pct: float = 25.0         # position cap = exposure / risk
+    daily_loss_limit_pct: float = 10.0     # daily kill switch = bankroll × this
+    governor_drawdown_pct: float = 5.0     # 24h loss worse than this % of bankroll → governor
+    governor_hours: float = 6.0
+    governor_size_mult: float = 0.5
     # Structure flags the Doctor may flip. 0 disables that book.
     book_momentum_size_mult: float = 1.0
     book_snipe_size_mult: float = 1.0

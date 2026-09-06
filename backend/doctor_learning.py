@@ -37,6 +37,7 @@ ALLOWED_KEYS = {
     "reentry_enabled", "reentry_size_multiplier", "reentry_breakout_pct",
     "reentry_min_bounce_pct", "reentry_min_buyers",
     "rh_min_growth_pct", "rh_min_inflow_usd",
+    "risk_per_trade_pct",
 } | GLOBAL_KEYS
 FORBIDDEN_KEYS = {"live_trading", "enabled", "daily_kill_switch_usd", "max_trade_usd"}
 CANARY_ID = "current"
@@ -261,8 +262,14 @@ def propose(cfg: dict, stats: dict[str, dict], min_n: int) -> dict | None:
                 return P("threshold", book, "rh_min_inflow_usd", min(2000.0, _f(cfg, "rh_min_inflow_usd", 300) + 100),
                          f"RH paper book still negative ({st['expectancy_usd']:+.4f} $/fill, n={st['n']}) with growth bar maxed — demand more inflow",
                          "raise expectancy by taking fewer, stronger RH entries", ev(st))
-    # 2. profit shape on the shared exit keys (scored across every book)
+    # 1b. bankroll risk dial DOWN: the whole machine is losing → risk less per trade
     g = S("global")
+    if cfg.get("bankroll_sizing_enabled") and g["n"] >= min_n and g["expectancy_usd"] < 0 \
+            and (g.get("expectancy_7d") is None or g["expectancy_7d"] <= 0) and _f(cfg, "risk_per_trade_pct", 2.0) > 0.5:
+        return P("threshold", "global", "risk_per_trade_pct", round(max(0.5, _f(cfg, "risk_per_trade_pct", 2.0) - 0.5), 2),
+                 f"all books together lose {g['expectancy_usd']:+.4f} $/fill over {g['n']} fills — risk less of the bankroll per trade while the edge is missing",
+                 "protect bankroll by shrinking stake while expectancy is negative", ev(g))
+    # 2. profit shape on the shared exit keys (scored across every book)
     if g["n"] >= min_n:
         wm, lm = g.get("winner_mean_usd"), g.get("loser_mean_usd")
         sl = _f(cfg, "stop_loss_pct", 20)
@@ -322,6 +329,14 @@ def propose(cfg: dict, stats: dict[str, dict], min_n: int) -> dict | None:
                 return P("threshold", book, key, round(min(cap, cur + step), 2),
                          f"{book} book earns {st['expectancy_usd']:+.4f} $/fill (n={st['n']}, 7d {st['expectancy_7d']:+.4f}) with payoff {st['payoff_ratio']:.2f} — scale the winner",
                          "raise total profit by sizing up a positive-expectancy book", ev(st, payoff_ratio=st.get("payoff_ratio")))
+    # 7. bankroll risk dial UP: positive 24h AND 7d expectancy across the
+    #    machine with payoff ≥ 1 → compound harder (Doctor-steered, capped 5%)
+    if cfg.get("bankroll_sizing_enabled") and g["n"] >= 2 * min_n and g["expectancy_usd"] > 0 \
+            and (g.get("expectancy_7d") or 0) > 0 and (g.get("payoff_ratio") or 0) >= 1.0 \
+            and _f(cfg, "risk_per_trade_pct", 2.0) < 5.0:
+        return P("threshold", "global", "risk_per_trade_pct", round(min(5.0, _f(cfg, "risk_per_trade_pct", 2.0) + 0.5), 2),
+                 f"machine earns {g['expectancy_usd']:+.4f} $/fill (n={g['n']}, 7d {g['expectancy_7d']:+.4f}) with payoff {g['payoff_ratio']:.2f} — risk a little more of the bankroll per trade",
+                 "raise total profit by compounding a positive-expectancy machine", ev(g, payoff_ratio=g.get("payoff_ratio")))
     return None
 
 

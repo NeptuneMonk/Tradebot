@@ -2276,6 +2276,10 @@ class BotState:
         if is_research_snipe:
             size_mult *= float(self.config.greylist_snipe_research_size_mult or 0.5)
         size_mult = min(size_mult, 2.0)
+        # Autopilot drawdown governor (bankroll.py) — half-size while engaged
+        _gov = getattr(self, "bankroll", None)
+        if _gov is not None:
+            size_mult *= _gov.size_mult()
         # Learning-loop book multiplier (0 ⇒ book disabled by the Doctor)
         _book_mult = book_size_mult(self.config, action)
         if _book_mult <= 0:
