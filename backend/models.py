@@ -43,6 +43,11 @@ class BotConfig(BaseModel):
     # 99% launch snipe tax) differ from Pump.fun. Exits reuse the standard
     # TP/SL/trailing/hold settings; stake reuses `max_trade_usd`.
     rh_paper_enabled: bool = False
+    # Live EVM execution on RH (ETH-quoted curves only). Independent of Solana live_trading.
+    rh_live_trading: bool = False
+    rh_live_slippage_pct: float = 8.0
+    rh_gas_reserve_eth: float = 0.002      # never spend below this ETH balance (gas for exits)
+    rh_daily_kill_switch_usd: float = 20.0 # live RH realised loss today → rh_live_trading auto-off
     rh_max_positions: int = 3
     rh_min_age_s: int = 5                 # snipe tax is 0 after 3s
     rh_max_age_min: float = 15.0

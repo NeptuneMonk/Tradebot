@@ -20,6 +20,7 @@ import PLBySourceCard from "@/components/PLBySourceCard";
 import CostTrackerCard from "@/components/CostTrackerCard";
 import CollapsibleSection from "@/components/CollapsibleSection";
 import AutopilotCard, { AutopilotSwitch } from "@/components/AutopilotCard";
+import RhWalletCard from "@/components/RhWalletCard";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Activity, LogOut } from "lucide-react";
 
@@ -371,6 +372,7 @@ export default function Dashboard() {
           </div>
         )}
         <AutopilotCard config={config} onConfigUpdate={setConfig} />
+        <RhWalletCard config={config} />
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
           <WalletCard wallet={wallet} />

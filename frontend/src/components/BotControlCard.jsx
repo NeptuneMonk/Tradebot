@@ -272,6 +272,55 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
         </span>
       </button>
 
+      {/* RH LIVE trading — real ETH on ETH-quoted PONS curves via the RH hot wallet */}
+      <button
+        type="button"
+        data-testid="rh-live-toggle"
+        onClick={async () => {
+          const next = !(local.rh_live_trading ?? false);
+          if (next && !window.confirm("Enable RH LIVE trading? Real ETH from the Robinhood hot wallet will buy ETH-quoted PONS curves that pass the RH gates. The RH daily kill switch and gas reserve apply.")) return;
+          try {
+            await onUpdate({ ...local, rh_live_trading: next });
+            setLocal((cur) => ({ ...cur, rh_live_trading: next }));
+            setBaseline((b) => (b ? { ...b, rh_live_trading: next } : b));
+            toast[next ? "warning" : "success"](next ? "RH LIVE trading ON — real ETH in play" : "RH live trading OFF");
+          } catch (e) {
+            toast.error(e?.response?.data?.detail || "Toggle failed");
+          }
+        }}
+        className={`w-full flex items-center justify-between px-3 py-2 border text-xs uppercase tracking-[0.15em] font-mono transition-colors duration-100 ${
+          (local.rh_live_trading ?? false)
+            ? "border-rose-700 text-rose-200 bg-rose-950/50 hover:bg-rose-900/50"
+            : "border-neutral-700 text-neutral-400 bg-neutral-900/50 hover:bg-neutral-800/60"
+        }`}
+      >
+        <span className="flex items-center gap-2">
+          <Zap className="w-3 h-3" />
+          RH Live Trading
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className={`text-[10px] ${(local.rh_live_trading ?? false) ? "text-rose-200" : "text-neutral-400"}`}>
+            {(local.rh_live_trading ?? false) ? (local.enabled ? "LIVE" : "ON · BOT STOPPED") : "OFF"}
+          </span>
+          <HelpHint label="RH Live Trading">
+            <div className="space-y-1.5">
+              <div>Executes the same RH entries/exits with <strong>real ETH</strong> from the Robinhood hot wallet (see the RH Wallet card): direct <code>buy()</code>/<code>sell()</code> on the PONS curve, on-chain simulation before every send, slippage guard, receipt-confirmed fills. Gas + curve fee are booked into P/L so the Doctor learns true costs.</div>
+              <div>ETH-quoted curves only — stock/USDG-quoted launches stay paper. Independent of Solana live trading. Auto-off when today's live RH loss hits the RH kill switch.</div>
+            </div>
+          </HelpHint>
+        </span>
+      </button>
+      {(local.rh_live_trading ?? false) && (
+        <div className="grid grid-cols-3 gap-2">
+          <Field label="RH slippage %" testid="rh-live-slippage-input" hint="minOut guard on live buys/sells; sells retry with widening slippage, then minOut=0 rather than strand tokens."
+                 value={local.rh_live_slippage_pct ?? 8} onChange={(v) => setLocal({ ...local, rh_live_slippage_pct: parseFloat(v) || 0 })} step="1" />
+          <Field label="Gas reserve ETH" testid="rh-gas-reserve-input" hint="Never buy below this ETH balance so exits always have gas."
+                 value={local.rh_gas_reserve_eth ?? 0.002} onChange={(v) => setLocal({ ...local, rh_gas_reserve_eth: parseFloat(v) || 0 })} step="0.001" />
+          <Field label="RH kill switch $" testid="rh-kill-switch-input" hint="Today's realised live RH loss that switches RH live trading off automatically."
+                 value={local.rh_daily_kill_switch_usd ?? 20} onChange={(v) => setLocal({ ...local, rh_daily_kill_switch_usd: parseFloat(v) || 0 })} step="5" />
+        </div>
+      )}
+
       {/* Speed Mode slider — controls priority fee + slippage as a bundle */}
       <SpeedModeSlider
         value={local.speed_mode || "manual"}

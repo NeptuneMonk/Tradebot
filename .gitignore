@@ -119,3 +119,8 @@ frontend/node_modules/.cache/default-development/0.pack
 frontend/node_modules/.cache/default-development/6.pack
 frontend/node_modules/.cache/default-development/9.pack
 frontend/node_modules/.cache/default-development/4.pack
+
+# Hot wallet secrets (never commit)
+backend/wallet.json
+backend/rh_wallet.json
+backend/rh_wallet.pass

@@ -421,6 +421,12 @@ async def update_config(body: dict = Body(...)):
     cfg.governor_size_mult = max(0.1, min(1.0, float(cfg.governor_size_mult)))
     cfg.paper_bankroll_usd = max(10.0, min(1_000_000.0, float(cfg.paper_bankroll_usd)))
     cfg.sweep_pct_of_profit = max(1.0, min(100.0, float(cfg.sweep_pct_of_profit)))
+    cfg.rh_live_slippage_pct = max(0.5, min(50.0, float(cfg.rh_live_slippage_pct)))
+    cfg.rh_gas_reserve_eth = max(0.0005, min(1.0, float(cfg.rh_gas_reserve_eth)))
+    cfg.rh_daily_kill_switch_usd = max(1.0, min(5000.0, float(cfg.rh_daily_kill_switch_usd)))
+    if cfg.rh_live_trading and not bot_state.config.rh_live_trading:
+        bot_state.rh_paper.live_kill_tripped = False
+        logger.warning("RH LIVE TRADING ENABLED — ETH-quoted PONS curves will be bought with real ETH")
     cfg.sweep_interval_days = max(1, min(90, int(cfg.sweep_interval_days)))
     cfg.sweep_min_usd = max(1.0, min(100_000.0, float(cfg.sweep_min_usd)))
     cfg.sweep_reserve_sol = max(0.01, min(10.0, float(cfg.sweep_reserve_sol)))
@@ -1862,6 +1868,70 @@ async def reentry_remove(mint: str):
 
 
 # ---------- Scanner candidates ----------
+# ---------- Robinhood Chain wallet (EVM) ----------
+@api.get("/rh/wallet")
+async def rh_wallet_info():
+    import rh_wallet
+    from rh_discovery import get_eth_usd_price
+    cfg = bot_state.config
+    out = {"address": rh_wallet.address(), "chain_id": rh_wallet.EXPECTED_CHAIN_ID, "rpc_ok": True,
+           "eth": None, "usd": None, "eth_usd": None, "rh_live_trading": bool(cfg.rh_live_trading),
+           "live_kill_tripped": bool(bot_state.rh_paper.live_kill_tripped),
+           "last_live_error": bot_state.rh_paper.last_live_error or None,
+           "live_pnl_today_usd": None, "gas_reserve_eth": cfg.rh_gas_reserve_eth,
+           "explorer": f"https://robinhoodchain.blockscout.com/address/{rh_wallet.address()}",
+           "fund_hint": "Send ETH on Robinhood Chain (Arbitrum Orbit, chain id 4663) to this address — bridge ETH from Ethereum/Arbitrum with the canonical Arbitrum bridge (see docs.robinhood.com/chain/connecting)."}
+    try:
+        wei = await rh_wallet.balance_wei()
+        px = await get_eth_usd_price()
+        out.update({"eth": wei / 1e18, "eth_usd": px, "usd": wei / 1e18 * px})
+    except Exception as e:
+        out.update({"rpc_ok": False, "error": str(e)})
+    try:
+        out["live_pnl_today_usd"] = await bot_state.rh_paper.live_pnl_today_usd()
+    except Exception:
+        pass
+    return out
+
+
+@api.post("/rh/wallet/send")
+async def rh_wallet_send(body: dict = Body(...)):
+    import rh_wallet
+    to = str(body.get("to") or "").strip()
+    try:
+        to = rh_wallet.checksum(to)
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid destination address")
+    try:
+        eth = float(body.get("eth") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="invalid amount")
+    if eth <= 0:
+        raise HTTPException(status_code=400, detail="amount must be > 0")
+    wei = int(eth * 1e18)
+    bal = await rh_wallet.balance_wei()
+    if wei > bal - int(0.0002 * 1e18):
+        raise HTTPException(status_code=409, detail=f"insufficient balance ({bal / 1e18:.6f} ETH incl. gas)")
+    try:
+        res = await rh_wallet.send_eth(to, wei)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"send failed: {e}")
+    logger.warning(f"RH wallet SEND {eth} ETH → {to} tx={res['hash']}")
+    return res
+
+
+@api.post("/rh/wallet/import")
+async def rh_wallet_import(body: dict = Body(...)):
+    import rh_wallet
+    if bot_state.rh_paper.positions and any(p["trade"].get("mode") == "live" for p in bot_state.rh_paper.positions.values()):
+        raise HTTPException(status_code=409, detail="close live RH positions before switching wallets")
+    try:
+        addr = rh_wallet.import_private_key(str(body.get("private_key") or ""))
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid private key")
+    return {"address": addr}
+
+
 # ---------- Autopilot ----------
 AUTOPILOT_ON = {"autopilot_enabled": True, "doctor_learning_enabled": True, "doctor_auto_apply_enabled": True,
                 "doctor_auto_apply_live": True, "doctor_advisory_only": False, "bankroll_sizing_enabled": True}

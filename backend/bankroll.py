@@ -41,15 +41,27 @@ class BankrollEngine:
     # ---------- inputs ----------
     async def bankroll_usd(self) -> tuple[float, str]:
         cfg = self.state.config
+        total, parts = 0.0, []
         if cfg.live_trading:
             try:
                 import wallet
                 from solana_client import get_sol_balance, get_sol_usd_price
                 sol = await get_sol_balance(wallet.get_pubkey_str())
-                price = await get_sol_usd_price()
-                return max(0.0, sol * price), "wallet"
+                total += max(0.0, sol * await get_sol_usd_price())
+                parts.append("sol")
             except Exception as e:
-                logger.warning(f"bankroll: wallet read failed ({e}); falling back to paper bankroll")
+                logger.warning(f"bankroll: SOL wallet read failed ({e})")
+        if getattr(cfg, "rh_live_trading", False):
+            try:
+                import rh_wallet
+                from rh_discovery import get_eth_usd_price
+                eth = await rh_wallet.balance_wei() / 1e18
+                total += max(0.0, eth * await get_eth_usd_price())
+                parts.append("eth")
+            except Exception as e:
+                logger.warning(f"bankroll: RH wallet read failed ({e})")
+        if parts:
+            return total, "+".join(parts)
         realised = await self._pnl_since(None, mode="paper")
         swept = 0.0
         try:
