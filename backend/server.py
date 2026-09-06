@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
-from fastapi import FastAPI, APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends, Body
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
@@ -107,6 +107,7 @@ async def lifespan(app: FastAPI):
     # auto-generated, pre-validated config tweaks.
     from strategy_doctor import StrategyDoctor, set_doctor
     doctor = StrategyDoctor(db=db, hub=hub)
+    doctor.reload_cb = bot_state.load
     set_doctor(doctor)
     await doctor.start()
     # Live Doctor — real-time archetype scorer + trailing-stop circuit
@@ -337,7 +338,15 @@ async def get_config():
 
 
 @api.put("/bot/config", response_model=BotConfig)
-async def update_config(cfg: BotConfig):
+async def update_config(body: dict = Body(...)):
+    """Accepts a FULL or PARTIAL config. Partial bodies are merged onto the
+    currently-running config — previously `{doctor_advisory_only: true}`
+    silently reset every other field to BotConfig defaults (max_trade $1,
+    SL 12 …) because Pydantic filled the gaps."""
+    try:
+        cfg = BotConfig(**{**bot_state.config.model_dump(), **(body or {})})
+    except Exception as e:
+        raise HTTPException(422, f"invalid config: {e}")
     if cfg.max_trade_usd > 5.0:
         cfg.max_trade_usd = 5.0
     if cfg.min_trade_usd < 0.10:
@@ -2017,7 +2026,7 @@ async def doctor_applied_history(limit: int = 25):
     Shows the exact before/after pair so the user can see what actually
     changed (vs just the proposed actions on the suggestion card)."""
     cur = db.strategy_suggestions.find(
-        {"status": "applied"}, {"_id": 0},
+        {"status": {"$in": ["applied", "reverted"]}}, {"_id": 0},
     ).sort("applied_at", -1).limit(max(1, min(200, int(limit))))
     rows = await cur.to_list(200)
     out = []
@@ -2026,9 +2035,18 @@ async def doctor_applied_history(limit: int = 25):
             "id": r.get("id"),
             "title": r.get("title"),
             "category": r.get("category"),
+            "status": r.get("status"),
             "applied_at": r.get("applied_at"),
             "actions": r.get("actions") or {},
             "before": r.get("applied_before") or {},
+            "auto_applied": bool(r.get("auto_applied")),
+            "auto_reverted": bool(r.get("auto_reverted")),
+            "auto_settled": bool(r.get("auto_settled")),
+            "auto_baseline_wr": r.get("auto_baseline_wr"),
+            "auto_wr_since": r.get("auto_wr_since"),
+            "auto_n_since": r.get("auto_n_since"),
+            "auto_watch_until": r.get("auto_watch_until"),
+            "reverted_at": r.get("reverted_at"),
             # Flag fields where the user has since edited the value back.
             # The doctor uses this on its next cycle to allow re-suggesting.
             "still_active_keys": [],  # filled in below
@@ -2039,7 +2057,7 @@ async def doctor_applied_history(limit: int = 25):
             row["still_active_keys"] = [
                 k for k, v in (row["actions"] or {}).items()
                 if cfg.get(k) == v
-            ]
+            ] if row["status"] == "applied" else []
     return {"items": out, "count": len(out)}
 
 

@@ -255,6 +255,15 @@ export default function Dashboard() {
       case "reentry_attempted":
         api.reentryWatchlist().then(setReentry).catch(() => {});
         break;
+      case "doctor_auto_applied":
+        toast.info(`Doctor auto-applied: ${data?.title ?? "config change"}`, { duration: 8000 });
+        break;
+      case "doctor_auto_reverted":
+        toast.warning(
+          `Doctor auto-reverted "${data?.title ?? "change"}" — win rate ${data?.wr_since ?? "?"}% vs ${data?.baseline_wr != null ? Math.round(data.baseline_wr) : "?"}% baseline`,
+          { duration: 12000 }
+        );
+        break;
       case "bot_auto_disabled_on_restart":
         toast.warning(
           `Bot was auto-disabled after backend restart (${data?.active_positions ?? 0} positions retained). Press Start to resume.`,

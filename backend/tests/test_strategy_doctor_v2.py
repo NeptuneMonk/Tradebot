@@ -146,3 +146,100 @@ def test_bot_load_is_reentrant():
     j = seg.index("# Restart-only work.")
     assert "if first_load:" in seg[j:j + 600]
     assert "            for mint in list(self.active_trades.keys()):\n                asyncio.create_task(self._monitor_position(mint))" in seg
+
+
+class _Sugg(_Coll):
+    async def update_one(self, flt, upd):
+        for d in self.docs:
+            if d.get("id") == flt.get("id"):
+                d.update(upd.get("$set", {}))
+        self.calls.append((flt, upd))
+
+    def find(self, flt, proj=None):
+        docs = [d for d in self.docs if all(
+            (d.get(k) == v) if not isinstance(v, dict) else (d.get(k) != v.get("$ne")) for k, v in flt.items())]
+        class _C:
+            def __aiter__(self_inner):
+                async def gen():
+                    for d in docs:
+                        yield d
+                return gen()
+            async def to_list(self_inner, n):
+                return list(docs)
+        return _C()
+
+
+class _Cfg(_Coll):
+    def __init__(self, doc):
+        super().__init__()
+        self.doc = doc
+
+    async def update_one(self, flt, upd):
+        self.doc.update(upd.get("$set", {}))
+
+    async def find_one(self, *a, **k):
+        return dict(self.doc)
+
+
+def _doctor_with(cfg, trades, suggestions=None):
+    db = type("DB", (), {})()
+    db.strategy_suggestions = _Sugg(suggestions or [])
+    db.bot_config = _Cfg(cfg)
+    db.trades = _Coll(trades)
+    d = sd.StrategyDoctor(db=db)
+    d.reloads = 0
+    async def reload():
+        d.reloads += 1
+    d.reload_cb = reload
+    return d, db
+
+
+def test_auto_apply_only_high_confidence_actionable_non_classifier():
+    cfg = {"doctor_auto_apply_enabled": True, "stop_loss_pct": 56.0, "take_profit_pct": 120.0}
+    trades = [trade(5, 10, "trailing-stop hit") for _ in range(20)]
+    d, db = _doctor_with(cfg, trades)
+    fresh = [
+        {"id": "a", "title": "sl", "category": "sl", "confidence": "high", "actions": {"stop_loss_pct": 20.0}},
+        {"id": "b", "title": "tp", "category": "tp", "confidence": "med", "actions": {"take_profit_pct": 40.0}},
+        {"id": "c", "title": "cls", "category": "classifier", "confidence": "high", "actions": {"classifier_action_whitelist": ["x"]}},
+        {"id": "d", "title": "info", "category": "classifier", "confidence": "high", "actions": {}},
+    ]
+    db.strategy_suggestions.docs = [dict(s, status="pending") for s in fresh]
+    asyncio.run(d._auto_apply(fresh, cfg, trades))
+    assert cfg["stop_loss_pct"] == 20.0 and cfg["take_profit_pct"] == 120.0 and "classifier_action_whitelist" not in cfg
+    a = db.strategy_suggestions.docs[0]
+    assert a["status"] == "applied" and a["auto_applied"] is True and a["applied_before"] == {"stop_loss_pct": 56.0}
+    assert a["auto_baseline_wr"] == 100.0 and a["auto_baseline_n"] == 20
+    assert d.reloads == 1
+    # disabled → nothing happens
+    cfg2 = {"doctor_auto_apply_enabled": False, "stop_loss_pct": 56.0}
+    d2, _ = _doctor_with(cfg2, trades)
+    asyncio.run(d2._auto_apply([dict(fresh[0])], cfg2, trades))
+    assert cfg2["stop_loss_pct"] == 56.0
+
+
+def test_watchdog_reverts_on_wr_drop_and_settles_otherwise():
+    applied_at = (NOW - timedelta(hours=3)).isoformat()
+    base_sugg = {"id": "a", "title": "sl", "category": "sl", "status": "applied", "auto_applied": True,
+                 "applied_at": applied_at, "applied_before": {"stop_loss_pct": 56.0}, "auto_baseline_wr": 60.0,
+                 "auto_watch_until": (NOW + timedelta(hours=21)).isoformat()}
+    # 15 trades since apply, 3 winners → WR 20% (drop 40pp) → revert
+    since = [trade(5, 10, "trailing-stop hit") for _ in range(3)] + [trade(-15, 2, "stop-loss hit") for _ in range(12)]
+    cfg = {"doctor_auto_revert_min_trades": 12, "doctor_auto_revert_wr_drop_pp": 10.0, "stop_loss_pct": 20.0}
+    d, db = _doctor_with(cfg, since, [dict(base_sugg)])
+    asyncio.run(d._auto_revert_watchdog(cfg, since))
+    s = db.strategy_suggestions.docs[0]
+    assert s["status"] == "reverted" and s["auto_reverted"] is True and cfg["stop_loss_pct"] == 56.0 and d.reloads == 1
+    # too few trades → untouched
+    cfg = {"doctor_auto_revert_min_trades": 12, "doctor_auto_revert_wr_drop_pp": 10.0, "stop_loss_pct": 20.0}
+    d, db = _doctor_with(cfg, since[:5], [dict(base_sugg)])
+    asyncio.run(d._auto_revert_watchdog(cfg, since[:5]))
+    assert db.strategy_suggestions.docs[0]["status"] == "applied" and cfg["stop_loss_pct"] == 20.0
+    # WR fine and watch window over → settled, kept
+    good = [trade(5, 10, "trailing-stop hit") for _ in range(14)]
+    expired = dict(base_sugg, auto_watch_until=(NOW - timedelta(minutes=1)).isoformat())
+    cfg = {"doctor_auto_revert_min_trades": 12, "doctor_auto_revert_wr_drop_pp": 10.0, "stop_loss_pct": 20.0}
+    d, db = _doctor_with(cfg, good, [expired])
+    asyncio.run(d._auto_revert_watchdog(cfg, good))
+    s = db.strategy_suggestions.docs[0]
+    assert s["status"] == "applied" and s["auto_settled"] is True and cfg["stop_loss_pct"] == 20.0

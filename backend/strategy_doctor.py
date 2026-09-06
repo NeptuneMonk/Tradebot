@@ -124,6 +124,7 @@ class StrategyDoctor:
     def __init__(self, db, hub=None):
         self.db = db
         self.hub = hub  # broadcast new suggestions over WS if available
+        self.reload_cb = None  # set by server: bot_state.load (re-entrant)
         self._task: asyncio.Task | None = None
         self.interval_minutes = DEFAULT_INTERVAL_MINUTES
 
@@ -281,7 +282,113 @@ class StrategyDoctor:
                     await self.hub.broadcast("doctor_new_suggestions", {"count": len(fresh)})
                 except Exception:
                     pass
+        try:
+            await self._auto_apply(fresh, cfg_doc, trades)
+            await self._auto_revert_watchdog(cfg_doc, trades)
+        except Exception as e:
+            logger.exception(f"doctor auto-apply/watchdog failed: {e}")
         return fresh
+
+    # ---------- auto-apply + watchdog ----------
+    AUTO_APPLY_BLOCKED_CATEGORIES = {"classifier", "needs_more_data", "timing"}
+
+    @staticmethod
+    def _wr(trades: list[dict]) -> float | None:
+        if not trades:
+            return None
+        return sum(1 for t in trades if (t.get("pnl_pct") or 0) > 0) / len(trades) * 100.0
+
+    async def _apply_actions(self, s: dict, cfg_doc: dict, extra: dict) -> dict:
+        actions = s.get("actions") or {}
+        before = {k: cfg_doc.get(k) for k in actions}
+        await self.db.bot_config.update_one({}, {"$set": actions})
+        cfg_doc.update(actions)
+        await self.db.strategy_suggestions.update_one(
+            {"id": s["id"]},
+            {"$set": {"status": "applied", "applied_at": _now_iso(), "applied_before": before, **extra}},
+        )
+        if self.reload_cb:
+            try:
+                await self.reload_cb()
+            except Exception as e:
+                logger.warning(f"doctor reload_cb failed: {e}")
+        return before
+
+    async def _auto_apply(self, fresh: list[dict], cfg_doc: dict, trades: list[dict]):
+        if not cfg_doc.get("doctor_auto_apply_enabled"):
+            return
+        baseline_wr = self._wr(trades)
+        for s in fresh:
+            if s.get("confidence") != "high" or not s.get("actions"):
+                continue
+            if s.get("category") in self.AUTO_APPLY_BLOCKED_CATEGORIES:
+                continue
+            before = await self._apply_actions(s, cfg_doc, {
+                "auto_applied": True,
+                "auto_baseline_wr": baseline_wr,
+                "auto_baseline_n": len(trades),
+                "auto_watch_until": (datetime.now(timezone.utc) + timedelta(
+                    hours=int(cfg_doc.get("doctor_auto_revert_hours", 24)))).isoformat(),
+            })
+            s["status"] = "applied"
+            s["auto_applied"] = True
+            logger.warning(f"doctor AUTO-APPLIED '{s['title']}' {s['actions']} (before {before})")
+            if self.hub:
+                try:
+                    await self.hub.broadcast("doctor_auto_applied", {
+                        "id": s["id"], "title": s["title"], "actions": s["actions"], "before": before,
+                    })
+                except Exception:
+                    pass
+
+    async def _auto_revert_watchdog(self, cfg_doc: dict, trades: list[dict]):
+        """Revert auto-applied changes whose post-apply win rate fell by more
+        than the configured drop vs the pre-apply baseline. After the watch
+        window closes without a revert the change is kept and marked settled."""
+        cur = self.db.strategy_suggestions.find(
+            {"status": "applied", "auto_applied": True, "auto_settled": {"$ne": True}}, {"_id": 0},
+        )
+        now = datetime.now(timezone.utc)
+        min_n = int(cfg_doc.get("doctor_auto_revert_min_trades", 12))
+        drop_pp = float(cfg_doc.get("doctor_auto_revert_wr_drop_pp", 10.0))
+        async for s in cur:
+            applied_at = s.get("applied_at") or ""
+            since = [t for t in trades if str(t.get("exit_time") or "") >= applied_at]
+            wr_since = self._wr(since)
+            base = s.get("auto_baseline_wr")
+            watch_until = s.get("auto_watch_until") or ""
+            if len(since) >= min_n and base is not None and wr_since is not None and wr_since <= base - drop_pp:
+                before = s.get("applied_before") or {}
+                if before:
+                    await self.db.bot_config.update_one({}, {"$set": before})
+                    cfg_doc.update(before)
+                await self.db.strategy_suggestions.update_one(
+                    {"id": s["id"]},
+                    {"$set": {"status": "reverted", "reverted_at": _now_iso(), "auto_reverted": True,
+                              "auto_wr_since": round(wr_since, 1), "auto_n_since": len(since)}},
+                )
+                if self.reload_cb:
+                    try:
+                        await self.reload_cb()
+                    except Exception:
+                        pass
+                logger.warning(
+                    f"doctor AUTO-REVERTED '{s.get('title')}' — WR since apply {wr_since:.0f}% "
+                    f"(n={len(since)}) vs baseline {base:.0f}%"
+                )
+                if self.hub:
+                    try:
+                        await self.hub.broadcast("doctor_auto_reverted", {
+                            "id": s["id"], "title": s.get("title"), "restored": before,
+                            "wr_since": round(wr_since, 1), "baseline_wr": base, "n_since": len(since),
+                        })
+                    except Exception:
+                        pass
+            elif watch_until and now.isoformat() >= watch_until:
+                await self.db.strategy_suggestions.update_one(
+                    {"id": s["id"]},
+                    {"$set": {"auto_settled": True, "auto_wr_since": wr_since, "auto_n_since": len(since)}},
+                )
 
     # ---------- data fetch ----------
     async def _fetch_recent_trades(self) -> list[dict]:

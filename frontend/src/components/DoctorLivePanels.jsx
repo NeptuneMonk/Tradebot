@@ -197,20 +197,37 @@ function AppliedHistory({ history, onRevert }) {
       </div>
       <div className="space-y-2 max-h-48 overflow-y-auto">
         {history.slice(0, 5).map((r) => (
-          <div key={r.id} className="text-[10px] font-mono border-l-2 border-cyan-700 pl-2"
+          <div key={r.id} className={`text-[10px] font-mono border-l-2 pl-2 ${r.status === "reverted" ? "border-rose-800" : r.auto_applied ? "border-lime-700" : "border-cyan-700"}`}
                data-testid={`applied-${r.id}`}>
-            <div className="flex items-center justify-between">
-              <span className="text-neutral-200 truncate">{r.title}</span>
-              <button onClick={() => onRevert(r.id)} className="text-[9px] uppercase tracking-wider text-neutral-500 hover:text-red-400"
-                      data-testid={`revert-${r.id}`}>Revert</button>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-neutral-200 truncate flex items-center gap-1.5">
+                {r.auto_applied && (
+                  <span className="text-[8px] px-1 border border-lime-800 text-lime-300 uppercase tracking-wider" data-testid={`auto-badge-${r.id}`}>auto</span>
+                )}
+                {r.title}
+              </span>
+              {r.status === "applied" && (
+                <button onClick={() => onRevert(r.id)} className="text-[9px] uppercase tracking-wider text-neutral-500 hover:text-red-400"
+                        data-testid={`revert-${r.id}`}>Revert</button>
+              )}
             </div>
             <div className="text-[9px] text-neutral-500 mt-0.5">
               {new Date(r.applied_at).toLocaleString()} ·
-              {r.still_active_keys?.length ? (
+              {r.status === "reverted" ? (
+                <span className="text-rose-400" data-testid={`reverted-${r.id}`}>
+                  {r.auto_reverted
+                    ? ` auto-reverted — WR ${r.auto_wr_since ?? "?"}% vs ${r.auto_baseline_wr != null ? Math.round(r.auto_baseline_wr) : "?"}% baseline (n=${r.auto_n_since ?? 0})`
+                    : " reverted"}
+                </span>
+              ) : r.still_active_keys?.length ? (
                 <span className="text-emerald-400"> {r.still_active_keys.length}/{Object.keys(r.actions || {}).length} active</span>
               ) : (
                 <span className="text-amber-400"> overwritten</span>
               )}
+              {r.status === "applied" && r.auto_applied && !r.auto_settled && (
+                <span className="text-lime-500/80"> · watching until {r.auto_watch_until ? new Date(r.auto_watch_until).toLocaleTimeString() : "—"}</span>
+              )}
+              {r.auto_settled && <span className="text-neutral-500"> · settled</span>}
             </div>
             {Object.entries(r.actions || {}).map(([k, v]) => (
               <div key={k} className="text-[9px] text-neutral-400">

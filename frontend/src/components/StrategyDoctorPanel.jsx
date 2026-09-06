@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { Loader2, Sparkles, X, CheckCircle2, RefreshCw, Stethoscope } from "lucide-react";
+import { Loader2, Sparkles, X, CheckCircle2, RefreshCw, Stethoscope, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import HelpHint from "./HelpHint";
@@ -44,6 +44,26 @@ export default function StrategyDoctorPanel({ onApplied, config, onConfigUpdate 
   const [lastRun, setLastRun] = useState(null);
   const [advisoryToggling, setAdvisoryToggling] = useState(false);
   const advisoryOnly = !!config?.doctor_advisory_only;
+  const autoApply = !!config?.doctor_auto_apply_enabled;
+  const [autoToggling, setAutoToggling] = useState(false);
+
+  const toggleAutoApply = async () => {
+    if (autoToggling) return;
+    setAutoToggling(true);
+    try {
+      const upd = await api.updateConfig({ doctor_auto_apply_enabled: !autoApply });
+      toast.success(
+        !autoApply
+          ? `Doctor auto-apply ON — high-confidence changes apply themselves; auto-revert if win rate drops ≥${config?.doctor_auto_revert_wr_drop_pp ?? 10}pp within ${config?.doctor_auto_revert_hours ?? 24}h`
+          : "Doctor auto-apply OFF — suggestions wait for your click"
+      );
+      onConfigUpdate && onConfigUpdate(upd);
+    } catch (e) {
+      toast.error("Toggle failed: " + (e?.response?.data?.detail || e.message));
+    } finally {
+      setAutoToggling(false);
+    }
+  };
 
   const toggleAdvisory = async () => {
     if (advisoryToggling) return;
@@ -138,6 +158,23 @@ export default function StrategyDoctorPanel({ onApplied, config, onConfigUpdate 
           )}
         </div>
         <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={toggleAutoApply}
+            disabled={autoToggling}
+            data-testid="doctor-auto-apply-toggle"
+            title={autoApply
+              ? "Auto-apply ON: high-confidence suggestions (SL/TP/hold/sizing/gates — never classifier whitelists) are applied automatically. A watchdog reverts any change whose win rate since apply drops ≥ the configured pp vs baseline inside the watch window. Click to turn off."
+              : "Auto-apply OFF: suggestions wait for your click. Click to let the doctor apply high-confidence changes itself with a 24h auto-revert guard."}
+            className={`px-2 py-1 text-[10px] uppercase tracking-wider font-mono border inline-flex items-center gap-1 transition-colors duration-100 ${
+              autoApply
+                ? "border-lime-700/60 text-lime-300 bg-lime-950/40 hover:bg-lime-900/40"
+                : "border-neutral-700 text-neutral-400 hover:bg-neutral-900"
+            }`}
+          >
+            <Zap className="w-3 h-3" />
+            {autoApply ? "Auto-apply" : "Manual"}
+          </button>
           <button
             type="button"
             onClick={toggleAdvisory}

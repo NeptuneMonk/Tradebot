@@ -1792,3 +1792,25 @@ lines in `bot.py` (import + construct + start for `RHDiscovery`, `RHPaperTrader`
   instead of "current − 4" (which produced the 116% card; that card expired).
 - Verified: apply + revert both 200; tests/test_strategy_doctor_v2.py (8) pass.
 - Note: user cleared paper history mid-session (16 trades in window now).
+
+### 2026-06 — Doctor auto-apply + 24h watchdog revert; PUT /bot/config partial-merge fix
+- `doctor_auto_apply_enabled` (default OFF, toggle in Strategy Doctor header,
+  testid `doctor-auto-apply-toggle`). Each doctor cycle auto-applies fresh
+  suggestions with confidence=high and non-empty actions, EXCEPT categories
+  classifier / timing / needs_more_data. Records `auto_applied`,
+  `auto_baseline_wr` (WR of lookback trades at apply), `auto_watch_until`
+  (+`doctor_auto_revert_hours`=24).
+- Watchdog (`_auto_revert_watchdog`, runs every cycle): for un-settled
+  auto-applied rows, WR of trades closed since apply (≥ `doctor_auto_revert_min_trades`=12)
+  ≤ baseline − `doctor_auto_revert_wr_drop_pp`(10) → restore `applied_before`,
+  status "reverted", `auto_reverted`, WS `doctor_auto_reverted`. Window passed
+  with no drop → `auto_settled`. Applied-history API now includes reverted
+  rows + auto fields; UI shows AUTO badge / auto-reverted reason / watching-until.
+- Doctor gets `reload_cb = bot_state.load` (re-entrant since the 500 fix).
+- CRITICAL FIX: `PUT /api/bot/config` accepted a full BotConfig, so any PARTIAL
+  body (the pre-existing Advisory toggle, my new toggle, curl) reset every other
+  field to defaults (max_trade $1, SL 12, hold 35…). Now merges body onto the
+  running config; invalid → 422. User config was wiped once by this during
+  testing and restored from /app/memory/cfg_restored_2026-06_after_wipe.json
+  (SL 20, TP 20, hold 90, max_trade 5, RH gates from review).
+- Tests: test_strategy_doctor_v2.py (10) pass.

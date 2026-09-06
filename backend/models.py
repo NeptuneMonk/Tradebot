@@ -279,6 +279,15 @@ class BotConfig(BaseModel):
     # supervising the bot in the UI — you decide when to stop, Doctor only
     # advises. Defaults False (full enforcement).
     doctor_advisory_only: bool = False
+    # Doctor auto-apply (2026-06): high-confidence suggestions with concrete
+    # actions are applied automatically; a watchdog reverts them if the win
+    # rate since apply drops by >= `doctor_auto_revert_wr_drop_pp` vs the
+    # pre-apply baseline within `doctor_auto_revert_hours`. Classifier
+    # whitelists are never auto-applied (they gate entries wholesale).
+    doctor_auto_apply_enabled: bool = False
+    doctor_auto_revert_hours: int = 24
+    doctor_auto_revert_wr_drop_pp: float = 10.0
+    doctor_auto_revert_min_trades: int = 12
     doctor_trail_drawdown_pct: float = 40.0     # pause if score drops this far from peak
     doctor_trail_recovery_pct: float = 70.0     # resume when score recovers to this fraction of pre-pause peak
     doctor_trail_lookback_minutes: int = 240    # peak rolls over this many minutes
