@@ -1735,3 +1735,18 @@ lines in `bot.py` (import + construct + start for `RHDiscovery`, `RHPaperTrader`
 - Live paper check: event exits land 6 blocks after trigger; a -47% SL still
   occurred → that is the honest cost of 600ms latency on PONS micro-curves.
 - Tests: `test_rh_paper.py` +2 (9 total) — all pass.
+
+### 2026-06 — Fix: blank Trade History rows / SOL badge on RH exits
+- Root cause 1 (backend): `bot.py` active-trades reconciler (+ startup respawn)
+  queried `db.trades {status:"active"}` and reattached RH paper positions as
+  Solana slots → `_monitor_position` on a 0x address ("Invalid Base58"),
+  phantom "timeout after 145s" exits, retry thrash. Fix: both queries now
+  exclude `chain:"rh"` (2 lines in bot.py). RH positions are owned solely by
+  `rh_paper.py`.
+- Root cause 2 (frontend data): `rh_paper` broadcast a sparse `trade_exit`
+  payload `{id,mint,symbol,reason}`; Dashboard inserts that payload straight
+  into the history list → blank row with default SOL badge until the next
+  refetch. Fix: broadcast the full trade doc (ISO entry_time), matching
+  bot.py's normal exit path. `trade_enter` likewise.
+- Verified live: 6 entries / 5 exits over 2.5 min, 0 reattach warnings,
+  0 Base58 errors, 52 history rows rendered with 0 blanks.

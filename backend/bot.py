@@ -224,7 +224,7 @@ class BotState:
                     "for safety. Press Start in the UI to resume trading."
                 )
             self._initial_load_done = True
-        async for t in self.db.trades.find({"status": "active"}, {"_id": 0}):
+        async for t in self.db.trades.find({"status": "active", "chain": {"$ne": "rh"}}, {"_id": 0}):
             # Persist legacy active trades that lack the new protocol field —
             # we can't safely respawn a monitor for them since price polling
             # needs the protocol routing. They get force-closed below.
@@ -563,7 +563,9 @@ class BotState:
             if self.recent_exit_until[mint] <= now:
                 del self.recent_exit_until[mint]
 
-        cursor = self.db.trades.find({"status": "active"}, {"_id": 0})
+        # `chain != rh`: Robinhood paper positions are owned by rh_paper.py —
+        # a Solana monitor on a 0x address just throws "Invalid Base58".
+        cursor = self.db.trades.find({"status": "active", "chain": {"$ne": "rh"}}, {"_id": 0})
         reattached = 0
         respawned = 0
         seen_mints = set()

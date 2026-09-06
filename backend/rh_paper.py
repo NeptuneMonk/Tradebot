@@ -41,6 +41,10 @@ RH_BLOCK_TIME_S = 0.1
 MONITOR_INTERVAL_S = 1.0
 
 
+def _iso(v):
+    return v.isoformat() if hasattr(v, "isoformat") else v
+
+
 def snipe_tax_bps(elapsed_s: float) -> int:
     """PONS: snipeTaxStartBps >> ((elapsed*14) // snipeTaxSeconds), zero once elapsed >= snipeTaxSeconds."""
     if elapsed_s >= SNIPE_TAX_SECONDS:
@@ -185,7 +189,7 @@ class RHPaperTrader:
             launch_update = {"entered": True, "entry_action": ENTRY_ACTION}
             await self.state.db.launches.update_one({"_id": b["launch_id"]}, {"$set": launch_update})
             await hub.broadcast("launch_update", {"id": b["launch_id"], "mint": token, **launch_update})
-            await hub.broadcast("trade_enter", doc)
+            await hub.broadcast("trade_enter", {**doc, "entry_time": _iso(doc["entry_time"])})
             logger.info(f"rh_paper ENTER {b['symbol']} {token[:10]} ${stake_usd:.2f} @ {price:.3e} {b['quote_symbol']} fee={fee*100:.2f}%")
         except asyncio.CancelledError:
             raise
@@ -320,7 +324,7 @@ class RHPaperTrader:
             launch_update = {"pin_exited": True, "exit_pnl_pct": t["pnl_pct"], "exit_reason": reason}
             await self.state.db.launches.update_one({"_id": t.get("launch_id")}, {"$set": launch_update})
             await hub.broadcast("launch_update", {"id": t.get("launch_id"), "mint": token, **launch_update})
-            await hub.broadcast("trade_exit", {"id": t["id"], "mint": token, "symbol": t.get("symbol"), "reason": reason})
+            await hub.broadcast("trade_exit", {**t, "entry_time": _iso(t.get("entry_time"))})
             self.stats["exits"] += 1
             logger.info(f"rh_paper EXIT {t.get('symbol')} {token[:10]} {reason} pnl={pnl_pct:+.1f}% (${pnl_usd:+.3f})")
             self.positions.pop(token, None)
