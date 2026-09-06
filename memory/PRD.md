@@ -1356,3 +1356,9 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - ✅ SOL watcher uses tracking-bucket price samples (RPC fallback throttled to 10s), handles `pumpswap` watches; `_attempt_reentry_impl` routes PumpSwap buys (wrap→buy→close) and stamps protocol/pool on the slot.
 - ✅ 5 new Bot Control fields (Min wait / Min bounce / Bounce confirm / Min buyers / Breakout). Server clamps added.
 - Tests: `tests/test_reentry_logic.py` (8) + updated `test_rh_paper.py`; suites green. Pre-existing unrelated failures: `test_partial_tp.py` (collection), `test_intelligent_exit::severity_override`, `test_iter8::paper_fields`, `test_panic_slip::sell_ix_shape`.
+
+
+## 2026-09-06 — RH feed dropouts: root cause + fix
+- Root cause: the public Robinhood RPC (Cloudflare edge) now returns **429 for every JSON-RPC batch** (even 2× eth_blockNumber in one body) while single requests succeed. `poll_once` sent one batched request per poll → ~80% 429s → backoff → "4 consecutive 429s, resync to head" every minute → feed appeared dead.
+- Fix in `rh_discovery.py::_rpc`: one HTTP request per call (`RPC_CONCURRENCY=1`), per-call cool-off retries on 429 (0.6/1.2/2/3s — the edge limiter is bursty), `META_PER_POLL=6` name/symbol lookups per poll. Stats now expose `rate_limited_calls` (per-call 429s absorbed by retries) separately from `rate_limited` (poll failures).
+- Verified live: poll-level 429s 0, no resyncs, head keeps pace (~10 blocks/s), launches/trades flowing.

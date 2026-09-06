@@ -34,6 +34,8 @@ RH_RPC_URL = os.environ.get("RH_RPC_URL", "")
 CHAIN = "rh"
 PROTOCOL = "pons"
 POLL_INTERVAL_S = 2.0
+RPC_CONCURRENCY = 1             # single requests only — the public RPC 429s JSON-RPC batches
+META_PER_POLL = 6               # name()+symbol() lookups per poll (2 requests each)
 BACKFILL_BLOCKS = 600           # ~1 min at ~100ms blocks
 MAX_BLOCK_SPAN = 600
 BLOCK_TIME_S = 0.1
@@ -236,22 +238,37 @@ class RHDiscovery:
             await asyncio.sleep(backoff)
 
     async def _rpc(self, calls: list[tuple[str, list]]) -> list:
-        payload = [{"jsonrpc": "2.0", "id": i, "method": m, "params": p} for i, (m, p) in enumerate(calls)]
-        self.stats["rpc_requests"] += 1
+        """One HTTP request PER call. The public RPC now 429s every JSON-RPC
+        *batch* (even two eth_blockNumber in one body) while single requests
+        sail through at ~80ms — the old single-batch poll was the 429 source."""
+        sem = asyncio.Semaphore(RPC_CONCURRENCY)
+
+        async def one(client: httpx.AsyncClient, i: int, m: str, p: list):
+            # The edge limiter is bursty: once tripped it sheds everything for
+            # a second or two, then recovers. Cool off and retry rather than
+            # failing the whole poll (which used to snowball into resyncs).
+            for attempt, cool in enumerate((0.6, 1.2, 2.0, 3.0, 0.0)):
+                async with sem:
+                    self.stats["rpc_requests"] += 1
+                    r = await client.post(RH_RPC_URL, json={"jsonrpc": "2.0", "id": i, "method": m, "params": p},
+                                          headers={"User-Agent": "Mozilla/5.0"})
+                if r.status_code != 429:
+                    break
+                self.stats["rate_limited_calls"] = self.stats.get("rate_limited_calls", 0) + 1
+                if cool:
+                    await asyncio.sleep(cool)
+            if r.status_code == 429:
+                raise RateLimited()
+            r.raise_for_status()
+            x = r.json()
+            if isinstance(x, dict) and "error" in x:
+                if (x["error"] or {}).get("code") == 429:
+                    raise RateLimited()
+                raise RuntimeError(f"rpc {m}: {x['error']}")
+            return x.get("result") if isinstance(x, dict) else None
+
         async with httpx.AsyncClient(timeout=20.0) as client:
-            r = await client.post(RH_RPC_URL, json=payload, headers={"User-Agent": "Mozilla/5.0"})
-        if r.status_code == 429:
-            raise RateLimited()
-        r.raise_for_status()
-        body = r.json()
-        by_id = {x.get("id"): x for x in body} if isinstance(body, list) else {0: body}
-        out = []
-        for i in range(len(calls)):
-            x = by_id.get(i) or {}
-            if "error" in x:
-                raise RuntimeError(f"rpc {calls[i][0]}: {x['error']}")
-            out.append(x.get("result"))
-        return out
+            return list(await asyncio.gather(*(one(client, i, m, p) for i, (m, p) in enumerate(calls))))
 
     async def poll_once(self):
         """Exactly ONE batched HTTP request per poll (the public RPC 429s on
@@ -276,7 +293,7 @@ class RHDiscovery:
         trade_filter = {"fromBlock": hex(fr), "toBlock": to_hex, "topics": [[T_BUY, T_SELL]]}
         if curves:
             trade_filter["address"] = curves
-        meta_tokens = self._meta_pending[:40]
+        meta_tokens = self._meta_pending[:META_PER_POLL]
         calls: list[tuple[str, list]] = [
             ("eth_blockNumber", []),
             ("eth_getLogs", [{"address": FACTORY, "fromBlock": hex(fr), "toBlock": to_hex,
