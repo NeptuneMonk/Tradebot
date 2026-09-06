@@ -780,6 +780,29 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                  hint="Position size multiplier for re-entries (e.g., 0.5 = half size). Risk control on a token you already exited once."
                  value={local.reentry_size_multiplier}
                  onChange={(v) => setLocal({ ...local, reentry_size_multiplier: parseFloat(v) || 0 })} step="0.1" />
+          <Field label="Min wait (s)" testid="reentry-min-wait-input"
+                 hint="Quiet time after ANY exit on the token before a re-entry may fire on either path. Stops the instant re-buy after a stop-loss."
+                 value={local.reentry_min_wait_s ?? 20}
+                 onChange={(v) => setLocal({ ...local, reentry_min_wait_s: parseInt(v, 10) || 0 })} step="5" />
+          <Field label="Min bounce (%)" testid="reentry-min-bounce-input"
+                 hint="The post-exit peak must exceed your exit price by this much before a pullback counts — the token has to keep running after you sold. Otherwise a 'pullback' is just a dump."
+                 value={local.reentry_min_bounce_pct ?? 5}
+                 onChange={(v) => setLocal({ ...local, reentry_min_bounce_pct: parseFloat(v) || 0 })} step="1" />
+          <Field label="Bounce confirm (%)" testid="reentry-bounce-confirm-input"
+                 hint="After the pullback, price must lift this much off its trough (with buyers arriving) before the bot buys. No knife-catching."
+                 value={local.reentry_bounce_confirm_pct ?? 3}
+                 onChange={(v) => setLocal({ ...local, reentry_bounce_confirm_pct: parseFloat(v) || 0 })} step="0.5" />
+          <Field label="Min buyers" testid="reentry-min-buyers-input"
+                 hint="Distinct buyers in the momentum window (Mom Gate window) required for a pullback re-entry."
+                 value={local.reentry_min_buyers ?? 2}
+                 onChange={(v) => setLocal({ ...local, reentry_min_buyers: parseInt(v, 10) || 0 })} step="1" />
+          <Field label="Breakout (%)" testid="reentry-breakout-input"
+                 hint="Breakout path: price above your exit by this much with Mom-Gate-strength buyers + inflow. Skipped if the last leg exited via stop-loss. Set very high to disable."
+                 value={local.reentry_breakout_pct ?? 5}
+                 onChange={(v) => setLocal({ ...local, reentry_breakout_pct: parseFloat(v) || 0 })} step="1" />
+        </div>
+        <div className="text-[10px] font-mono text-neutral-600">
+          a losing re-entry leg ends the watch · a winning leg refreshes it (attempts carry over)
         </div>
       </div>
 

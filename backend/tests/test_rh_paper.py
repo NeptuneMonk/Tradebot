@@ -275,7 +275,7 @@ def test_rh_momentum_gate_defers_sl_until_buyers_fade_or_budget():
 def test_rh_reentry_watch_pullback_and_breakout():
     st = make_state(reentry_enabled=True, reentry_window_seconds=600, reentry_max_attempts=2,
                     reentry_pullback_pct=20.0, reentry_size_multiplier=1.0, take_profit_pct=10.0,
-                    exit_momentum_gate_enabled=False)
+                    exit_momentum_gate_enabled=False, reentry_min_wait_s=0)
     now = time.time()
     b = hot_bucket(st.rh_discovery, now, price=1e-9, first=5e-10)
     asyncio.run(st.rh_paper._enter(TOKEN))
@@ -287,9 +287,19 @@ def test_rh_reentry_watch_pullback_and_breakout():
     # no move → no re-entry
     st.rh_paper._scan_reentries(time.time())
     assert w["attempts"] == 0
-    # 25% pullback from post-exit peak with a fresh buyer → re-entry attempt
+    # a straight dump 25% below exit is NOT a pullback (token never ran on)
     b["buy_events"].append((time.time(), 0.05, "0x" + "b" * 40))
     b["last_price_quote"] = 0.97e-9
+    st.rh_paper._scan_reentries(time.time())
+    assert w["attempts"] == 0
+    # real pullback: run on to +23%, drop 25% from that peak, bounce +4% off the trough with 2 buyers
+    b["last_price_quote"] = 1.6e-9
+    st.rh_paper._scan_reentries(time.time())
+    b["last_price_quote"] = 1.2e-9
+    st.rh_paper._scan_reentries(time.time())
+    assert w["attempts"] == 0
+    b["buy_events"].append((time.time(), 0.05, "0x" + "c" * 40))
+    b["last_price_quote"] = 1.25e-9
 
     async def run():
         st.rh_paper._scan_reentries(time.time())

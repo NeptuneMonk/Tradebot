@@ -1345,3 +1345,14 @@ These are exactly the high-confidence snipe targets the sniper was designed for 
 ### Backlog (unchanged priorities)
 - P1 Robinhood Phase C live EVM execution · P2 greylist 1-hop linked wallets · P2 age-tiered Seasoned gates · P2 Telegram alerts · P3 Jito bundles
 - Idea: a "Deferred Exit Log" marker on trade rows (how long SL/TP was held on momentum and what it gained/lost)
+
+
+## 2026-09-06 — Re-entry audit + fix (SOL watcher + RH paper)
+Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback" measured from a peak initialised at the exit price with no run-on requirement → knife-catching at −38…−86% below exit; (2) stale watch survived losing re-entry legs → 0–1s "retry" chains after SL (up to max_attempts); (3) breakout fired within ~8s at +5% with 3 buyers → TP→rebuy-higher→SL churn; (4) SOL watcher polled Helius every 2s per mint, dropped PumpSwap winners, no momentum check.
+- ✅ New `reentry_logic.py` (`decide_reentry`, `update_watch_price`, `recent_buyers_and_inflow`) shared by `bot.py` + `rh_paper.py`.
+- ✅ Pullback = peak ≥ exit×(1+`reentry_min_bounce_pct` 5%) AND (peak−trough)/peak ≥ `reentry_pullback_pct` AND price ≥ trough×(1+`reentry_bounce_confirm_pct` 3%) AND buyers ≥ `reentry_min_buyers` (2) in the Mom-Gate window.
+- ✅ Breakout = price > exit×(1+`reentry_breakout_pct` 5%) AND buyers ≥ `exit_momentum_min_buyers` AND inflow ok AND last leg not SL.
+- ✅ `reentry_min_wait_s` (20s) after any exit before either path. Losing leg pops the watch; winning leg refreshes it carrying `attempts`.
+- ✅ SOL watcher uses tracking-bucket price samples (RPC fallback throttled to 10s), handles `pumpswap` watches; `_attempt_reentry_impl` routes PumpSwap buys (wrap→buy→close) and stamps protocol/pool on the slot.
+- ✅ 5 new Bot Control fields (Min wait / Min bounce / Bounce confirm / Min buyers / Breakout). Server clamps added.
+- Tests: `tests/test_reentry_logic.py` (8) + updated `test_rh_paper.py`; suites green. Pre-existing unrelated failures: `test_partial_tp.py` (collection), `test_intelligent_exit::severity_override`, `test_iter8::paper_fields`, `test_panic_slip::sell_ix_shape`.

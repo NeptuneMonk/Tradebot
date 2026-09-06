@@ -266,6 +266,11 @@ class BotConfig(BaseModel):
     reentry_pullback_pct: float = 25.0
     reentry_window_seconds: int = 300
     reentry_size_multiplier: float = 0.5
+    reentry_min_wait_s: int = 20            # quiet time after ANY exit on the mint before a re-entry may fire
+    reentry_min_bounce_pct: float = 5.0     # post-exit peak must exceed exit price by this much (token kept running)
+    reentry_bounce_confirm_pct: float = 3.0 # price must lift this much off the trough before buying the pullback
+    reentry_min_buyers: int = 2             # distinct buyers in the momentum window required for a pullback entry
+    reentry_breakout_pct: float = 5.0       # breakout path: price above exit by this much (+ strong buyers + inflow)
     # === Graduation (pumpfun → PumpSwap) handling ===
     # When the bonding curve completes (`complete=True`) OR the curve account
     # returns null (closed), the monitor first tries to migrate the position

@@ -406,6 +406,11 @@ async def update_config(body: dict = Body(...)):
     cfg.greylist_snipe_ripcord_drawdown_pct = max(20.0, min(95.0, cfg.greylist_snipe_ripcord_drawdown_pct))
     cfg.greylist_snipe_ripcord_grace_seconds = max(0, min(60, cfg.greylist_snipe_ripcord_grace_seconds))
     cfg.creator_greylist_inactive_days = max(1, min(365, int(cfg.creator_greylist_inactive_days)))
+    cfg.reentry_min_wait_s = max(0, min(600, int(cfg.reentry_min_wait_s)))
+    cfg.reentry_min_bounce_pct = max(0.0, min(200.0, float(cfg.reentry_min_bounce_pct)))
+    cfg.reentry_bounce_confirm_pct = max(0.0, min(50.0, float(cfg.reentry_bounce_confirm_pct)))
+    cfg.reentry_min_buyers = max(0, min(50, int(cfg.reentry_min_buyers)))
+    cfg.reentry_breakout_pct = max(0.0, min(200.0, float(cfg.reentry_breakout_pct)))
     # Advisory→Enforced reset: when the user flips Advisory OFF, reset the
     # Doctor trail-stop's peak so it doesn't immediately slam a pause based
     # on historical regime drift. Fresh baseline = fresh decisions.

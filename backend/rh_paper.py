@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from models import Trade, now_utc
 from ws_hub import hub
+from reentry_logic import decide_reentry, recent_buyers_and_inflow
 
 if TYPE_CHECKING:
     from bot import BotState
@@ -160,14 +161,22 @@ class RHPaperTrader:
     # ---------- re-entry watch (winners only; same knobs as the SOL watcher) ----------
     def _watch_after_exit(self, token: str, t: dict, price: float, b: dict | None, now: float):
         cfg = self.state.config
-        if not getattr(cfg, "reentry_enabled", True) or (t.get("pnl_pct") or 0) <= 0 or price <= 0:
+        prev = self.watch.get(token)
+        if (t.get("pnl_pct") or 0) <= 0:
+            # A losing leg ends the watch — no chained retries off a stale peak.
+            self.watch.pop(token, None)
+            return
+        if not getattr(cfg, "reentry_enabled", True) or price <= 0:
             return
         if not b or b.get("graduated"):
             return
         self.watch[token] = {
+            "attempts": int(prev.get("attempts") or 0) if prev else 0,
+            "last_exit_time": now, "last_exit_was_sl": False,
+            "trough_after_peak": price,
             "mint": token, "chain": CHAIN, "name": t.get("name"), "symbol": t.get("symbol"),
             "exit_price_quote": price, "exit_price_sol": 0.0, "quote_symbol": t.get("quote_symbol"),
-            "exit_time": now, "attempts": 0, "max_attempts": int(cfg.reentry_max_attempts),
+            "exit_time": now, "max_attempts": int(cfg.reentry_max_attempts),
             "window_s": int(cfg.reentry_window_seconds), "pullback_pct": float(cfg.reentry_pullback_pct),
             "size_multiplier": float(cfg.reentry_size_multiplier), "original_pnl_usd": t.get("pnl_usd") or 0.0,
             "peak_price_after_exit": price, "creator": t.get("creator"),
@@ -186,15 +195,15 @@ class RHPaperTrader:
             price = b["last_price_quote"]
             if price <= 0 or token in self.positions or token in self._pending_entries:
                 continue
-            w["peak_price_after_exit"] = max(w["peak_price_after_exit"], price)
-            cutoff = now - float(getattr(cfg, "exit_momentum_window_s", 10))
-            buyers = {wl for ts, _q, wl in b["buy_events"] if ts >= cutoff}
-            pullback = price <= w["peak_price_after_exit"] * (1 - w["pullback_pct"] / 100.0) and len(buyers) >= 1
-            breakout = price > w["exit_price_quote"] * 1.05 and len(buyers) >= int(getattr(cfg, "exit_momentum_min_buyers", 3))
-            if not (pullback or breakout):
+            window_s = float(getattr(cfg, "exit_momentum_window_s", 10))
+            n_buyers, inflow_q = recent_buyers_and_inflow(b["buy_events"], now, window_s)
+            quote_usd = self._quote_usd(b["quote_symbol"])
+            inflow_ok = inflow_q * quote_usd >= float(getattr(cfg, "rh_min_inflow_usd", 0) or 0) * 0.5
+            trigger = decide_reentry(w, price, now, n_buyers, inflow_ok, cfg)
+            if trigger is None:
                 continue
             w["attempts"] += 1
-            w["last_trigger"] = "pullback" if pullback else "breakout"
+            w["last_trigger"] = trigger
             self.entered.discard(token)
             self._pending_entries.add(token)
             asyncio.create_task(self._enter(token, size_mult=w["size_multiplier"], reentry=w["last_trigger"]))

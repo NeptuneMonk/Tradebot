@@ -28,6 +28,7 @@ from discovery import PumpfunDiscovery
 from rh_discovery import RHDiscovery
 from rh_paper import RHPaperTrader
 from doctor_learning import book_size_mult
+from reentry_logic import decide_reentry, recent_buyers_and_inflow
 from speed_modes import (
     speed_mode_resolve, estimate_tx_fee_sol, auto_tuner,
     CU_PUMPFUN, CU_PUMPSWAP,
@@ -814,18 +815,20 @@ class BotState:
                     if await self.check_kill_switch():
                         continue
 
-                    state = await pumpfun.fetch_bonding_curve_state(mint)
-                    if not state or state["complete"]:
+                    cur_price = await self._reentry_watch_price(mint, w, now)
+                    if cur_price is None:
                         to_remove.append(mint)
                         continue
-                    cur_price = state["virtual_sol_reserves"] / state["virtual_token_reserves"] / LAMPORTS_PER_SOL
-                    # Track peak after exit so we measure pullback from local high
-                    if cur_price > w["peak_price_after_exit"]:
-                        w["peak_price_after_exit"] = cur_price
-                    pullback = (w["peak_price_after_exit"] - cur_price) / max(w["peak_price_after_exit"], 1e-18) * 100
-                    if pullback >= w["pullback_pct"]:
-                        # Optional sanity: only re-enter if curve still has inflow
-                        # (compare cur_real_sol vs threshold). Skip strict check for now.
+                    if cur_price <= 0:
+                        continue
+                    b = self.tracking.get(mint) or {}
+                    window_s = float(getattr(self.config, "exit_momentum_window_s", 10) or 10)
+                    n_buyers, inflow_lamports = recent_buyers_and_inflow(b.get("buy_events"), now, window_s)
+                    inflow_ok = inflow_lamports / LAMPORTS_PER_SOL >= float(
+                        getattr(self.config, "exit_momentum_min_inflow_sol", 0.25) or 0)
+                    trigger = decide_reentry(w, cur_price, now, n_buyers, inflow_ok, self.config)
+                    if trigger:
+                        w["last_trigger"] = trigger
                         try:
                             await self._attempt_reentry(w)
                         except Exception as e:
@@ -836,6 +839,38 @@ class BotState:
             except Exception as e:
                 logger.debug(f"reentry watcher loop error: {e}")
             await asyncio.sleep(2.0)
+
+    async def _reentry_watch_price(self, mint: str, w: dict, now: float) -> float | None:
+        """Current price for a watched mint. Prefers the live tracking bucket
+        (fed by the listener / discovery refresh — zero RPC); falls back to an
+        RPC read at most every 10s. Returns None when the token is gone
+        (curve graduated for a pumpfun watch, or pool state unreadable)."""
+        b = self.tracking.get(mint) or {}
+        samples = b.get("price_samples")
+        if samples:
+            ts, px = samples[-1]
+            if now - ts <= 5.0 and px > 0:
+                return float(px)
+        if now - float(w.get("_last_rpc_ts") or 0) < 10.0:
+            return float(w.get("_last_rpc_price") or 0.0)
+        w["_last_rpc_ts"] = now
+        try:
+            if (w.get("protocol") or "pumpfun") == "pumpswap":
+                pool = w.get("pumpswap_pool") or b.get("pumpswap_pool") or ""
+                st = await pumpswap.fetch_pool_state(pool) if pool else None
+                if not st:
+                    return None
+                px = pumpswap.price_sol_per_raw_token(st)
+            else:
+                st = await pumpfun.fetch_bonding_curve_state(mint)
+                if not st or st["complete"]:
+                    return None
+                px = st["virtual_sol_reserves"] / st["virtual_token_reserves"] / LAMPORTS_PER_SOL
+        except Exception as e:
+            logger.debug(f"reentry price fetch failed for {mint[:8]}: {e}")
+            return float(w.get("_last_rpc_price") or 0.0)
+        w["_last_rpc_price"] = float(px)
+        return float(px)
 
     async def _attempt_reentry(self, w: dict):
         mint = w["mint"]
@@ -873,14 +908,27 @@ class BotState:
         sol_in_lamports = int(trade_sol * LAMPORTS_PER_SOL)
         if sol_in_lamports <= 0:
             return
-        state = await pumpfun.fetch_bonding_curve_state(mint)
-        if not state or state["complete"]:
-            return
+        protocol = w.get("protocol") or "pumpfun"
+        pumpswap_state = None
+        if protocol == "pumpswap":
+            pool = w.get("pumpswap_pool") or (self.tracking.get(mint) or {}).get("pumpswap_pool") or ""
+            pumpswap_state = await pumpswap.fetch_pool_state(pool) if pool else None
+            if not pumpswap_state:
+                return
+            state = {"real_sol_reserves": pumpswap_state["quote_reserves"], "complete": False}
+        else:
+            state = await pumpfun.fetch_bonding_curve_state(mint)
+            if not state or state["complete"]:
+                return
         real_sol = state["real_sol_reserves"] / LAMPORTS_PER_SOL
         if real_sol < self.config.min_curve_liquidity_sol:
             return
         eff_priority, eff_slip, _ = self._resolve_fees()
-        tokens_out, max_sol = pumpfun.quote_buy_tokens(state, sol_in_lamports, eff_slip)
+        tokens_out, max_sol = (
+            pumpswap.quote_buy_tokens(pumpswap_state, sol_in_lamports, eff_slip)
+            if protocol == "pumpswap"
+            else pumpfun.quote_buy_tokens(state, sol_in_lamports, eff_slip)
+        )
         if tokens_out <= 0:
             return
         entry_price_sol = sol_in_lamports / tokens_out / LAMPORTS_PER_SOL
@@ -902,25 +950,42 @@ class BotState:
             speed_mode_at_entry=self.config.speed_mode,
             risk_score=40,
             classifier_action="reentry",
+            protocol=protocol,
+            pumpswap_pool=(w.get("pumpswap_pool") or None) if protocol == "pumpswap" else None,
         )
         if mode == "live":
-            if not creator_str:
-                logger.error(f"re-entry skipped {mint}: missing creator (required for creator_vault PDA)")
-                return
             try:
                 kp = get_keypair()
                 user = get_pubkey()
                 mint_pk = Pubkey.from_string(mint)
-                bc_state = await pumpfun.fetch_bonding_curve_state(mint)
-                curve_creator = (bc_state or {}).get("creator") or creator_str
-                creator_pk = Pubkey.from_string(curve_creator)
-                trade.creator = curve_creator
-                tp = await pumpfun.get_mint_token_program(mint)
-                ixs = [
-                    pumpfun.build_create_ata_ix(user, user, mint_pk, tp),
-                    await pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol, creator_pk, tp),
-                ]
-                sig = await pumpfun.send_versioned_tx(kp, ixs, eff_priority)
+                if protocol == "pumpswap":
+                    base_tp = await pumpfun.get_mint_token_program(mint)
+                    user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
+                    wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, max_sol)
+                    ixs = [
+                        pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp),
+                        *wsol_ixs,
+                        pumpswap.build_buy_ix(
+                            user, pumpswap_state, user_token_ata, wsol_acc,
+                            base_amount_out=tokens_out, max_quote_amount_in=max_sol,
+                            base_token_program=base_tp,
+                        ),
+                        pumpswap.build_close_wsol_ix(user, wsol_acc),
+                    ]
+                    sig = await pumpfun.send_versioned_tx(kp, ixs, eff_priority, compute_unit_limit=400_000)
+                else:
+                    if not creator_str:
+                        raise RuntimeError("missing creator (required for creator_vault PDA)")
+                    bc_state = await pumpfun.fetch_bonding_curve_state(mint)
+                    curve_creator = (bc_state or {}).get("creator") or creator_str
+                    creator_pk = Pubkey.from_string(curve_creator)
+                    trade.creator = curve_creator
+                    tp = await pumpfun.get_mint_token_program(mint)
+                    ixs = [
+                        pumpfun.build_create_ata_ix(user, user, mint_pk, tp),
+                        await pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol, creator_pk, tp),
+                    ]
+                    sig = await pumpfun.send_versioned_tx(kp, ixs, eff_priority)
                 trade.entry_sig = sig
             except Exception as e:
                 logger.exception(f"Live re-entry buy failed for {mint}: {e}")
@@ -930,7 +995,12 @@ class BotState:
                 return
         await self._persist_trade(trade)
         w["attempts"] += 1
-        self.active_trades[mint] = {"trade": trade.model_dump(), "launch": {"creator": w.get("creator"), "mint": mint}}
+        self.active_trades[mint] = {
+            "trade": trade.model_dump(),
+            "launch": {"creator": w.get("creator"), "mint": mint},
+            "protocol": protocol,
+            "pumpswap_pool": w.get("pumpswap_pool") or "",
+        }
         await hub.broadcast("trade_enter", trade.model_dump())
         await hub.broadcast("reentry_attempted", {"mint": mint, "attempts": w["attempts"]})
         asyncio.create_task(self._monitor_position(mint))
@@ -4135,12 +4205,19 @@ class BotState:
         # a fresh greylist_snipe_fire (different mint, different pattern).
         classifier_action = trade_doc.get("classifier_action") or ""
         is_snipe_trade = classifier_action == "greylist_snipe"
+        prev_watch = self.reentry_watch.get(mint)
+        if total_pnl_sol <= 0 and prev_watch is not None:
+            # A losing leg ends the watch — no chained retries off a stale peak.
+            self.reentry_watch.pop(mint, None)
+            await hub.broadcast("reentry_watch_remove", {"mint": mint})
+        graduated_curve = protocol != "pumpswap" and bool(state.get("complete", False))
         if (
             self.config.reentry_enabled
             and not self.stopping_gracefully
             and not is_snipe_trade
             and total_pnl_sol > 0
-            and not state.get("complete", False)
+            and exit_price_sol > 0
+            and not graduated_curve
         ):
             self.reentry_watch[mint] = {
                 "mint": mint,
@@ -4148,13 +4225,18 @@ class BotState:
                 "symbol": trade_doc.get("symbol"),
                 "exit_price_sol": exit_price_sol,
                 "exit_time": time.time(),
-                "attempts": 0,
+                "last_exit_time": time.time(),
+                "last_exit_was_sl": False,
+                "attempts": int(prev_watch.get("attempts") or 0) if prev_watch else 0,
                 "max_attempts": self.config.reentry_max_attempts,
                 "window_s": self.config.reentry_window_seconds,
                 "pullback_pct": self.config.reentry_pullback_pct,
                 "size_multiplier": self.config.reentry_size_multiplier,
                 "original_pnl_usd": total_pnl_usd,
                 "peak_price_after_exit": exit_price_sol,
+                "trough_after_peak": exit_price_sol,
+                "protocol": protocol,
+                "pumpswap_pool": slot.get("pumpswap_pool") or "",
                 "creator": (slot.get("launch") or {}).get("creator"),
             }
             await hub.broadcast("reentry_watch_add", self.reentry_watch[mint])
