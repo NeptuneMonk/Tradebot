@@ -214,6 +214,14 @@ class RHPaperTrader:
         dd_from_peak = (pos["peak_price"] - price) / pos["peak_price"] * 100.0 if pos["peak_price"] > 0 else 0.0
         if b.get("graduated"):
             return "graduated"
+        if (
+            cfg.no_momentum_exit_enabled
+            and not pos.get("_nm_checked")
+            and now - pos["opened"] >= cfg.no_momentum_after_s
+        ):
+            pos["_nm_checked"] = True
+            if peak_pct < cfg.no_momentum_min_mfe_pct:
+                return "no_momentum"
         if pnl_pct >= cfg.take_profit_pct:
             return "take_profit"
         if pnl_pct <= -cfg.stop_loss_pct:

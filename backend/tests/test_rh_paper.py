@@ -118,7 +118,8 @@ def test_enter_then_take_profit_exit_math():
 
 
 def test_stop_loss_trailing_graduation_and_hold():
-    st = make_state(stop_loss_pct=12.0, trailing_arm_pct=12.0, trailing_stop_pct=6.0, hold_max_seconds=35)
+    st = make_state(stop_loss_pct=12.0, trailing_arm_pct=12.0, trailing_stop_pct=6.0, hold_max_seconds=35,
+                    no_momentum_exit_enabled=False)
     now = time.time()
     b = hot_bucket(st.rh_discovery, now, price=1e-9, first=5e-10)
     asyncio.run(st.rh_paper._enter(TOKEN))
@@ -221,3 +222,29 @@ def test_tick_exit_marked_and_event_path_ignored_when_no_position():
     asyncio.run(st.rh_paper.exit(TOKEN, "manual exit"))
     doc = st.db.trades.docs[next(iter(st.db.trades.docs))]
     assert doc["exit_mode"] == "tick" and doc["exit_reason"] == "manual exit"
+
+
+def test_no_momentum_exit_one_shot():
+    st = make_state(no_momentum_after_s=30, no_momentum_min_mfe_pct=5.0, stop_loss_pct=50, hold_max_seconds=999)
+    now = time.time()
+    b = hot_bucket(st.rh_discovery, now, price=1e-9, first=5e-10)
+    asyncio.run(st.rh_paper._enter(TOKEN))
+    pos = st.rh_paper.positions[TOKEN]
+    # 20s in, flat → not yet
+    pos["opened"] = time.time() - 20
+    b["last_price_quote"] = 1.01e-9
+    assert st.rh_paper._decide_exit(pos, b, time.time()) is None
+    # 31s in, peak only +1% → no_momentum
+    pos["opened"] = time.time() - 31
+    assert st.rh_paper._decide_exit(pos, b, time.time()) == "no_momentum"
+    # a position that DID move (+8% peak) passes and is never re-checked
+    pos2 = {"trade": dict(pos["trade"]), "peak_price": 1.08e-9, "_last_price": 1.0e-9, "opened": time.time() - 31}
+    assert st.rh_paper._decide_exit(pos2, b, time.time()) is None
+    assert pos2["_nm_checked"] is True
+    b["last_price_quote"] = 0.99e-9
+    pos2["opened"] = time.time() - 60
+    assert st.rh_paper._decide_exit(pos2, b, time.time()) is None
+    # disabled
+    st.config = BotConfig(enabled=True, rh_paper_enabled=True, no_momentum_exit_enabled=False, stop_loss_pct=50, hold_max_seconds=999)
+    pos3 = {"trade": dict(pos["trade"]), "peak_price": 1e-9, "_last_price": 1e-9, "opened": time.time() - 90}
+    assert st.rh_paper._decide_exit(pos3, b, time.time()) is None

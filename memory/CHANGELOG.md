@@ -1750,3 +1750,24 @@ lines in `bot.py` (import + construct + start for `RHDiscovery`, `RHPaperTrader`
   bot.py's normal exit path. `trade_enter` likewise.
 - Verified live: 6 entries / 5 exits over 2.5 min, 0 reattach warnings,
   0 Base58 errors, 52 history rows rendered with 0 blanks.
+
+### 2026-06 — Holistic trading review → option (d): config table + no-momentum exit
+- Review of 81 paper trades (42 SOL / 39 RH) + live history: SL@56% caused
+  5 stops = −$7.81 (whole SOL loss); 20 flat positions (MFE ≤3%) bled to
+  timeout for −$14; trailing exits 100% green; reentry best source (75% win);
+  12 "fast pump" churn entries (risk 70); live history dominated by 711 ghost
+  buys (execution, not strategy).
+- NEW no-momentum exit (both chains): `no_momentum_exit_enabled` (True),
+  `no_momentum_after_s` (30), `no_momentum_min_mfe_pct` (5). One-shot check;
+  snipes + partial-TP'd positions exempt. bot.py: one guarded block after the
+  timeout block in `_monitor_position` (reason "no-momentum (peak +x% after ys)").
+  rh_paper: `_decide_exit` → "no_momentum". UI fields `no-momentum-after-input`,
+  `no-momentum-mfe-input` next to Max Hold.
+- Config applied (previous saved at /app/memory/cfg_before_review_2026-06.json):
+  SL 56→20, TP 120→45, reentry size 0.5→1.0, reentry pullback 25→20,
+  RH: new_buyers_1m 2→6, min_growth 30→15, min_mc 1500→8000, max_mc 260k→60k,
+  max_age 300→20 min. Kept user's hold_max 90 and growth_new 20.
+- Live paper check: PORT exited no_momentum at −0.6% (MFE 4.1%), NBIS TP +51%.
+- Not built (declined for now): pre-entry fast-pump veto, growth ceilings,
+  RH-specific TP/SL, source-aware sizing.
+- Tests: test_no_momentum_exit.py (3), test_rh_paper.py (+1) — pass.

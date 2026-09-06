@@ -323,6 +323,14 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                hint="Hard time cap on a position. If neither TP nor SL fires within this window, the bot exits as 'timeout'."
                value={local.hold_max_seconds}
                onChange={(v) => setLocal({ ...local, hold_max_seconds: parseInt(v, 10) || 0 })} step="1" />
+        <Field label="No-Mo Check (s)" testid="no-momentum-after-input"
+               hint="No-momentum exit: one-shot check this many seconds after entry (both chains). If the position never reached the MFE floor below, exit as 'no-momentum'. Snipes and positions that already took partial TP are exempt. Set 0 to disable."
+               value={local.no_momentum_after_s ?? 30}
+               onChange={(v) => { const n = parseInt(v, 10) || 0; setLocal({ ...local, no_momentum_after_s: n, no_momentum_exit_enabled: n > 0 }); }} step="5" />
+        <Field label="No-Mo MFE (%)" testid="no-momentum-mfe-input"
+               hint="Minimum peak gain (max favourable excursion) the position must have shown by the check time to be allowed to keep running."
+               value={local.no_momentum_min_mfe_pct ?? 5}
+               onChange={(v) => setLocal({ ...local, no_momentum_min_mfe_pct: parseFloat(v) || 0 })} step="1" />
         {showAdvancedFees && (
           <Field label="Priority µLamp" testid="prio-input"
                  hint="Compute-unit price in micro-lamports. Higher = better landing odds, higher fee. Speed Mode handles this; manual override only."

@@ -81,6 +81,13 @@ class BotConfig(BaseModel):
     speed_mode: str = "manual"
     hold_max_seconds: int = 35       # 2026-06-06: 45→35 — Pump.fun dumps
                                      # accelerate past the old window
+    # No-momentum exit (2026-06 review): 20/81 paper trades sat flat
+    # (MFE <= 3%) then bled to the timeout for -$14 combined. One-shot check
+    # at `no_momentum_after_s`: if the position never reached
+    # `no_momentum_min_mfe_pct`, exit. Snipes and partial-TP'd positions skip.
+    no_momentum_exit_enabled: bool = True
+    no_momentum_after_s: int = 30
+    no_momentum_min_mfe_pct: float = 5.0
     take_profit_pct: float = 20.0    # data: 12% was cutting winners; 20% balanced
     stop_loss_pct: float = 12.0      # 2026-06-06: 15→12 — tighter live risk cap
     trailing_stop_pct: float = 6.0   # 2026-06-06: 8→6 — lock gains sooner

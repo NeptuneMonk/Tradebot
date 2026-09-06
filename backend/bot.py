@@ -2782,6 +2782,27 @@ class BotState:
                         finally:
                             slot["exit_in_progress"] = False
 
+                # No-momentum exit — one-shot at no_momentum_after_s: a position
+                # that never reached +min_mfe% is dead money on a micro-cap.
+                if (
+                    not is_snipe
+                    and self.config.no_momentum_exit_enabled
+                    and not slot.get("partial_done")
+                    and not slot.get("_no_momentum_checked")
+                    and elapsed >= self.config.no_momentum_after_s
+                ):
+                    slot["_no_momentum_checked"] = True
+                    _ep = float((slot.get("trade") or {}).get("entry_price_sol") or 0)
+                    _pk = float(slot.get("peak_price_sol") or 0)
+                    _mfe = (_pk / _ep - 1.0) * 100.0 if _ep > 0 and _pk > 0 else 0.0
+                    if _mfe < self.config.no_momentum_min_mfe_pct:
+                        slot["exit_in_progress"] = True
+                        try:
+                            await self._exit(mint, reason=f"no-momentum (peak {_mfe:+.1f}% after {int(elapsed)}s)")
+                            return
+                        finally:
+                            slot["exit_in_progress"] = False
+
                 # Protocol-aware price polling
                 protocol = slot.get("protocol", "pumpfun")
                 if protocol == "pumpswap":
