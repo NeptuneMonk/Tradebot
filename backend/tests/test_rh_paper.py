@@ -67,6 +67,55 @@ def hot_bucket(disc, now, *, age_s=60, price=2e-9, first=1e-9, buyers=12, curve=
     return b
 
 
+async def _enter_and_fill(st, token=TOKEN, **kw):
+    """Paper buys are queued and filled from the poll at their fill block — drive that here."""
+    await st.rh_paper._enter(token, **kw)
+    pb = st.rh_paper.pending_buys.get(token)
+    if pb:
+        st.rh_paper.resolve_pending_buys(pb["fill_block"])
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+
+def enter(st, **kw):
+    asyncio.run(_enter_and_fill(st, **kw))
+
+
+def test_paper_buy_fills_at_fill_block_price_with_own_impact_and_rejects_stale_decisions():
+    """Regression 2026-09-07 (MANTA +213% in 1.6s): the paper buy filled at a price that was
+    3 s stale while the curve had already graduated. Live would have reverted."""
+    st = make_state(paper_exit_latency_ms=600)       # 6 blocks at 100 ms
+    now = time.time()
+    b = hot_bucket(st.rh_discovery, now, price=6.289e-9)
+    st.rh_discovery.stats["head"] = 100
+    V, K0 = 1.68, 1.68e9
+    b.update(curve_a=(6.289e-9 * K0) ** 0.5, curve_k0=K0)
+    # 1) graduated before the fill block → rejected, slot released
+    asyncio.run(st.rh_paper._enter(TOKEN))
+    assert TOKEN in st.rh_paper.pending_buys and TOKEN in st.rh_paper._pending_entries
+    assert st.rh_paper.pending_buys[TOKEN]["fill_block"] == 106
+    b["graduated"] = True
+    st.rh_paper.resolve_pending_buys(105)
+    assert TOKEN in st.rh_paper.pending_buys            # not landed yet
+    st.rh_paper.resolve_pending_buys(106)
+    assert TOKEN not in st.rh_paper.pending_buys and TOKEN not in st.rh_paper.positions
+    assert TOKEN not in st.rh_paper._pending_entries and st.rh_paper.stats["entries_rejected"] == 1
+    # 2) price ran +220% before the fill block → rejected like a live buy past its slippage tolerance
+    b["graduated"] = False
+    b["block_prices"].append((106, 2.015e-8))
+    asyncio.run(st.rh_paper._enter(TOKEN))
+    st.rh_paper.resolve_pending_buys(106)
+    assert TOKEN not in st.rh_paper.positions and st.rh_paper.stats["entries_rejected"] == 2
+    # 3) normal: fills at the fill block's price (+3%) and our own $10 buy nudges the price a little more
+    b["block_prices"].clear()
+    b["block_prices"].append((106, 6.289e-9 * 1.03))
+    enter(st)
+    t = st.rh_paper.positions[TOKEN]["trade"]
+    assert t["entry_block"] == 106 and abs(t["entry_decision_price_quote"] - 6.289e-9) < 1e-15
+    assert t["entry_price_quote"] > 6.289e-9 * 1.03          # own impact on the exact curve
+    assert t["entry_price_quote"] < 6.289e-9 * 1.03 * 1.01   # …but tiny for a $10 stake on a $8k curve
+
+
 def test_snipe_tax_schedule():
     assert rp.snipe_tax_bps(0.0) == 9900
     assert rp.snipe_tax_bps(1.0) == 618
@@ -97,7 +146,7 @@ def test_enter_then_take_profit_exit_math():
     st = make_state(take_profit_pct=20.0)
     now = time.time()
     b = hot_bucket(st.rh_discovery, now, price=2e-9)
-    asyncio.run(st.rh_paper._enter(TOKEN))
+    enter(st)
     assert TOKEN in st.rh_paper.positions
     t = st.rh_paper.positions[TOKEN]["trade"]
     assert t["chain"] == "rh" and t["mode"] == "paper" and t["classifier_action"] == "rh_pons_paper"
@@ -122,7 +171,7 @@ def test_stop_loss_trailing_graduation_and_hold():
                     no_momentum_exit_enabled=False)
     now = time.time()
     b = hot_bucket(st.rh_discovery, now, price=1e-9, first=5e-10)
-    asyncio.run(st.rh_paper._enter(TOKEN))
+    enter(st)
     pos = st.rh_paper.positions[TOKEN]
 
     def check(price, expect, graduated=False, opened_ago=0):
@@ -161,7 +210,7 @@ def test_max_positions_gate():
     st = make_state(rh_max_positions=1)
     now = time.time()
     hot_bucket(st.rh_discovery, now)
-    asyncio.run(st.rh_paper._enter(TOKEN))
+    enter(st)
     other = "0x" + "e" * 40
     b2 = dict(st.rh_discovery.tracking[TOKEN])
     b2["buyers"] = set(st.rh_discovery.tracking[TOKEN]["buyers"])
@@ -176,7 +225,7 @@ def test_event_driven_stop_fires_on_breaching_trade_and_fills_after_latency():
     st = make_state(stop_loss_pct=12.0, paper_exit_latency_ms=600, exit_momentum_gate_enabled=False)
     now = time.time()
     b = hot_bucket(st.rh_discovery, now, price=1e-9, first=5e-10)
-    asyncio.run(st.rh_paper._enter(TOKEN))
+    enter(st)
     pos = st.rh_paper.positions[TOKEN]
     assert st.rh_paper.latency_blocks() == 6
     disc = st.rh_discovery
@@ -218,7 +267,7 @@ def test_tick_exit_marked_and_event_path_ignored_when_no_position():
     # no position → on_trade is a no-op
     st.rh_paper.on_trade(TOKEN, b, {"side": "sell", "price": 1e-12, "block": 5}, now)
     assert TOKEN not in st.rh_paper.positions
-    asyncio.run(st.rh_paper._enter(TOKEN))
+    enter(st)
     asyncio.run(st.rh_paper.exit(TOKEN, "manual exit"))
     doc = st.db.trades.docs[next(iter(st.db.trades.docs))]
     assert doc["exit_mode"] == "tick" and doc["exit_reason"] == "manual exit"
@@ -228,7 +277,7 @@ def test_no_momentum_exit_one_shot():
     st = make_state(no_momentum_after_s=30, no_momentum_min_mfe_pct=5.0, stop_loss_pct=50, hold_max_seconds=999)
     now = time.time()
     b = hot_bucket(st.rh_discovery, now, price=1e-9, first=5e-10)
-    asyncio.run(st.rh_paper._enter(TOKEN))
+    enter(st)
     pos = st.rh_paper.positions[TOKEN]
     # 20s in, flat → not yet
     pos["opened"] = time.time() - 20
@@ -254,7 +303,7 @@ def test_rh_momentum_gate_defers_sl_until_buyers_fade_or_budget():
     st = make_state(stop_loss_pct=12.0, no_momentum_exit_enabled=False, hold_max_seconds=999)
     now = time.time()
     b = hot_bucket(st.rh_discovery, now, price=1e-9, first=5e-10)
-    asyncio.run(st.rh_paper._enter(TOKEN))
+    enter(st)
     pos = st.rh_paper.positions[TOKEN]
     b["last_price_quote"] = 0.85e-9                      # -15%
     b["buy_events"].clear()
@@ -278,7 +327,7 @@ def test_rh_reentry_watch_pullback_and_breakout():
                     exit_momentum_gate_enabled=False, reentry_min_wait_s=0)
     now = time.time()
     b = hot_bucket(st.rh_discovery, now, price=1e-9, first=5e-10)
-    asyncio.run(st.rh_paper._enter(TOKEN))
+    enter(st)
     b["last_price_quote"] = 1.3e-9
     asyncio.run(st.rh_paper.exit(TOKEN, "take_profit"))
     assert TOKEN in st.rh_paper.watch and TOKEN not in st.rh_paper.positions
@@ -303,6 +352,9 @@ def test_rh_reentry_watch_pullback_and_breakout():
 
     async def run():
         st.rh_paper._scan_reentries(time.time())
+        await asyncio.sleep(0.05)
+        pb = st.rh_paper.pending_buys.get(TOKEN)
+        st.rh_paper.resolve_pending_buys(pb["fill_block"])
         await asyncio.sleep(0.05)
     asyncio.run(run())
     assert w["attempts"] == 1 and w["last_trigger"] == "pullback"

@@ -447,6 +447,26 @@ class RHDiscovery:
             paper = getattr(self.state, "rh_paper", None)
             if paper is not None:
                 paper.on_trade(token, b, tr, now)
+        self._score_feed_projections()
+
+    def _score_feed_projections(self):
+        """Compare each feed projection with the spot price after ALL trades of its block landed."""
+        feed = getattr(self.state, "rh_feed", None)
+        for b in self.tracking.values():
+            est = b.pop("_score_est", None)
+            if not est or feed is None:
+                continue
+            spot = float(b.get("last_price_quote") or 0.0)
+            if spot <= 0 or int(b.get("last_block") or 0) < int(est.get("seq") or 0):
+                continue
+            err = (float(est["price"]) / spot - 1.0) * 100.0
+            if abs(err) > 5.0:
+                logger.info(f"rh_feed projection miss {b.get('symbol')} seq={est.get('seq')} kind={est.get('kind')} "
+                            f"est={est['price']:.3e} spot={spot:.3e} err={err:+.1f}% age={time.time() - float(b.get('start') or 0):.1f}s")
+            fs = feed.stats
+            fs["feed_scored"] = fs.get("feed_scored", 0) + 1
+            fs["feed_err_last_pct"] = round(err, 3)
+            fs["feed_abs_err_ema_pct"] = round(0.9 * fs.get("feed_abs_err_ema_pct", abs(err)) + 0.1 * abs(err), 3)
 
     def apply_trade(self, b: dict, tr: dict, now: float):
         if tr["side"] == "buy":
@@ -498,15 +518,9 @@ class RHDiscovery:
                 spot = tr["price"]
             b["last_price_quote"] = spot
             est = b.pop("feed_est", None)
-            if est and est.get("exact") and int(tr.get("block") or 0) == int(est.get("seq") or -1) and spot > 0:
-                # the poll just landed the very tx the feed projected → score the projection
-                feed = getattr(self.state, "rh_feed", None)
-                if feed is not None:
-                    err = (float(est["price"]) / spot - 1.0) * 100.0
-                    fs = feed.stats
-                    fs["feed_scored"] = fs.get("feed_scored", 0) + 1
-                    fs["feed_err_last_pct"] = round(err, 3)
-                    fs["feed_abs_err_ema_pct"] = round(0.9 * fs.get("feed_abs_err_ema_pct", abs(err)) + 0.1 * abs(err), 3)
+            if est and est.get("exact") and int(tr.get("block") or 0) == int(est.get("seq") or -1):
+                # the poll is landing the block the feed projected; score once the whole block is applied
+                b["_score_est"] = est
             b["block_prices"].append((tr.get("block") or 0, spot))
             b["last_block"] = max(int(b.get("last_block") or 0), int(tr.get("block") or 0))
             if now - b["last_price_sample_ts"] >= 1.0:

@@ -70,6 +70,7 @@ class RHPaperTrader:
         self.watch: dict[str, dict] = {}   # re-entry watch after winning exits
         self._task: asyncio.Task | None = None
         self._pending_entries: set[str] = set()
+        self.pending_buys: dict[str, dict] = {}
         self.stats = {"entries": 0, "exits": 0, "skipped": 0, "last_scan_ts": 0.0}
 
     def start(self):
@@ -242,7 +243,10 @@ class RHPaperTrader:
         self._pending_entries.add(token)
         await self._enter(token, manual=True)
         if token in self.positions:
-            return {"ok": True, "mint": token, "symbol": b.get("symbol"), "mode": "paper", "chain": CHAIN}
+            return {"ok": True, "mint": token, "symbol": b.get("symbol"), "mode": "live" if self.live_ok(b) else "paper", "chain": CHAIN}
+        if token in self.pending_buys:
+            return {"ok": True, "mint": token, "symbol": b.get("symbol"), "mode": "paper", "chain": CHAIN,
+                    "queued": True, "fill_block": self.pending_buys[token]["fill_block"]}
         return {"ok": False, "reason": "paper entry did not open (unpriced quote or no price yet)"}
 
     async def _enter(self, token: str, size_mult: float = 1.0, reentry: str | None = None,
@@ -258,7 +262,6 @@ class RHPaperTrader:
             if price <= 0 or quote_usd <= 0:
                 return
             now = time.time()
-            fee = fee_fraction(now - b["start"])
             _gov = getattr(self.state, "bankroll", None)
             base_stake = float(getattr(cfg, "rh_max_trade_usd", 5.0))
             if base_stake <= 0:
@@ -266,23 +269,90 @@ class RHPaperTrader:
                 return
             stake_usd = base_stake * max(0.1, float(size_mult)) * (_gov.size_mult("rh") if _gov else 1.0)
             stake_quote = stake_usd / quote_usd
-            tokens = stake_quote * (1.0 - fee) / price
-            mode = "paper"
-            live_fill = None
+            ctx = {"reentry": reentry, "reentry_ctx": reentry_ctx, "manual": manual}
             if self.live_ok(b):
                 live_fill = await self._live_buy(token, b, stake_quote, price)
                 if live_fill is None:
                     return
+                await self._open_position(token, b, price, stake_quote, quote_usd, now, live_fill, ctx)
+                return
+            # PAPER: a real buy would land `latency_blocks` after the chain head we last saw, at THAT block's
+            # price — not at the (possibly seconds-stale) last polled price. Queue it and fill from the poll.
+            head = int(self.state.rh_discovery.stats.get("head") or b.get("last_block") or 0)
+            self.pending_buys[token] = {"decision_block": head, "fill_block": head + self.latency_blocks(),
+                                        "decision_price": price, "stake_quote": stake_quote, "ts": now, "ctx": ctx}
+            self._pending_entries.add(token)   # keeps the slot reserved until the fill resolves
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"rh_paper enter failed {token[:10]}: {e}")
+        self._pending_entries.discard(token)
+
+    def resolve_pending_buys(self, head: int):
+        """Fill queued paper buys once their fill block has landed, mirroring what a live
+        buy would have done: reject if the curve graduated first or the price ran past the
+        live slippage tolerance; otherwise fill at the fill block's price including our own impact."""
+        cfg = self.state.config
+        for token, pb in list(self.pending_buys.items()):
+            if head < pb["fill_block"]:
+                continue
+            self.pending_buys.pop(token, None)
+            b = self.state.rh_discovery.tracking.get(token)
+            reason = None
+            if not b or b.get("graduated"):
+                reason = "graduated before fill"
+            else:
+                fill = pb["decision_price"]
+                for blk, px in reversed(b.get("block_prices", ())):
+                    if blk <= pb["fill_block"] and px > 0:
+                        fill = px
+                        break
+                tol = float(getattr(cfg, "rh_live_slippage_pct", 8.0)) / 100.0
+                if fill > pb["decision_price"] * (1.0 + tol):
+                    reason = f"price ran +{(fill / pb['decision_price'] - 1) * 100:.0f}% before fill (> {tol * 100:.0f}% slippage)"
+            if reason:
+                self._pending_entries.discard(token)
+                self.stats["entries_rejected"] = self.stats.get("entries_rejected", 0) + 1
+                logger.info(f"rh_paper entry REJECTED {b['symbol'] if b else token[:10]}: {reason}")
+                continue
+            asyncio.create_task(self._open_position(token, b, fill, pb["stake_quote"], self._quote_usd(b["quote_symbol"]),
+                                                    time.time(), None, pb["ctx"], fill_block=pb["fill_block"],
+                                                    decision_price=pb["decision_price"]))
+
+    async def _open_position(self, token: str, b: dict, price: float, stake_quote: float, quote_usd: float,
+                             now: float, live_fill: dict | None, ctx: dict, fill_block: int | None = None,
+                             decision_price: float | None = None):
+        try:
+            if token in self.positions or token in self.entered:
+                return
+            fee = fee_fraction(now - b["start"])
+            reentry, reentry_ctx, manual = ctx.get("reentry"), ctx.get("reentry_ctx"), ctx.get("manual")
+            if live_fill:
                 mode = "live"
                 stake_quote = live_fill["quote_wei"] / 1e18
                 tokens = live_fill["tokens_raw"] / 1e18
-                stake_usd = stake_quote * quote_usd
+                price = stake_quote / tokens if tokens > 0 else price
+            else:
+                mode = "paper"
+                k0 = b.get("curve_k0")
+                if k0 and b.get("curve_a"):
+                    # exact curve at the fill price: our own buy moves the price too
+                    a = (price * k0) ** 0.5
+                    a2 = a + stake_quote * (1.0 - fee)
+                    tokens = k0 / a - k0 / a2
+                    price = stake_quote * (1.0 - fee) / tokens if tokens > 0 else price
+                else:
+                    tokens = stake_quote * (1.0 - fee) / price
+            if tokens <= 0:
+                return
+            stake_usd = stake_quote * quote_usd
             trade = Trade(
                 mint=token, creator=b["creator"], name=b["name"], symbol=b["symbol"],
                 mode=mode, entry_usd=stake_usd, entry_tokens=tokens,
                 protocol=PROTOCOL, classifier_action=ENTRY_ACTION, risk_score=50,
                 chain=CHAIN, quote_symbol=b["quote_symbol"], entry_quote=stake_quote,
-                entry_price_quote=(stake_quote / tokens if (live_fill and tokens > 0) else price),
+                entry_price_quote=price,
                 fees_usd=((live_fill["fee_wei"] + live_fill["gas_cost_wei"]) / 1e18 * quote_usd) if live_fill
                          else stake_quote * fee * quote_usd + self._paper_gas_usd(),
             )
@@ -291,6 +361,8 @@ class RHPaperTrader:
                 doc.update({"entry_sig": live_fill["tx"], "entry_tokens_raw": str(live_fill["tokens_raw"]), "curve": b.get("curve"),
                             "entry_gas_usd": live_fill["gas_cost_wei"] / 1e18 * quote_usd,
                             "entry_latency_s": live_fill["latency_s"], "entry_block": live_fill["block"]})
+            else:
+                doc.update({"entry_block": fill_block, "entry_decision_price_quote": decision_price})
             # entry_time stays a datetime (bot.py stores BSON dates; a string
             # here would sort below every SOL trade in /trades/history).
             doc["launch_id"] = b["launch_id"]
@@ -309,11 +381,11 @@ class RHPaperTrader:
             await self.state.db.launches.update_one({"_id": b["launch_id"]}, {"$set": launch_update})
             await hub.broadcast("launch_update", {"id": b["launch_id"], "mint": token, **launch_update})
             await hub.broadcast("trade_enter", {**doc, "entry_time": _iso(doc["entry_time"])})
-            logger.info(f"rh_paper ENTER {b['symbol']} {token[:10]} ${stake_usd:.2f} @ {price:.3e} {b['quote_symbol']} fee={fee*100:.2f}%")
+            logger.info(f"rh_paper ENTER {b['symbol']} {token[:10]} ${stake_usd:.2f} @ {price:.3e} {b['quote_symbol']} fee={fee*100:.2f}% [{mode}]")
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.warning(f"rh_paper enter failed {token[:10]}: {e}")
+            logger.warning(f"rh_paper open failed {token[:10]}: {e}")
         finally:
             self._pending_entries.discard(token)
 
@@ -537,6 +609,7 @@ class RHPaperTrader:
     def resolve_pending(self, head: int):
         """After each poll: fill any triggered exit whose fill block has
         landed, at the last curve price seen at/before that block."""
+        self.resolve_pending_buys(head)
         for token, pos in list(self.positions.items()):
             trig = pos.get("exit_trigger")
             if not trig or pos.get("_fill_task"):
