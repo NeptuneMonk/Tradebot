@@ -48,6 +48,9 @@ class BotConfig(BaseModel):
     rh_live_slippage_pct: float = 8.0
     rh_gas_reserve_eth: float = 0.002      # never spend below this ETH balance (gas for exits)
     rh_daily_kill_switch_usd: float = 20.0 # live RH realised loss today → rh_live_trading auto-off
+    # RH stake — its own dial (Autopilot derives it from the RH bankroll, never from the Solana one)
+    rh_max_trade_usd: float = 5.0
+    rh_fee_drag_max_pct: float = 5.0       # round-trip gas may eat at most this % of a stake → min viable stake
     # Sequencer-feed rug detector: exit the instant a big sell is ORDERED (before the poll sees it)
     rh_seq_feed_enabled: bool = True
     rh_rug_sell_usd: float = 300.0         # a single sell ≥ this USD value on a held curve → exit now

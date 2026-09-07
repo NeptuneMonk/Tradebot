@@ -69,7 +69,7 @@ class ProfitSweeper:
 
     async def preview(self) -> dict:
         cfg = self.state.config
-        bankroll, source = await self.bankroll.bankroll_usd()
+        bankroll, source = await self.bankroll.bankroll_usd("sol")
         baseline = float(cfg.sweep_baseline_usd or 0.0)
         profit = max(0.0, bankroll - baseline) if baseline > 0 else 0.0
         amount = profit * float(cfg.sweep_pct_of_profit) / 100.0
@@ -134,7 +134,7 @@ class ProfitSweeper:
             self.last_error = ""
             # baseline → post-sweep bankroll: retained profit keeps compounding,
             # only new growth is sliced next time
-            new_bankroll, _ = await self.bankroll.bankroll_usd()
+            new_bankroll, _ = await self.bankroll.bankroll_usd("sol")
             cfg.sweep_baseline_usd = round(new_bankroll, 2)
             await self.state.save_config()
             await self._persist(last_sweep_ts=self.last_sweep_ts)
@@ -188,7 +188,7 @@ class ProfitSweeper:
             try:
                 cfg = self.state.config
                 if cfg.sweep_enabled:
-                    bankroll, _ = await self.bankroll.bankroll_usd()
+                    bankroll, _ = await self.bankroll.bankroll_usd("sol")
                     await self.ensure_baseline(bankroll)
                     if self.next_due_ts() and time.time() >= self.next_due_ts():
                         await self.sweep_now(force=False)

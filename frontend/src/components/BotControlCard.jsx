@@ -156,8 +156,8 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
             setLocal((cur) => ({ ...cur, helius_tracker_enabled: next }));
             setBaseline((b) => (b ? { ...b, helius_tracker_enabled: next } : b));
             toast.success(next
-              ? "Helius tracker resumed — listener reconnecting…"
-              : "Helius tracker paused — credit consumption halted");
+              ? "Pump.fun feed ON — Solana trading resumes, listener reconnecting…"
+              : "Pump.fun feed OFF — no new Solana entries; Robinhood keeps trading");
           } catch {
             toast.error("Toggle failed");
           }
@@ -174,17 +174,17 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
           ) : (
             <Pause className="w-3 h-3" />
           )}
-          Helius Tracker
+          Pump.fun Feed · Solana Trading
         </span>
         <span className="flex items-center gap-1.5">
-          <span className={`text-[10px] ${(local.helius_tracker_enabled ?? true) ? "text-emerald-300" : "text-amber-300"}`}>
-            {(local.helius_tracker_enabled ?? true) ? "LIVE" : "PAUSED"}
+          <span className={`text-[10px] ${(local.helius_tracker_enabled ?? true) ? "text-emerald-300" : "text-amber-300"}`} data-testid="helius-tracker-state">
+            {(local.helius_tracker_enabled ?? true) ? "ON" : "OFF"}
           </span>
-          <HelpHint label="Helius Tracker">
+          <HelpHint label="Pump.fun Feed · Solana Trading">
             <div className="space-y-1.5">
-              <div><span className="text-emerald-300">LIVE</span>: listener subscribes to Pump.fun via Helius WSS; scanner can fetch pool/curve state to fire entries; account-event bus subscribes to position events. Burns Helius credits proportional to chain activity.</div>
-              <div><span className="text-amber-300">PAUSED</span>: listener disconnects, scanner skips RPC fetches, new entries are blocked, account-event bus idles, wallet-graph hunter idles. <strong>Open positions continue monitoring</strong> (small footprint — required to detect exits and protect funds). HTTP discovery from pump.fun&apos;s API continues (not a Helius endpoint).</div>
-              <div className="text-neutral-400">Use this when running preview + production simultaneously to throttle credit consumption on the environment you&apos;re not actively trading on.</div>
+              <div><span className="text-emerald-300">ON</span>: the bot listens to Pump.fun launches via Helius, the momentum scanner fetches curve state, and Solana entries (new-band, seasoned momentum, greylist snipes, re-entries) can fire. Burns Helius credits proportional to chain activity.</div>
+              <div><span className="text-amber-300">OFF — Robinhood only</span>: Pump.fun feed disconnects and <strong>no new Solana trades open</strong>. Robinhood paper/live trading, the sequencer feed and Autopilot are unaffected (they never touch Helius). <strong>Open Solana positions keep being monitored</strong> until they exit, so nothing is stranded.</div>
+              <div className="text-neutral-400">Use OFF when you only want to run Robinhood trades, or to stop Helius credit burn on an environment you aren&apos;t trading on. Start/Stop still controls the whole bot.</div>
             </div>
           </HelpHint>
         </span>
@@ -871,7 +871,11 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
           <HelpHint label="RH Paper Gates">Entry filters for the Robinhood Chain paper trader. Independent from the Pump.fun bands — PONS launches graduate at 4.2 ETH and carry a 99% snipe tax in the first 3 seconds, so the defaults skip the launch window and the graduation sweep.</HelpHint>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
-          <Field label="Max Positions" testid="rh-max-positions-input" hint="Concurrent RH paper positions."
+          <Field label="RH Stake $" testid="rh-max-trade-input" hint="Stake per Robinhood trade (paper and live). Autopilot derives it from the RH bankroll × risk% and lifts it to the fee floor — round-trip gas is ~$0.19 on Robinhood Chain, so a $0.50 stake needs +40% just to break even; $5 needs ~6%."
+                 value={local.rh_max_trade_usd ?? 5} onChange={(v) => setLocal({ ...local, rh_max_trade_usd: parseFloat(v) || 0 })} step="1" />
+          <Field label="Max gas drag %" testid="rh-fee-drag-input" hint="Autopilot floor: round-trip gas may eat at most this % of a stake. 5% with $0.19 gas → min stake $3.80 (break-even ≈ +7% incl. the 2% curve fee)."
+                 value={local.rh_fee_drag_max_pct ?? 5} onChange={(v) => setLocal({ ...local, rh_fee_drag_max_pct: parseFloat(v) || 0 })} step="1" />
+          <Field label="Max Positions" testid="rh-max-positions-input" hint="Concurrent RH positions."
                  value={local.rh_max_positions ?? 3} onChange={(v) => setLocal({ ...local, rh_max_positions: parseInt(v, 10) || 0 })} step="1" />
           <Field label="Min Age (s)" testid="rh-min-age-input" hint="Skip the launch window. Snipe tax is 99% at t=0 and zero after 3s."
                  value={local.rh_min_age_s ?? 5} onChange={(v) => setLocal({ ...local, rh_min_age_s: parseInt(v, 10) || 0 })} step="1" />

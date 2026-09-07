@@ -91,6 +91,12 @@ export default function RhWalletCard({ config }) {
             <div><div className="text-[9px] uppercase tracking-[0.15em] text-neutral-600">status</div><div className={w.live_kill_tripped ? "text-rose-300" : "text-neutral-200"}>{w.live_kill_tripped ? "RH kill switch tripped" : live ? "live · gas reserve " + w.gas_reserve_eth + " ETH" : "paper only"}</div></div>
           </div>
           {w.last_live_error && <div className="text-rose-400/90 text-[10px]">last live error: {w.last_live_error}</div>}
+          {w.fee_floor && (
+            <div className={`text-[10px] ${w.stake_usd > 0 && w.stake_usd < w.fee_floor.min_stake_usd ? "text-amber-300" : "text-neutral-500"}`} data-testid="rh-wallet-fee-floor">
+              stake ${Number(w.stake_usd ?? 0).toFixed(2)} · gas ≈ ${Number(w.fee_floor.gas_round_trip_usd).toFixed(2)}/round trip + {w.fee_floor.curve_fee_round_trip_pct}% curve fee → break-even ≈ +{(w.fee_floor.curve_fee_round_trip_pct + (w.stake_usd > 0 ? (w.fee_floor.gas_round_trip_usd / w.stake_usd) * 100 : 0)).toFixed(1)}%
+              {w.stake_usd > 0 && w.stake_usd < w.fee_floor.min_stake_usd && <> · below the ${Number(w.fee_floor.min_stake_usd).toFixed(2)} fee floor — gas eats &gt;{w.fee_floor.max_gas_drag_pct}% of every trade</>}
+            </div>
+          )}
 
           <div className="border-t border-neutral-800 pt-3 grid grid-cols-1 sm:grid-cols-[2fr_1fr_auto] gap-2 items-end">
             <label className="block"><span className="text-[9px] uppercase tracking-[0.15em] text-neutral-600">send ETH to</span>

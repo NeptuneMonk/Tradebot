@@ -39,7 +39,7 @@ ENTRY_ACTION = "rh_pons_paper"
 CURVE_FEE_BPS = 100
 SNIPE_TAX_START_BPS = 9900
 SNIPE_TAX_SECONDS = 3
-RH_GAS_USD = 0.02
+RH_GAS_USD = 0.09  # fallback per-side gas; live fills refine it (observed ~$0.08 buy / ~$0.10 sell)
 LIVE_SELL_RETRY_COOLDOWN_S = 10.0  # after 3 failed on-chain sells, wait before the next exit attempt
 RH_BLOCK_TIME_S = 0.1
 MONITOR_INTERVAL_S = 1.0
@@ -164,6 +164,12 @@ class RHPaperTrader:
     def _quote_usd(self, sym: str) -> float:
         return self.state.rh_discovery._quote_usd(sym)
 
+    def _paper_gas_usd(self) -> float:
+        """Per-side gas the paper book charges — half the measured live round trip, else the fallback."""
+        eng = getattr(self.state, "bankroll", None)
+        rt = float((getattr(eng, "rh_fee_floor", None) or {}).get("gas_round_trip_usd") or 0.0)
+        return rt / 2.0 if rt > 0 else RH_GAS_USD
+
     # ---------- re-entry watch (winners only; same knobs as the SOL watcher) ----------
     def _watch_after_exit(self, token: str, t: dict, price: float, b: dict | None, now: float):
         cfg = self.state.config
@@ -254,7 +260,11 @@ class RHPaperTrader:
             now = time.time()
             fee = fee_fraction(now - b["start"])
             _gov = getattr(self.state, "bankroll", None)
-            stake_usd = float(cfg.max_trade_usd) * max(0.1, float(size_mult)) * (_gov.size_mult() if _gov else 1.0)
+            base_stake = float(getattr(cfg, "rh_max_trade_usd", 5.0))
+            if base_stake <= 0:
+                logger.info(f"rh_paper skip {b['symbol']}: RH stake is 0 — bankroll too small for the fee floor")
+                return
+            stake_usd = base_stake * max(0.1, float(size_mult)) * (_gov.size_mult("rh") if _gov else 1.0)
             stake_quote = stake_usd / quote_usd
             tokens = stake_quote * (1.0 - fee) / price
             mode = "paper"
@@ -274,7 +284,7 @@ class RHPaperTrader:
                 chain=CHAIN, quote_symbol=b["quote_symbol"], entry_quote=stake_quote,
                 entry_price_quote=(stake_quote / tokens if (live_fill and tokens > 0) else price),
                 fees_usd=((live_fill["fee_wei"] + live_fill["gas_cost_wei"]) / 1e18 * quote_usd) if live_fill
-                         else stake_quote * fee * quote_usd + RH_GAS_USD,
+                         else stake_quote * fee * quote_usd + self._paper_gas_usd(),
             )
             doc = trade.model_dump()
             if live_fill:
@@ -590,15 +600,16 @@ class RHPaperTrader:
                 t.update({"exit_sig": live_fill["tx"], "exit_gas_usd": gas_usd, "exit_latency_s": live_fill["latency_s"]})
             else:
                 proceeds_quote = t["entry_tokens"] * price * (1.0 - fee)
-                exit_usd = max(0.0, proceeds_quote * quote_usd - RH_GAS_USD)
-            pnl_usd = exit_usd - t["entry_usd"]
+                exit_usd = max(0.0, proceeds_quote * quote_usd - self._paper_gas_usd())
+            # live: entry gas is a real cost of the round trip — book it against the trade
+            pnl_usd = exit_usd - t["entry_usd"] - (float(t.get("entry_gas_usd") or 0.0) if live_fill else 0.0)
             pnl_pct = (pnl_usd / t["entry_usd"] * 100.0) if t["entry_usd"] > 0 else 0.0
             t.update({
                 "status": "closed", "exit_time": now_utc().isoformat(), "exit_reason": reason,
                 "exit_usd": round(exit_usd, 6), "exit_quote": proceeds_quote, "exit_price_quote": price,
                 "pnl_usd": round(pnl_usd, 6), "pnl_pct": round(pnl_pct, 4),
                 "fees_usd": round((t.get("fees_usd") or 0.0) + ((live_fill["fee_wei"] + live_fill["gas_cost_wei"]) / 1e18 * quote_usd if live_fill
-                                                                 else proceeds_quote / (1 - fee) * fee * quote_usd + RH_GAS_USD), 6),
+                                                                 else proceeds_quote / (1 - fee) * fee * quote_usd + self._paper_gas_usd()), 6),
                 "peak_price_quote": pos["peak_price"],
                 "exit_mode": "event" if trigger else "tick",
                 "exit_deferrals": pos.get("_mom_defer_log") or None,

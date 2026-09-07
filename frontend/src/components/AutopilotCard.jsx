@@ -65,7 +65,8 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
 
   if (!s) return null;
   const b = s.bankroll || {};
-  const dd = b.drawdown_24h_pct ?? 0;
+  const sol = b.chains?.sol || {};
+  const rh = b.chains?.rh || {};
   const canary = s.canary;
   const running = canary?.state === "running";
   const books = s.books || {};
@@ -88,7 +89,7 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
         <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-neutral-400">
           <Bot className={`w-3.5 h-3.5 ${s.driving ? "text-lime-300" : ""}`} /> Autopilot
           <HelpHint label="Autopilot">
-            One switch: Doctor learning + auto-apply (paper AND live) + bankroll sizing. Stake = bankroll × risk%, position cap = exposure ÷ risk, daily kill switch = bankroll × loss limit — recomputed every 60s from the live balance so profits compound and losses shrink exposure. The Doctor may move risk% between 0.5–5 on measured $ expectancy, one canary at a time; a 24h loss past the governor line halves every book for a cooling period.
+            One switch: Doctor learning + auto-apply (paper AND live) + bankroll sizing. Each chain has ITS OWN bankroll — Solana from the SOL wallet (live) or its paper pool, Robinhood from the ETH wallet (live) or its paper pool — never mixed. Stake = that chain&apos;s bankroll × risk%, kill switch = bankroll × loss limit, recomputed every 60s. Robinhood stakes are also lifted to the fee floor (gas ≤ drag %) or the chain sits out when the bankroll can&apos;t fund it. The Doctor may move risk% between 0.5–5 on measured $ expectancy; a 24h loss past the governor line halves that chain&apos;s books for a cooling period.
           </HelpHint>
         </div>
         <span className={`text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 border ${s.driving ? "border-lime-700 text-lime-300 bg-lime-950/40" : "border-neutral-800 text-neutral-500"}`} data-testid="autopilot-driving-badge">
@@ -103,16 +104,31 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
       )}
       {gov && (
         <div className="mt-2 flex items-center justify-between gap-2 text-[10px] font-mono text-rose-300 border border-rose-900/60 bg-rose-950/20 px-2 py-1" data-testid="autopilot-governor">
-          <span className="inline-flex items-center gap-1.5"><ShieldAlert className="w-3 h-3" /> governor: every book at {Math.round((b.governor_size_mult || 0.5) * 100)}% size until {fmtWhen(b.governor_until)} — {b.governor_reason}</span>
+          <span className="inline-flex items-center gap-1.5"><ShieldAlert className="w-3 h-3" /> governor: {b.governor_reason} — that chain trades at {Math.round((b.governor_size_mult || 0.5) * 100)}% size until {fmtWhen(b.governor_until)}</span>
           <button type="button" onClick={() => api.autopilotReleaseGovernor().then(load)} className="px-1.5 border border-rose-800 hover:bg-rose-900/40 uppercase" data-testid="autopilot-governor-release">release</button>
         </div>
       )}
 
-      <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Stat label={`bankroll (${b.bankroll_source || "—"})`} value={usd(b.bankroll_usd)} testid="autopilot-bankroll" />
-        <Stat label="today's P/L" value={signedUsd(b.pnl_24h_usd)} tone={(b.pnl_24h_usd ?? 0) >= 0 ? "text-emerald-300" : "text-rose-300"} testid="autopilot-pnl" />
-        <Stat label="24h drawdown" value={`${dd.toFixed(1)}%`} tone={dd <= -(s.risk?.governor_drawdown_pct ?? 5) ? "text-rose-300" : "text-neutral-200"} />
-        <Stat label="stake · cap · kill" value={`${usd(s.sizing?.max_trade_usd)} · ${s.sizing?.max_concurrent_positions} · ${usd(s.sizing?.daily_kill_switch_usd, 0)}`} testid="autopilot-sizing" />
+      <div className="mt-3 space-y-1.5" data-testid="autopilot-chains">
+        {[["sol", "Solana", sol, `${usd(s.sizing?.max_trade_usd)} · ${s.sizing?.max_concurrent_positions} · ${usd(s.sizing?.daily_kill_switch_usd, 0)}`],
+          ["rh", "Robinhood", rh, `${usd(s.sizing?.rh_max_trade_usd)} · ${s.sizing?.rh_max_positions} · ${usd(s.sizing?.rh_daily_kill_switch_usd, 0)}`]].map(([key, name, c, sizing]) => (
+          <div key={key} className={`grid grid-cols-2 sm:grid-cols-5 gap-3 px-2 py-1.5 border ${c.governor_active ? "border-rose-900/60 bg-rose-950/10" : "border-neutral-800/70"}`} data-testid={`autopilot-chain-${key}`}>
+            <div>
+              <div className="text-[9px] uppercase tracking-[0.15em] text-neutral-600">{name} · {c.mode || "—"}</div>
+              <div className="text-xs font-mono text-neutral-200">{c.bankroll_source || "—"}</div>
+            </div>
+            <Stat label="bankroll" value={usd(c.bankroll_usd)} testid={`autopilot-bankroll-${key}`} />
+            <Stat label="24h P/L" value={signedUsd(c.pnl_24h_usd)} tone={(c.pnl_24h_usd ?? 0) >= 0 ? "text-emerald-300" : "text-rose-300"} testid={`autopilot-pnl-${key}`} />
+            <Stat label="24h drawdown" value={`${Number(c.drawdown_24h_pct ?? 0).toFixed(1)}%`} tone={(c.drawdown_24h_pct ?? 0) <= -(s.risk?.governor_drawdown_pct ?? 5) ? "text-rose-300" : "text-neutral-200"} />
+            <Stat label="stake · cap · kill" value={sizing} testid={`autopilot-sizing-${key}`} />
+          </div>
+        ))}
+        {rh.fee_floor && (
+          <div className="text-[10px] font-mono text-neutral-500 px-2" data-testid="autopilot-rh-fee-floor">
+            RH fee floor: gas ≈ {usd(rh.fee_floor.gas_round_trip_usd)} per round trip{rh.fee_floor.samples ? ` (median of ${rh.fee_floor.samples} live fills)` : " (estimate)"} + {rh.fee_floor.curve_fee_round_trip_pct}% curve fee → min viable stake <span className="text-neutral-200">{usd(rh.fee_floor.min_stake_usd)}</span> so gas stays ≤ {rh.fee_floor.max_gas_drag_pct}% (break-even ≈ +{rh.fee_floor.break_even_pct_at_min_stake}%)
+            {rh.sitting_out && <span className="text-amber-300"> · RH bankroll too small for the floor — sitting out</span>}
+          </div>
+        )}
       </div>
 
       <div className="mt-3 grid grid-cols-3 gap-2 text-[10px] font-mono">
@@ -157,7 +173,7 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
             : <>no Doctor changes applied yet</>}
         </div>
         <div className="flex items-center gap-1.5">
-          <Clock className="w-3 h-3 text-neutral-500" /> next review {fmtWhen(s.next_review_ts)} · <Wallet className="w-3 h-3 text-neutral-500" /> {s.live_trading ? "LIVE wallet" : `paper bankroll $${Number(config?.paper_bankroll_usd ?? 1000).toFixed(0)}`}
+          <Clock className="w-3 h-3 text-neutral-500" /> next review {fmtWhen(s.next_review_ts)} · <Wallet className="w-3 h-3 text-neutral-500" /> paper pools ${Number(config?.paper_bankroll_usd ?? 1000).toFixed(0)} per chain
           {s.kill_switch_tripped && <span className="text-rose-300"> · kill switch tripped</span>}
         </div>
       </div>

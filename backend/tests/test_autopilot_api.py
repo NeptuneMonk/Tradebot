@@ -30,8 +30,11 @@ def test_autopilot_status_shape_defaults():
              "note", "last_change", "next_review_ts", "kill_switch_tripped",
              "risk", "sizing", "books"):
         assert k in s, f"missing {k}"
-    br = s["bankroll"]
+    assert set(s["bankroll"]["chains"]) == {"sol", "rh"}
+    br = s["bankroll"]["chains"]["sol"]
     assert br["bankroll_source"] == "paper"
+    rhb = s["bankroll"]["chains"]["rh"]
+    assert rhb["mode"] in ("paper", "live") and "fee_floor" in rhb and "rh_max_trade_usd" in rhb["derived"]
     b = br["bankroll_usd"]
     assert abs(b - 1000.0) < 500  # paper bankroll ballpark ($1000 seed + realised paper P/L)
     d = br["derived"]
@@ -57,7 +60,7 @@ def test_autopilot_on_applies_bankroll_and_flags():
 
     # bot config reflects flags
     cfg = _get("/api/bot/config").json()
-    d = body["bankroll"]["derived"] if "derived" in body.get("bankroll", {}) else _get("/api/autopilot/status").json()["bankroll"]["derived"]
+    d = body["bankroll"]["chains"]["sol"]["derived"]
     assert cfg["autopilot_enabled"] is True
     assert cfg["doctor_auto_apply_enabled"] is True
     assert cfg["doctor_auto_apply_live"] is True

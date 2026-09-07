@@ -310,9 +310,9 @@ export default function Dashboard() {
             <span className="text-neutral-400">{wsConnected ? "WS LIVE" : "WS OFFLINE"}</span>
           </span>
           <span className="flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full ${status?.listener_connected ? "bg-emerald-500" : "bg-red-500"}`}></span>
+            <span className={`w-2 h-2 rounded-full ${status?.listener_connected ? "bg-emerald-500" : (config && config.helius_tracker_enabled === false) ? "bg-amber-500" : "bg-red-500"}`}></span>
             <span className="text-neutral-400" data-testid="listener-status">
-              {status?.listener_connected ? "LISTENER LIVE" : "LISTENER OFFLINE"}
+              {status?.listener_connected ? "PUMP.FUN FEED LIVE" : (config && config.helius_tracker_enabled === false) ? "PUMP.FUN FEED OFF · RH ONLY" : "PUMP.FUN FEED OFFLINE"}
             </span>
           </span>
           {me && (

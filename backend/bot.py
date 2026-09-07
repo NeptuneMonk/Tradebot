@@ -2278,7 +2278,7 @@ class BotState:
         # Autopilot drawdown governor (bankroll.py) — half-size while engaged
         _gov = getattr(self, "bankroll", None)
         if _gov is not None:
-            size_mult *= _gov.size_mult()
+            size_mult *= _gov.size_mult("sol")
         # Learning-loop book multiplier (0 ⇒ book disabled by the Doctor)
         _book_mult = book_size_mult(self.config, action)
         if _book_mult <= 0:

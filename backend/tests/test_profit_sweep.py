@@ -36,7 +36,7 @@ class _State:
 
 class _Bank:
     def __init__(self, st): self.st = st
-    async def bankroll_usd(self): return self.st._bankroll, "paper"
+    async def bankroll_usd(self, chain="sol"): return self.st._bankroll, "paper"
     async def refresh(self): return {}
 
 

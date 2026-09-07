@@ -430,6 +430,8 @@ async def update_config(body: dict = Body(...)):
     cfg.rh_rug_sell_curve_pct = max(1.0, min(100.0, float(cfg.rh_rug_sell_curve_pct)))
     cfg.rh_gas_reserve_eth = max(0.0005, min(1.0, float(cfg.rh_gas_reserve_eth)))
     cfg.rh_daily_kill_switch_usd = max(1.0, min(5000.0, float(cfg.rh_daily_kill_switch_usd)))
+    cfg.rh_max_trade_usd = max(0.0, min(100.0, float(cfg.rh_max_trade_usd)))
+    cfg.rh_fee_drag_max_pct = max(0.5, min(50.0, float(cfg.rh_fee_drag_max_pct)))
     if cfg.rh_live_trading and not bot_state.config.rh_live_trading:
         bot_state.rh_paper.live_kill_tripped = False
         logger.warning("RH LIVE TRADING ENABLED — ETH-quoted PONS curves will be bought with real ETH")
@@ -1868,6 +1870,8 @@ async def rh_wallet_info():
         out["live_pnl_today_usd"] = await bot_state.rh_paper.live_pnl_today_usd()
     except Exception:
         pass
+    out["stake_usd"] = cfg.rh_max_trade_usd
+    out["fee_floor"] = bot_state.bankroll.rh_fee_floor or None
     return out
 
 
@@ -1955,9 +1959,12 @@ async def autopilot_status():
                  "daily_loss_limit_pct": cfg.daily_loss_limit_pct, "governor_drawdown_pct": cfg.governor_drawdown_pct,
                  "governor_hours": cfg.governor_hours},
         "sizing": {"max_trade_usd": cfg.max_trade_usd, "min_trade_usd": cfg.min_trade_usd,
-                   "max_concurrent_positions": cfg.max_concurrent_positions, "daily_kill_switch_usd": cfg.daily_kill_switch_usd},
+                   "max_concurrent_positions": cfg.max_concurrent_positions, "daily_kill_switch_usd": cfg.daily_kill_switch_usd,
+                   "rh_max_trade_usd": cfg.rh_max_trade_usd, "rh_max_positions": cfg.rh_max_positions,
+                   "rh_daily_kill_switch_usd": cfg.rh_daily_kill_switch_usd},
         "books": {"momentum": cfg.book_momentum_size_mult, "greylist_snipe": cfg.book_snipe_size_mult,
-                  "reentry": (cfg.reentry_size_multiplier if cfg.reentry_enabled else 0.0), "rh_pons": 1.0 if cfg.rh_paper_enabled else 0.0},
+                  "reentry": (cfg.reentry_size_multiplier if cfg.reentry_enabled else 0.0),
+                  "rh_pons": 1.0 if (cfg.rh_paper_enabled or cfg.rh_live_trading) else 0.0},
         "canary": learning.get("canary"),
         "proposal": learning.get("proposal"),
         "note": learning.get("note"),
@@ -1988,15 +1995,17 @@ async def autopilot_sweep_run_now():
 @api.post("/autopilot/sweep/reset-baseline")
 async def autopilot_sweep_reset_baseline():
     """Re-anchor the baseline to the current bankroll (e.g. after a deposit)."""
-    bankroll, _ = await bot_state.bankroll.bankroll_usd()
+    bankroll, _ = await bot_state.bankroll.bankroll_usd("sol")
     bot_state.config.sweep_baseline_usd = round(bankroll, 2)
     await bot_state.save_config()
     return await bot_state.sweeper.preview()
 
 
 @api.post("/autopilot/governor/release")
-async def autopilot_release_governor():
-    await bot_state.bankroll.release_governor()
+async def autopilot_release_governor(chain: str | None = None):
+    if chain not in (None, "sol", "rh"):
+        raise HTTPException(status_code=400, detail="chain must be sol|rh")
+    await bot_state.bankroll.release_governor(chain)
     return await bot_state.bankroll.refresh()
 
 
