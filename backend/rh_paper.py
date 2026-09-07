@@ -581,6 +581,69 @@ class RHPaperTrader:
             if reason:
                 pos["_exiting"] = True
                 asyncio.create_task(self.exit(token, reason))
+            elif pos.get("_riding") and not pos.get("_pyramiding"):
+                self._maybe_pyramid(token, pos, b, now)
+
+    # ---------- pyramid into a riding winner ----------
+    def _maybe_pyramid(self, token: str, pos: dict, b: dict, now: float):
+        cfg = self.state.config
+        if not getattr(cfg, "pyramid_enabled", True):
+            return
+        t = pos["trade"]
+        price = float(b.get("last_price_quote") or 0.0)
+        adds = int(t.get("pyramids") or 0)
+        if price <= 0 or adds >= int(getattr(cfg, "pyramid_max_adds", 3)):
+            return
+        step = float(getattr(cfg, "pyramid_step_pct", 10.0)) / 100.0
+        nxt = pos.get("_pyramid_next") or pos["peak_price"] * (1.0 + step)   # first add needs a fresh higher-high
+        if price < nxt:
+            return
+        pos["_pyramiding"] = True
+        asyncio.create_task(self._pyramid(token, pos, b, price, now))
+
+    async def _pyramid(self, token: str, pos: dict, b: dict, price: float, now: float):
+        cfg = self.state.config
+        t = pos["trade"]
+        try:
+            quote_usd = self._quote_usd(b["quote_symbol"])
+            base_quote = float(t.get("base_entry_quote") or t.get("entry_quote") or 0.0)
+            add_quote = base_quote * float(getattr(cfg, "pyramid_add_frac", 0.5))
+            if add_quote <= 0 or quote_usd <= 0:
+                return
+            fee = fee_fraction(now - b["start"])
+            if t.get("mode") == "live":
+                fill = await self._live_buy(token, b, add_quote, price)
+                if fill is None:
+                    return
+                add_quote = fill["quote_wei"] / 1e18
+                tokens = fill["tokens_raw"] / 1e18
+                t["entry_tokens_raw"] = str(int(t.get("entry_tokens_raw") or 0) + fill["tokens_raw"])
+                t["fees_usd"] = float(t.get("fees_usd") or 0) + (fill["fee_wei"] + fill["gas_cost_wei"]) / 1e18 * quote_usd
+            else:
+                k0 = b.get("curve_k0")
+                if k0 and b.get("curve_a"):
+                    a = (price * k0) ** 0.5
+                    tokens = k0 / a - k0 / (a + add_quote * (1.0 - fee))
+                else:
+                    tokens = add_quote * (1.0 - fee) / price
+                t["fees_usd"] = float(t.get("fees_usd") or 0) + add_quote * fee * quote_usd + self._paper_gas_usd()
+            t.setdefault("base_entry_quote", t.get("entry_quote"))
+            t["entry_quote"] = float(t.get("entry_quote") or 0) + add_quote
+            t["entry_usd"] = float(t.get("entry_usd") or 0) + add_quote * quote_usd
+            t["entry_tokens"] = float(t.get("entry_tokens") or 0) + tokens
+            t["entry_price_quote"] = t["entry_quote"] / t["entry_tokens"] if t["entry_tokens"] > 0 else price
+            t["pyramids"] = int(t.get("pyramids") or 0) + 1
+            t.setdefault("pyramid_adds", []).append({"price": price, "quote": add_quote, "usd": add_quote * quote_usd, "ts": now})
+            pos["_pyramid_next"] = price * (1.0 + float(getattr(cfg, "pyramid_step_pct", 10.0)) / 100.0)
+            self.stats["pyramids"] = self.stats.get("pyramids", 0) + 1
+            await self.state.db.trades.update_one({"_id": t["id"]}, {"$set": {k: t[k] for k in
+                ("entry_quote", "entry_usd", "entry_tokens", "entry_price_quote", "pyramids", "pyramid_adds", "fees_usd", "base_entry_quote")
+                if k in t}})
+            logger.info(f"rh_paper PYRAMID #{t['pyramids']} {t.get('symbol')} +${add_quote * quote_usd:.2f} @ {price:.3e} → avg {t['entry_price_quote']:.3e} [{t.get('mode')}]")
+        except Exception as e:
+            logger.warning(f"rh_paper pyramid failed {token[:10]}: {e}")
+        finally:
+            pos.pop("_pyramiding", None)
 
     # ---------- event-driven exits (per curve trade, block-accurate) ----------
     def latency_blocks(self) -> int:
@@ -792,7 +855,22 @@ class RHPaperTrader:
             if pos["peak_price"] > 0:
                 row["live_drawdown_from_peak_pct"] = round((pos["peak_price"] - cur) / pos["peak_price"] * 100.0, 1)
 
+    def hot_board(self) -> list[dict]:
+        now = time.time()
+        out = []
+        for token, w in self.watch.items():
+            left = float(w.get("window_s") or 0) - (now - float(w.get("exit_time") or now))
+            if left <= 0:
+                continue
+            out.append({"mint": token, "symbol": w.get("symbol"), "hot": bool(w.get("hot")),
+                        "attempts_left": max(0, int(w.get("max_attempts") or 0) - int(w.get("attempts") or 0)),
+                        "size_multiplier": w.get("size_multiplier"), "seconds_left": int(left),
+                        "last_trigger": w.get("last_trigger"), "original_pnl_usd": w.get("original_pnl_usd")})
+        out.sort(key=lambda r: (not r["hot"], -(r["original_pnl_usd"] or 0)))
+        return out
+
     def status(self) -> dict:
-        return {**self.stats, "active": self._active(), "open_positions": len(self.positions),
+        return {**self.stats, "active": self._active(), "open_positions": len(self.positions), "hot_board": self.hot_board(),
                 "positions": [{"mint": m, "symbol": p["trade"].get("symbol"), "entry_price_quote": p["trade"].get("entry_price_quote"),
-                               "last_price": p["_last_price"], "peak_price": p["peak_price"]} for m, p in self.positions.items()]}
+                               "last_price": p["_last_price"], "peak_price": p["peak_price"], "riding": bool(p.get("_riding")),
+                               "pyramids": p["trade"].get("pyramids") or 0} for m, p in self.positions.items()]}

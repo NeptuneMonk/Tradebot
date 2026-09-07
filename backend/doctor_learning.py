@@ -38,7 +38,7 @@ ALLOWED_KEYS = {
     "reentry_min_bounce_pct", "reentry_min_buyers",
     "rh_min_growth_pct", "rh_min_inflow_usd", "rh_min_unique_buyers", "rh_min_curve_pct", "rh_min_mc_usd",
     "min_curve_liquidity_sol", "min_buyers_for_entry", "min_curve_liquidity_sol_new", "min_buyers_for_entry_new",
-    "risk_per_trade_pct",
+    "risk_per_trade_pct", "winner_ride_min_pnl_pct",
 } | GLOBAL_KEYS
 FORBIDDEN_KEYS = {"live_trading", "enabled", "daily_kill_switch_usd", "max_trade_usd"}
 TECHNIQUE_MIN_GAIN_USD = 0.02        # $/fill a technique change must add to be worth a canary
@@ -84,7 +84,7 @@ def propose_technique(cfg: dict, trades_by_book: dict[str, list[dict]], min_n: i
     """Technique first: per book, replay its own fills against the exit grid and split them by entry
     feature; return the single best-gain proposal (or None) plus the full analysis for the UI."""
     from book_params import (BOOKS as _B, REGIME_MULT_CAP, REGIME_MULT_STEP, REGIMES, book_exit_view, entry_feature_splits,
-                             entry_pair_splits, regime_splits, trade_regime, whatif_exits)
+                             entry_pair_splits, regime_splits, ride_scorecard, trade_regime, whatif_exits)
     analysis: dict = {}
     best: dict | None = None
     for book in _B:
@@ -177,6 +177,20 @@ def propose_technique(cfg: dict, trades_by_book: dict[str, list[dict]], min_n: i
         for c in cands:
             if best is None or c["gain"] > best["gain"]:
                 best = c
+    # ride scorecard is global (all books share the ride threshold)
+    all_rows = [t for rows in trades_by_book.values() for t in rows]
+    rs = ride_scorecard(all_rows, cfg)
+    analysis["ride"] = rs
+    if rs and rs.get("proposal") is not None and abs(rs["gain_vs_clock_usd_per_ride"]) >= TECHNIQUE_MIN_GAIN_USD:
+        c = {"type": "threshold", "book": "global", "key": "winner_ride_min_pnl_pct", "value": rs["proposal"],
+             "gain": abs(rs["gain_vs_clock_usd_per_ride"]),
+             "reason": (f"{rs['n']} rode-winner exits {'beat' if rs['gain_vs_clock_usd_per_ride'] > 0 else 'trailed'} the clock by "
+                        f"{rs['gain_vs_clock_usd_per_ride']:+.4f} $/ride ({rs['rides_that_beat_clock']}/{rs['n']} beat it) → "
+                        f"winner_ride_min_pnl_pct {rs['current_min_pnl_pct']:g} → {rs['proposal']:g}"),
+             "direction": "let more winners ride when riding pays; demand a bigger lead when it gives back",
+             "evidence": rs}
+        if best is None or c["gain"] > best["gain"]:
+            best = c
     if best:
         prop = {"type": best["type"], "book": best["book"], "key": best["key"], "value": best["value"], "reason": best["reason"],
                 "expected_direction": best["direction"], "evidence": best["evidence"], "technique": True}

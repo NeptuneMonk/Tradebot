@@ -15,10 +15,15 @@ export default function RhWalletCard({ config }) {
   const [showImport, setShowImport] = useState(false);
   const [pk, setPk] = useState("");
   const [busy, setBusy] = useState(false);
+  const [board, setBoard] = useState({ hot: [], positions: [] });
 
   const load = useCallback(async () => {
     try { setW(await api.rhWallet()); } catch { /* best effort */ }
-    try { const st = await api.rhStatus(); setFeed({ ...(st.seq_feed || {}), head: st.head }); } catch { /* best effort */ }
+    try {
+      const st = await api.rhStatus();
+      setFeed({ ...(st.seq_feed || {}), head: st.head });
+      setBoard({ hot: (st.paper && st.paper.hot_board) || [], positions: (st.paper && st.paper.positions) || [] });
+    } catch { /* best effort */ }
   }, []);
   useEffect(() => {
     load();
@@ -95,6 +100,21 @@ export default function RhWalletCard({ config }) {
             <div className={`text-[10px] ${w.stake_usd > 0 && w.stake_usd < w.fee_floor.min_stake_usd ? "text-amber-300" : "text-neutral-500"}`} data-testid="rh-wallet-fee-floor">
               stake ${Number(w.stake_usd ?? 0).toFixed(2)} · gas ≈ ${Number(w.fee_floor.gas_round_trip_usd).toFixed(2)}/round trip + {w.fee_floor.curve_fee_round_trip_pct}% curve fee → break-even ≈ +{(w.fee_floor.curve_fee_round_trip_pct + (w.stake_usd > 0 ? (w.fee_floor.gas_round_trip_usd / w.stake_usd) * 100 : 0)).toFixed(1)}%
               {w.stake_usd > 0 && w.stake_usd < w.fee_floor.min_stake_usd && <> · below the ${Number(w.fee_floor.min_stake_usd).toFixed(2)} fee floor — gas eats &gt;{w.fee_floor.max_gas_drag_pct}% of every trade</>}
+            </div>
+          )}
+          {(board.positions.some((p) => p.riding) || board.hot.length > 0) && (
+            <div className="mt-2 border border-neutral-800/70 p-2 space-y-1" data-testid="rh-hot-board">
+              <div className="text-[9px] uppercase tracking-[0.15em] text-neutral-600">hot token board</div>
+              {board.positions.filter((p) => p.riding).map((p) => (
+                <div key={p.mint} className="text-[10px] font-mono text-lime-300" data-testid={`rh-riding-${p.mint}`}>
+                  ▲ riding {p.symbol} · {(((p.last_price || 0) / (p.entry_price_quote || 1) - 1) * 100).toFixed(0)}% · pyramids {p.pyramids || 0}
+                </div>
+              ))}
+              {board.hot.map((h) => (
+                <div key={h.mint} className={`text-[10px] font-mono ${h.hot ? "text-amber-300" : "text-neutral-500"}`} data-testid={`rh-hot-${h.mint}`}>
+                  {h.hot ? "●" : "○"} {h.symbol || h.mint.slice(0, 8)} · {h.attempts_left} re-entr{h.attempts_left === 1 ? "y" : "ies"} left · size ×{Number(h.size_multiplier || 0).toFixed(2)} · {Math.floor(h.seconds_left / 60)}m{String(h.seconds_left % 60).padStart(2, "0")}s{h.last_trigger ? ` · last ${h.last_trigger}` : ""}
+                </div>
+              ))}
             </div>
           )}
 

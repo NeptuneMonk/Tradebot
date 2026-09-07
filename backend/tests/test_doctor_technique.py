@@ -207,3 +207,17 @@ def test_doctor_proposes_a_busy_hour_trail_when_only_busy_fills_give_back():
     # the busy-only change must not be worse than the book-wide one: busy fills gain the full 40% run either way,
     # but a book-wide TP 40 would also cap quiet fills that already keep +38% — so per-regime wins or ties
     assert "busy" in prop["key"] or prop["value"] == 40
+
+
+def test_ride_scorecard_tunes_threshold_from_rides_vs_clock():
+    cfg = BotConfig(winner_ride_min_pnl_pct=10.0).model_dump()
+    good = [dict(_t(4.0, 50, -3), rode_winner=True, ride_started_pnl_pct=15.0) for _ in range(10)]   # clock would pay $1.5, ride paid $4
+    rs = bp.ride_scorecard(good, cfg)
+    assert rs["n"] == 10 and abs(rs["gain_vs_clock_usd_per_ride"] - 2.5) < 1e-9 and rs["proposal"] == 5.0
+    bad = [dict(_t(0.5, 50, -3), rode_winner=True, ride_started_pnl_pct=20.0) for _ in range(10)]     # gave back: $2 → $0.5
+    assert bp.ride_scorecard(bad, cfg)["proposal"] == 15.0
+    assert bp.ride_scorecard(good[:3], cfg)["proposal"] is None                                       # thin sample → report only
+    by_book = {"rh_pons": good, "momentum": [], "greylist_snipe": [], "reentry": []}
+    prop, analysis = dl.propose_technique(cfg, by_book, 15)
+    assert analysis["ride"]["n"] == 10
+    assert prop and prop["key"] == "winner_ride_min_pnl_pct" and prop["value"] == 5.0 and dl.key_ok(prop["key"])

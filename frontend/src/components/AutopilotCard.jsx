@@ -162,7 +162,12 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
           <div className="px-2 py-1 text-[9px] uppercase tracking-[0.15em] text-neutral-600 flex items-center gap-1.5">
             <FlaskConical className="w-3 h-3" /> technique lab · what each book&apos;s own fills say (7d)
           </div>
-          {Object.entries(s.technique).map(([book, t]) => {
+          {s.technique.ride && (
+            <div className="px-2 py-1 border-t border-neutral-800/50 text-[10px] font-mono text-neutral-400" data-testid="technique-ride">
+              ride scorecard: {s.technique.ride.n} rode-winner exits · <span className={s.technique.ride.gain_vs_clock_usd_per_ride >= 0 ? "text-lime-300" : "text-rose-300"}>{signedUsd(s.technique.ride.gain_vs_clock_usd_per_ride)}/ride vs the clock</span> · {s.technique.ride.rides_that_beat_clock}/{s.technique.ride.n} beat it · ride threshold {s.technique.ride.current_min_pnl_pct}%{s.technique.ride.proposal != null ? ` → ${s.technique.ride.proposal}%` : ""}
+            </div>
+          )}
+          {Object.entries(s.technique).filter(([k]) => k !== "ride").map(([book, t]) => {
             const ex = t.current_exits || {};
             const wi = t.whatif || {};
             const best = wi.best;

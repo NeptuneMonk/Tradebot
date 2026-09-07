@@ -434,3 +434,37 @@ def test_hot_winner_gets_boosted_reentry_watch():
     w = st.rh_paper.watch[TOKEN]
     assert w["hot"] and w["max_attempts"] == 4 and w["window_s"] == 600 and abs(w["size_multiplier"] - 0.75) < 1e-9
     t = st.rh_paper.closed[-1] if hasattr(st.rh_paper, "closed") else None
+
+
+def test_pyramid_adds_on_higher_high_while_riding():
+    st = make_state(pyramid_step_pct=10.0, pyramid_add_frac=0.5, pyramid_max_adds=2, hold_max_seconds=60)
+    now = time.time()
+    b = hot_bucket(st.rh_discovery, now, price=1e-9)
+    enter(st)
+    pos = st.rh_paper.positions[TOKEN]
+    t = pos["trade"]
+    q0, tok0 = t["entry_quote"], t["entry_tokens"]
+    pos["_riding"] = True
+    pos["peak_price"] = 1.3e-9
+    b["last_price_quote"] = 1.35e-9                       # not +10% above the 1.3 peak yet
+    st.rh_paper._maybe_pyramid(TOKEN, pos, b, now)
+    assert "_pyramiding" not in pos and not t.get("pyramids")
+    b["last_price_quote"] = 1.45e-9                       # higher-high confirmed
+    asyncio.run(_run_pyramid(st, pos, b))
+    assert t["pyramids"] == 1 and abs(t["entry_quote"] - q0 * 1.5) < 1e-12 and t["entry_tokens"] > tok0
+    assert 1e-9 < t["entry_price_quote"] < 1.45e-9      # averaged up, below the add price
+    assert abs(pos["_pyramid_next"] - 1.45e-9 * 1.1) < 1e-20
+    b["last_price_quote"] = 1.7e-9
+    asyncio.run(_run_pyramid(st, pos, b))
+    assert t["pyramids"] == 2
+    b["last_price_quote"] = 2.5e-9                        # cap reached → no third add
+    st.rh_paper._maybe_pyramid(TOKEN, pos, b, now)
+    assert "_pyramiding" not in pos and t["pyramids"] == 2
+    board = st.rh_paper.status()
+    assert board["positions"][0]["pyramids"] == 2 and board["positions"][0]["riding"] and "hot_board" in board
+
+
+async def _run_pyramid(st, pos, b):
+    st.rh_paper._maybe_pyramid(TOKEN, pos, b, time.time())
+    for _ in range(4):
+        await asyncio.sleep(0)

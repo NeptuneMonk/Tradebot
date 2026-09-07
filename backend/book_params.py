@@ -282,3 +282,34 @@ def entry_pair_splits(trades: list[dict], book: str, cfg, min_side: int = 5) -> 
                         and (cap_a is None or ma <= cap_a) and (cap_b is None or mb <= cap_b)})
     out.sort(key=lambda r: -r["gain_usd_per_fill"])
     return out
+
+
+RIDE_STEP_PCT, RIDE_MIN_PCT, RIDE_MAX_PCT = 5.0, 0.0, 50.0
+
+
+def ride_scorecard(trades: list[dict], cfg, min_n: int = 8) -> dict | None:
+    """Rode-winner exits vs what the clock would have paid (P/L at the moment the ride began).
+    Proposes moving winner_ride_min_pnl_pct: down when riding pays, up when it gives profits back."""
+    rows = []
+    for t in trades:
+        if not t.get("rode_winner") or t.get("ride_started_pnl_pct") is None:
+            continue
+        try:
+            entry_usd, pnl = float(t.get("entry_usd") or 0), float(t.get("pnl_usd"))
+            clock = entry_usd * float(t["ride_started_pnl_pct"]) / 100.0
+        except (TypeError, ValueError):
+            continue
+        if entry_usd > 0:
+            rows.append(pnl - clock)
+    if not rows:
+        return None
+    cur = float(_get(cfg, "winner_ride_min_pnl_pct", 10.0))
+    gain = statistics.mean(rows)
+    wins = sum(1 for g in rows if g > 0)
+    out = {"n": len(rows), "gain_vs_clock_usd_per_ride": gain, "rides_that_beat_clock": wins, "current_min_pnl_pct": cur, "proposal": None}
+    if len(rows) >= min_n:
+        if gain > 0 and cur > RIDE_MIN_PCT:
+            out["proposal"] = max(RIDE_MIN_PCT, cur - RIDE_STEP_PCT)   # riding pays → let more winners ride
+        elif gain < 0 and cur < RIDE_MAX_PCT:
+            out["proposal"] = min(RIDE_MAX_PCT, cur + RIDE_STEP_PCT)   # riding gives back → demand a bigger lead first
+    return out

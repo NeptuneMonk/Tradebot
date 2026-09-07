@@ -253,6 +253,12 @@ class BotConfig(BaseModel):
     # or still drawing buyers is NOT cut at hold_max — the trailing stop / TP take over, up to a hard ceiling.
     winner_ride_enabled: bool = True
     winner_ride_min_pnl_pct: float = 10.0
+    # Pyramid into a riding winner: on each confirmed higher-high (+step% above the last add level)
+    # add pyramid_add_frac × the original stake, up to pyramid_max_adds times
+    pyramid_enabled: bool = True
+    pyramid_step_pct: float = 10.0
+    pyramid_add_frac: float = 0.5
+    pyramid_max_adds: int = 3
     winner_ride_max_hold_mult: float = 6.0      # hard ceiling = hold_max × this
     # Hot tokens: a winner that reached ≥ this % gets a boosted re-entry watch (bigger size, more attempts, longer window)
     hot_token_pnl_pct: float = 25.0
