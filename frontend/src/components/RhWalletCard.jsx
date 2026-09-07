@@ -9,6 +9,7 @@ const fmt = (v, d = 5) => (v == null ? "—" : Number(v).toFixed(d));
 export default function RhWalletCard({ config }) {
   const [open, setOpen] = useState(false);
   const [w, setW] = useState(null);
+  const [feed, setFeed] = useState(null);
   const [to, setTo] = useState("");
   const [amt, setAmt] = useState("");
   const [showImport, setShowImport] = useState(false);
@@ -17,6 +18,7 @@ export default function RhWalletCard({ config }) {
 
   const load = useCallback(async () => {
     try { setW(await api.rhWallet()); } catch { /* best effort */ }
+    try { const st = await api.rhStatus(); setFeed({ ...(st.seq_feed || {}), head: st.head }); } catch { /* best effort */ }
   }, []);
   useEffect(() => {
     load();
@@ -55,6 +57,15 @@ export default function RhWalletCard({ config }) {
           {open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
           <Wallet className="w-3.5 h-3.5 text-lime-300/80" /> Robinhood wallet
           <span className="text-neutral-600 normal-case tracking-normal">EVM · chain {w?.chain_id ?? 4663}</span>
+          {feed && (
+            <span
+              className={`normal-case tracking-normal text-[9px] px-1.5 py-0.5 border ${feed.connected ? "border-lime-900 text-lime-300" : "border-rose-900 text-rose-400"}`}
+              title={`Sequencer feed: sees every ordered tx before the RPC. curve sells seen ${feed.curve_sells} · rug alerts ${feed.rug_alerts} · reconnects ${feed.reconnects}${feed.last_error ? ` · ${feed.last_error}` : ""}`}
+              data-testid="rh-seq-feed-pill"
+            >
+              seq feed {feed.connected ? `● +${Math.max(0, (feed.last_seq || 0) - (feed.head || 0))} blk ahead` : "○ down"} · rugs {feed.rug_alerts}
+            </span>
+          )}
         </span>
         <span className="flex items-center gap-2 font-mono text-xs">
           <span className="text-neutral-200" data-testid="rh-wallet-balance">{w ? `${fmt(w.eth)} ETH` : "…"}</span>

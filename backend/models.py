@@ -48,6 +48,10 @@ class BotConfig(BaseModel):
     rh_live_slippage_pct: float = 8.0
     rh_gas_reserve_eth: float = 0.002      # never spend below this ETH balance (gas for exits)
     rh_daily_kill_switch_usd: float = 20.0 # live RH realised loss today → rh_live_trading auto-off
+    # Sequencer-feed rug detector: exit the instant a big sell is ORDERED (before the poll sees it)
+    rh_seq_feed_enabled: bool = True
+    rh_rug_sell_usd: float = 300.0         # a single sell ≥ this USD value on a held curve → exit now
+    rh_rug_sell_curve_pct: float = 15.0    # ...or ≥ this % of the curve's quote reserves
     rh_max_positions: int = 3
     rh_min_age_s: int = 5                 # snipe tax is 0 after 3s
     rh_max_age_min: float = 15.0

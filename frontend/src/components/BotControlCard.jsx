@@ -310,6 +310,12 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
           </HelpHint>
         </span>
       </button>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Rug sell ≥ $" testid="rh-rug-sell-usd-input" hint="Sequencer-feed rug detector: a single sell of at least this USD value on a curve you hold exits immediately, before the 2s poll sees it."
+               value={local.rh_rug_sell_usd ?? 300} onChange={(v) => setLocal({ ...local, rh_rug_sell_usd: parseFloat(v) || 0 })} step="50" />
+        <Field label="Rug sell ≥ % curve" testid="rh-rug-sell-pct-input" hint="...or a sell worth at least this share of the curve's quote reserves."
+               value={local.rh_rug_sell_curve_pct ?? 15} onChange={(v) => setLocal({ ...local, rh_rug_sell_curve_pct: parseFloat(v) || 0 })} step="5" />
+      </div>
       {(local.rh_live_trading ?? false) && (
         <div className="grid grid-cols-3 gap-2">
           <Field label="RH slippage %" testid="rh-live-slippage-input" hint="minOut guard on live buys/sells; sells retry with widening slippage, then minOut=0 rather than strand tokens."

@@ -277,7 +277,7 @@ class RHPaperTrader:
             )
             doc = trade.model_dump()
             if live_fill:
-                doc.update({"entry_sig": live_fill["tx"], "entry_tokens_raw": str(live_fill["tokens_raw"]),
+                doc.update({"entry_sig": live_fill["tx"], "entry_tokens_raw": str(live_fill["tokens_raw"]), "curve": b.get("curve"),
                             "entry_gas_usd": live_fill["gas_cost_wei"] / 1e18 * quote_usd,
                             "entry_latency_s": live_fill["latency_s"], "entry_block": live_fill["block"]})
             # entry_time stays a datetime (bot.py stores BSON dates; a string
@@ -329,7 +329,7 @@ class RHPaperTrader:
             if bal - quote_wei < reserve:
                 logger.warning(f"rh_live skip {b.get('symbol')}: balance {bal / 1e18:.5f} ETH < stake {stake_quote:.5f} + reserve")
                 return None
-            fill = await rh_live.buy(token, quote_wei, price, float(cfg.rh_live_slippage_pct))
+            fill = await rh_live.buy(b["curve"], quote_wei, price, float(cfg.rh_live_slippage_pct))
             self.stats["live_buys"] = self.stats.get("live_buys", 0) + 1
             logger.warning(f"rh_live BUY {b.get('symbol')} {token[:10]} {fill['quote_wei'] / 1e18:.5f} ETH → {fill['tokens_raw'] / 1e18:,.0f} tokens tx={fill['tx'][:12]} ({fill['latency_s']}s)")
             return fill
@@ -350,7 +350,8 @@ class RHPaperTrader:
             pass
         for attempt in range(3):
             try:
-                fill = await rh_live.sell(token, raw, price, float(cfg.rh_live_slippage_pct) * (attempt + 1))
+                curve = t.get("curve") or (self.state.rh_discovery.tracking.get(token) or {}).get("curve") or token
+                fill = await rh_live.sell(curve, raw, price, float(cfg.rh_live_slippage_pct) * (attempt + 1))
                 self.stats["live_sells"] = self.stats.get("live_sells", 0) + 1
                 logger.warning(f"rh_live SELL {t.get('symbol')} {token[:10]} {fill['quote_wei'] / 1e18:.5f} ETH tx={fill['tx'][:12]} ({fill['latency_s']}s)")
                 return fill
@@ -475,6 +476,23 @@ class RHPaperTrader:
             "fill_block": tr["block"] + self.latency_blocks(),
         }
 
+    def on_rug_alert(self, token: str, b: dict, seq: int, now: float):
+        """Sequencer feed saw a big sell for a curve we hold: exit NOW (bypasses
+        the momentum gate). The sell is already ordered ahead of us, so the
+        paper fill still lands `latency_blocks` after it — honest, just ~2s
+        sooner than the poll would have reacted."""
+        pos = self.positions.get(token)
+        if not pos or pos.get("_exiting"):
+            return
+        pos["_exiting"] = True
+        pos["exit_trigger"] = {
+            "reason": "rug_detected",
+            "block": seq,
+            "price": b.get("last_price_quote") or pos.get("_last_price"),
+            "fill_block": seq + self.latency_blocks(),
+        }
+        self.stats["rug_exits"] = self.stats.get("rug_exits", 0) + 1
+
     def resolve_pending(self, head: int):
         """After each poll: fill any triggered exit whose fill block has
         landed, at the last curve price seen at/before that block."""
@@ -545,6 +563,7 @@ class RHPaperTrader:
                 "exit_deferrals": pos.get("_mom_defer_log") or None,
                 "exit_deferred_s": round(time.time() - min(d["ts"] for d in pos["_mom_defer_log"]), 1) if pos.get("_mom_defer_log") else None,
                 "exit_defer_bounded": bool(pos.get("_mom_defer_bounded")),
+                "rug_alert": pos.get("_rug_alert"),
             })
             if trigger:
                 ep = t.get("entry_price_quote") or 0

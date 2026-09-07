@@ -111,6 +111,9 @@ async def lifespan(app: FastAPI):
     from bankroll import BankrollEngine
     bot_state.bankroll = BankrollEngine(bot_state, db)
     bot_state.bankroll.start()
+    from rh_feed import RHSequencerFeed
+    bot_state.rh_feed = RHSequencerFeed(bot_state)
+    bot_state.rh_feed.start()
     from profit_sweep import ProfitSweeper
     bot_state.sweeper = ProfitSweeper(bot_state, db, bot_state.bankroll)
     bot_state.sweeper.start()
@@ -423,6 +426,8 @@ async def update_config(body: dict = Body(...)):
     cfg.sweep_pct_of_profit = max(1.0, min(100.0, float(cfg.sweep_pct_of_profit)))
     cfg.rh_live_slippage_pct = max(0.5, min(50.0, float(cfg.rh_live_slippage_pct)))
     cfg.exit_momentum_max_extra_loss_pct = max(0.0, min(50.0, float(cfg.exit_momentum_max_extra_loss_pct)))
+    cfg.rh_rug_sell_usd = max(10.0, min(1_000_000.0, float(cfg.rh_rug_sell_usd)))
+    cfg.rh_rug_sell_curve_pct = max(1.0, min(100.0, float(cfg.rh_rug_sell_curve_pct)))
     cfg.rh_gas_reserve_eth = max(0.0005, min(1.0, float(cfg.rh_gas_reserve_eth)))
     cfg.rh_daily_kill_switch_usd = max(1.0, min(5000.0, float(cfg.rh_daily_kill_switch_usd)))
     if cfg.rh_live_trading and not bot_state.config.rh_live_trading:
@@ -2091,7 +2096,8 @@ def _now_iso_srv() -> str:
 @api.get("/rh/status")
 async def rh_status():
     """Robinhood Chain feed health — head block, tracked tokens, RPC usage."""
-    return {**bot_state.rh_discovery.status(), "paper": bot_state.rh_paper.status()}
+    return {**bot_state.rh_discovery.status(), "paper": bot_state.rh_paper.status(),
+            "seq_feed": getattr(getattr(bot_state, "rh_feed", None), "stats", None)}
 
 
 @api.get("/diagnostics/tracking-summary")
