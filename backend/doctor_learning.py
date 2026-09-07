@@ -56,6 +56,8 @@ def key_ok(key: str) -> bool:
     from book_params import BOOKS as _B, EXIT_PARAMS, REGIMES
     if len(parts) == 3 and parts[0] == "book_exits" and parts[1] in _B and parts[2] in EXIT_PARAMS:
         return True
+    if len(parts) == 4 and parts[0] == "book_exits" and parts[1] in _B and parts[2] in REGIMES and parts[3] in EXIT_PARAMS:
+        return True
     if len(parts) == 3 and parts[0] == "regime_gate_mult" and parts[1] in _B and parts[2] in REGIMES:
         return True
     return len(parts) == 2 and parts[0] == "regime_busy_threshold" and parts[1] in _B
@@ -81,8 +83,8 @@ def cfg_set(cfg: dict, key: str, value):
 def propose_technique(cfg: dict, trades_by_book: dict[str, list[dict]], min_n: int) -> tuple[dict | None, dict]:
     """Technique first: per book, replay its own fills against the exit grid and split them by entry
     feature; return the single best-gain proposal (or None) plus the full analysis for the UI."""
-    from book_params import (BOOKS as _B, REGIME_MULT_CAP, REGIME_MULT_STEP, book_exit_view, entry_feature_splits,
-                             entry_pair_splits, regime_splits, whatif_exits)
+    from book_params import (BOOKS as _B, REGIME_MULT_CAP, REGIME_MULT_STEP, REGIMES, book_exit_view, entry_feature_splits,
+                             entry_pair_splits, regime_splits, trade_regime, whatif_exits)
     analysis: dict = {}
     best: dict | None = None
     for book in _B:
@@ -99,7 +101,14 @@ def propose_technique(cfg: dict, trades_by_book: dict[str, list[dict]], min_n: i
         if len(rows) >= min_n and not any(sp["actionable"] for sp in splits):
             pairs = entry_pair_splits(rows, book, cfg)   # only when no single feature is clean enough
         regime = regime_splits(rows, book, cfg) if len(rows) >= min_n else None
-        analysis[book] = {"n": len(rows), "current_exits": cur, "whatif": wi, "splits": splits[:6], "pairs": pairs[:3], "regime": regime}
+        # exits per regime: busy hours may deserve a tighter trail than quiet ones
+        regime_exits = {}
+        for reg in REGIMES:
+            sub = [t for t in rows if trade_regime(cfg, book, t) == reg]
+            if len(sub) >= min_n:
+                regime_exits[reg] = {"n": len(sub), "current_exits": book_exit_view(cfg, book, reg), **whatif_exits(sub, book_exit_view(cfg, book, reg))}
+        analysis[book] = {"n": len(rows), "current_exits": cur, "whatif": wi, "splits": splits[:6], "pairs": pairs[:3],
+                          "regime": regime, "regime_exits": regime_exits}
         if len(rows) < min_n:
             continue
         cands = []
@@ -137,6 +146,22 @@ def propose_technique(cfg: dict, trades_by_book: dict[str, list[dict]], min_n: i
                               "direction": "raise expectancy by requiring both signals at entry — measured on this book's fills",
                               "evidence": {k: pr[k] for k in ("features", "n", "splits", "current", "high_high_n", "high_high_expectancy_usd", "rest_expectancy_usd")}})
                 break
+        for reg, rw in regime_exits.items():
+            rb = rw.get("best")
+            if not rb:
+                continue
+            cur_r = rw["current_exits"]
+            # weight the regime gain by its share of fills so it competes fairly with book-wide changes
+            gain_w = rw["gain_usd_per_fill"] * rw["n"] / max(1, len(rows))
+            if rw["gain_usd_per_fill"] >= max(TECHNIQUE_MIN_GAIN_USD, TECHNIQUE_MIN_GAIN_REL * abs(rw["current"]["expectancy_usd"])) \
+                    and float(rb["value"]) != float(cur_r[rb["param"]]):
+                cands.append({"type": "threshold", "book": book, "key": f"book_exits.{book}.{reg}.{rb['param']}", "value": rb["value"],
+                              "gain": gain_w,
+                              "reason": (f"{book} fills entered in {reg} hours ({rw['n']}): {rb['param']} {cur_r[rb['param']]:g} → {rb['value']:g} lifts "
+                                         f"{rw['current']['expectancy_usd']:+.4f} → {rb['expectancy_usd']:+.4f} $/fill in that regime only"),
+                              "direction": f"raise expectancy with a {reg}-hour exit ladder for this book — measured on its {reg}-hour fills",
+                              "evidence": {"regime": reg, "n": rw["n"], "expectancy_now": rw["current"]["expectancy_usd"],
+                                           "expectancy_whatif": rb["expectancy_usd"], "grid": rw["rows"][:24]}})
         if regime and regime["actionable"] and regime["gain_usd_per_fill"] >= TECHNIQUE_MIN_GAIN_USD:
             lose = regime["losing"]
             new_mult = round(min(REGIME_MULT_CAP, regime["current_mult"] + REGIME_MULT_STEP), 2)

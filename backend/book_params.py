@@ -86,10 +86,14 @@ def _get(cfg, key, default=None):
     return cfg.get(key, default) if isinstance(cfg, dict) else getattr(cfg, key, default)
 
 
-def exit_param(cfg, book: str, param: str) -> float:
-    """Book override if set, else the shared global."""
+def exit_param(cfg, book: str, param: str, regime: str | None = None) -> float:
+    """Regime override (book_exits.<book>.<regime>.<param>) → book override → shared global → model default."""
     ov = (_get(cfg, "book_exits") or {}).get(book) or {}
-    v = ov.get(param)
+    v = None
+    if regime and isinstance(ov.get(regime), dict):
+        v = ov[regime].get(param)
+    if v is None:
+        v = ov.get(param)
     if v is None:
         v = _get(cfg, param)
     if v is None:
@@ -98,8 +102,14 @@ def exit_param(cfg, book: str, param: str) -> float:
     return float(v)
 
 
-def book_exit_view(cfg, book: str) -> dict:
-    return {p: exit_param(cfg, book, p) for p in EXIT_PARAMS}
+def book_exit_view(cfg, book: str, regime: str | None = None) -> dict:
+    return {p: exit_param(cfg, book, p, regime) for p in EXIT_PARAMS}
+
+
+def trade_regime(cfg, book: str, trade: dict) -> str | None:
+    """Regime the trade was ENTERED in (its exit ladder is chosen once, at entry)."""
+    rate = (trade.get("entry_ctx") or {}).get("launch_rate_per_h")
+    return regime_for(cfg, book, float(rate)) if rate is not None else None
 
 
 # ---------------- counterfactual exit optimizer ----------------

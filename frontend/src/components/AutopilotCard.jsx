@@ -184,6 +184,11 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
                   {split
                     ? <>entry: {split.feature} &lt; {Number(split.split).toFixed(split.split > 100 ? 0 : 1)} → {signedUsd(split.low_expectancy_usd)}/fill, above → <span className={split.actionable ? "text-lime-300" : "text-neutral-300"}>{signedUsd(split.high_expectancy_usd)}</span>{split.actionable ? ` · raise ${split.key} ${split.current} → ${Number(split.split).toFixed(0)}` : " · no clean split"}</>
                     : <span className="text-neutral-600">entry: no feature splits yet (entry context recorded from now on)</span>}
+                  {t.regime_exits && Object.entries(t.regime_exits).map(([reg, rw]) => rw.best && (
+                    <div key={reg} data-testid={`technique-regime-exits-${book}-${reg}`}>
+                      {reg}-hour exits (n={rw.n}): now {signedUsd(rw.current?.expectancy_usd)}/fill → best <span className={(rw.gain_usd_per_fill ?? 0) > 0.02 ? "text-lime-300" : "text-neutral-300"}>{rw.best.param} {rw.best.value}</span> = {signedUsd(rw.best.expectancy_usd)}/fill
+                    </div>
+                  ))}
                   {t.regime && (
                     <div data-testid={`technique-regime-${book}`}>
                       regime: quiet (&lt;{Number(t.regime.threshold_per_h).toFixed(0)}/h) {signedUsd(t.regime.quiet.expectancy_usd)}/fill (n={t.regime.quiet.n}) · busy {signedUsd(t.regime.busy.expectancy_usd)}/fill (n={t.regime.busy.n}){t.regime.actionable ? <span className="text-lime-300"> · tighten {t.regime.losing}-hour gates ×{(t.regime.current_mult + 0.5).toFixed(1)}</span> : t.regime.current_mult > 1 ? ` · ${t.regime.losing} gates ×${t.regime.current_mult}` : ""}

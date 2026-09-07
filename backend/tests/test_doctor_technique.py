@@ -178,3 +178,32 @@ def test_regime_split_and_gate_multiplier():
     cfg2 = BotConfig(regime_gate_mult={"rh_pons": {"busy": 1.5}}, regime_busy_threshold={"rh_pons": 35.0})
     assert bp.regime_gate_mult(cfg2, "rh_pons", 50.0) == 1.5 and bp.regime_gate_mult(cfg2, "rh_pons", 20.0) == 1.0
     assert bp.regime_gate_mult(cfg2, "momentum", 50.0) == 1.0
+
+
+def test_regime_exit_ladder_overrides_book_and_global():
+    cfg = BotConfig(trailing_stop_pct=5.0, book_exits={"rh_pons": {"trailing_stop_pct": 4.0, "busy": {"trailing_stop_pct": 3.0}}},
+                    regime_busy_threshold={"rh_pons": 40.0})
+    busy_trade = {"entry_ctx": {"launch_rate_per_h": 55}}
+    quiet_trade = {"entry_ctx": {"launch_rate_per_h": 10}}
+    assert bp.trade_regime(cfg, "rh_pons", busy_trade) == "busy" and bp.trade_regime(cfg, "rh_pons", quiet_trade) == "quiet"
+    assert bp.exit_param(cfg, "rh_pons", "trailing_stop_pct", "busy") == 3.0
+    assert bp.exit_param(cfg, "rh_pons", "trailing_stop_pct", "quiet") == 4.0      # no quiet override → book level
+    assert bp.exit_param(cfg, "momentum", "trailing_stop_pct", "busy") == 5.0     # other book untouched
+    assert bp.book_exit_view(cfg, "rh_pons", "busy")["take_profit_pct"] == BotConfig().take_profit_pct
+    assert dl.key_ok("book_exits.rh_pons.busy.trailing_stop_pct") and not dl.key_ok("book_exits.rh_pons.night.trailing_stop_pct")
+
+
+def test_doctor_proposes_a_busy_hour_trail_when_only_busy_fills_give_back():
+    cfg = BotConfig(take_profit_pct=100.0, trailing_stop_pct=50.0, trailing_arm_pct=12.0, regime_busy_threshold={"rh_pons": 40.0}).model_dump()
+    # busy-hour fills run +40% then collapse to -5%; quiet-hour fills run +40% and keep +38% → only busy needs a tight trail
+    busy = [_t(-0.5, mfe=40, mae=-3, ctx={"launch_rate_per_h": 60}) for _ in range(16)]
+    quiet = [_t(3.8, mfe=40, mae=-3, ctx={"launch_rate_per_h": 10}) for _ in range(16)]
+    by_book = {"rh_pons": busy + quiet, "momentum": [], "greylist_snipe": [], "reentry": []}
+    prop, analysis = dl.propose_technique(cfg, by_book, 15)
+    rx = analysis["rh_pons"]["regime_exits"]
+    assert rx["busy"]["n"] == 16 and rx["quiet"]["n"] == 16
+    assert rx["busy"]["best"]["param"] in ("trailing_stop_pct", "take_profit_pct")
+    assert prop and prop["key"].startswith("book_exits.rh_pons.") and prop["book"] == "rh_pons"
+    # the busy-only change must not be worse than the book-wide one: busy fills gain the full 40% run either way,
+    # but a book-wide TP 40 would also cap quiet fills that already keep +38% — so per-regime wins or ties
+    assert "busy" in prop["key"] or prop["value"] == 40

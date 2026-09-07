@@ -497,8 +497,8 @@ class RHPaperTrader:
         if price < pos.get("trough_price", entry):
             pos["trough_price"] = price
             pos["trough_ts"] = now
-        from book_params import book_exit_view
-        bx = book_exit_view(cfg, "rh_pons")   # RH's own TP/SL/trail/hold (Doctor-tuned), else the shared globals
+        from book_params import book_exit_view, trade_regime
+        bx = book_exit_view(cfg, "rh_pons", trade_regime(cfg, "rh_pons", t))   # RH's own ladder, per entry regime
         pnl_pct = (price - entry) / entry * 100.0
         peak_pct = (pos["peak_price"] - entry) / entry * 100.0
         dd_from_peak = (pos["peak_price"] - price) / pos["peak_price"] * 100.0 if pos["peak_price"] > 0 else 0.0

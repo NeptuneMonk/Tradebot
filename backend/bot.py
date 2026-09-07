@@ -1217,13 +1217,15 @@ class BotState:
             pass
         # Doctor-tuned per-book exits (book_exits) override the shared globals
         try:
-            from book_params import book_for_action, exit_param
+            from book_params import book_for_action, exit_param, trade_regime
             t = (slot or {}).get("trade") or {}
             book = t.get("book") or book_for_action(t.get("classifier_action"))
             param = {"tp_pct": "take_profit_pct", "sl_pct": "stop_loss_pct", "trail_pct": "trailing_stop_pct",
                      "trail_arm_pct": "trailing_arm_pct"}.get(key)
-            if param and (self.config.book_exits or {}).get(book, {}).get(param) is not None:
-                return exit_param(self.config, book, param)
+            bx = (self.config.book_exits or {}).get(book, {})
+            reg = trade_regime(self.config, book, t)
+            if param and (bx.get(param) is not None or (reg and isinstance(bx.get(reg), dict) and bx[reg].get(param) is not None)):
+                return exit_param(self.config, book, param, reg)
         except Exception:
             pass
         return float(default)
@@ -2864,8 +2866,9 @@ class BotState:
         slot["last_monitor_tick"] = time.time()
         trade_doc = slot["trade"]
         start = time.time()
-        from book_params import book_for_action, exit_param
-        max_hold = exit_param(self.config, trade_doc.get("book") or book_for_action(trade_doc.get("classifier_action")), "hold_max_seconds")
+        from book_params import book_for_action, exit_param, trade_regime
+        _bk = trade_doc.get("book") or book_for_action(trade_doc.get("classifier_action"))
+        max_hold = exit_param(self.config, _bk, "hold_max_seconds", trade_regime(self.config, _bk, trade_doc))
         last_classify = 0.0
         # Rolling (ts, price_sol) samples for the velocity-aware timeout check.
         # Survives across this monitor's lifetime; reset if a new monitor takes over.
