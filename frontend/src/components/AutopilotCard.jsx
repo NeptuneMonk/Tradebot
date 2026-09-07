@@ -89,7 +89,7 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
         <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-neutral-400">
           <Bot className={`w-3.5 h-3.5 ${s.driving ? "text-lime-300" : ""}`} /> Autopilot
           <HelpHint label="Autopilot">
-            One switch: Doctor learning + auto-apply (paper AND live) + bankroll sizing. Each chain has ITS OWN bankroll — Solana from the SOL wallet (live) or its paper pool, Robinhood from the ETH wallet (live) or its paper pool — never mixed. Stake = that chain&apos;s bankroll × risk%, kill switch = bankroll × loss limit, recomputed every 60s. Robinhood stakes are also lifted to the fee floor (gas ≤ drag %) or the chain sits out when the bankroll can&apos;t fund it. The Doctor may move risk% between 0.5–5 on measured $ expectancy; a 24h loss past the governor line halves that chain&apos;s books for a cooling period.
+            One switch: Doctor learning + auto-apply (paper AND live) + bankroll sizing. Each chain has ITS OWN bankroll — Solana from the SOL wallet (live) or its paper pool, Robinhood from the ETH wallet (live) or its paper pool — never mixed. Stake = that chain&apos;s bankroll × risk%, kill switch = bankroll × loss limit, recomputed every 60s. Robinhood stakes are also lifted to the fee floor (gas ≤ drag %) or the chain sits out when the bankroll can&apos;t fund it. The Doctor works TECHNIQUE FIRST: it replays each book&apos;s own fills against a TP/SL/hold grid and splits them by entry feature, proposing the measured best setting as a canary (per-book exits, so RH never moves Solana). Disabling a book or cutting risk% is the last resort, only on 3× the sample when no technique change helps.
           </HelpHint>
         </div>
         <span className={`text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 border ${s.driving ? "border-lime-700 text-lime-300 bg-lime-950/40" : "border-neutral-800 text-neutral-500"}`} data-testid="autopilot-driving-badge">
@@ -156,6 +156,39 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
         ))}
         {b.governor_size_mult && b.governor_size_mult < 1 && <span className="px-1.5 py-0.5 border border-rose-900 text-rose-300">governor ×{b.governor_size_mult}</span>}
       </div>
+
+      {s.technique && Object.keys(s.technique).length > 0 && (
+        <div className="mt-3 border border-neutral-800/70" data-testid="autopilot-technique">
+          <div className="px-2 py-1 text-[9px] uppercase tracking-[0.15em] text-neutral-600 flex items-center gap-1.5">
+            <FlaskConical className="w-3 h-3" /> technique lab · what each book&apos;s own fills say (7d)
+          </div>
+          {Object.entries(s.technique).map(([book, t]) => {
+            const ex = t.current_exits || {};
+            const wi = t.whatif || {};
+            const best = wi.best;
+            const gain = wi.gain_usd_per_fill ?? 0;
+            const split = (t.splits || []).find((x) => x.actionable) || (t.splits || [])[0];
+            return (
+              <div key={book} className="px-2 py-1.5 border-t border-neutral-800/50 grid grid-cols-1 sm:grid-cols-[110px_1fr_1fr] gap-x-3 gap-y-0.5 text-[10px] font-mono" data-testid={`technique-${book}`}>
+                <div>
+                  <div className="text-neutral-200">{book}</div>
+                  <div className="text-neutral-600">n={t.n} · TP {ex.take_profit_pct}% · SL {ex.stop_loss_pct}% · trail {ex.trailing_stop_pct}% · hold {ex.hold_max_seconds}s</div>
+                </div>
+                <div className="text-neutral-400">
+                  {wi.n >= 1 && best
+                    ? <>exits: now <span className="text-neutral-200">{signedUsd(wi.current?.expectancy_usd)}</span>/fill → best <span className={gain > 0.02 ? "text-lime-300" : "text-neutral-300"}>{best.param} {best.value}</span> = {signedUsd(best.expectancy_usd)}/fill ({gain >= 0 ? "+" : ""}{Number(gain).toFixed(3)}) · MFE {Number(wi.median_mfe).toFixed(0)}% / MAE {Number(wi.median_mae).toFixed(0)}%{wi.mae_recorded ? "" : " · trough not yet recorded — SL what-ifs pending"}</>
+                    : <span className="text-neutral-600">exits: need {Math.max(0, (config?.doctor_learning_min_trades_per_book ?? 15) - (t.n || 0))} more fills</span>}
+                </div>
+                <div className="text-neutral-400">
+                  {split
+                    ? <>entry: {split.feature} &lt; {Number(split.split).toFixed(split.split > 100 ? 0 : 1)} → {signedUsd(split.low_expectancy_usd)}/fill, above → <span className={split.actionable ? "text-lime-300" : "text-neutral-300"}>{signedUsd(split.high_expectancy_usd)}</span>{split.actionable ? ` · raise ${split.key} ${split.current} → ${Number(split.split).toFixed(0)}` : " · no clean split"}</>
+                    : <span className="text-neutral-600">entry: no feature splits yet (entry context recorded from now on)</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       <div className="mt-3 space-y-1 text-[10px] font-mono text-neutral-400">
         <div className="flex items-center gap-1.5" data-testid="autopilot-canary">

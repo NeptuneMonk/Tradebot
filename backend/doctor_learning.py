@@ -36,24 +36,104 @@ ALLOWED_KEYS = {
     "greylist_snipe_stale_seconds",
     "reentry_enabled", "reentry_size_multiplier", "reentry_breakout_pct",
     "reentry_min_bounce_pct", "reentry_min_buyers",
-    "rh_min_growth_pct", "rh_min_inflow_usd",
+    "rh_min_growth_pct", "rh_min_inflow_usd", "rh_min_unique_buyers", "rh_min_curve_pct", "rh_min_mc_usd",
+    "min_curve_liquidity_sol", "min_buyers_for_entry", "min_curve_liquidity_sol_new", "min_buyers_for_entry_new",
     "risk_per_trade_pct",
 } | GLOBAL_KEYS
 FORBIDDEN_KEYS = {"live_trading", "enabled", "daily_kill_switch_usd", "max_trade_usd"}
+TECHNIQUE_MIN_GAIN_USD = 0.02        # $/fill a technique change must add to be worth a canary
+TECHNIQUE_MIN_GAIN_REL = 0.15        # …and ≥15% of |current expectancy|
+LAST_RESORT_MULT = 3                 # size cuts / disables need 3× the minimum sample
+
+
+def key_ok(key: str) -> bool:
+    """Flat whitelist, or a per-book exit override `book_exits.<book>.<param>`."""
+    if key in FORBIDDEN_KEYS:
+        return False
+    if key in ALLOWED_KEYS:
+        return True
+    parts = key.split(".")
+    from book_params import BOOKS as _B, EXIT_PARAMS
+    return len(parts) == 3 and parts[0] == "book_exits" and parts[1] in _B and parts[2] in EXIT_PARAMS
+
+
+def cfg_get(cfg: dict, key: str):
+    cur = cfg
+    for part in key.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    return cur
+
+
+def cfg_set(cfg: dict, key: str, value):
+    parts = key.split(".")
+    cur = cfg
+    for part in parts[:-1]:
+        cur = cur.setdefault(part, {})
+    cur[parts[-1]] = value
+
+
+def propose_technique(cfg: dict, trades_by_book: dict[str, list[dict]], min_n: int) -> tuple[dict | None, dict]:
+    """Technique first: per book, replay its own fills against the exit grid and split them by entry
+    feature; return the single best-gain proposal (or None) plus the full analysis for the UI."""
+    from book_params import BOOKS as _B, book_exit_view, entry_feature_splits, whatif_exits
+    analysis: dict = {}
+    best: dict | None = None
+    for book in _B:
+        rows = trades_by_book.get(book) or []
+        if book == "momentum":
+            by_band = {"new": [t for t in rows if (t.get("entry_ctx") or {}).get("band") == "new"],
+                       "seasoned": [t for t in rows if (t.get("entry_ctx") or {}).get("band") != "new"]}
+        cur = book_exit_view(cfg, book)
+        wi = whatif_exits(rows, cur) if len(rows) >= min_n else {"n": len(rows)}
+        splits = entry_feature_splits(rows, book, cfg) if len(rows) >= min_n else []
+        if book == "momentum" and len(by_band["new"]) >= min_n:
+            splits += entry_feature_splits(by_band["new"], "momentum_new", cfg)
+        analysis[book] = {"n": len(rows), "current_exits": cur, "whatif": wi, "splits": splits[:6]}
+        if len(rows) < min_n:
+            continue
+        cands = []
+        b = wi.get("best")
+        if b and wi["gain_usd_per_fill"] >= max(TECHNIQUE_MIN_GAIN_USD, TECHNIQUE_MIN_GAIN_REL * abs(wi["current"]["expectancy_usd"]))                 and float(b["value"]) != float(cur[b["param"]]):
+            cands.append({"type": "threshold", "book": book, "key": f"book_exits.{book}.{b['param']}", "value": b["value"],
+                          "gain": wi["gain_usd_per_fill"],
+                          "reason": (f"replaying {wi['n']} {book} fills: {b['param']} {cur[b['param']]:g} → {b['value']:g} lifts expectancy "
+                                     f"{wi['current']['expectancy_usd']:+.4f} → {b['expectancy_usd']:+.4f} $/fill (median MFE {wi['median_mfe']:+.1f}%, MAE {wi['median_mae']:+.1f}%)"),
+                          "direction": "raise expectancy by tuning this book's exit — measured on its own fills",
+                          "evidence": {"n": wi["n"], "expectancy_now": wi["current"]["expectancy_usd"], "expectancy_whatif": b["expectancy_usd"],
+                                       "median_mfe": wi["median_mfe"], "median_mae": wi["median_mae"], "grid": wi["rows"][:24]}})
+        for sp in splits:
+            if sp["actionable"] and sp["gain_usd_per_fill"] >= TECHNIQUE_MIN_GAIN_USD:
+                val = round(sp["split"], 2) if isinstance(cfg.get(sp["key"], 0.0), float) else int(round(sp["split"]))
+                cands.append({"type": "threshold", "book": book, "key": sp["key"], "value": val, "gain": sp["gain_usd_per_fill"],
+                              "reason": (f"{book} fills with {sp['feature']} < {sp['split']:g} lose {sp['low_expectancy_usd']:+.4f} $/fill, "
+                                         f"above earn {sp['high_expectancy_usd']:+.4f} (n={sp['n']}) → raise {sp['key']} {sp['current']:g} → {val:g}"),
+                              "direction": "raise expectancy by filtering the entries that lose — measured, not guessed",
+                              "evidence": {k: sp[k] for k in ("feature", "n", "split", "current", "low_expectancy_usd", "high_expectancy_usd")}})
+                break  # one entry-filter candidate per book (the top-gain one)
+        for c in cands:
+            if best is None or c["gain"] > best["gain"]:
+                best = c
+    if best:
+        prop = {"type": best["type"], "book": best["book"], "key": best["key"], "value": best["value"], "reason": best["reason"],
+                "expected_direction": best["direction"], "evidence": best["evidence"], "technique": True}
+        return prop, analysis
+    return None, analysis
 CANARY_ID = "current"
 
 
 def book_of(t: dict) -> str | None:
     """Which learning book a closed trade belongs to. Manual buys are the
     operator's decision, not a tunable strategy → None (still shown in P/L)."""
-    b = t.get("book")
-    if b in BOOKS:
-        return b
     a = t.get("classifier_action") or ""
     if a in ("manual", "rh_pons_manual"):
         return None
     if t.get("chain") == "rh" or a.startswith("rh_pons"):
-        return "rh_pons"
+        return "rh_pons"          # chain wins: legacy RH docs carry the model default book="momentum"
+    b = t.get("book")
+    if b in BOOKS:
+        return b
     if a == "reentry":
         return "reentry"
     return "greylist_snipe" if a == "greylist_snipe" else "momentum"
@@ -194,12 +274,17 @@ def _f(cfg: dict, key: str, default: float) -> float:
         return float(default)
 
 
-def propose(cfg: dict, stats: dict[str, dict], min_n: int) -> dict | None:
+def propose(cfg: dict, stats: dict[str, dict], min_n: int, trades_by_book: dict[str, list[dict]] | None = None) -> dict | None:
     """Priority ladder — first match wins. Every rule is scored on USD
-    expectancy per fill (profit), never on win rate. Returns None when nothing
-    qualifies."""
+    expectancy per fill (profit), never on win rate. Order: TECHNIQUE (per-book exit grid,
+    data-driven entry filters) → profit-shape rules → scale winners → LAST RESORT size cuts.
+    Returns None when nothing qualifies."""
+    if trades_by_book is not None:
+        tech, _ = propose_technique(cfg, trades_by_book, min_n)
+        if tech:
+            return tech
     def P(kind, book, key, value, reason, direction, evidence):
-        assert key in ALLOWED_KEYS and key not in FORBIDDEN_KEYS
+        assert key_ok(key)
         return {"type": kind, "book": book, "key": key, "value": value, "reason": reason,
                 "expected_direction": direction, "evidence": evidence}
 
@@ -216,7 +301,9 @@ def propose(cfg: dict, stats: dict[str, dict], min_n: int) -> dict | None:
     # 1. a losing book (negative USD expectancy over a real sample, and not
     #    just a bad hour: the 7d expectancy must not contradict it)
     for book, st in (("momentum", mom), ("greylist_snipe", sn), ("reentry", re_), ("rh_pons", rh)):
-        if st["n"] < min_n or st["expectancy_usd"] >= 0:
+        # LAST RESORT: only after technique found nothing, on 3× the sample, and never while a
+        # smaller fix is plausible on a thin sample
+        if st["n"] < LAST_RESORT_MULT * min_n or st["expectancy_usd"] >= 0:
             continue
         if (st.get("expectancy_7d") or 0) > 0 and st.get("n_7d", 0) >= 3 * min_n:
             continue
@@ -264,7 +351,7 @@ def propose(cfg: dict, stats: dict[str, dict], min_n: int) -> dict | None:
                          "raise expectancy by taking fewer, stronger RH entries", ev(st))
     # 1b. bankroll risk dial DOWN: the whole machine is losing → risk less per trade
     g = S("global")
-    if cfg.get("bankroll_sizing_enabled") and g["n"] >= min_n and g["expectancy_usd"] < 0 \
+    if cfg.get("bankroll_sizing_enabled") and g["n"] >= LAST_RESORT_MULT * min_n and g["expectancy_usd"] < 0 \
             and (g.get("expectancy_7d") is None or g["expectancy_7d"] <= 0) and _f(cfg, "risk_per_trade_pct", 2.0) > 0.5:
         return P("threshold", "global", "risk_per_trade_pct", round(max(0.5, _f(cfg, "risk_per_trade_pct", 2.0) - 0.5), 2),
                  f"all books together lose {g['expectancy_usd']:+.4f} $/fill over {g['n']} fills — risk less of the bankroll per trade while the edge is missing",
@@ -419,7 +506,13 @@ class LearningEngine:
             self.last["canary"] = await self.canary()
             return []  # one change at a time
 
-        proposal = propose(cfg, books, min_n)
+        by_book: dict[str, list[dict]] = {b: [] for b in BOOKS}
+        for t in trades_7d:
+            bk = book_of(t)
+            if bk in by_book:
+                by_book[bk].append(t)
+        _, self.last["technique"] = propose_technique(cfg, by_book, min_n)
+        proposal = propose(cfg, books, min_n, by_book)
         self.last["canary"] = can
         if not proposal:
             self.last["proposal"] = None
@@ -455,14 +548,14 @@ class LearningEngine:
 
     async def apply(self, proposal: dict, cfg: dict, books: dict | None = None, auto: bool = False) -> dict:
         key, value = proposal["key"], proposal["value"]
-        if key not in ALLOWED_KEYS or key in FORBIDDEN_KEYS:
+        if not key_ok(key):
             raise ValueError(f"key {key} not allowed")
         if await self.canary() and (await self.canary()).get("state") == "running":
             raise RuntimeError("canary already running — one change at a time")
         book = proposal["book"]
         st = (books or self.last.get("books") or {}).get(book if book in BOOKS else "global", {})
-        prior = cfg.get(key)
-        if prior is None:  # key never persisted → baseline is the model default
+        prior = cfg_get(cfg, key)
+        if prior is None and "." not in key:  # key never persisted → baseline is the model default
             from models import BotConfig
             prior = BotConfig().model_dump().get(key)
         canary = {
@@ -476,8 +569,8 @@ class LearningEngine:
             "baseline_max_drawdown_usd": st.get("max_drawdown_usd"),
             "auto": auto,
         }
-        await self.db.bot_config.update_one({}, {"$set": {key: value}})
-        cfg[key] = value
+        await self.db.bot_config.update_one({}, {"$set": {key: value}})   # dotted keys nest natively in Mongo
+        cfg_set(cfg, key, value)
         await self._set_canary(canary)
         await self._reload()
         logger.warning(f"doctor LEARNING canary started: {key}={value} ({'auto' if auto else 'manual'}) book={book}")
@@ -520,7 +613,14 @@ class LearningEngine:
             return None
         subset = can.get("baseline_config_subset") or {}
         if subset:
-            await self.db.bot_config.update_one({}, {"$set": subset})
+            to_set = {k: v for k, v in subset.items() if v is not None}
+            to_unset = {k: "" for k, v in subset.items() if v is None}
+            ops = {}
+            if to_set:
+                ops["$set"] = to_set
+            if to_unset:
+                ops["$unset"] = to_unset
+            await self.db.bot_config.update_one({}, ops)
         await self._blacklist(fingerprint(can["proposal"]))
         done = {**can, "state": "reverted", "ended_at": datetime.now(timezone.utc).isoformat(),
                 "revert_reason": reason, **(verdict or {})}
@@ -543,4 +643,5 @@ class LearningEngine:
 
     async def status(self) -> dict:
         return {"books": self.last.get("books", {}), "proposal": self.last.get("proposal"),
-                "canary": await self.canary(), "note": self.last.get("note", "")}
+                "canary": await self.canary(), "note": self.last.get("note", ""),
+                "technique": self.last.get("technique", {})}

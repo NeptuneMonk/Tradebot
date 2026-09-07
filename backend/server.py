@@ -1968,6 +1968,7 @@ async def autopilot_status():
         "canary": learning.get("canary"),
         "proposal": learning.get("proposal"),
         "note": learning.get("note"),
+        "technique": learning.get("technique"),
         "last_change": last[0] if last else None,
         "next_review_ts": next_review,
         "kill_switch_tripped": bool(bot_state.kill_switch_tripped),

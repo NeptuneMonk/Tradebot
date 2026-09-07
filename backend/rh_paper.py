@@ -349,7 +349,7 @@ class RHPaperTrader:
             stake_usd = stake_quote * quote_usd
             trade = Trade(
                 mint=token, creator=b["creator"], name=b["name"], symbol=b["symbol"],
-                mode=mode, entry_usd=stake_usd, entry_tokens=tokens,
+                mode=mode, entry_usd=stake_usd, entry_tokens=tokens, book="rh_pons",
                 protocol=PROTOCOL, classifier_action=ENTRY_ACTION, risk_score=50,
                 chain=CHAIN, quote_symbol=b["quote_symbol"], entry_quote=stake_quote,
                 entry_price_quote=price,
@@ -357,6 +357,16 @@ class RHPaperTrader:
                          else stake_quote * fee * quote_usd + self._paper_gas_usd(),
             )
             doc = trade.model_dump()
+            first = float(b.get("first_price_quote") or 0.0)
+            doc["entry_ctx"] = {
+                "growth_pct": ((price / first) - 1.0) * 100.0 if first > 0 else None,
+                "inflow_usd": float(b.get("net_quote") or 0.0) * quote_usd,
+                "unique_buyers": len(b.get("buyers") or ()),
+                "curve_fill_pct": float(b.get("curve_fill_pct") or 0.0),
+                "mc_usd": float(b.get("usd_market_cap") or 0.0),
+                "age_s": now - float(b.get("start") or now),
+                "quote_symbol": b.get("quote_symbol"),
+            }
             if live_fill:
                 doc.update({"entry_sig": live_fill["tx"], "entry_tokens_raw": str(live_fill["tokens_raw"]), "curve": b.get("curve"),
                             "entry_gas_usd": live_fill["gas_cost_wei"] / 1e18 * quote_usd,
@@ -476,6 +486,12 @@ class RHPaperTrader:
             return None
         if price > pos["peak_price"]:
             pos["peak_price"] = price
+            pos["peak_ts"] = now
+        if price < pos.get("trough_price", entry):
+            pos["trough_price"] = price
+            pos["trough_ts"] = now
+        from book_params import book_exit_view
+        bx = book_exit_view(cfg, "rh_pons")   # RH's own TP/SL/trail/hold (Doctor-tuned), else the shared globals
         pnl_pct = (price - entry) / entry * 100.0
         peak_pct = (pos["peak_price"] - entry) / entry * 100.0
         dd_from_peak = (pos["peak_price"] - price) / pos["peak_price"] * 100.0 if pos["peak_price"] > 0 else 0.0
@@ -490,7 +506,7 @@ class RHPaperTrader:
             key = f"_mom_defer_{kind}"
             if kind == "sl":
                 # bounded deferral: never ride more than X points past the SL line
-                if pnl_pct <= -(cfg.stop_loss_pct + float(getattr(cfg, "exit_momentum_max_extra_loss_pct", 5.0))):
+                if pnl_pct <= -(bx["stop_loss_pct"] + float(getattr(cfg, "exit_momentum_max_extra_loss_pct", 5.0))):
                     pos["_mom_defer_bounded"] = True
                     return False
             cutoff = now - float(getattr(cfg, "exit_momentum_window_s", 10))
@@ -506,9 +522,9 @@ class RHPaperTrader:
             if started == now:
                 pos.setdefault("_mom_defer_log", []).append({"kind": kind, "at_pnl_pct": round(pnl_pct, 2), "ts": now})
             return now - started < float(getattr(cfg, "exit_momentum_max_defer_s", 20))
-        if pnl_pct >= cfg.take_profit_pct and _mom_holds("tp"):
+        if pnl_pct >= bx["take_profit_pct"] and _mom_holds("tp"):
             return None
-        if pnl_pct <= -cfg.stop_loss_pct and _mom_holds("sl"):
+        if pnl_pct <= -bx["stop_loss_pct"] and _mom_holds("sl"):
             return None
         if (
             cfg.no_momentum_exit_enabled
@@ -518,13 +534,13 @@ class RHPaperTrader:
             pos["_nm_checked"] = True
             if peak_pct < cfg.no_momentum_min_mfe_pct:
                 return "no_momentum"
-        if pnl_pct >= cfg.take_profit_pct:
+        if pnl_pct >= bx["take_profit_pct"]:
             return "take_profit"
-        if pnl_pct <= -cfg.stop_loss_pct:
+        if pnl_pct <= -bx["stop_loss_pct"]:
             return "stop_loss"
-        if peak_pct >= cfg.trailing_arm_pct and dd_from_peak >= cfg.trailing_stop_pct:
+        if peak_pct >= bx["trailing_arm_pct"] and dd_from_peak >= bx["trailing_stop_pct"]:
             return "trailing_stop"
-        if now - pos["opened"] >= cfg.hold_max_seconds:
+        if now - pos["opened"] >= bx["hold_max_seconds"]:
             return "max_hold"
         return None
 
@@ -685,6 +701,9 @@ class RHPaperTrader:
                 "fees_usd": round((t.get("fees_usd") or 0.0) + ((live_fill["fee_wei"] + live_fill["gas_cost_wei"]) / 1e18 * quote_usd if live_fill
                                                                  else proceeds_quote / (1 - fee) * fee * quote_usd + self._paper_gas_usd()), 6),
                 "peak_price_quote": pos["peak_price"],
+                "trough_price_quote": pos.get("trough_price", t["entry_price_quote"]),
+                "peak_ts": pos.get("peak_ts"), "trough_ts": pos.get("trough_ts"),
+                "peak_hold_s": (pos["peak_ts"] - pos["opened"]) if pos.get("peak_ts") else None,
                 "exit_mode": "event" if trigger else "tick",
                 "exit_deferrals": pos.get("_mom_defer_log") or None,
                 "exit_deferred_s": round(time.time() - min(d["ts"] for d in pos["_mom_defer_log"]), 1) if pos.get("_mom_defer_log") else None,

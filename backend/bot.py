@@ -1208,6 +1208,17 @@ class BotState:
                 return float(ov[key])
         except Exception:
             pass
+        # Doctor-tuned per-book exits (book_exits) override the shared globals
+        try:
+            from book_params import book_for_action, exit_param
+            t = (slot or {}).get("trade") or {}
+            book = t.get("book") or book_for_action(t.get("classifier_action"))
+            param = {"tp_pct": "take_profit_pct", "sl_pct": "stop_loss_pct", "trail_pct": "trailing_stop_pct",
+                     "trail_arm_pct": "trailing_arm_pct"}.get(key)
+            if param and (self.config.book_exits or {}).get(book, {}).get(param) is not None:
+                return exit_param(self.config, book, param)
+        except Exception:
+            pass
         return float(default)
 
     def _is_snipe(self, slot: dict) -> bool:
@@ -1494,6 +1505,10 @@ class BotState:
         if cur_price_sol > peak:
             peak = cur_price_sol
             slot["peak_price_sol"] = peak
+            slot["peak_ts"] = time.time()
+        if cur_price_sol < slot.get("trough_price_sol", entry_p):
+            slot["trough_price_sol"] = cur_price_sol
+            slot["trough_ts"] = time.time()
         if peak > 0:
             drawdown_pct = (peak - cur_price_sol) / peak * 100
             ripcord_thresh = float(cfg.greylist_snipe_ripcord_drawdown_pct or 60.0)
@@ -1533,11 +1548,15 @@ class BotState:
         entry_p = trade_doc.get("entry_price_sol", 0)
         if entry_p <= 0:
             return
-        # Update peak for trailing stop
+        # Update peak for trailing stop (+ trough/timing → Doctor's counterfactual exit grid)
         peak = slot.get("peak_price_sol", entry_p)
         if cur_price_sol > peak:
             peak = cur_price_sol
             slot["peak_price_sol"] = peak
+            slot["peak_ts"] = time.time()
+        if cur_price_sol < slot.get("trough_price_sol", entry_p):
+            slot["trough_price_sol"] = cur_price_sol
+            slot["trough_ts"] = time.time()
         # Cache last seen price for the UI's live-PnL panel.
         slot["_last_price_sol"] = cur_price_sol
 
@@ -2578,6 +2597,12 @@ class BotState:
             greylist_score_at_entry=greylist_ctx.get("score"),
             greylist_overrides_at_entry=greylist_ctx.get("overrides") or {},
             greylist_pattern_at_entry=greylist_ctx.get("pattern"),
+            entry_ctx={"curve_liquidity_sol": float(real_sol),
+                       "unique_buyers": int(getattr(launch, "unique_buyers", 0) or 0),
+                       "buy_count": int(getattr(launch, "buy_count", 0) or 0),
+                       "usd_market_cap": float(getattr(launch, "usd_market_cap", 0) or 0),
+                       "creator_score": greylist_ctx.get("score"),
+                       "band": "new" if action == "momentum_new" else "seasoned"},
             greylist_pattern_suggested_tp_pct=greylist_ctx.get("pattern_tp_pct"),
             is_research_snipe=is_research_snipe,
             # Persist the snipe ctx on the trade doc itself so a restart
@@ -2828,7 +2853,8 @@ class BotState:
         slot["last_monitor_tick"] = time.time()
         trade_doc = slot["trade"]
         start = time.time()
-        max_hold = self.config.hold_max_seconds
+        from book_params import book_for_action, exit_param
+        max_hold = exit_param(self.config, trade_doc.get("book") or book_for_action(trade_doc.get("classifier_action")), "hold_max_seconds")
         last_classify = 0.0
         # Rolling (ts, price_sol) samples for the velocity-aware timeout check.
         # Survives across this monitor's lifetime; reset if a new monitor takes over.
@@ -4089,6 +4115,10 @@ class BotState:
                 "pnl_sol": total_pnl_sol,
                 "pnl_usd": total_pnl_usd,
                 "pnl_pct": pnl_pct,
+                "peak_price_sol": float(slot.get("peak_price_sol") or trade_doc.get("entry_price_sol") or 0),
+                "trough_price_sol": float(slot.get("trough_price_sol") or trade_doc.get("entry_price_sol") or 0),
+                "peak_ts": slot.get("peak_ts"), "trough_ts": slot.get("trough_ts"),
+                "peak_hold_s": (slot["peak_ts"] - slot["_entry_ts_mono"]) if slot.get("peak_ts") and slot.get("_entry_ts_mono") else None,
             }
         )
         await self.db.trades.update_one(

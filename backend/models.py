@@ -125,6 +125,8 @@ class BotConfig(BaseModel):
     # and bonding-curve-complete exits where landing the sell matters more
     # than the fill price. 25% lets us escape sharp dumps without 6003 reverts.
     panic_exit_slippage_bps: int = 2500  # 25% emergency exit slippage
+    # Per-book exit overrides (Doctor-tuned): {book: {take_profit_pct, stop_loss_pct, trailing_stop_pct, trailing_arm_pct, hold_max_seconds}}
+    book_exits: dict = {}
 
     # Intelligent Exit v2 — exchange-style exit logic.
     # When enabled: SL / TS only fire after a sustained breach (not on single
@@ -591,6 +593,7 @@ class Trade(BaseModel):
     # whatever exit logic remained. Only set for `classifier_action ==
     # "greylist_snipe"`; None for momentum / reentry trades.
     snipe_pattern_ctx: Optional[dict] = None
+    entry_ctx: Optional[dict] = None  # gate features at entry (Doctor learns entry filters from these)
 
 
 class WalletInfo(BaseModel):

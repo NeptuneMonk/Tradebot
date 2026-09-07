@@ -81,10 +81,13 @@ def engine():
 def test_negative_snipe_expectancy_disables_book():
     trades = [t(-0.004, "greylist_snipe") for _ in range(12)] + [t(0.001, "greylist_snipe") for _ in range(4)]
     stats = {"greylist_snipe": dl.book_stats(trades), "momentum": {"n": 0}}
-    p = dl.propose({"book_snipe_size_mult": 1.0, "greylist_snipe_min_score": 45}, stats, 15)
+    # size cuts are the LAST RESORT: nothing on a thin sample (n=16 < 3×15) …
+    assert dl.propose({"book_snipe_size_mult": 1.0, "greylist_snipe_min_score": 45}, stats, 15) is None
+    # … on 3× the sample a deeply negative book (-0.41 $/fill) is disabled outright
+    p = dl.propose({"book_snipe_size_mult": 1.0, "greylist_snipe_min_score": 70}, stats, 5)
     assert p and p["key"] == "book_snipe_size_mult" and p["value"] == 0.0 and p["book"] == "greylist_snipe"
     # already disabled → nothing
-    assert dl.propose({"book_snipe_size_mult": 0.0}, stats, 15) is None
+    assert dl.propose({"book_snipe_size_mult": 0.0, "greylist_snipe_min_score": 70}, stats, 5) is None
 
 
 def test_slightly_negative_large_snipe_sample_raises_score_first():
@@ -169,8 +172,8 @@ def test_live_without_auto_apply_live_blocks_auto_apply():
 def test_cycle_does_not_auto_apply_when_live_and_emits_learning_suggestion():
     e, db = engine()
     db.bot_config.doc = {}
-    cfg = {"doctor_learning_enabled": True, "doctor_learning_min_trades_per_book": 15, "doctor_auto_apply_enabled": True,
-           "live_trading": True, "doctor_auto_apply_live": False, "book_snipe_size_mult": 1.0}
+    cfg = {"doctor_learning_enabled": True, "doctor_learning_min_trades_per_book": 5, "doctor_auto_apply_enabled": True,
+           "live_trading": True, "doctor_auto_apply_live": False, "book_snipe_size_mult": 1.0, "greylist_snipe_min_score": 70}
     trades = [t(-0.004, "greylist_snipe") for _ in range(16)]
     out = asyncio.run(e.cycle(cfg, trades, trades))
     assert len(out) == 1 and out[0]["category"] == "learning" and out[0]["actions"] == {"book_snipe_size_mult": 0.0}
@@ -202,16 +205,16 @@ def test_reentry_book_cuts_losing_trigger_before_disabling():
     trades = [_re(-0.002, "breakout") for _ in range(10)] + [_re(0.001, "pullback") for _ in range(8)]
     stats = {"reentry": dl.book_stats(trades)}
     assert stats["reentry"]["by_trigger"]["breakout"]["expectancy_usd"] < 0 < stats["reentry"]["by_trigger"]["pullback"]["expectancy_usd"]
-    p = dl.propose({"reentry_enabled": True, "reentry_breakout_pct": 5.0}, stats, 15)
+    p = dl.propose({"reentry_enabled": True, "reentry_breakout_pct": 5.0}, stats, 5)
     assert p["key"] == "reentry_breakout_pct" and p["value"] == 15.0 and p["book"] == "reentry"
     # pullbacks losing → raise the run-on bar, then buyers, then switch off
     trades = [_re(-0.002, "pullback") for _ in range(16)]
     stats = {"reentry": dl.book_stats(trades)}
-    assert dl.propose({"reentry_enabled": True, "reentry_min_bounce_pct": 5.0}, stats, 15)["key"] == "reentry_min_bounce_pct"
-    assert dl.propose({"reentry_enabled": True, "reentry_min_bounce_pct": 30.0, "reentry_min_buyers": 2}, stats, 15)["key"] == "reentry_min_buyers"
-    p = dl.propose({"reentry_enabled": True, "reentry_min_bounce_pct": 30.0, "reentry_min_buyers": 5}, stats, 15)
+    assert dl.propose({"reentry_enabled": True, "reentry_min_bounce_pct": 5.0}, stats, 5)["key"] == "reentry_min_bounce_pct"
+    assert dl.propose({"reentry_enabled": True, "reentry_min_bounce_pct": 30.0, "reentry_min_buyers": 2}, stats, 5)["key"] == "reentry_min_buyers"
+    p = dl.propose({"reentry_enabled": True, "reentry_min_bounce_pct": 30.0, "reentry_min_buyers": 5}, stats, 5)
     assert p["key"] == "reentry_enabled" and p["value"] is False
-    assert dl.propose({"reentry_enabled": False}, stats, 15) is None
+    assert dl.propose({"reentry_enabled": False}, stats, 5) is None
 
 
 def test_rh_book_is_audited_and_tightens_gates():
@@ -219,9 +222,9 @@ def test_rh_book_is_audited_and_tightens_gates():
     for x in trades:
         x["pnl_usd"] = -0.2
     stats = {"rh_pons": dl.book_stats(trades)}
-    p = dl.propose({"rh_min_growth_pct": 30.0}, stats, 15)
+    p = dl.propose({"rh_min_growth_pct": 30.0}, stats, 5)
     assert p["key"] == "rh_min_growth_pct" and p["value"] == 40.0 and p["book"] == "rh_pons"
-    assert dl.propose({"rh_min_growth_pct": 100.0, "rh_min_inflow_usd": 300.0}, stats, 15)["key"] == "rh_min_inflow_usd"
+    assert dl.propose({"rh_min_growth_pct": 100.0, "rh_min_inflow_usd": 300.0}, stats, 5)["key"] == "rh_min_inflow_usd"
 
 
 def test_global_profit_shape_rules_sl_and_tp():
