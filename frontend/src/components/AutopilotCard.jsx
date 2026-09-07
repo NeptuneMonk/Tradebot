@@ -168,11 +168,12 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
             const best = wi.best;
             const gain = wi.gain_usd_per_fill ?? 0;
             const split = (t.splits || []).find((x) => x.actionable) || (t.splits || [])[0];
+            const pair = (t.pairs || []).find((x) => x.actionable) || (t.pairs || [])[0];
             return (
               <div key={book} className="px-2 py-1.5 border-t border-neutral-800/50 grid grid-cols-1 sm:grid-cols-[110px_1fr_1fr] gap-x-3 gap-y-0.5 text-[10px] font-mono" data-testid={`technique-${book}`}>
                 <div>
                   <div className="text-neutral-200">{book}</div>
-                  <div className="text-neutral-600">n={t.n} · TP {ex.take_profit_pct}% · SL {ex.stop_loss_pct}% · trail {ex.trailing_stop_pct}% · hold {ex.hold_max_seconds}s</div>
+                  <div className="text-neutral-600">n={t.n} · TP {ex.take_profit_pct}% · SL {ex.stop_loss_pct}% · trail {ex.trailing_stop_pct}% @ {ex.trailing_arm_pct}% · hold {ex.hold_max_seconds}s</div>
                 </div>
                 <div className="text-neutral-400">
                   {wi.n >= 1 && best
@@ -183,6 +184,11 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
                   {split
                     ? <>entry: {split.feature} &lt; {Number(split.split).toFixed(split.split > 100 ? 0 : 1)} → {signedUsd(split.low_expectancy_usd)}/fill, above → <span className={split.actionable ? "text-lime-300" : "text-neutral-300"}>{signedUsd(split.high_expectancy_usd)}</span>{split.actionable ? ` · raise ${split.key} ${split.current} → ${Number(split.split).toFixed(0)}` : " · no clean split"}</>
                     : <span className="text-neutral-600">entry: no feature splits yet (entry context recorded from now on)</span>}
+                  {pair && (
+                    <div data-testid={`technique-pair-${book}`}>
+                      pair: {pair.features[0]} ≥ {Number(pair.splits[0]).toFixed(0)} AND {pair.features[1]} ≥ {Number(pair.splits[1]).toFixed(0)} → <span className={pair.actionable ? "text-lime-300" : "text-neutral-300"}>{signedUsd(pair.high_high_expectancy_usd)}</span>/fill (n={pair.high_high_n}), rest {signedUsd(pair.rest_expectancy_usd)}{pair.actionable ? " · raise both gates" : ""}
+                    </div>
+                  )}
                 </div>
               </div>
             );

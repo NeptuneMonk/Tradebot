@@ -77,7 +77,7 @@ def cfg_set(cfg: dict, key: str, value):
 def propose_technique(cfg: dict, trades_by_book: dict[str, list[dict]], min_n: int) -> tuple[dict | None, dict]:
     """Technique first: per book, replay its own fills against the exit grid and split them by entry
     feature; return the single best-gain proposal (or None) plus the full analysis for the UI."""
-    from book_params import BOOKS as _B, book_exit_view, entry_feature_splits, whatif_exits
+    from book_params import BOOKS as _B, book_exit_view, entry_feature_splits, entry_pair_splits, whatif_exits
     analysis: dict = {}
     best: dict | None = None
     for book in _B:
@@ -90,7 +90,10 @@ def propose_technique(cfg: dict, trades_by_book: dict[str, list[dict]], min_n: i
         splits = entry_feature_splits(rows, book, cfg) if len(rows) >= min_n else []
         if book == "momentum" and len(by_band["new"]) >= min_n:
             splits += entry_feature_splits(by_band["new"], "momentum_new", cfg)
-        analysis[book] = {"n": len(rows), "current_exits": cur, "whatif": wi, "splits": splits[:6]}
+        pairs = []
+        if len(rows) >= min_n and not any(sp["actionable"] for sp in splits):
+            pairs = entry_pair_splits(rows, book, cfg)   # only when no single feature is clean enough
+        analysis[book] = {"n": len(rows), "current_exits": cur, "whatif": wi, "splits": splits[:6], "pairs": pairs[:3]}
         if len(rows) < min_n:
             continue
         cands = []
@@ -112,12 +115,30 @@ def propose_technique(cfg: dict, trades_by_book: dict[str, list[dict]], min_n: i
                               "direction": "raise expectancy by filtering the entries that lose — measured, not guessed",
                               "evidence": {k: sp[k] for k in ("feature", "n", "split", "current", "low_expectancy_usd", "high_expectancy_usd")}})
                 break  # one entry-filter candidate per book (the top-gain one)
+        for pr in pairs:
+            if pr["actionable"] and pr["gain_usd_per_fill"] >= TECHNIQUE_MIN_GAIN_USD:
+                acts = {}
+                for k, split, curv in zip(pr["keys"], pr["splits"], pr["current"]):
+                    if split > curv:
+                        acts[k] = round(split, 2) if isinstance(cfg.get(k, 0.0), float) else int(round(split))
+                if not acts:
+                    break
+                cands.append({"type": "threshold", "book": book, "key": "+".join(acts), "value": acts, "actions": acts,
+                              "gain": pr["gain_usd_per_fill"],
+                              "reason": (f"{book}: no single gate separates winners, but fills with {pr['features'][0]} ≥ {pr['splits'][0]:g} AND "
+                                         f"{pr['features'][1]} ≥ {pr['splits'][1]:g} earn {pr['high_high_expectancy_usd']:+.4f} $/fill (n={pr['high_high_n']}) "
+                                         f"while the rest lose {pr['rest_expectancy_usd']:+.4f} → raise both gates together"),
+                              "direction": "raise expectancy by requiring both signals at entry — measured on this book's fills",
+                              "evidence": {k: pr[k] for k in ("features", "n", "splits", "current", "high_high_n", "high_high_expectancy_usd", "rest_expectancy_usd")}})
+                break
         for c in cands:
             if best is None or c["gain"] > best["gain"]:
                 best = c
     if best:
         prop = {"type": best["type"], "book": best["book"], "key": best["key"], "value": best["value"], "reason": best["reason"],
                 "expected_direction": best["direction"], "evidence": best["evidence"], "technique": True}
+        if best.get("actions"):
+            prop["actions"] = best["actions"]
         return prop, analysis
     return None, analysis
 CANARY_ID = "current"
@@ -500,18 +521,19 @@ class LearningEngine:
             st["note"] = self._book_note(b, st, min_n)
         self.last["books"] = books
 
+        by_book: dict[str, list[dict]] = {b: [] for b in BOOKS}
+        for t in trades_7d:
+            bk = book_of(t)
+            if bk in by_book:
+                by_book[bk].append(t)
+        _, self.last["technique"] = propose_technique(cfg, by_book, min_n)   # always refreshed for the UI
+
         can = await self.canary()
         if can and can.get("state") == "running":
             await self._evaluate_canary(can, cfg, trades_24h)
             self.last["canary"] = await self.canary()
             return []  # one change at a time
 
-        by_book: dict[str, list[dict]] = {b: [] for b in BOOKS}
-        for t in trades_7d:
-            bk = book_of(t)
-            if bk in by_book:
-                by_book[bk].append(t)
-        _, self.last["technique"] = propose_technique(cfg, by_book, min_n)
         proposal = propose(cfg, books, min_n, by_book)
         self.last["canary"] = can
         if not proposal:
@@ -536,7 +558,7 @@ class LearningEngine:
                 "improves and drawdown is not >15% worse — otherwise reverted and blacklisted 24h. "
                 "Optimises USD expectancy after fill (profit), not win rate."
             ),
-            "actions": {proposal["key"]: proposal["value"]},
+            "actions": proposal.get("actions") or {proposal["key"]: proposal["value"]},
             "confidence": "high" if proposal["type"] == "flag" else "med",
             "metrics": {"book": proposal["book"], "fingerprint": fp, **{k: (round(v, 6) if isinstance(v, float) else v) for k, v in proposal["evidence"].items()}},
             "learning": True,
@@ -548,29 +570,35 @@ class LearningEngine:
 
     async def apply(self, proposal: dict, cfg: dict, books: dict | None = None, auto: bool = False) -> dict:
         key, value = proposal["key"], proposal["value"]
-        if not key_ok(key):
-            raise ValueError(f"key {key} not allowed")
+        actions = proposal.get("actions") or {key: value}
+        for k in actions:
+            if not key_ok(k):
+                raise ValueError(f"key {k} not allowed")
         if await self.canary() and (await self.canary()).get("state") == "running":
             raise RuntimeError("canary already running — one change at a time")
         book = proposal["book"]
         st = (books or self.last.get("books") or {}).get(book if book in BOOKS else "global", {})
-        prior = cfg_get(cfg, key)
-        if prior is None and "." not in key:  # key never persisted → baseline is the model default
-            from models import BotConfig
-            prior = BotConfig().model_dump().get(key)
+        baseline = {}
+        for k in actions:
+            prior = cfg_get(cfg, k)
+            if prior is None and "." not in k:  # key never persisted → baseline is the model default
+                from models import BotConfig
+                prior = BotConfig().model_dump().get(k)
+            baseline[k] = prior
         canary = {
             "state": "running",
             "proposal": proposal,
             "book": book,
-            "baseline_config_subset": {key: prior},
+            "baseline_config_subset": baseline,
             "started_at": datetime.now(timezone.utc).isoformat(),
             "trades_at_start": st.get("n", 0),
             "baseline_expectancy_usd": st.get("expectancy_usd"),
             "baseline_max_drawdown_usd": st.get("max_drawdown_usd"),
             "auto": auto,
         }
-        await self.db.bot_config.update_one({}, {"$set": {key: value}})   # dotted keys nest natively in Mongo
-        cfg_set(cfg, key, value)
+        await self.db.bot_config.update_one({}, {"$set": dict(actions)})   # dotted keys nest natively in Mongo
+        for k, v in actions.items():
+            cfg_set(cfg, k, v)
         await self._set_canary(canary)
         await self._reload()
         logger.warning(f"doctor LEARNING canary started: {key}={value} ({'auto' if auto else 'manual'}) book={book}")

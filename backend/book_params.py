@@ -12,6 +12,8 @@ EXIT_PARAMS = ("take_profit_pct", "stop_loss_pct", "trailing_stop_pct", "trailin
 EXIT_GRID = {  # candidate values the optimizer may propose
     "take_profit_pct": [10, 15, 20, 25, 30, 40, 50, 60, 80, 100],
     "stop_loss_pct": [8, 10, 12, 15, 20, 25, 30, 35, 40],
+    "trailing_stop_pct": [3, 4, 5, 6, 8, 10, 12, 15],
+    "trailing_arm_pct": [5, 8, 10, 12, 15, 20, 30],
     "hold_max_seconds": [20, 30, 45, 60, 90, 120, 180, 300],
 }
 # entry feature (in trade.entry_ctx) → config key raised to the split point, per book
@@ -86,8 +88,11 @@ def _path(t: dict) -> dict | None:
             "hold_s": hold, "peak_hold_s": t.get("peak_hold_s"), "mae_recorded": bool(tr_rec)}
 
 
-def _simulate(p: dict, tp: float, sl: float, hold: float | None, fee_pct: float) -> float:
-    """USD result of this trade under (tp, sl, hold). Unknown paths fall back to what really happened."""
+def _simulate(p: dict, params: dict, fee_pct: float) -> float:
+    """USD result of this trade under the exit ladder `params`. Unknown paths fall back to what really happened."""
+    tp, sl = float(params["take_profit_pct"]), float(params["stop_loss_pct"])
+    trail, arm = float(params["trailing_stop_pct"]), float(params["trailing_arm_pct"])
+    hold = float(params.get("hold_max_seconds") or 0) or None
     hit_tp, hit_sl = p["mfe"] >= tp - 1e-6, p["mae"] <= -sl + 1e-6
     if hit_tp and hit_sl:
         first = "tp" if p["peak_first"] else "sl"
@@ -97,13 +102,18 @@ def _simulate(p: dict, tp: float, sl: float, hold: float | None, fee_pct: float)
         first = "sl"
     else:
         first = None
+    if first == "sl":
+        return -p["entry_usd"] * (sl + fee_pct) / 100.0
     if first == "tp":
-        # hold cap can only cut a TP short if the peak came after the cap
         if hold and p.get("peak_hold_s") and p["peak_hold_s"] > hold and p["hold_s"] and p["hold_s"] > hold:
             return p["pnl_usd"]
         return p["entry_usd"] * (tp - fee_pct) / 100.0
-    if first == "sl":
-        return -p["entry_usd"] * (sl + fee_pct) / 100.0
+    # trailing stop: armed once the run reached `arm`; fires if the price later gave back ≥ `trail` from the peak
+    if p["mfe"] >= arm - 1e-6 and p["mfe"] > 0:
+        drop_from_peak = (1.0 - (1.0 + p["pnl_pct"] / 100.0) / (1.0 + p["mfe"] / 100.0)) * 100.0
+        if drop_from_peak >= trail - 1e-6:
+            exit_pct = ((1.0 + p["mfe"] / 100.0) * (1.0 - trail / 100.0) - 1.0) * 100.0
+            return p["entry_usd"] * (exit_pct - fee_pct) / 100.0
     return p["pnl_usd"]
 
 
@@ -114,25 +124,24 @@ def whatif_exits(trades: list[dict], cur: dict, fee_pct: float = 2.0) -> dict:
     n = len(paths)
     if n == 0:
         return {"n": 0}
-    tp0, sl0, hold0 = float(cur["take_profit_pct"]), float(cur["stop_loss_pct"]), float(cur["hold_max_seconds"])
+    from models import BotConfig
+    _d = BotConfig()
+    cur_params = {k: float(cur.get(k, getattr(_d, k))) for k in EXIT_PARAMS}
 
-    def exp_for(tp, sl, hold):
-        return statistics.mean(_simulate(p, tp, sl, hold, fee_pct) for p in paths)
+    def exp_for(**over):
+        params = {**cur_params, **over}
+        return statistics.mean(_simulate(p, params, fee_pct) for p in paths)
 
-    base = exp_for(tp0, sl0, hold0)
-    rows = []
-    for tp in EXIT_GRID["take_profit_pct"]:
-        rows.append({"param": "take_profit_pct", "value": tp, "expectancy_usd": exp_for(tp, sl0, hold0)})
-    for sl in EXIT_GRID["stop_loss_pct"]:
-        rows.append({"param": "stop_loss_pct", "value": sl, "expectancy_usd": exp_for(tp0, sl, hold0)})
-    # SL what-ifs need the recorded trough: without it a dip-then-recover winner looks like it never
-    # dipped, which makes tight stops look free. Require ≥2/3 of fills to carry one.
+    base = exp_for()
+    rows = [{"param": param, "value": v, "expectancy_usd": exp_for(**{param: v})}
+            for param in ("take_profit_pct", "stop_loss_pct", "trailing_stop_pct", "trailing_arm_pct")
+            for v in EXIT_GRID[param]]
     have_mae = sum(1 for p in paths if p["mae_recorded"]) >= max(3, (2 * n) // 3)
     if not have_mae:
         rows = [r for r in rows if r["param"] != "stop_loss_pct"]
     best = max(rows, key=lambda r: r["expectancy_usd"]) if rows else None
     gain = (best["expectancy_usd"] - base) if best else 0.0
-    return {"n": n, "current": {"take_profit_pct": tp0, "stop_loss_pct": sl0, "hold_max_seconds": hold0, "expectancy_usd": base},
+    return {"n": n, "current": {**cur_params, "expectancy_usd": base},
             "best": best, "gain_usd_per_fill": gain, "rows": rows, "mae_recorded": have_mae,
             "median_mfe": statistics.median(p["mfe"] for p in paths), "median_mae": statistics.median(p["mae"] for p in paths)}
 
@@ -169,5 +178,43 @@ def entry_feature_splits(trades: list[dict], book: str, cfg, min_side: int = 5) 
                     "low_expectancy_usd": e_low, "high_expectancy_usd": e_high, "all_expectancy_usd": e_all,
                     "gain_usd_per_fill": e_high - e_all,
                     "actionable": e_low < 0 < e_high and med > cur and (cap is None or med <= cap)})
+    out.sort(key=lambda r: -r["gain_usd_per_fill"])
+    return out
+
+
+def entry_pair_splits(trades: list[dict], book: str, cfg, min_side: int = 5) -> list[dict]:
+    """When no single feature separates winners from losers, try pairs: fills above BOTH medians
+    ("high-high") vs everything else. Actionable when the rest loses, high-high earns, and both
+    gates can be raised to their split."""
+    feats = list((ENTRY_FEATURES.get(book) or {}).items())
+    out = []
+    for i in range(len(feats)):
+        for j in range(i + 1, len(feats)):
+            (fa, ka), (fb, kb) = feats[i], feats[j]
+            rows = []
+            for t in trades:
+                ctx = t.get("entry_ctx") or {}
+                if ctx.get(fa) is None or ctx.get(fb) is None or t.get("pnl_usd") is None:
+                    continue
+                try:
+                    rows.append((float(ctx[fa]), float(ctx[fb]), float(t["pnl_usd"])))
+                except (TypeError, ValueError):
+                    pass
+            if len(rows) < 3 * min_side:
+                continue
+            ma = statistics.median(r[0] for r in rows)
+            mb = statistics.median(r[1] for r in rows)
+            hh = [p for a, b, p in rows if a >= ma and b >= mb]
+            rest = [p for a, b, p in rows if not (a >= ma and b >= mb)]
+            if len(hh) < min_side or len(rest) < min_side:
+                continue
+            e_hh, e_rest, e_all = statistics.mean(hh), statistics.mean(rest), statistics.mean(p for *_, p in rows)
+            cur_a, cur_b = float(_get(cfg, ka) or 0), float(_get(cfg, kb) or 0)
+            cap_a, cap_b = FEATURE_CAPS.get(ka), FEATURE_CAPS.get(kb)
+            out.append({"features": [fa, fb], "keys": [ka, kb], "n": len(rows), "splits": [ma, mb], "current": [cur_a, cur_b],
+                        "high_high_n": len(hh), "high_high_expectancy_usd": e_hh, "rest_expectancy_usd": e_rest,
+                        "all_expectancy_usd": e_all, "gain_usd_per_fill": e_hh - e_all,
+                        "actionable": e_rest < 0 < e_hh and (ma > cur_a or mb > cur_b)
+                        and (cap_a is None or ma <= cap_a) and (cap_b is None or mb <= cap_b)})
     out.sort(key=lambda r: -r["gain_usd_per_fill"])
     return out

@@ -1495,3 +1495,9 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - First live cycle: rh_pons n=53, now −$0.26/fill → best `book_exits.rh_pons.take_profit_pct=100` (−$0.16, +$0.10/fill) → canary running (auto). A first mis-attributed canary (momentum SL 85→8 driven by RH data without troughs) was reverted by hand and the bias fixed.
 - Tests: `tests/test_doctor_technique.py` (6), updated doctor/autopilot tests for last-resort gating; unit suite 446 passed, API suites green.
 - ⚠️ Note for user: global `stop_loss_pct` is **85%** in the current config (with trail 5% / arm 12%) — effectively no hard stop; the Doctor can now set per-book SLs once troughs accumulate.
+
+### 2026-09-07 — Doctor v3 follow-ups: trailing/arm grid + two-feature splits
+- `whatif_exits` now varies the full ladder: TP, SL, **trailing_stop_pct (3–15)**, **trailing_arm_pct (5–30)** (hold via peak timing). Trail model: armed when MFE ≥ arm; fires if the real giveback from peak ≥ trail → exit at peak×(1−trail); otherwise the actual outcome stands. Current ladder read from the book (defaults filled from BotConfig).
+- `entry_pair_splits`: when no single feature split is actionable, tries feature pairs — "high-high" (≥ both medians) vs the rest; actionable when rest < 0 < high-high. Proposal carries `actions` (two keys applied/reverted together); `apply()`/`revert()`/suggestions handle multi-key proposals; `key` = "a+b".
+- Technique analysis now refreshes every cycle even while a canary runs (UI stayed stale before). Autopilot card shows trail@arm and a `pair:` line per book.
+- Live: rh_pons n=63 under the TP=100 canary reads +$0.023/fill; next best = trailing 5 → 3 (+$0.055/fill). Tests: 10 technique tests, all suites green.

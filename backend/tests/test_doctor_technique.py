@@ -29,7 +29,7 @@ def test_exit_param_prefers_book_override_then_global_then_default():
 def test_whatif_grid_finds_the_tp_the_fills_actually_supported():
     # 20 fills: every one ran to +40% MFE but the book's TP is 60 so they all faded and closed at -5%
     trades = [_t(-0.5, mfe=40, mae=-8) for _ in range(20)]
-    cur = {"take_profit_pct": 60.0, "stop_loss_pct": 25.0, "hold_max_seconds": 60.0}
+    cur = {"take_profit_pct": 60.0, "stop_loss_pct": 25.0, "hold_max_seconds": 60.0, "trailing_stop_pct": 50.0, "trailing_arm_pct": 12.0}
     wi = bp.whatif_exits(trades, cur)
     assert wi["n"] == 20 and wi["current"]["expectancy_usd"] == -0.5
     assert wi["best"]["param"] == "take_profit_pct" and wi["best"]["value"] == 40
@@ -40,7 +40,7 @@ def test_whatif_grid_finds_the_tp_the_fills_actually_supported():
 def test_whatif_respects_path_order_and_sl_candidates():
     # trough came first and went to -30%: with SL 12 these become -12% losses, TP is never reached first
     trades = [_t(2.0, mfe=25, mae=-30, peak_first=False) for _ in range(12)]
-    cur = {"take_profit_pct": 20.0, "stop_loss_pct": 40.0, "hold_max_seconds": 60.0}
+    cur = {"take_profit_pct": 20.0, "stop_loss_pct": 40.0, "hold_max_seconds": 60.0, "trailing_stop_pct": 50.0, "trailing_arm_pct": 12.0}
     wi = bp.whatif_exits(trades, cur)
     sl12 = next(r for r in wi["rows"] if r["param"] == "stop_loss_pct" and r["value"] == 12)
     assert abs(sl12["expectancy_usd"] - (-10.0 * (12 + 2) / 100)) < 1e-9
@@ -81,5 +81,63 @@ def test_apply_and_revert_nested_book_key():
     assert cfg["book_exits"]["rh_pons"]["take_profit_pct"] == 40
     assert can["baseline_config_subset"] == {"book_exits.rh_pons.take_profit_pct": None}
     assert db.bot_config.doc.get("book_exits.rh_pons.take_profit_pct") == 40 or db.bot_config.doc.get("book_exits", {}).get("rh_pons", {}).get("take_profit_pct") == 40
+    done = asyncio.run(e.revert("manual"))
+    assert done["state"] == "reverted"
+
+
+def test_trailing_and_arm_grid_models_giveback_from_peak():
+    # fills ran to +40% then gave back to +5% (35% off the peak). trail 5% armed at 10% would have kept ~+33%
+    trades = [_t(0.5, mfe=40, mae=-3) for _ in range(15)]
+    cur = {"take_profit_pct": 100.0, "stop_loss_pct": 40.0, "trailing_stop_pct": 50.0, "trailing_arm_pct": 12.0, "hold_max_seconds": 60.0}
+    wi = bp.whatif_exits(trades, cur)
+    params = {r["param"] for r in wi["rows"]}
+    assert {"trailing_stop_pct", "trailing_arm_pct"} <= params
+    t5 = next(r for r in wi["rows"] if r["param"] == "trailing_stop_pct" and r["value"] == 5)
+    assert abs(t5["expectancy_usd"] - 10.0 * (((1.4 * 0.95) - 1) * 100 - 2) / 100) < 1e-9
+    t3 = next(r for r in wi["rows"] if r["param"] == "trailing_stop_pct" and r["value"] == 3)
+    assert t3["expectancy_usd"] > t5["expectancy_usd"] > 0.5      # tighter trail keeps more of the +40% run
+    assert wi["best"]["param"] == "take_profit_pct" and wi["best"]["value"] == 40   # …but banking the peak beats both
+
+
+def test_trail_does_not_fire_when_giveback_smaller_than_trail():
+    trades = [_t(3.5, mfe=40, mae=-3) for _ in range(10)]        # exited at +35%: only 3.6% off the peak
+    cur = {"take_profit_pct": 100.0, "stop_loss_pct": 40.0, "trailing_stop_pct": 10.0, "trailing_arm_pct": 12.0, "hold_max_seconds": 60.0}
+    wi = bp.whatif_exits(trades, cur)
+    assert abs(wi["current"]["expectancy_usd"] - 3.5) < 1e-9
+
+
+def test_pair_split_used_only_when_single_split_is_not_clean():
+    cfg = BotConfig(rh_min_inflow_usd=100.0, rh_min_unique_buyers=2).model_dump()
+    # winners need BOTH high inflow and many buyers; either alone loses → single splits are muddy
+    trades = []
+    for i in range(8):
+        trades.append(_t(+0.8, 30, -5, ctx={"inflow_usd": 900 + i, "unique_buyers": 20 + i}))   # high-high wins
+        for _ in range(2):
+            trades.append(_t(-0.5, 5, -20, ctx={"inflow_usd": 900 + i, "unique_buyers": 3 + i % 2}))  # high inflow, few buyers
+            trades.append(_t(-0.5, 5, -20, ctx={"inflow_usd": 200 + i, "unique_buyers": 20 + i}))     # many buyers, low inflow
+        trades.append(_t(-0.5, 5, -20, ctx={"inflow_usd": 200 + i, "unique_buyers": 3 + i % 2}))
+    singles = bp.entry_feature_splits(trades, "rh_pons", cfg)
+    assert not any(s["actionable"] for s in singles)
+    pairs = bp.entry_pair_splits(trades, "rh_pons", cfg)
+    top = pairs[0]
+    assert top["actionable"] and set(top["features"]) == {"inflow_usd", "unique_buyers"}
+    assert top["high_high_expectancy_usd"] > 0 > top["rest_expectancy_usd"]
+    by_book = {"rh_pons": trades, "momentum": [], "greylist_snipe": [], "reentry": []}
+    prop, analysis = dl.propose_technique(cfg, by_book, 15)
+    assert prop and prop.get("actions") and set(prop["actions"]) == {"rh_min_inflow_usd", "rh_min_unique_buyers"}
+    assert analysis["rh_pons"]["pairs"][0]["actionable"]
+
+
+def test_apply_and_revert_two_key_proposal():
+    from tests.test_doctor_learning import engine
+    e, db = engine()
+    db.bot_config.doc = {}
+    cfg = BotConfig(rh_min_inflow_usd=100.0, rh_min_unique_buyers=2).model_dump()
+    prop = {"type": "threshold", "book": "rh_pons", "key": "rh_min_inflow_usd+rh_min_unique_buyers",
+            "value": {"rh_min_inflow_usd": 550.0, "rh_min_unique_buyers": 11}, "actions": {"rh_min_inflow_usd": 550.0, "rh_min_unique_buyers": 11},
+            "reason": "r", "expected_direction": "d", "evidence": {}}
+    can = asyncio.run(e.apply(prop, cfg, {"rh_pons": {"n": 32, "expectancy_usd": -0.1, "max_drawdown_usd": 5}}, auto=True))
+    assert cfg["rh_min_inflow_usd"] == 550.0 and cfg["rh_min_unique_buyers"] == 11
+    assert can["baseline_config_subset"] == {"rh_min_inflow_usd": 100.0, "rh_min_unique_buyers": 2}
     done = asyncio.run(e.revert("manual"))
     assert done["state"] == "reverted"
