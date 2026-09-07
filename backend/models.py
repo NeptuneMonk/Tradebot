@@ -127,6 +127,10 @@ class BotConfig(BaseModel):
     panic_exit_slippage_bps: int = 2500  # 25% emergency exit slippage
     # Per-book exit overrides (Doctor-tuned): {book: {take_profit_pct, stop_loss_pct, trailing_stop_pct, trailing_arm_pct, hold_max_seconds}}
     book_exits: dict = {}
+    # Regime (quiet vs busy launch hours): entry-threshold multiplier per book per regime, Doctor-tuned
+    regime_gate_mult: dict = {}          # {book: {"quiet": 1.0, "busy": 1.5}}
+    regime_busy_threshold: dict = {}     # {book: launches/h} — set by the Doctor from the book's own fills
+    regime_busy_default_per_h: float = 30.0
 
     # Intelligent Exit v2 — exchange-style exit logic.
     # When enabled: SL / TS only fire after a sustained breach (not on single

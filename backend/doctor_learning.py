@@ -53,8 +53,12 @@ def key_ok(key: str) -> bool:
     if key in ALLOWED_KEYS:
         return True
     parts = key.split(".")
-    from book_params import BOOKS as _B, EXIT_PARAMS
-    return len(parts) == 3 and parts[0] == "book_exits" and parts[1] in _B and parts[2] in EXIT_PARAMS
+    from book_params import BOOKS as _B, EXIT_PARAMS, REGIMES
+    if len(parts) == 3 and parts[0] == "book_exits" and parts[1] in _B and parts[2] in EXIT_PARAMS:
+        return True
+    if len(parts) == 3 and parts[0] == "regime_gate_mult" and parts[1] in _B and parts[2] in REGIMES:
+        return True
+    return len(parts) == 2 and parts[0] == "regime_busy_threshold" and parts[1] in _B
 
 
 def cfg_get(cfg: dict, key: str):
@@ -77,7 +81,8 @@ def cfg_set(cfg: dict, key: str, value):
 def propose_technique(cfg: dict, trades_by_book: dict[str, list[dict]], min_n: int) -> tuple[dict | None, dict]:
     """Technique first: per book, replay its own fills against the exit grid and split them by entry
     feature; return the single best-gain proposal (or None) plus the full analysis for the UI."""
-    from book_params import BOOKS as _B, book_exit_view, entry_feature_splits, entry_pair_splits, whatif_exits
+    from book_params import (BOOKS as _B, REGIME_MULT_CAP, REGIME_MULT_STEP, book_exit_view, entry_feature_splits,
+                             entry_pair_splits, regime_splits, whatif_exits)
     analysis: dict = {}
     best: dict | None = None
     for book in _B:
@@ -93,7 +98,8 @@ def propose_technique(cfg: dict, trades_by_book: dict[str, list[dict]], min_n: i
         pairs = []
         if len(rows) >= min_n and not any(sp["actionable"] for sp in splits):
             pairs = entry_pair_splits(rows, book, cfg)   # only when no single feature is clean enough
-        analysis[book] = {"n": len(rows), "current_exits": cur, "whatif": wi, "splits": splits[:6], "pairs": pairs[:3]}
+        regime = regime_splits(rows, book, cfg) if len(rows) >= min_n else None
+        analysis[book] = {"n": len(rows), "current_exits": cur, "whatif": wi, "splits": splits[:6], "pairs": pairs[:3], "regime": regime}
         if len(rows) < min_n:
             continue
         cands = []
@@ -131,6 +137,18 @@ def propose_technique(cfg: dict, trades_by_book: dict[str, list[dict]], min_n: i
                               "direction": "raise expectancy by requiring both signals at entry — measured on this book's fills",
                               "evidence": {k: pr[k] for k in ("features", "n", "splits", "current", "high_high_n", "high_high_expectancy_usd", "rest_expectancy_usd")}})
                 break
+        if regime and regime["actionable"] and regime["gain_usd_per_fill"] >= TECHNIQUE_MIN_GAIN_USD:
+            lose = regime["losing"]
+            new_mult = round(min(REGIME_MULT_CAP, regime["current_mult"] + REGIME_MULT_STEP), 2)
+            acts = {f"regime_gate_mult.{book}.{lose}": new_mult, f"regime_busy_threshold.{book}": round(regime["threshold_per_h"], 1)}
+            cands.append({"type": "threshold", "book": book, "key": "+".join(acts), "value": acts, "actions": acts,
+                          "gain": regime["gain_usd_per_fill"],
+                          "reason": (f"{book} in {lose} hours (launch rate {'<' if lose == 'quiet' else '≥'} {regime['threshold_per_h']:g}/h) "
+                                     f"earns {regime[lose]['expectancy_usd']:+.4f} $/fill (n={regime[lose]['n']}) vs "
+                                     f"{regime['quiet' if lose == 'busy' else 'busy'][ 'expectancy_usd']:+.4f} in the other regime → "
+                                     f"tighten every {book} entry gate ×{new_mult:g} during {lose} hours"),
+                          "direction": "raise expectancy by demanding more from entries in the regime that loses",
+                          "evidence": regime})
         for c in cands:
             if best is None or c["gain"] > best["gain"]:
                 best = c

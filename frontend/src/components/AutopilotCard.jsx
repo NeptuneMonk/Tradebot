@@ -177,13 +177,18 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
                 </div>
                 <div className="text-neutral-400">
                   {wi.n >= 1 && best
-                    ? <>exits: now <span className="text-neutral-200">{signedUsd(wi.current?.expectancy_usd)}</span>/fill → best <span className={gain > 0.02 ? "text-lime-300" : "text-neutral-300"}>{best.param} {best.value}</span> = {signedUsd(best.expectancy_usd)}/fill ({gain >= 0 ? "+" : ""}{Number(gain).toFixed(3)}) · MFE {Number(wi.median_mfe).toFixed(0)}% / MAE {Number(wi.median_mae).toFixed(0)}%{wi.mae_recorded ? "" : " · trough not yet recorded — SL what-ifs pending"}</>
+                    ? <>exits: now <span className="text-neutral-200">{signedUsd(wi.current?.expectancy_usd)}</span>/fill → best <span className={gain > 0.02 ? "text-lime-300" : "text-neutral-300"}>{best.param} {best.value}</span> = {signedUsd(best.expectancy_usd)}/fill ({gain >= 0 ? "+" : ""}{Number(gain).toFixed(3)}) · MFE {Number(wi.median_mfe).toFixed(0)}% / MAE {Number(wi.median_mae).toFixed(0)}%{wi.mae_recorded ? "" : " · trough not yet recorded — SL what-ifs pending"}{wi.peak_timing_recorded ? "" : " · peak timing pending — hold what-ifs pending"}</>
                     : <span className="text-neutral-600">exits: need {Math.max(0, (config?.doctor_learning_min_trades_per_book ?? 15) - (t.n || 0))} more fills</span>}
                 </div>
                 <div className="text-neutral-400">
                   {split
                     ? <>entry: {split.feature} &lt; {Number(split.split).toFixed(split.split > 100 ? 0 : 1)} → {signedUsd(split.low_expectancy_usd)}/fill, above → <span className={split.actionable ? "text-lime-300" : "text-neutral-300"}>{signedUsd(split.high_expectancy_usd)}</span>{split.actionable ? ` · raise ${split.key} ${split.current} → ${Number(split.split).toFixed(0)}` : " · no clean split"}</>
                     : <span className="text-neutral-600">entry: no feature splits yet (entry context recorded from now on)</span>}
+                  {t.regime && (
+                    <div data-testid={`technique-regime-${book}`}>
+                      regime: quiet (&lt;{Number(t.regime.threshold_per_h).toFixed(0)}/h) {signedUsd(t.regime.quiet.expectancy_usd)}/fill (n={t.regime.quiet.n}) · busy {signedUsd(t.regime.busy.expectancy_usd)}/fill (n={t.regime.busy.n}){t.regime.actionable ? <span className="text-lime-300"> · tighten {t.regime.losing}-hour gates ×{(t.regime.current_mult + 0.5).toFixed(1)}</span> : t.regime.current_mult > 1 ? ` · ${t.regime.losing} gates ×${t.regime.current_mult}` : ""}
+                    </div>
+                  )}
                   {pair && (
                     <div data-testid={`technique-pair-${book}`}>
                       pair: {pair.features[0]} ≥ {Number(pair.splits[0]).toFixed(0)} AND {pair.features[1]} ≥ {Number(pair.splits[1]).toFixed(0)} → <span className={pair.actionable ? "text-lime-300" : "text-neutral-300"}>{signedUsd(pair.high_high_expectancy_usd)}</span>/fill (n={pair.high_high_n}), rest {signedUsd(pair.rest_expectancy_usd)}{pair.actionable ? " · raise both gates" : ""}

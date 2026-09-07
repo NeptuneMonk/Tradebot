@@ -29,6 +29,50 @@ FEATURE_CAPS = {"rh_min_growth_pct": 150.0, "rh_min_inflow_usd": 3000.0, "rh_min
                 "min_curve_liquidity_sol_new": 80.0, "min_buyers_for_entry_new": 40, "greylist_snipe_min_score": 85.0}
 
 
+REGIMES = ("quiet", "busy")
+REGIME_MULT_STEP, REGIME_MULT_CAP = 0.5, 3.0
+
+
+def regime_for(cfg, book: str, launch_rate_per_h: float) -> str:
+    """'busy' when the chain is launching faster than this book's threshold (Doctor-set, default 30/h)."""
+    thr = float(((_get(cfg, "regime_busy_threshold") or {}).get(book)) or _get(cfg, "regime_busy_default_per_h", 30.0) or 30.0)
+    return "busy" if launch_rate_per_h >= thr else "quiet"
+
+
+def regime_gate_mult(cfg, book: str, launch_rate_per_h: float) -> float:
+    """Multiplier applied to this book's ENTRY thresholds in the current regime (1.0 = untouched)."""
+    reg = regime_for(cfg, book, launch_rate_per_h)
+    m = ((_get(cfg, "regime_gate_mult") or {}).get(book) or {}).get(reg)
+    return float(m) if m is not None else 1.0
+
+
+def regime_splits(trades: list[dict], book: str, cfg, min_side: int = 5) -> dict | None:
+    """Quiet vs busy launch hours for this book's fills (split at the median launch rate at entry)."""
+    rows = []
+    for t in trades:
+        r, p = (t.get("entry_ctx") or {}).get("launch_rate_per_h"), t.get("pnl_usd")
+        if r is None or p is None:
+            continue
+        try:
+            rows.append((float(r), float(p)))
+        except (TypeError, ValueError):
+            pass
+    if len(rows) < 2 * min_side:
+        return None
+    med = statistics.median(r for r, _ in rows)
+    quiet = [p for r, p in rows if r < med]
+    busy = [p for r, p in rows if r >= med]
+    if len(quiet) < min_side or len(busy) < min_side:
+        return None
+    e_q, e_b = statistics.mean(quiet), statistics.mean(busy)
+    losing = "quiet" if e_q < e_b else "busy"
+    cur_mult = ((_get(cfg, "regime_gate_mult") or {}).get(book) or {}).get(losing, 1.0)
+    return {"n": len(rows), "threshold_per_h": med, "quiet": {"n": len(quiet), "expectancy_usd": e_q},
+            "busy": {"n": len(busy), "expectancy_usd": e_b}, "losing": losing, "current_mult": float(cur_mult),
+            "actionable": min(e_q, e_b) < 0 < max(e_q, e_b) and float(cur_mult) < REGIME_MULT_CAP,
+            "gain_usd_per_fill": max(e_q, e_b) - statistics.mean(p for _, p in rows)}
+
+
 def book_for_action(action: str | None, chain: str | None = None) -> str:
     a = action or ""
     if chain == "rh" or a.startswith("rh_pons"):
@@ -102,11 +146,18 @@ def _simulate(p: dict, params: dict, fee_pct: float) -> float:
         first = "sl"
     else:
         first = None
+    # max-hold cut before the real exit: before the peak → assume flat (fees only); after the peak →
+    # interpolate between the peak and the real exit. Longer holds than the real one can't be known.
+    if hold and p.get("hold_s") and p["hold_s"] > hold and p.get("peak_hold_s") is not None and first != "sl":
+        if not (first == "tp" and p["peak_hold_s"] <= hold):
+            if p["peak_hold_s"] >= hold:
+                return -p["entry_usd"] * fee_pct / 100.0
+            frac = (hold - p["peak_hold_s"]) / max(1e-9, p["hold_s"] - p["peak_hold_s"])
+            at_cut = p["mfe"] + (p["pnl_pct"] - p["mfe"]) * frac
+            return p["entry_usd"] * (at_cut - fee_pct) / 100.0
     if first == "sl":
         return -p["entry_usd"] * (sl + fee_pct) / 100.0
     if first == "tp":
-        if hold and p.get("peak_hold_s") and p["peak_hold_s"] > hold and p["hold_s"] and p["hold_s"] > hold:
-            return p["pnl_usd"]
         return p["entry_usd"] * (tp - fee_pct) / 100.0
     # trailing stop: armed once the run reached `arm`; fires if the price later gave back ≥ `trail` from the peak
     if p["mfe"] >= arm - 1e-6 and p["mfe"] > 0:
@@ -134,15 +185,18 @@ def whatif_exits(trades: list[dict], cur: dict, fee_pct: float = 2.0) -> dict:
 
     base = exp_for()
     rows = [{"param": param, "value": v, "expectancy_usd": exp_for(**{param: v})}
-            for param in ("take_profit_pct", "stop_loss_pct", "trailing_stop_pct", "trailing_arm_pct")
+            for param in ("take_profit_pct", "stop_loss_pct", "trailing_stop_pct", "trailing_arm_pct", "hold_max_seconds")
             for v in EXIT_GRID[param]]
+    have_peak_timing = sum(1 for p in paths if p.get("peak_hold_s") is not None and p.get("hold_s")) >= max(3, (2 * n) // 3)
+    if not have_peak_timing:
+        rows = [r for r in rows if r["param"] != "hold_max_seconds"]
     have_mae = sum(1 for p in paths if p["mae_recorded"]) >= max(3, (2 * n) // 3)
     if not have_mae:
         rows = [r for r in rows if r["param"] != "stop_loss_pct"]
     best = max(rows, key=lambda r: r["expectancy_usd"]) if rows else None
     gain = (best["expectancy_usd"] - base) if best else 0.0
     return {"n": n, "current": {**cur_params, "expectancy_usd": base},
-            "best": best, "gain_usd_per_fill": gain, "rows": rows, "mae_recorded": have_mae,
+            "best": best, "gain_usd_per_fill": gain, "rows": rows, "mae_recorded": have_mae, "peak_timing_recorded": have_peak_timing,
             "median_mfe": statistics.median(p["mfe"] for p in paths), "median_mae": statistics.median(p["mae"] for p in paths)}
 
 

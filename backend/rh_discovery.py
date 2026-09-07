@@ -207,6 +207,10 @@ class RateLimited(Exception):
     pass
 
 
+def launch_rate_per_h(starts, now: float) -> float:
+    return float(sum(1 for t in starts if now - float(t or 0) <= 3600.0))
+
+
 class RHDiscovery:
     def __init__(self, state: "BotState"):
         self.state = state

@@ -1009,8 +1009,15 @@ class BotState:
         asyncio.create_task(self._monitor_position(mint))
 
     # ---------- Listener handlers ----------
+    def _launch_rate(self) -> float:
+        now = time.time()
+        ts = [t for t in getattr(self, "_launch_ts", []) if now - t <= 3600.0]
+        self._launch_ts = ts
+        return float(len(ts))
+
     async def on_launch(self, launch_data: dict):
         """New Pump.fun token created."""
+        self._launch_ts = (getattr(self, "_launch_ts", []) + [time.time()])[-5000:]
         launch = Launch(
             mint=launch_data["mint"],
             creator=launch_data["creator"],
@@ -2351,7 +2358,10 @@ class BotState:
             )
 
         min_liq = self.config.min_curve_liquidity_sol_new if is_new_band else self.config.min_curve_liquidity_sol
-        min_buyers = self.config.min_buyers_for_entry_new if is_new_band else self.config.min_buyers_for_entry
+        from book_params import regime_gate_mult
+        _rm = regime_gate_mult(self.config, "momentum", self._launch_rate())
+        min_buyers = (self.config.min_buyers_for_entry_new if is_new_band else self.config.min_buyers_for_entry) * _rm
+        min_liq = min_liq * _rm
 
         # Liquidity gate: skip entry if curve has too little real SOL.
         # Greylist snipes use a much looser floor (0.1 SOL) — fresh curves
@@ -2602,6 +2612,7 @@ class BotState:
                        "buy_count": int(getattr(launch, "buy_count", 0) or 0),
                        "usd_market_cap": float(getattr(launch, "usd_market_cap", 0) or 0),
                        "creator_score": greylist_ctx.get("score"),
+                       "launch_rate_per_h": self._launch_rate(),
                        "band": "new" if action == "momentum_new" else "seasoned"},
             greylist_pattern_suggested_tp_pct=greylist_ctx.get("pattern_tp_pct"),
             is_research_snipe=is_research_snipe,

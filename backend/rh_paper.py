@@ -123,16 +123,18 @@ class RHPaperTrader:
         age = now - b["start"]
         if age < cfg.rh_min_age_s or age > cfg.rh_max_age_min * 60:
             return "age"
+        from book_params import regime_gate_mult
+        rm = regime_gate_mult(cfg, "rh_pons", self._launch_rate(now))   # quiet/busy hours scale the gates
         if not (cfg.rh_min_curve_pct <= b["curve_fill_pct"] <= cfg.rh_max_curve_pct):
             return "curve"
         mc = b["usd_market_cap"]
-        if mc <= 0 or mc < cfg.rh_min_mc_usd or mc > cfg.rh_max_mc_usd:
+        if mc <= 0 or mc < cfg.rh_min_mc_usd * rm or mc > cfg.rh_max_mc_usd:
             return "mc"
-        if len(b["buyers"]) < cfg.rh_min_unique_buyers:
+        if len(b["buyers"]) < cfg.rh_min_unique_buyers * rm:
             return "buyers"
         cur, first = b["last_price_quote"], b["first_price_quote"]
         growth = ((cur - first) / first * 100.0) if first > 0 and cur > 0 else 0.0
-        if growth < cfg.rh_min_growth_pct:
+        if growth < cfg.rh_min_growth_pct * rm:
             return "growth"
         cutoff_inflow = now - cfg.scanner_recent_inflow_window_s
         cutoff_vel = now - cfg.scanner_holder_velocity_window_s
@@ -145,7 +147,7 @@ class RHPaperTrader:
                 recent.add(w)
         if len(recent) < cfg.rh_min_new_buyers_1m:
             return "new-buyers"
-        if inflow * quote_usd < cfg.rh_min_inflow_usd:
+        if inflow * quote_usd < cfg.rh_min_inflow_usd * rm:
             return "inflow"
         last_ms = b["last_trade_ms"]
         if not last_ms or now - last_ms / 1000.0 > cfg.rh_max_last_trade_age_s:
@@ -164,6 +166,10 @@ class RHPaperTrader:
 
     def _quote_usd(self, sym: str) -> float:
         return self.state.rh_discovery._quote_usd(sym)
+
+    def _launch_rate(self, now: float) -> float:
+        from rh_discovery import launch_rate_per_h
+        return launch_rate_per_h((b.get("start") for b in self.state.rh_discovery.tracking.values()), now)
 
     def _paper_gas_usd(self) -> float:
         """Per-side gas the paper book charges — half the measured live round trip, else the fallback."""
@@ -366,6 +372,7 @@ class RHPaperTrader:
                 "mc_usd": float(b.get("usd_market_cap") or 0.0),
                 "age_s": now - float(b.get("start") or now),
                 "quote_symbol": b.get("quote_symbol"),
+                "launch_rate_per_h": self._launch_rate(now),
             }
             if live_fill:
                 doc.update({"entry_sig": live_fill["tx"], "entry_tokens_raw": str(live_fill["tokens_raw"]), "curve": b.get("curve"),

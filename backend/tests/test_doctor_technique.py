@@ -141,3 +141,40 @@ def test_apply_and_revert_two_key_proposal():
     assert can["baseline_config_subset"] == {"rh_min_inflow_usd": 100.0, "rh_min_unique_buyers": 2}
     done = asyncio.run(e.revert("manual"))
     assert done["state"] == "reverted"
+
+
+def test_hold_grid_uses_real_peak_timing():
+    # peak at 20s (+30%), exit at 90s at -5%: hold 30 keeps most of the peak; hold 10 cuts before it (flat - fees)
+    trades = []
+    for _ in range(12):
+        t = _t(-0.5, mfe=30, mae=-6, hold=90)
+        t["peak_hold_s"] = 20.0
+        trades.append(t)
+    cur = {"take_profit_pct": 100.0, "stop_loss_pct": 40.0, "trailing_stop_pct": 50.0, "trailing_arm_pct": 12.0, "hold_max_seconds": 120.0}
+    wi = bp.whatif_exits(trades, cur)
+    assert wi["peak_timing_recorded"]
+    h30 = next(r for r in wi["rows"] if r["param"] == "hold_max_seconds" and r["value"] == 30)
+    h20 = next(r for r in wi["rows"] if r["param"] == "hold_max_seconds" and r["value"] == 20)
+    exp30 = 10.0 * ((30 + (-5 - 30) * (10 / 70)) - 2) / 100          # interpolated between peak and exit
+    assert abs(h30["expectancy_usd"] - exp30) < 1e-9 and abs(h20["expectancy_usd"] - (-10.0 * 2 / 100)) < 1e-9  # cut before the peak = fees only
+    # without peak timing the hold rows are withheld
+    for t in trades:
+        t["peak_hold_s"] = None
+    assert not any(r["param"] == "hold_max_seconds" for r in bp.whatif_exits(trades, cur)["rows"])
+
+
+def test_regime_split_and_gate_multiplier():
+    cfg = BotConfig().model_dump()
+    trades = [_t(+0.6, 30, -5, ctx={"launch_rate_per_h": 10 + i}) for i in range(10)] + \
+             [_t(-0.4, 5, -20, ctx={"launch_rate_per_h": 60 + i}) for i in range(10)]
+    r = bp.regime_splits(trades, "rh_pons", cfg)
+    assert r["losing"] == "busy" and r["actionable"] and 19 <= r["threshold_per_h"] <= 61
+    by_book = {"rh_pons": trades, "momentum": [], "greylist_snipe": [], "reentry": []}
+    prop, analysis = dl.propose_technique(cfg, by_book, 15)
+    assert analysis["rh_pons"]["regime"]["busy"]["expectancy_usd"] < 0
+    # exits/entry splits have no edge here → the regime proposal wins
+    assert prop and prop["actions"]["regime_gate_mult.rh_pons.busy"] == 1.5 and "regime_busy_threshold.rh_pons" in prop["actions"]
+    assert all(dl.key_ok(k) for k in prop["actions"])
+    cfg2 = BotConfig(regime_gate_mult={"rh_pons": {"busy": 1.5}}, regime_busy_threshold={"rh_pons": 35.0})
+    assert bp.regime_gate_mult(cfg2, "rh_pons", 50.0) == 1.5 and bp.regime_gate_mult(cfg2, "rh_pons", 20.0) == 1.0
+    assert bp.regime_gate_mult(cfg2, "momentum", 50.0) == 1.0
