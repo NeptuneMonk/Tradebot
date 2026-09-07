@@ -230,3 +230,36 @@ def test_gc_drops_stale_and_caps():
         disc._curve_to_token[f"0x{i + 100:040x}"] = tok
     disc._gc(now)
     assert len(disc.tracking) == 3 and len(disc._curve_to_token) == 3
+
+
+def test_virtual_reserve_solved_from_two_trades_and_net_quote_self_corrects():
+    """Stock/USDG curves each have their own V; ETH's is 1.68. Missing early trades must not
+    leave net_quote negative — it is re-derived from the exact curve state on every trade."""
+    V, K0 = 366.8649, 366.8649 * rh.TOKEN_SUPPLY
+    def buy(a, q_in, fee=0.01):
+        q = q_in * (1 - fee); x = K0 / a
+        return {"side": "buy", "q_eff": q, "tokens": x - K0 / (a + q)}, a + q
+    def sell(a, tokens):
+        x = K0 / a; a2 = K0 / (x + tokens)
+        return {"side": "sell", "q_eff": a - a2, "tokens": tokens}, a2
+    a = V + 40.0                         # 40 DJT of real reserve already in the curve (we missed those buys)
+    t1, a = buy(a, 12.0)
+    t2, a = sell(a, 30_000_000)
+    t3, a = buy(a, 5.0)
+    assert abs(rh.solve_virtual(t1, t2) - V) < 1e-6
+    assert abs(rh.solve_virtual(t2, t3) - V) < 1e-6
+    # bucket that starts tracking mid-life on an unknown quote
+    b = {"quote_symbol": "DJT", "quote_decimals": 18, "net_quote": 0.0, "buyers": set(), "buy_count": 0, "sell_count": 0,
+         "buy_events": [], "graduation_threshold": 1000.0, "graduated": False, "first_price_quote": 0.0,
+         "block_prices": [], "price_samples": [], "last_price_sample_ts": 0.0, "mc_samples": [], "last_block": 0}
+    st = make_state()
+    disc = rh.RHDiscovery(st)
+    now = time.time()
+    disc.apply_trade(b, {**t1, "wallet": BUYER, "quote": t1["q_eff"] / 0.99, "price": 1e-9, "block": 1}, now)
+    assert b["net_quote"] < 40.0 + 12.0 and "virtual_quote" not in b          # naive sum, V unknown yet
+    disc.apply_trade(b, {**t2, "wallet": BUYER, "quote": t2["q_eff"], "price": 1e-9, "block": 2}, now)
+    assert "virtual_quote" not in b                                           # one candidate, awaiting confirmation
+    disc.apply_trade(b, {**t3, "wallet": BUYER, "quote": t3["q_eff"] / 0.99, "price": 1e-9, "block": 3}, now)
+    assert abs(b["virtual_quote"] - V) < 1e-3
+    assert abs(b["net_quote"] - (a - V)) < 1e-6 and b["net_quote"] > 40.0    # exact reserve, never negative
+    assert abs(b["curve_fill_pct"] - (a - V) / 1000.0 * 100) < 1e-6

@@ -1473,3 +1473,7 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - ✅ **Feed accuracy scoring**: when the poll lands the very tx the feed projected, error is scored → `seq_feed.feed_scored / feed_err_last_pct / feed_abs_err_ema_pct`, shown on the RH wallet pill ("est err 0.28% (7)"). Live after deploy: 7 scored, last 0.03%, EMA 0.28%. Projections now run for every tracked curve (exits only for held ones).
 - Tests: `test_rh_feed.py` +3 (exact recovery, projection == curve, rug by predicted drop not reserve share), `test_rh_discovery` on-curve numbers; `test_rh_integration_api` no-EVM test replaced by chain-tag check; v9 bands test skips in RH-only mode. 40 RH unit tests green.
 - ℹ️ State left as user set it: bot OFF, RH paper/live OFF, feed OFF, autopilot ON. Live exits still land ~6 blocks (~1.5s) after the trigger (send→inclusion) — a separate latency item.
+
+### 2026-09-07 — Negative "quote inflow" on RH candidates (fixed)
+- Cause: `net_quote` was Σ observed buys − sells; any missed early trade (late tracking start, RPC gap) drifted it negative (e.g. −0.093 ETH, −290 USDG).
+- Fix: `net_quote` (and `curve_fill_pct`) now re-derived from the exact curve state after every trade (`a − V`). For non-ETH quotes V is inferred with `solve_virtual()` from two consecutive trades and confirmed by a third (each stock/USDG launch has its own V ≈ $4.2k of quote: DJT 366.86, TSLA 10.4, AAPL 9.68, NVDA 16.64, BB 503.8). Verified on chain; unit test added. 0 negative rows after deploy.

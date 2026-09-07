@@ -52,6 +52,27 @@ TOKEN_SUPPLY = 1_000_000_000
 VIRTUAL_QUOTE: dict[str, float] = {"ETH": 1.68}
 
 
+def solve_virtual(t1: dict, t2: dict) -> float | None:
+    """Solve the curve's virtual quote reserve V from TWO consecutive trades (signed q into curve,
+    signed tokens out of curve): k0·s/(a(a+s)) = dx with k0 = V·SUPPLY, a2 = a1 + s1.
+    Stock/USDG launches each get their own V (≈ $4.2k of quote at launch), so it must be inferred."""
+    try:
+        s1 = t1["q_eff"] if t1["side"] == "buy" else -t1["q_eff"]
+        d1 = t1["tokens"] if t1["side"] == "buy" else -t1["tokens"]
+        s2 = t2["q_eff"] if t2["side"] == "buy" else -t2["q_eff"]
+        d2 = t2["tokens"] if t2["side"] == "buy" else -t2["tokens"]
+        den = s2 * d1 - s1 * d2
+        if abs(den) < 1e-18 or not s1 or not s2 or not d1 or not d2:
+            return None
+        a = s1 * (s1 + s2) * d2 / den
+        if a <= 0:
+            return None
+        v = a * (a + s1) * d1 / (TOKEN_SUPPLY * s1)
+        return v if v > 0 else None
+    except Exception:
+        return None
+
+
 def curve_after_trade(side: str, q_eff: float, tokens: float, k0: float) -> tuple[float, float] | None:
     """Solve the curve's effective reserve a = net_quote + V from ONE trade (self-correcting, no drift).
     Returns (a_before, a_after)."""
@@ -443,12 +464,27 @@ class RHDiscovery:
         if tr["price"] > 0:
             if b["first_price_quote"] <= 0:
                 b["first_price_quote"] = tr["price"]
-            V = VIRTUAL_QUOTE.get(b.get("quote_symbol"))
+            V = b.get("virtual_quote") or VIRTUAL_QUOTE.get(b.get("quote_symbol"))
+            if not V:
+                # unknown quote: infer V from two consecutive trades, then confirm on the next one
+                prev_tr = b.get("_prev_trade")
+                if prev_tr:
+                    cand = solve_virtual(prev_tr, tr)
+                    pend = b.get("_v_candidate")
+                    if cand and pend and abs(cand / pend - 1.0) < 0.01:
+                        V = b["virtual_quote"] = round(cand, 6)
+                    b["_v_candidate"] = cand
+                b["_prev_trade"] = tr
             st = curve_after_trade(tr["side"], tr.get("q_eff", 0.0), tr["tokens"], V * TOKEN_SUPPLY) if V else None
             if st:
                 # exact curve: marginal (spot) price after the trade, not the trade's average price
                 b["curve_a"], b["curve_k0"] = st[1], V * TOKEN_SUPPLY
                 spot = st[1] * st[1] / b["curve_k0"]
+                # the curve's true net quote — summing observed trades drifts (negative when early buys were missed)
+                b["net_quote"] = st[1] - V
+                thr = b.get("graduation_threshold") or 0
+                if thr > 0 and not b.get("graduated"):
+                    b["curve_fill_pct"] = max(0.0, min(100.0, b["net_quote"] / thr * 100.0))
             else:
                 # unknown curve constant → keep the heuristic Δp/p ≈ k · quote/reserves, calibrated per curve
                 prev = b.get("last_price_quote") or 0.0
