@@ -373,6 +373,7 @@ class RHDiscovery:
             "symbol": None,
             "buyers": set(),
             "buy_events": deque(maxlen=500),
+            "sell_events": deque(maxlen=500),
             "buy_count": 0,
             "sell_count": 0,
             "net_quote": 0.0,
@@ -416,6 +417,7 @@ class RHDiscovery:
         else:
             b["sell_count"] += 1
             b["net_quote"] -= tr["quote"]
+            b.setdefault("sell_events", deque(maxlen=500)).append((now, tr["quote"], tr["wallet"]))
         thr = b["graduation_threshold"] or 0
         if thr > 0 and not b["graduated"]:
             b["curve_fill_pct"] = max(0.0, min(100.0, b["net_quote"] / thr * 100.0))

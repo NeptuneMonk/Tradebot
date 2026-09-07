@@ -9,6 +9,11 @@ os.environ["RH_WALLET_PATH"] = os.path.join(tempfile.mkdtemp(), "rh_wallet.json"
 os.environ["RH_WALLET_PASS_PATH"] = os.path.join(os.path.dirname(os.environ["RH_WALLET_PATH"]), "rh_wallet.pass")
 import rh_wallet
 import rh_live
+from pathlib import Path
+# never touch the real hot-wallet files, whatever import order pytest used
+rh_wallet.WALLET_PATH = Path(os.environ["RH_WALLET_PATH"])
+rh_wallet.PASS_PATH = Path(os.environ["RH_WALLET_PASS_PATH"])
+rh_wallet._ACCT = rh_wallet._load_or_create()
 from rh_discovery import T_BUY, T_SELL
 from models import BotConfig
 
@@ -16,16 +21,21 @@ from models import BotConfig
 def test_keystore_created_encrypted_and_reloadable():
     addr = rh_wallet.address()
     assert addr.startswith("0x") and len(addr) == 42
-    raw = open(os.environ["RH_WALLET_PATH"]).read()
+    raw = open(rh_wallet.WALLET_PATH).read()
     assert "crypto" in raw and rh_wallet._ACCT.key.hex() not in raw
     assert rh_wallet._load_or_create().address == addr
-    assert oct(os.stat(os.environ["RH_WALLET_PATH"]).st_mode)[-3:] == "600"
+    assert oct(os.stat(rh_wallet.WALLET_PATH).st_mode)[-3:] == "600"
 
 
 def test_import_private_key_switches_account():
     from eth_account import Account
+    orig = rh_wallet._ACCT
     a = Account.create()
-    assert rh_wallet.import_private_key(a.key.hex()) == a.address and rh_wallet.address() == a.address
+    try:
+        assert rh_wallet.import_private_key(a.key.hex()) == a.address and rh_wallet.address() == a.address
+    finally:
+        rh_wallet._persist(orig)
+        rh_wallet._ACCT = orig
 
 
 def test_calldata_selectors_match_onchain():

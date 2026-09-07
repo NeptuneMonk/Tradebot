@@ -19,7 +19,7 @@ MINT = "So11111111111111111111111111111111111111112"
 
 def make(cfg=None, buyers=0, sol_each=0.1, age_s=2):
     st = BotState.__new__(BotState)
-    st.config = BotConfig(**(cfg or {}))
+    st.config = BotConfig(**{"stop_loss_pct": 20.0, **(cfg or {})})
     now = time.time()
     ev = deque([(now - age_s, int(sol_each * LAMPORTS_PER_SOL), f"w{i}") for i in range(buyers)])
     st.tracking = {MINT: {"buy_events": ev}}
@@ -44,8 +44,16 @@ def test_weak_momentum_lets_exit_fire_and_clears_state():
     assert st._buy_momentum_holds(MINT, slot, "sl", -22.0) is False
 
 
+def test_deferred_sl_is_bounded_at_sl_plus_extra():
+    st, slot = make({"stop_loss_pct": 20.0, "exit_momentum_max_extra_loss_pct": 5.0}, buyers=6, sol_each=0.2)
+    assert st._buy_momentum_holds(MINT, slot, "sl", -22.0) is True
+    assert st._buy_momentum_holds(MINT, slot, "sl", -24.9) is True
+    assert st._buy_momentum_holds(MINT, slot, "sl", -25.0) is False   # SL 20 + 5 → fire
+    assert st._buy_momentum_holds(MINT, slot, "tp", 45.0) is True      # TP deferral unaffected
+
+
 def test_hard_sl_floor_and_defer_budget():
-    st, slot = make(buyers=6, sol_each=0.2)
+    st, slot = make({"exit_momentum_max_extra_loss_pct": 50.0}, buyers=6, sol_each=0.2)
     assert st._buy_momentum_holds(MINT, slot, "sl", -61.0) is False  # past hard floor 60
     assert st._buy_momentum_holds(MINT, slot, "sl", -30.0) is True
     slot["_mom_defer_sl"] = time.time() - 21                         # budget (20s) spent

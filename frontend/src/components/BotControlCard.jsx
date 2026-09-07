@@ -392,6 +392,10 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                hint="Longest an SL/TP can be deferred on momentum before it fires anyway. SL also always fires past the hard floor (exit_momentum_hard_sl_pct, default 60%)."
                value={local.exit_momentum_max_defer_s ?? 20}
                onChange={(v) => setLocal({ ...local, exit_momentum_max_defer_s: parseInt(v, 10) || 0 })} step="5" />
+        <Field label="SL Defer Max Extra %" testid="exit-momentum-extra-loss-input"
+               hint="While an SL is deferred on momentum, fire anyway once the loss runs this many points past the SL line. SL 20 + 5 ⇒ a deferred stop can never fill below −25% (on both SOL and RH). Also: RH deferral now needs net buy inflow, not just a few buyers."
+               value={local.exit_momentum_max_extra_loss_pct ?? 5}
+               onChange={(v) => setLocal({ ...local, exit_momentum_max_extra_loss_pct: parseFloat(v) || 0 })} step="1" />
         {showAdvancedFees && (
           <Field label="Priority µLamp" testid="prio-input"
                  hint="Compute-unit price in micro-lamports. Higher = better landing odds, higher fee. Speed Mode handles this; manual override only."

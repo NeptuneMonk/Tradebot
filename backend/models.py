@@ -104,6 +104,9 @@ class BotConfig(BaseModel):
     exit_momentum_min_inflow_sol: float = 0.25
     exit_momentum_max_defer_s: int = 20
     exit_momentum_hard_sl_pct: float = 60.0
+    # While an SL is deferred on momentum, fire anyway once the loss runs this
+    # many points past the SL line (bounds a deferred SL at SL+X, not -60%).
+    exit_momentum_max_extra_loss_pct: float = 5.0
     take_profit_pct: float = 20.0    # data: 12% was cutting winners; 20% balanced
     stop_loss_pct: float = 12.0      # 2026-06-06: 15→12 — tighter live risk cap
     trailing_stop_pct: float = 6.0   # 2026-06-06: 8→6 — lock gains sooner

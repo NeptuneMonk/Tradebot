@@ -317,3 +317,33 @@ def test_rh_reentry_watch_pullback_and_breakout():
     st.rh_paper.watch[TOKEN] = dict(w, exit_time=time.time() - 700, attempts=0)
     st.rh_paper._scan_reentries(time.time())
     assert TOKEN not in st.rh_paper.watch
+
+
+def _open_pos(st, b, entry=1e-9):
+    st.rh_paper.positions[TOKEN] = {"trade": {"entry_price_quote": entry, "entry_usd": 5.0, "entry_tokens": 1.0},
+                                    "peak_price": entry, "_last_price": entry, "opened": time.time() - 5}
+    return st.rh_paper.positions[TOKEN]
+
+
+def test_sl_deferral_is_bounded_and_needs_net_inflow():
+    st = make_state(stop_loss_pct=20.0, exit_momentum_gate_enabled=True, exit_momentum_min_buyers=3,
+                    exit_momentum_max_defer_s=20, exit_momentum_max_extra_loss_pct=5.0,
+                    no_momentum_exit_enabled=False, hold_max_seconds=600)
+    now = time.time()
+    b = hot_bucket(st.rh_discovery, now, price=1e-9, first=1e-9)
+    pos = _open_pos(st, b)
+    # 3 fresh buyers but sells dominate the window → NOT momentum → SL fires at the line
+    for i in range(3):
+        b["buy_events"].append((now, 0.01, f"0x{i + 100:040x}"))
+    b["sell_events"].append((now, 5.0, "0x" + "e" * 40))
+    b["last_price_quote"] = 0.79e-9
+    assert st.rh_paper._decide_exit(pos, b, now) == "stop_loss"
+    # genuine buy pressure (net inflow) → SL deferred at -21% ...
+    b["sell_events"].clear()
+    pos.pop("_mom_defer_sl", None)
+    assert st.rh_paper._decide_exit(pos, b, now) is None
+    assert pos["_mom_defer_log"][0]["kind"] == "sl"
+    # ... but never past SL + 5 points, even with buyers still piling in
+    b["last_price_quote"] = 0.74e-9   # -26%
+    assert st.rh_paper._decide_exit(pos, b, now + 1) == "stop_loss"
+    assert pos["_mom_defer_bounded"] is True

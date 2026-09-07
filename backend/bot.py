@@ -426,6 +426,8 @@ class BotState:
             return False
         if kind == "sl" and pct_change <= -float(cfg.exit_momentum_hard_sl_pct):
             return False
+        if kind == "sl" and pct_change <= -(float(cfg.stop_loss_pct) + float(getattr(cfg, "exit_momentum_max_extra_loss_pct", 5.0))):
+            return False  # bounded deferral: SL + X points, never further
         bucket = self.tracking.get(mint) or {}
         events = bucket.get("buy_events") or ()
         now = time.time()

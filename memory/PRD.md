@@ -1401,3 +1401,10 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - ✅ UI: collapsible `RhWalletCard` (default collapsed; balance/mode in header row; deposit address + copy + explorer + funding hint, send ETH, import key) under the Autopilot card; `RH Live Trading` toggle (confirm dialog) + slippage/reserve/kill fields in Bot Control.
 - Tests: `tests/test_rh_wallet_live.py` (6) + RH suites (34 green). **LIVE BUY/SELL NOT EXERCISED ON-CHAIN (wallet 0 ETH)** — first live fills must be watched; ERC-20-quoted curves remain paper.
 - Hot wallet: 0x5a13E1D32bAf1275eF59726ec5B16B9C0eA5e479 (preview-generated).
+
+
+## 2026-09-07 — RH exits overshooting SL (root cause + fix)
+- Data (SL 9%): fills at −14.3 / −19.2 / −32.6 on `stop_loss`, trailing stops filling −52.6 / −76.1 after triggering at −3.8 / +12.3.
+- Root cause 1 (bug): the RH buy-momentum gate deferred SL on **buyers only** (no inflow check) up to 20s with a −60% hard floor — a dumping curve with 3 bot buys held the stop open. Fix: RH deferral now requires buyers ≥ min AND buy quote > sell quote in the window (new `sell_events` on the bucket); **both engines** now bound a deferred SL at `stop_loss_pct + exit_momentum_max_extra_loss_pct` (new, default 5 → SL 9 ⇒ never past −14%). Bot Control field "SL Defer Max Extra %".
+- Root cause 2 (model, not bug): event-mode fills use the last curve price ≤ trigger block + `paper_exit_latency_ms`/0.1s (6 blocks). During a rug the price 600ms later is far below the trigger. Kept (live latency is ≥ that) but now audited: trades carry `exit_trigger_pnl_pct`, `exit_latency_blocks`, `exit_deferrals`, `exit_deferred_s`, `exit_defer_bounded`; Trade History tooltip shows "trigger at X% → fill Y% after N blocks" and deferral time.
+- ⚠️ RH hot wallet file was overwritten by a test run (import test wrote to the real path before it was sandboxed): address is now **0xCD6966571A41F9e0d9243A91DE73e84dE2142dF4** (old 0x5a13…e479 held 0 ETH). Tests now patch `rh_wallet.WALLET_PATH` to a temp dir.

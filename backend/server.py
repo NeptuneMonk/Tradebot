@@ -422,6 +422,7 @@ async def update_config(body: dict = Body(...)):
     cfg.paper_bankroll_usd = max(10.0, min(1_000_000.0, float(cfg.paper_bankroll_usd)))
     cfg.sweep_pct_of_profit = max(1.0, min(100.0, float(cfg.sweep_pct_of_profit)))
     cfg.rh_live_slippage_pct = max(0.5, min(50.0, float(cfg.rh_live_slippage_pct)))
+    cfg.exit_momentum_max_extra_loss_pct = max(0.0, min(50.0, float(cfg.exit_momentum_max_extra_loss_pct)))
     cfg.rh_gas_reserve_eth = max(0.0005, min(1.0, float(cfg.rh_gas_reserve_eth)))
     cfg.rh_daily_kill_switch_usd = max(1.0, min(5000.0, float(cfg.rh_daily_kill_switch_usd)))
     if cfg.rh_live_trading and not bot_state.config.rh_live_trading:

@@ -394,15 +394,26 @@ class RHPaperTrader:
         def _mom_holds(kind: str) -> bool:
             if not getattr(cfg, "exit_momentum_gate_enabled", True):
                 return False
-            if kind == "sl" and pnl_pct <= -float(getattr(cfg, "exit_momentum_hard_sl_pct", 60.0)):
-                return False
+            key = f"_mom_defer_{kind}"
+            if kind == "sl":
+                if pnl_pct <= -float(getattr(cfg, "exit_momentum_hard_sl_pct", 60.0)):
+                    return False
+                # bounded deferral: never ride more than X points past the SL line
+                if pnl_pct <= -(cfg.stop_loss_pct + float(getattr(cfg, "exit_momentum_max_extra_loss_pct", 5.0))):
+                    pos["_mom_defer_bounded"] = True
+                    return False
             cutoff = now - float(getattr(cfg, "exit_momentum_window_s", 10))
             buyers = {w for ts, _q, w in b.get("buy_events", ()) if ts >= cutoff}
-            key = f"_mom_defer_{kind}"
-            if len(buyers) < int(getattr(cfg, "exit_momentum_min_buyers", 3)):
+            buy_q = sum(q for ts, q, _w in b.get("buy_events", ()) if ts >= cutoff)
+            sell_q = sum(q for ts, q, _w in b.get("sell_events", ()) if ts >= cutoff)
+            # "momentum" means buyers AND net inflow — a dump with a few bot
+            # buys sprinkled in must not hold an SL open
+            if len(buyers) < int(getattr(cfg, "exit_momentum_min_buyers", 3)) or buy_q <= sell_q:
                 pos.pop(key, None)
                 return False
             started = pos.setdefault(key, now)
+            if started == now:
+                pos.setdefault("_mom_defer_log", []).append({"kind": kind, "at_pnl_pct": round(pnl_pct, 2), "ts": now})
             return now - started < float(getattr(cfg, "exit_momentum_max_defer_s", 20))
         if pnl_pct >= cfg.take_profit_pct and _mom_holds("tp"):
             return None
@@ -531,12 +542,18 @@ class RHPaperTrader:
                                                                  else proceeds_quote / (1 - fee) * fee * quote_usd + RH_GAS_USD), 6),
                 "peak_price_quote": pos["peak_price"],
                 "exit_mode": "event" if trigger else "tick",
+                "exit_deferrals": pos.get("_mom_defer_log") or None,
+                "exit_deferred_s": round(time.time() - min(d["ts"] for d in pos["_mom_defer_log"]), 1) if pos.get("_mom_defer_log") else None,
+                "exit_defer_bounded": bool(pos.get("_mom_defer_bounded")),
             })
             if trigger:
+                ep = t.get("entry_price_quote") or 0
                 t.update({
                     "exit_trigger_block": trigger["block"],
                     "exit_fill_block": trigger["fill_block"],
                     "exit_trigger_price_quote": trigger["price"],
+                    "exit_trigger_pnl_pct": round((trigger["price"] / ep - 1.0) * 100.0, 2) if (ep and trigger["price"]) else None,
+                    "exit_latency_blocks": trigger["fill_block"] - trigger["block"],
                 })
             await self.state.db.trades.update_one({"_id": t["id"]}, {"$set": t}, upsert=True)
             launch_update = {"pin_exited": True, "exit_pnl_pct": t["pnl_pct"], "exit_reason": reason}

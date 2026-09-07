@@ -122,6 +122,16 @@ function TradeHistoryTable({ history }) {
                             entered via <span className="text-neutral-300">{t.classifier_action}</span>
                           </div>
                         )}
+                        {(t.exit_trigger_pnl_pct != null || t.exit_deferred_s != null) && (
+                          <div className="mt-1 text-[10px] text-neutral-500" data-testid={`exit-audit-${t.id}`}>
+                            {t.exit_trigger_pnl_pct != null && (
+                              <>trigger at <span className="text-neutral-300">{t.exit_trigger_pnl_pct >= 0 ? "+" : ""}{t.exit_trigger_pnl_pct.toFixed(1)}%</span> → fill {t.pnl_pct >= 0 ? "+" : ""}{Number(t.pnl_pct).toFixed(1)}% after {t.exit_latency_blocks ?? "?"} blocks of latency</>
+                            )}
+                            {t.exit_deferred_s != null && (
+                              <div>SL/TP deferred <span className="text-amber-300">{t.exit_deferred_s}s</span> on buy momentum{t.exit_defer_bounded ? " · fired at the SL+extra bound" : ""}</div>
+                            )}
+                          </div>
+                        )}
                         {t.reentry_ctx && (
                           <div className="mt-1 text-[10px] text-neutral-500 whitespace-pre-line" data-testid={`reentry-ctx-${t.id}`}>
                             {reentryTitle(t)}
