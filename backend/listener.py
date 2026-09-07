@@ -44,7 +44,9 @@ def parse_create_event(raw: bytes) -> dict | None:
         offset += 32
         bonding_curve = raw[offset : offset + 32]
         offset += 32
-        user = raw[offset : offset + 32] if len(raw) >= offset + 32 else b"\x00" * 32
+        if len(mint) != 32 or len(bonding_curve) != 32 or len(raw) < offset + 32:
+            return None  # truncated event → would yield mint='' / creator=1111… phantom launches
+        user = raw[offset : offset + 32]
 
         import base58
         return {

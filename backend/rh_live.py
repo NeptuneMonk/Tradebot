@@ -70,10 +70,16 @@ async def buy(curve: str, quote_wei: int, est_price_quote: float, slippage_pct: 
             "block": int(rc.get("blockNumber", "0x0"), 16)}
 
 
-async def sell(curve: str, tokens_raw: int, est_price_quote: float, slippage_pct: float) -> dict:
+async def sell(curve: str, tokens_raw: int, est_price_quote: float, slippage_pct: float, token: str | None = None) -> dict:
     est_quote = int(tokens_raw * est_price_quote) if est_price_quote > 0 else 0
     min_out = int(est_quote * (1.0 - slippage_pct / 100.0))
     me = rh_wallet.address()
+    approve_gas = 0
+    if token:
+        # sell() does token.transferFrom(seller → curve); without an allowance it reverts every time
+        approve_tx = await rh_wallet.ensure_allowance(token, curve, tokens_raw)
+        if approve_tx:
+            approve_gas = (await rh_wallet.wait_receipt(approve_tx))["gas_cost_wei"]
     data = rh_wallet.calldata(SELL_SIG, ["uint256", "uint256", "address"], [tokens_raw, min_out, me])
     try:
         await rh_wallet.simulate(curve, data, 0)
@@ -90,5 +96,29 @@ async def sell(curve: str, tokens_raw: int, est_price_quote: float, slippage_pct
     ev = _trade_log(rc, curve, T_SELL)
     tokens_in, quote_out, fee = ev if ev else (tokens_raw, est_quote, 0)
     return {"tx": tx, "tokens_raw": tokens_in, "quote_wei": quote_out, "fee_wei": fee,
-            "gas_cost_wei": rc["gas_cost_wei"], "latency_s": round(time.time() - t0, 2),
+            "gas_cost_wei": rc["gas_cost_wei"] + approve_gas, "latency_s": round(time.time() - t0, 2),
             "block": int(rc.get("blockNumber", "0x0"), 16)}
+
+
+async def recover_sell(curve: str, from_block: int) -> dict | None:
+    """Find a sell() from OUR wallet on this curve since `from_block` (e.g. the tx landed
+    but the process restarted before it was booked). Returns a fill dict or None."""
+    me = rh_wallet.address().lower()
+    head = int(await rh_wallet.rpc("eth_blockNumber", []), 16)
+    logs = await rh_wallet.rpc("eth_getLogs", [{"fromBlock": hex(max(0, from_block)), "toBlock": hex(head),
+                                                "address": rh_wallet.checksum(curve), "topics": [T_SELL]}])
+    for lg in reversed(logs or []):
+        rc = await rh_wallet.rpc("eth_getTransactionReceipt", [lg["transactionHash"]])
+        if not rc or (rc.get("from") or "").lower() != me or rc.get("status") != "0x1":
+            continue
+        rc["ok"] = True
+        rc["gas_cost_wei"] = int(rc.get("gasUsed", "0x0"), 16) * int(rc.get("effectiveGasPrice", "0x0"), 16)
+        ev = _trade_log(rc, curve, T_SELL)
+        if not ev:
+            continue
+        tokens_in, quote_out, fee = ev
+        logger.warning(f"rh_live recovered unbooked SELL on {curve[:10]} tx={lg['transactionHash'][:12]}")
+        return {"tx": lg["transactionHash"], "tokens_raw": tokens_in, "quote_wei": quote_out, "fee_wei": fee,
+                "gas_cost_wei": rc["gas_cost_wei"], "latency_s": 0.0,
+                "block": int(rc.get("blockNumber", "0x0"), 16), "recovered": True}
+    return None

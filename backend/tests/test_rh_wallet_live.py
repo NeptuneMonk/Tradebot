@@ -80,3 +80,54 @@ def test_live_gate_requires_flag_eth_quote_and_no_kill():
 def test_config_defaults():
     c = BotConfig()
     assert (c.rh_live_trading, c.rh_live_slippage_pct, c.rh_gas_reserve_eth, c.rh_daily_kill_switch_usd) == (False, 8.0, 0.002, 20.0)
+
+
+def test_sell_approves_curve_before_selling_when_allowance_missing(monkeypatch):
+    """Verified on-chain 2026-09-07: every direct PONS seller approve()s the curve first;
+    our 3 live sells reverted with allowance=0. sell(token=...) must approve, then sell."""
+    calls = []
+    me = rh_wallet.address()
+    curve, token = "0x59bfc19200000000000000000000000000000001", "0x71880db900000000000000000000000000000002"
+
+    async def fake_allowance(tok, spender, owner=None):
+        return 0
+    async def fake_simulate(to, data, value=0, sender=None):
+        calls.append(("sim", to.lower(), data[:10]))
+        return "0x"
+    async def fake_send(to, data="0x", value=0, gas_limit=None):
+        calls.append(("send", to.lower(), data[:10]))
+        return "0x" + "ab" * 32
+    async def fake_receipt(tx, timeout=90.0):
+        return {"ok": True, "gas_cost_wei": 7, "logs": [], "blockNumber": "0x10"}
+
+    monkeypatch.setattr(rh_wallet, "allowance", fake_allowance)
+    monkeypatch.setattr(rh_wallet, "simulate", fake_simulate)
+    monkeypatch.setattr(rh_wallet, "send", fake_send)
+    monkeypatch.setattr(rh_wallet, "wait_receipt", fake_receipt)
+
+    fill = asyncio.run(rh_live.sell(curve, 1000, 1e-9, 5.0, token=token))
+    sends = [c for c in calls if c[0] == "send"]
+    assert sends[0] == ("send", token.lower(), "0x095ea7b3"), "first tx must be approve(curve, MAX) on the token"
+    assert sends[1] == ("send", curve.lower(), "0xd04c6983"), "then sell() on the curve"
+    assert fill["gas_cost_wei"] == 14  # approve gas + sell gas both booked
+    # approve payload targets the curve with MAX_UINT256
+    approve_data = rh_wallet.calldata("approve(address,uint256)", ["address", "uint256"], [rh_wallet.checksum(curve), rh_wallet.MAX_UINT256])
+    assert approve_data.endswith("f" * 64)
+
+
+def test_sell_skips_approve_when_allowance_sufficient(monkeypatch):
+    calls = []
+    async def fake_allowance(tok, spender, owner=None):
+        return 10**30
+    async def fake_simulate(to, data, value=0, sender=None):
+        return "0x"
+    async def fake_send(to, data="0x", value=0, gas_limit=None):
+        calls.append(data[:10]); return "0x" + "cd" * 32
+    async def fake_receipt(tx, timeout=90.0):
+        return {"ok": True, "gas_cost_wei": 3, "logs": [], "blockNumber": "0x10"}
+    monkeypatch.setattr(rh_wallet, "allowance", fake_allowance)
+    monkeypatch.setattr(rh_wallet, "simulate", fake_simulate)
+    monkeypatch.setattr(rh_wallet, "send", fake_send)
+    monkeypatch.setattr(rh_wallet, "wait_receipt", fake_receipt)
+    asyncio.run(rh_live.sell("0x" + "1" * 40, 5, 1e-9, 5.0, token="0x" + "2" * 40))
+    assert calls == ["0xd04c6983"]

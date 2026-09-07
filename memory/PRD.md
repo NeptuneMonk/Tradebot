@@ -1445,3 +1445,13 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - P2: Config-change audit timeline (you / Doctor / autopilot sizing)
 - P2: Feed accuracy report (feed-estimated vs poll price)
 - P3: Jito bundle support
+
+
+## 2026-09-07 — RH live: first real fills exposed 3 bugs (all fixed)
+- 🐛 **Sells reverted (`eth_call: execution reverted`) on every live position** — PONS `sell()` pulls tokens via `transferFrom`; verified on-chain that every direct seller first sends `approve(curve, MAX)`. Our allowance was 0. Fix: `rh_wallet.allowance()` / `ensure_allowance()` + `rh_live.sell(..., token=)` approves once per token→curve (gas booked into the fill). 4 approvals landed, 3 stranded positions sold within seconds.
+- 🐛 **`nonce too low` on back-to-back buys** (one buy reverted on-chain, gas burned) — sequencer's `pending` count lags a just-sent tx. Fix: local `_NEXT_NONCE` tracking in `rh_wallet.send` (resyncs on nonce error).
+- 🐛 **Exit retry storm** — after a failed live sell, poll/tick/feed paths all re-fired `exit()` concurrently (dozens of sells/sec). Fix: `_live_sell_inflight` mutex + `_live_retry_after` 10s cooldown per position.
+- 🐛 **Unbooked sell after restart** — QUOTAAI's sell tx landed while the backend reloaded; position stayed "active" with 0 tokens. Fix: `rh_live.recover_sell(curve, from_block)` scans our Sell logs and books the real fill when the wallet holds 0 tokens (recovered QUOTAAI at +19.6%).
+- 🐛 **Phantom Solana launches** — truncated Pump.fun `CreateEvent`s parsed to `mint=''` / `creator=1111…`, creating a fake greylisted creator (58 launches / 40 failed) whose snipes crashed with `String is the wrong size`. Fix: `parse_create_event` rejects short payloads; 53 phantom launches + the phantom creator purged.
+- Tests: `test_rh_wallet_live.py` +2 (approve-before-sell, skip when allowance sufficient). RH suites 26/26 green.
+- Live P/L today −$0.76 (3 tiny $0.50 tests exited at −75/−79% because they sat unsellable through a dump; QUOTAAI +19.6%). Wallet 0.01316 ETH.

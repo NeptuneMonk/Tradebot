@@ -40,6 +40,7 @@ CURVE_FEE_BPS = 100
 SNIPE_TAX_START_BPS = 9900
 SNIPE_TAX_SECONDS = 3
 RH_GAS_USD = 0.02
+LIVE_SELL_RETRY_COOLDOWN_S = 10.0  # after 3 failed on-chain sells, wait before the next exit attempt
 RH_BLOCK_TIME_S = 0.1
 MONITOR_INTERVAL_S = 1.0
 
@@ -342,16 +343,25 @@ class RHPaperTrader:
     async def _live_sell(self, token: str, t: dict, price: float) -> dict | None:
         cfg = self.state.config
         raw = int(t.get("entry_tokens_raw") or int(float(t["entry_tokens"]) * 1e18))
+        curve = t.get("curve") or (self.state.rh_discovery.tracking.get(token) or {}).get("curve") or token
         try:
             on_chain = await rh_wallet.erc20_balance(token)
-            if 0 < on_chain < raw:
+            if on_chain == 0:
+                # nothing left to sell — the sell may have landed without being booked (restart mid-exit)
+                fill = await rh_live.recover_sell(curve, int(t.get("entry_block") or 0))
+                if fill:
+                    self.stats["live_sells"] = self.stats.get("live_sells", 0) + 1
+                    return fill
+                self.last_live_error = f"sell {t.get('symbol')}: wallet holds 0 tokens and no on-chain sell found"
+                logger.error(f"rh_live sell {token[:10]}: {self.last_live_error}")
+                return None
+            if on_chain < raw:
                 raw = on_chain
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"rh_live balance check failed {token[:10]}: {e}")
         for attempt in range(3):
             try:
-                curve = t.get("curve") or (self.state.rh_discovery.tracking.get(token) or {}).get("curve") or token
-                fill = await rh_live.sell(curve, raw, price, float(cfg.rh_live_slippage_pct) * (attempt + 1))
+                fill = await rh_live.sell(curve, raw, price, float(cfg.rh_live_slippage_pct) * (attempt + 1), token=token)
                 self.stats["live_sells"] = self.stats.get("live_sells", 0) + 1
                 logger.warning(f"rh_live SELL {t.get('symbol')} {token[:10]} {fill['quote_wei'] / 1e18:.5f} ETH tx={fill['tx'][:12]} ({fill['latency_s']}s)")
                 return fill
@@ -555,9 +565,20 @@ class RHPaperTrader:
                 t["symbol"], t["name"] = bk.get("symbol"), bk.get("name")
             live_fill = None
             if t.get("mode") == "live":
-                live_fill = await self._live_sell(token, t, price)
+                if pos.get("_live_sell_inflight"):
+                    return  # another exit path is already selling this position on-chain
+                if time.time() < pos.get("_live_retry_after", 0.0):
+                    pos.pop("_exiting", None)
+                    pos.pop("_fill_task", None)
+                    return  # still cooling down from the last failed sell
+                pos["_live_sell_inflight"] = True
+                try:
+                    live_fill = await self._live_sell(token, t, price)
+                finally:
+                    pos.pop("_live_sell_inflight", None)
                 if live_fill is None:
                     # stranded: keep the position open for the next tick rather than book a phantom exit
+                    pos["_live_retry_after"] = time.time() + LIVE_SELL_RETRY_COOLDOWN_S
                     pos.pop("_exiting", None)
                     pos.pop("_fill_task", None)
                     t["exit_error"] = self.last_live_error

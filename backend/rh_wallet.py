@@ -59,6 +59,8 @@ def _persist(acct) -> None:
 
 _ACCT = _load_or_create()
 _SEND_LOCK = asyncio.Lock()
+_NEXT_NONCE: int | None = None
+MAX_UINT256 = 2**256 - 1
 
 
 def address() -> str:
@@ -139,19 +141,50 @@ async def simulate(to: str, data: str, value: int = 0, sender: str | None = None
 
 async def send(to: str, data: str = "0x", value: int = 0, gas_limit: int | None = None) -> str:
     """Sign + broadcast an EIP-1559 tx. Serialised per wallet for nonce safety."""
+    global _NEXT_NONCE
     async with _SEND_LOCK:
         cid = await chain_id()
         if EXPECTED_CHAIN_ID and cid != EXPECTED_CHAIN_ID:
             raise RhRpcError(f"wrong chain: rpc={cid} expected={EXPECTED_CHAIN_ID}")
         sender = _ACCT.address
-        nonce = int(await rpc("eth_getTransactionCount", [sender, "pending"]), 16)
+        # The sequencer's "pending" count can lag a tx we just broadcast → track locally too.
+        rpc_nonce = int(await rpc("eth_getTransactionCount", [sender, "pending"]), 16)
+        nonce = max(rpc_nonce, _NEXT_NONCE or 0)
         prio, max_fee = await fee_fields()
         call = {"from": sender, "to": checksum(to), "data": data, "value": hex(value)}
         gas = gas_limit or int(int(await rpc("eth_estimateGas", [call]), 16) * 1.3)
         tx = {"type": 2, "chainId": cid, "nonce": nonce, "to": checksum(to), "value": value, "data": data,
               "gas": gas, "maxPriorityFeePerGas": prio, "maxFeePerGas": max_fee, "accessList": []}
         signed = _ACCT.sign_transaction(tx)
-        return await rpc("eth_sendRawTransaction", ["0x" + signed.raw_transaction.hex()])
+        try:
+            h = await rpc("eth_sendRawTransaction", ["0x" + signed.raw_transaction.hex()])
+        except RhRpcError as e:
+            if "nonce too low" in str(e).lower():
+                _NEXT_NONCE = None  # resync from RPC on next send
+            raise
+        _NEXT_NONCE = nonce + 1
+        return h
+
+
+async def allowance(token: str, spender: str, owner: str | None = None) -> int:
+    data = calldata("allowance(address,address)", ["address", "address"], [checksum(owner or _ACCT.address), checksum(spender)])
+    res = await rpc("eth_call", [{"to": checksum(token), "data": data}, "latest"])
+    return int(res, 16) if res and res != "0x" else 0
+
+
+async def ensure_allowance(token: str, spender: str, amount: int) -> str | None:
+    """PONS curves pull tokens via transferFrom on sell(); approve MAX once per token→curve.
+    Returns the approve tx hash when one was needed, else None."""
+    if await allowance(token, spender) >= amount:
+        return None
+    data = calldata("approve(address,uint256)", ["address", "uint256"], [checksum(spender), MAX_UINT256])
+    await simulate(token, data, 0)
+    tx = await send(token, data, 0, gas_limit=80_000)
+    rc = await wait_receipt(tx)
+    if not rc["ok"]:
+        raise RhRpcError(f"approve reverted on-chain tx={tx}")
+    logger.warning(f"rh_wallet APPROVE {token[:10]} → {spender[:10]} tx={tx[:12]}")
+    return tx
 
 
 async def wait_receipt(tx_hash: str, timeout: float = 90.0) -> dict:
