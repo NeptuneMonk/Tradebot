@@ -249,6 +249,15 @@ class BotConfig(BaseModel):
     # keep running so we don't cut a winner mid-pump. TP/SL/trailing still fire
     # normally, so this can't run forever — it just delays the hard cutoff
     # while momentum is intact.
+    # Ride winners past the clock: a position up ≥ min_pnl that is still near its highs (inside the trail)
+    # or still drawing buyers is NOT cut at hold_max — the trailing stop / TP take over, up to a hard ceiling.
+    winner_ride_enabled: bool = True
+    winner_ride_min_pnl_pct: float = 10.0
+    winner_ride_max_hold_mult: float = 6.0      # hard ceiling = hold_max × this
+    # Hot tokens: a winner that reached ≥ this % gets a boosted re-entry watch (bigger size, more attempts, longer window)
+    hot_token_pnl_pct: float = 25.0
+    hot_reentry_size_mult: float = 1.5
+    hot_reentry_extra_attempts: int = 2
     hold_timeout_velocity_extend_enabled: bool = True
     hold_timeout_velocity_window_s: int = 10
     hold_timeout_velocity_min_pct: float = 0.0

@@ -2956,7 +2956,23 @@ class BotState:
                     # so this only stretches the *hard* timeout, never disables
                     # protections.
                     extend_ok = False
-                    if self.config.hold_timeout_velocity_extend_enabled:
+                    # ride the winner: in profit and still inside the trail → TP/trailing govern, not the clock
+                    try:
+                        _ep = float(trade_doc.get("entry_price_sol") or 0)
+                        _cur = float(slot.get("_last_price_sol") or (slot.get("monitor_price_samples") or [(0, 0)])[-1][1] or 0)
+                        _pk = float(slot.get("peak_price_sol") or _ep)
+                        if (self.config.winner_ride_enabled and _ep > 0 and _cur > 0
+                                and (_cur / _ep - 1) * 100 >= self.config.winner_ride_min_pnl_pct
+                                and elapsed < max_hold * self.config.winner_ride_max_hold_mult
+                                and (_pk - _cur) / _pk * 100 < self._exit_param(slot, "trail_pct", self.config.trailing_stop_pct)):
+                            extend_ok = True
+                            if not slot.get("_riding"):
+                                slot["_riding"] = True
+                                slot["_ride_started_pnl_pct"] = round((_cur / _ep - 1) * 100, 2)
+                                logger.info(f"RIDING {mint} past hold cap at {slot['_ride_started_pnl_pct']:+.1f}% — trail/TP govern now")
+                    except Exception:
+                        pass
+                    if not extend_ok and self.config.hold_timeout_velocity_extend_enabled:
                         win_s = max(3, int(self.config.hold_timeout_velocity_window_s))
                         samples = slot.get("monitor_price_samples") or []
                         v = velocity_pct_strict(samples, time.time(), win_s) if samples else None
@@ -4132,6 +4148,7 @@ class BotState:
                 "peak_price_sol": float(slot.get("peak_price_sol") or trade_doc.get("entry_price_sol") or 0),
                 "trough_price_sol": float(slot.get("trough_price_sol") or trade_doc.get("entry_price_sol") or 0),
                 "peak_ts": slot.get("peak_ts"), "trough_ts": slot.get("trough_ts"),
+                "rode_winner": bool(slot.get("_riding")), "ride_started_pnl_pct": slot.get("_ride_started_pnl_pct"),
                 "peak_hold_s": (slot["peak_ts"] - slot["_entry_ts_mono"]) if slot.get("peak_ts") and slot.get("_entry_ts_mono") else None,
             }
         )
@@ -4264,10 +4281,11 @@ class BotState:
                 "last_exit_time": time.time(),
                 "last_exit_was_sl": False,
                 "attempts": int(prev_watch.get("attempts") or 0) if prev_watch else 0,
-                "max_attempts": self.config.reentry_max_attempts,
-                "window_s": self.config.reentry_window_seconds,
+                "hot": pnl_pct >= self.config.hot_token_pnl_pct,
+                "max_attempts": self.config.reentry_max_attempts + (self.config.hot_reentry_extra_attempts if pnl_pct >= self.config.hot_token_pnl_pct else 0),
+                "window_s": self.config.reentry_window_seconds * (2 if pnl_pct >= self.config.hot_token_pnl_pct else 1),
                 "pullback_pct": self.config.reentry_pullback_pct,
-                "size_multiplier": self.config.reentry_size_multiplier,
+                "size_multiplier": self.config.reentry_size_multiplier * (self.config.hot_reentry_size_mult if pnl_pct >= self.config.hot_token_pnl_pct else 1.0),
                 "original_pnl_usd": total_pnl_usd,
                 "peak_price_after_exit": exit_price_sol,
                 "trough_after_peak": exit_price_sol,

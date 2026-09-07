@@ -366,7 +366,7 @@ def test_rh_reentry_watch_pullback_and_breakout():
     asyncio.run(st.rh_paper.exit(TOKEN, "stop_loss"))
     assert TOKEN not in st.rh_paper.watch
     # window expiry drops the entry
-    st.rh_paper.watch[TOKEN] = dict(w, exit_time=time.time() - 700, attempts=0)
+    st.rh_paper.watch[TOKEN] = dict(w, exit_time=time.time() - 700, attempts=0, window_s=600)  # (hot winners get a 2× window)
     st.rh_paper._scan_reentries(time.time())
     assert TOKEN not in st.rh_paper.watch
 
@@ -399,3 +399,38 @@ def test_sl_deferral_is_bounded_and_needs_net_inflow():
     b["last_price_quote"] = 0.74e-9   # -26%
     assert st.rh_paper._decide_exit(pos, b, now + 1) == "stop_loss"
     assert pos["_mom_defer_bounded"] is True
+
+
+def test_winner_rides_past_hold_cap_until_trail_or_ceiling():
+    st = make_state(hold_max_seconds=60, take_profit_pct=500.0, trailing_stop_pct=10.0, trailing_arm_pct=5.0,
+                    winner_ride_min_pnl_pct=10.0, winner_ride_max_hold_mult=3.0, exit_momentum_gate_enabled=False)
+    now = time.time()
+    b = hot_bucket(st.rh_discovery, now, price=1e-9)
+    enter(st)
+    pos = st.rh_paper.positions[TOKEN]
+    pos["opened"] = now - 90                       # past the 60s cap
+    b["last_price_quote"] = 1.4e-9                 # +40%, at its high → ride
+    assert st.rh_paper._decide_exit(pos, b, now) is None and pos["_riding"]
+    b["last_price_quote"] = 1.25e-9                # 10.7% off the 1.4 peak → trail takes it
+    assert st.rh_paper._decide_exit(pos, b, now) == "trailing_stop"
+    # a flat position past the cap still times out
+    pos2 = dict(pos, peak_price=1e-9, opened=now - 90); pos2.pop("_riding", None)
+    b["last_price_quote"] = 1.02e-9
+    assert st.rh_paper._decide_exit(pos2, b, now) == "max_hold"
+    # hard ceiling: 3× hold → max_hold even while winning
+    pos3 = dict(pos, peak_price=1.4e-9, opened=now - 200)
+    b["last_price_quote"] = 1.4e-9
+    assert st.rh_paper._decide_exit(pos3, b, now) == "max_hold"
+
+
+def test_hot_winner_gets_boosted_reentry_watch():
+    st = make_state(reentry_enabled=True, reentry_max_attempts=2, reentry_window_seconds=300, reentry_size_multiplier=0.5,
+                    hot_token_pnl_pct=25.0, hot_reentry_size_mult=1.5, hot_reentry_extra_attempts=2)
+    now = time.time()
+    b = hot_bucket(st.rh_discovery, now, price=1e-9)
+    enter(st)
+    b["last_price_quote"] = 1.6e-9                 # +60% → hot
+    asyncio.run(st.rh_paper.exit(TOKEN, "take_profit"))
+    w = st.rh_paper.watch[TOKEN]
+    assert w["hot"] and w["max_attempts"] == 4 and w["window_s"] == 600 and abs(w["size_multiplier"] - 0.75) < 1e-9
+    t = st.rh_paper.closed[-1] if hasattr(st.rh_paper, "closed") else None

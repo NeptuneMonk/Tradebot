@@ -839,6 +839,18 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                  hint="Position size multiplier for re-entries (e.g., 0.5 = half size). Risk control on a token you already exited once."
                  value={local.reentry_size_multiplier}
                  onChange={(v) => setLocal({ ...local, reentry_size_multiplier: parseFloat(v) || 0 })} step="0.1" />
+          <Field label="Hot token ≥ %" testid="hot-token-pnl-input"
+                 hint="A winner that exited with at least this % becomes a HOT token: its re-entry watch gets a bigger size, extra attempts and a 2× window so the bot keeps trading it up the chart."
+                 value={local.hot_token_pnl_pct ?? 25}
+                 onChange={(v) => setLocal({ ...local, hot_token_pnl_pct: parseFloat(v) || 0 })} step="5" />
+          <Field label="Hot size ×" testid="hot-reentry-size-input"
+                 hint="Extra size multiplier applied to re-entries on HOT tokens (stacked on Size ×). 1.5 = half again as big."
+                 value={local.hot_reentry_size_mult ?? 1.5}
+                 onChange={(v) => setLocal({ ...local, hot_reentry_size_mult: parseFloat(v) || 0 })} step="0.1" />
+          <Field label="Ride winner ≥ %" testid="winner-ride-min-pnl-input"
+                 hint="Positions up at least this % when the hold cap arrives are NOT cut by the clock while they stay inside the trailing stop (or keep drawing buyers) — TP / trail decide instead. Hard ceiling = hold cap × 6. Set 0 to always ride, 999 to disable."
+                 value={local.winner_ride_min_pnl_pct ?? 10}
+                 onChange={(v) => setLocal({ ...local, winner_ride_min_pnl_pct: parseFloat(v) || 0 })} step="5" />
           <Field label="Min wait (s)" testid="reentry-min-wait-input"
                  hint="Quiet time after ANY exit on the token before a re-entry may fire on either path. Stops the instant re-buy after a stop-loss."
                  value={local.reentry_min_wait_s ?? 20}

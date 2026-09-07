@@ -378,6 +378,9 @@ async def update_config(body: dict = Body(...)):
     cfg.reentry_pullback_pct = max(0.0, min(95.0, cfg.reentry_pullback_pct))
     cfg.reentry_window_seconds = max(10, min(3600, cfg.reentry_window_seconds))
     cfg.reentry_size_multiplier = max(0.0, min(1.0, cfg.reentry_size_multiplier))
+    cfg.hot_token_pnl_pct = max(0.0, min(1000.0, float(cfg.hot_token_pnl_pct)))
+    cfg.hot_reentry_size_mult = max(1.0, min(3.0, float(cfg.hot_reentry_size_mult)))
+    cfg.winner_ride_min_pnl_pct = max(0.0, min(999.0, float(cfg.winner_ride_min_pnl_pct)))
     # Partial TP clamps
     cfg.partial_tp_pct = max(0.0, min(100.0, cfg.partial_tp_pct))
     cfg.partial_tp_trail_tighten_pct = max(0.5, min(50.0, cfg.partial_tp_trail_tighten_pct))

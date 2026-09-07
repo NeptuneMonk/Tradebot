@@ -189,15 +189,21 @@ class RHPaperTrader:
             return
         if not b or b.get("graduated"):
             return
+        hot = (t.get("pnl_pct") or 0) >= float(getattr(cfg, "hot_token_pnl_pct", 25.0))
+        extra_att = int(getattr(cfg, "hot_reentry_extra_attempts", 2)) if hot else 0
+        hot_mult = float(getattr(cfg, "hot_reentry_size_mult", 1.5)) if hot else 1.0
+        if hot:
+            logger.info(f"rh_paper HOT {t.get('symbol')} (+{t.get('pnl_pct'):.0f}%) — boosted re-entry watch ×{hot_mult:g}, +{extra_att} attempts")
         self.watch[token] = {
+            "hot": hot,
             "attempts": int(prev.get("attempts") or 0) if prev else 0,
             "last_exit_time": now, "last_exit_was_sl": False,
             "trough_after_peak": price,
             "mint": token, "chain": CHAIN, "name": t.get("name"), "symbol": t.get("symbol"),
             "exit_price_quote": price, "exit_price_sol": 0.0, "quote_symbol": t.get("quote_symbol"),
-            "exit_time": now, "max_attempts": int(cfg.reentry_max_attempts),
-            "window_s": int(cfg.reentry_window_seconds), "pullback_pct": float(cfg.reentry_pullback_pct),
-            "size_multiplier": float(cfg.reentry_size_multiplier), "original_pnl_usd": t.get("pnl_usd") or 0.0,
+            "exit_time": now, "max_attempts": int(cfg.reentry_max_attempts) + extra_att,
+            "window_s": int(cfg.reentry_window_seconds) * (2 if hot else 1), "pullback_pct": float(cfg.reentry_pullback_pct),
+            "size_multiplier": float(cfg.reentry_size_multiplier) * hot_mult, "original_pnl_usd": t.get("pnl_usd") or 0.0,
             "peak_price_after_exit": price, "creator": t.get("creator"),
         }
 
@@ -547,7 +553,18 @@ class RHPaperTrader:
             return "stop_loss"
         if peak_pct >= bx["trailing_arm_pct"] and dd_from_peak >= bx["trailing_stop_pct"]:
             return "trailing_stop"
-        if now - pos["opened"] >= bx["hold_max_seconds"]:
+        held = now - pos["opened"]
+        if held >= bx["hold_max_seconds"]:
+            # ride the winner: in profit and still near its highs (inside the trail) or still drawing buyers →
+            # let TP / trailing stop decide, not the clock (hard ceiling keeps it bounded)
+            if (getattr(cfg, "winner_ride_enabled", True) and pnl_pct >= float(getattr(cfg, "winner_ride_min_pnl_pct", 10.0))
+                    and held < bx["hold_max_seconds"] * float(getattr(cfg, "winner_ride_max_hold_mult", 6.0))
+                    and (dd_from_peak < bx["trailing_stop_pct"] or _mom_holds("max_hold"))):
+                if not pos.get("_riding"):
+                    pos["_riding"] = True
+                    pos["_ride_started_pnl_pct"] = round(pnl_pct, 2)
+                    logger.info(f"rh_paper RIDING {t.get('symbol')} past hold cap at {pnl_pct:+.1f}% — trail/TP govern now")
+                return None
             return "max_hold"
         return None
 
@@ -709,6 +726,7 @@ class RHPaperTrader:
                                                                  else proceeds_quote / (1 - fee) * fee * quote_usd + self._paper_gas_usd()), 6),
                 "peak_price_quote": pos["peak_price"],
                 "trough_price_quote": pos.get("trough_price", t["entry_price_quote"]),
+                "rode_winner": bool(pos.get("_riding")), "ride_started_pnl_pct": pos.get("_ride_started_pnl_pct"),
                 "peak_ts": pos.get("peak_ts"), "trough_ts": pos.get("trough_ts"),
                 "peak_hold_s": (pos["peak_ts"] - pos["opened"]) if pos.get("peak_ts") else None,
                 "exit_mode": "event" if trigger else "tick",
