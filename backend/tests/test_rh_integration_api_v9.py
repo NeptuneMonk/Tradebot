@@ -113,6 +113,9 @@ class TestScannerCandidates:
         assert isinstance(c["passes"], bool)
 
     def test_existing_bands_present(self, sess):
+        cfg = sess.get(f"{BASE_URL}/api/bot/config", timeout=15).json()
+        if cfg.get("helius_tracker_enabled") is False:
+            pytest.skip("Pump.fun feed is OFF (RH-only mode) — no Solana candidates expected")
         rows = sess.get(f"{BASE_URL}/api/scanner/candidates", timeout=30).json()
         bands = {r.get("band") for r in rows}
         # 'new' or 'seasoned' should still exist

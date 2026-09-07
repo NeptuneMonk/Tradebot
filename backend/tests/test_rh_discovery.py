@@ -131,15 +131,21 @@ def test_ingest_builds_bucket_curve_pct_and_mc():
     now = time.time()
     new = asyncio.run(disc._ingest_factory_logs([launched_log()], head=105, now=now))
     assert new == [TOKEN]
-    disc._ingest_trade_logs([buy_log(2_100_000_000_000_000_000, 500_000_000 * 10**18)], now)
+    # on-curve trade: (0 + 1.68)·1e9 = (1.68 + 1.68)·5e8 → 1.68 ETH buys exactly 500M tokens
+    disc._ingest_trade_logs([buy_log(1_680_000_000_000_000_000, 500_000_000 * 10**18)], now)
     b = disc.tracking[TOKEN]
     assert b["chain"] == "rh" and b["protocol"] == "pons"
-    assert abs(b["curve_fill_pct"] - 50.0) < 1e-6
+    assert abs(b["curve_fill_pct"] - 40.0) < 1e-6           # 1.68 / 4.2
     assert b["buy_count"] == 1 and len(b["buyers"]) == 1
-    # price 2.1/5e8 ETH per token → MC = price*1e9*3000 USD
-    assert abs(b["usd_market_cap"] - (2.1 / 5e8) * 1e9 * 3000) < 1e-3
-    disc._ingest_trade_logs([sell_log(100_000_000 * 10**18, 420_000_000_000_000_000)], now)
-    assert abs(b["curve_fill_pct"] - 40.0) < 1e-6
+    # exact curve state recovered from the trade itself; price is the marginal (spot) price, not the trade average
+    assert abs(b["curve_a"] - 3.36) < 1e-9
+    spot = 3.36 ** 2 / 1.68e9
+    assert abs(b["last_price_quote"] - spot) < 1e-18 and spot > 1.68 / 5e8   # spot 6.72e-9 > average 3.36e-9
+    assert abs(b["usd_market_cap"] - spot * 1e9 * 3000) < 1e-3
+    # sell 100M tokens: x 5e8 → 6e8, a 3.36 → 2.8, gross quote out 0.56 ETH
+    disc._ingest_trade_logs([sell_log(100_000_000 * 10**18, 560_000_000_000_000_000)], now)
+    assert abs(b["curve_a"] - 2.8) < 1e-9
+    assert abs(b["curve_fill_pct"] - (1.68 - 0.56) / 4.2 * 100) < 1e-6
     assert b["sell_count"] == 1
 
 

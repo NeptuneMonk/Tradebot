@@ -516,7 +516,7 @@ class RHPaperTrader:
         }
         self.stats["feed_exits"] = self.stats.get("feed_exits", 0) + 1
 
-    def on_rug_alert(self, token: str, b: dict, seq: int, now: float):
+    def on_rug_alert(self, token: str, b: dict, seq: int, now: float, est_price: float | None = None):
         """Sequencer feed saw a big sell for a curve we hold: exit NOW (bypasses
         the momentum gate). The sell is already ordered ahead of us, so the
         paper fill still lands `latency_blocks` after it — honest, just ~2s
@@ -528,8 +528,9 @@ class RHPaperTrader:
         pos["exit_trigger"] = {
             "reason": "rug_detected",
             "block": seq,
-            "price": b.get("last_price_quote") or pos.get("_last_price"),
+            "price": est_price or b.get("last_price_quote") or pos.get("_last_price"),
             "fill_block": seq + self.latency_blocks(),
+            "source": "feed",
         }
         self.stats["rug_exits"] = self.stats.get("rug_exits", 0) + 1
 

@@ -40,7 +40,7 @@ class FakeCol:
 
 
 def make_state(**cfg):
-    base = dict(enabled=True, rh_paper_enabled=True, paper_entry_latency_ms=0, paper_exit_latency_ms=0, max_trade_usd=10.0)
+    base = dict(enabled=True, rh_paper_enabled=True, paper_entry_latency_ms=0, paper_exit_latency_ms=0, max_trade_usd=10.0, rh_max_trade_usd=10.0)
     base.update(cfg)
     st = SimpleNamespace(
         config=BotConfig(**base),

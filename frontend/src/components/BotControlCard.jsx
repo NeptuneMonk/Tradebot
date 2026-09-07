@@ -313,7 +313,7 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
       <div className="grid grid-cols-2 gap-2">
         <Field label="Rug sell ≥ $" testid="rh-rug-sell-usd-input" hint="Sequencer-feed rug detector: a single sell of at least this USD value on a curve you hold exits immediately, before the 2s poll sees it."
                value={local.rh_rug_sell_usd ?? 300} onChange={(v) => setLocal({ ...local, rh_rug_sell_usd: parseFloat(v) || 0 })} step="50" />
-        <Field label="Rug sell ≥ % curve" testid="rh-rug-sell-pct-input" hint="...or a sell worth at least this share of the curve's quote reserves."
+        <Field label="Rug sell ≥ % price drop" testid="rh-rug-sell-pct-input" hint="...or an ordered sell that the exact curve math says will knock the price down by at least this % (PONS curve: (net ETH + 1.68 virtual) × tokens = constant)."
                value={local.rh_rug_sell_curve_pct ?? 15} onChange={(v) => setLocal({ ...local, rh_rug_sell_curve_pct: parseFloat(v) || 0 })} step="5" />
       </div>
       {(local.rh_live_trading ?? false) && (

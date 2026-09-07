@@ -99,12 +99,14 @@ def test_no_evm_in_tracking_summary(s):
     assert not re.search(r"0x[a-fA-F0-9]{40}", body), "EVM address leaked into tracking summary"
 
 
-def test_no_evm_in_trades(s):
+def test_rh_trades_are_tagged_with_chain(s):
+    # Phase B+ : RH paper/live trades share the trade tables; every EVM row must carry chain="rh"
     for path in ("/api/trades/active", "/api/trades/history"):
         r = s.get(f"{BASE_URL}{path}", timeout=15)
         assert r.status_code == 200, r.text
-        body = json.dumps(r.json())
-        assert not re.search(r"0x[a-fA-F0-9]{40}", body), f"EVM address in {path}"
+        for row in r.json():
+            if re.fullmatch(r"0x[a-fA-F0-9]{40}", str(row.get("mint") or "")):
+                assert row.get("chain") == "rh", f"EVM trade without chain=rh in {path}: {row.get('mint')}"
 
 
 # --- Config toggle ---

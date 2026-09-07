@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import time
 from collections import deque
@@ -45,6 +46,23 @@ LAUNCH_TTL_H = 24
 WS_THROTTLE_S = 5.0
 MC_SAMPLE_KEEP = 60
 TOKEN_SUPPLY = 1_000_000_000
+# PONS V2 curve = exact constant product with a VIRTUAL quote reserve:
+#   (net_quote + V) · token_reserve = V · TOKEN_SUPPLY      spot price = (net_quote + V) / token_reserve
+# Fitted on-chain 2026-09-07 across 8 ETH-quoted curves: V = 1.68 ETH exactly (sd 0).
+VIRTUAL_QUOTE: dict[str, float] = {"ETH": 1.68}
+
+
+def curve_after_trade(side: str, q_eff: float, tokens: float, k0: float) -> tuple[float, float] | None:
+    """Solve the curve's effective reserve a = net_quote + V from ONE trade (self-correcting, no drift).
+    Returns (a_before, a_after)."""
+    if q_eff <= 0 or tokens <= 0:
+        return None
+    root = math.sqrt(q_eff * q_eff + 4.0 * k0 * q_eff / tokens)
+    if side == "buy":
+        a = (-q_eff + root) / 2.0
+        return a, a + q_eff
+    a = (q_eff + root) / 2.0
+    return a, a - q_eff
 
 FACTORY = "0x7ed598bcef8bd9edd8c97a195c6d13f40801ec7e"
 T_LAUNCHED = "0x8d4aad4953d0ca700d468f3753aa14432d1b35b43ec6409f051fb6aa43a89607"
@@ -157,6 +175,7 @@ def decode_trade(log: dict, quote_decimals: int) -> dict:
         "side": "buy" if is_buy else "sell",
         "wallet": _addr(log["topics"][1]),
         "quote": quote,
+        "q_eff": max(eff_quote_raw, 0) / (10 ** quote_decimals),  # what actually entered/left the curve
         "tokens": tokens,
         "price": (max(eff_quote_raw, 0) / (10 ** quote_decimals) / tokens) if tokens > 0 else 0.0,
         "block": int(log["blockNumber"], 16),
@@ -424,25 +443,42 @@ class RHDiscovery:
         if tr["price"] > 0:
             if b["first_price_quote"] <= 0:
                 b["first_price_quote"] = tr["price"]
-            # calibrate the feed's price-impact coefficient: Δp/p ≈ k · quote/reserves
-            prev = b.get("last_price_quote") or 0.0
-            reserves_before = b["net_quote"] - tr["quote"] if tr["side"] == "buy" else b["net_quote"] + tr["quote"]
-            if prev > 0 and reserves_before > 0 and tr["quote"] > 0:
-                x = tr["quote"] / reserves_before
-                r = tr["price"] / prev - 1.0
-                if x > 1e-4 and (r > 0) == (tr["side"] == "buy"):
-                    k = max(0.2, min(6.0, abs(r) / x))
-                    b["impact_k"] = 0.7 * b.get("impact_k", 2.0) + 0.3 * k
-            b["last_price_quote"] = tr["price"]
-            b.pop("feed_est", None)
-            b["block_prices"].append((tr.get("block") or 0, tr["price"]))
+            V = VIRTUAL_QUOTE.get(b.get("quote_symbol"))
+            st = curve_after_trade(tr["side"], tr.get("q_eff", 0.0), tr["tokens"], V * TOKEN_SUPPLY) if V else None
+            if st:
+                # exact curve: marginal (spot) price after the trade, not the trade's average price
+                b["curve_a"], b["curve_k0"] = st[1], V * TOKEN_SUPPLY
+                spot = st[1] * st[1] / b["curve_k0"]
+            else:
+                # unknown curve constant → keep the heuristic Δp/p ≈ k · quote/reserves, calibrated per curve
+                prev = b.get("last_price_quote") or 0.0
+                reserves_before = b["net_quote"] - tr["quote"] if tr["side"] == "buy" else b["net_quote"] + tr["quote"]
+                if prev > 0 and reserves_before > 0 and tr["quote"] > 0:
+                    x = tr["quote"] / reserves_before
+                    r = tr["price"] / prev - 1.0
+                    if x > 1e-4 and (r > 0) == (tr["side"] == "buy"):
+                        k = max(0.2, min(6.0, abs(r) / x))
+                        b["impact_k"] = 0.7 * b.get("impact_k", 2.0) + 0.3 * k
+                spot = tr["price"]
+            b["last_price_quote"] = spot
+            est = b.pop("feed_est", None)
+            if est and est.get("exact") and int(tr.get("block") or 0) == int(est.get("seq") or -1) and spot > 0:
+                # the poll just landed the very tx the feed projected → score the projection
+                feed = getattr(self.state, "rh_feed", None)
+                if feed is not None:
+                    err = (float(est["price"]) / spot - 1.0) * 100.0
+                    fs = feed.stats
+                    fs["feed_scored"] = fs.get("feed_scored", 0) + 1
+                    fs["feed_err_last_pct"] = round(err, 3)
+                    fs["feed_abs_err_ema_pct"] = round(0.9 * fs.get("feed_abs_err_ema_pct", abs(err)) + 0.1 * abs(err), 3)
+            b["block_prices"].append((tr.get("block") or 0, spot))
             b["last_block"] = max(int(b.get("last_block") or 0), int(tr.get("block") or 0))
             if now - b["last_price_sample_ts"] >= 1.0:
-                b["price_samples"].append((now, tr["price"]))
+                b["price_samples"].append((now, spot))
                 b["last_price_sample_ts"] = now
             usd = self._quote_usd(b["quote_symbol"])
             if usd > 0:
-                b["usd_market_cap"] = tr["price"] * TOKEN_SUPPLY * usd
+                b["usd_market_cap"] = spot * TOKEN_SUPPLY * usd
                 b["mc_samples"].append((now, b["usd_market_cap"]))
         b["last_trade_ms"] = int(now * 1000)
 

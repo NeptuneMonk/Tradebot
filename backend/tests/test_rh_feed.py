@@ -42,7 +42,7 @@ def _state(price=1e-9, net_quote=2.0, with_pos=True):
     paper = SimpleNamespace(positions={}, stats={}, latency_blocks=lambda: 6)
     st = SimpleNamespace(config=BotConfig(), rh_discovery=disc, rh_paper=paper)
     import rh_paper as rp
-    paper.on_rug_alert = lambda token, bb, seq, now: rp.RHPaperTrader.on_rug_alert(paper, token, bb, seq, now)
+    paper.on_rug_alert = lambda token, bb, seq, now, **kw: rp.RHPaperTrader.on_rug_alert(paper, token, bb, seq, now, **kw)
     if with_pos:
         paper.positions[TOKEN] = {"trade": {"entry_price_quote": price}, "_last_price": price}
     return st, b
@@ -120,3 +120,66 @@ def test_feed_buy_tick_raises_estimate_and_poll_resets_it():
     b.pop("feed_est")           # what apply_trade does when the poll lands a real trade
     feed._on_message(_feed_message(7, [_signed_buy(int(0.1 * 10**18))]))
     assert abs(b["feed_est"]["price"] - 1e-9 * (1 + 2.0 * 0.1 / 1.1)) < 1e-15
+
+
+# ---------------- exact PONS curve model (V = 1.68 ETH virtual reserve, fitted on-chain) ----------------
+V, SUPPLY = 1.68, 1_000_000_000
+K0 = V * SUPPLY
+
+
+def _sim_buy(a, q_in, fee=0.01):
+    """Return (tokens_out, a_after) for a gross quote-in on the exact curve."""
+    q_eff = q_in * (1 - fee)
+    x = K0 / a
+    a2 = a + q_eff
+    return x - K0 / a2, a2
+
+
+def _sim_sell(a, tokens):
+    x = K0 / a
+    a2 = K0 / (x + tokens)
+    return a - a2, a2  # gross quote out, a_after
+
+
+def test_curve_after_trade_recovers_exact_state_from_a_single_trade():
+    from rh_discovery import curve_after_trade
+    a = V + 0.37                      # 0.37 ETH of real reserves
+    tokens_out, a2 = _sim_buy(a, 0.25)
+    pre, post = curve_after_trade("buy", 0.25 * 0.99, tokens_out, K0)
+    assert abs(pre - a) < 1e-9 and abs(post - a2) < 1e-9
+    q_out, a3 = _sim_sell(a2, 40_000_000)
+    pre, post = curve_after_trade("sell", q_out, 40_000_000, K0)
+    assert abs(pre - a2) < 1e-9 and abs(post - a3) < 1e-9
+
+
+def test_feed_projection_matches_exact_curve_and_compounds_until_poll():
+    st, b = _state(price=1e-9, net_quote=0.1, with_pos=True)
+    st.rh_paper.on_feed_tick = lambda *a, **k: None
+    a = V + 0.1
+    b.update({"curve_a": a, "curve_k0": K0, "quote_decimals": 18, "start": time.time() - 60, "last_block": 4})
+    feed = rh_feed.RHSequencerFeed(st)
+    feed._on_message(_feed_message(5, [_signed_sell(50_000_000 * 10**18)]))
+    _, a2 = _sim_sell(a, 50_000_000)
+    assert b["feed_est"]["exact"] and abs(b["feed_est"]["price"] - a2 * a2 / K0) < 1e-18
+    # legacy model would have called this -56% (0.05 ETH sell vs 0.1 real reserves, k=2); truth is -9.8%
+    assert 0.89 < b["feed_est"]["price"] / (a * a / K0) < 0.91
+    feed._on_message(_feed_message(6, [_signed_buy(int(0.2 * 10**18))]))
+    _, a3 = _sim_buy(a2, 0.2)
+    assert abs(b["feed_est"]["a"] - a3) < 1e-9 and b["feed_est"]["kind"] == "buy"
+
+
+def test_rug_alert_uses_predicted_price_drop_not_real_reserve_share():
+    st, b = _state(price=1e-9, net_quote=0.1, with_pos=True)
+    st.config.rh_rug_sell_usd = 1e9          # isolate the %-drop rule
+    st.config.rh_rug_sell_curve_pct = 15.0
+    b.update({"curve_a": V + 0.1, "curve_k0": K0, "quote_decimals": 18, "start": time.time() - 60})
+    feed = rh_feed.RHSequencerFeed(st)
+    # 20M tokens ≈ 0.02 ETH: 20% of the 0.1 ETH REAL reserves (legacy: rug) but only ~4% price drop (exact: not a rug)
+    feed._on_message(_feed_message(1, [_signed_sell(20_000_000 * 10**18)]))
+    assert feed.stats["rug_alerts"] == 0 and 3.5 < b["last_seq_sell"]["curve_pct"] < 4.5
+    # 90M tokens → ~-17% price → rug
+    feed._on_message(_feed_message(2, [_signed_sell(90_000_000 * 10**18)]))
+    pos = st.rh_paper.positions[TOKEN]
+    assert feed.stats["rug_alerts"] == 1 and pos["exit_trigger"]["reason"] == "rug_detected"
+    assert pos["exit_trigger"]["source"] == "feed" and pos["_rug_alert"]["exact"] is True
+    assert pos["exit_trigger"]["price"] < 0.85 * (V + 0.1) ** 2 / K0

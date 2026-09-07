@@ -29,6 +29,7 @@ SELL_SEL = bytes.fromhex("d04c6983")
 BUY_SEL = bytes.fromhex("59a87bc1")
 L2_SIGNED_TX = 4
 L2_BATCH = 3
+FEED_EST_TTL_S = 8.0  # poll cadence ~2s: a projected tx that hasn't landed in 8s almost certainly reverted
 
 
 def _walk(b: bytes):
@@ -150,28 +151,64 @@ class RHSequencerFeed:
                 if c[0] == "sell":
                     self.stats["curve_sells"] += 1
                     self._maybe_rug(token, b, c[1], seq, now, positions)
-                if token in positions and not positions[token].get("_exiting"):
-                    self._feed_tick(token, b, c[0], c[1], seq, now)
+                # project every tracked curve (keeps the estimate fresh + scores accuracy); only held ones can exit
+                self._feed_tick(token, b, c[0], c[1], seq, now,
+                                notify=token in positions and not positions[token].get("_exiting"))
 
-    def _feed_tick(self, token: str, b: dict, kind: str, amount_raw: int, seq: int, now: float):
-        """Estimate the post-trade price from the ordered tx and hand it to the
-        exit logic. Δp/p ≈ k·q/reserves with k calibrated per curve from the
-        poll's real (quote, price) pairs (constant-product ⇒ k≈2)."""
-        base = float(b.get("last_price_quote") or 0.0)
+    def _curve_base(self, b: dict) -> tuple[float, float] | None:
+        """(effective reserve a, k0) to project from: the last feed estimate if it is
+        newer than the last polled block, else the poll's exact curve state."""
+        a0, k0 = b.get("curve_a"), b.get("curve_k0")
+        if not a0 or not k0:
+            return None
         est = b.get("feed_est")
-        if est and est.get("seq", 0) >= int(b.get("last_block") or 0):
-            base = float(est.get("price") or base)
-        reserves = float(b.get("net_quote") or 0.0)
-        if base <= 0 or reserves <= 0:
-            return
-        k = float(b.get("impact_k") or 2.0)
+        # chain from the last projection only while it's plausibly still pending; a projected tx that
+        # reverted never lands a trade (nothing pops feed_est), so expire it instead of compounding on it
+        if est and est.get("a") and est.get("seq", 0) >= int(b.get("last_block") or 0) and time.time() - float(est.get("ts") or 0) < FEED_EST_TTL_S:
+            return float(est["a"]), float(k0)
+        return float(a0), float(k0)
+
+    def _project(self, b: dict, kind: str, amount_raw: int, now: float) -> tuple[float, float, float] | None:
+        """Exact constant-product projection of an ordered tx → (a_before, a_after, new_price)."""
+        base = self._curve_base(b)
+        if not base:
+            return None
+        a, k0 = base
         if kind == "buy":
-            q = amount_raw / 1e18
-            new_price = base * (1.0 + k * q / (reserves + q))
+            from rh_paper import fee_fraction
+            q = amount_raw / (10 ** int(b.get("quote_decimals") or 18))
+            a2 = a + q * (1.0 - fee_fraction(now - float(b.get("start") or now)))
         else:
-            q = amount_raw / 1e18 * base           # quote value of the tokens being sold
-            new_price = base * max(0.05, 1.0 - k * q / (reserves + q))
-        b["feed_est"] = {"price": new_price, "seq": seq, "ts": now, "kind": kind}
+            a2 = k0 / (k0 / a + amount_raw / 1e18)
+        return a, a2, a2 * a2 / k0
+
+    def _feed_tick(self, token: str, b: dict, kind: str, amount_raw: int, seq: int, now: float, notify: bool = True):
+        """Estimate the post-trade price from the ordered tx and hand it to the
+        exit logic. ETH curves: exact — (net_quote + 1.68) · tokens = const, so a
+        pending buy/sell maps to one post-trade spot price. Other quotes: Δp/p ≈
+        k·q/reserves with k calibrated per curve."""
+        proj = self._project(b, kind, amount_raw, now)
+        if proj:
+            _, a2, new_price = proj
+            b["feed_est"] = {"price": new_price, "a": a2, "seq": seq, "ts": now, "kind": kind, "exact": True}
+        else:
+            base = float(b.get("last_price_quote") or 0.0)
+            est = b.get("feed_est")
+            if est and est.get("seq", 0) >= int(b.get("last_block") or 0):
+                base = float(est.get("price") or base)
+            reserves = float(b.get("net_quote") or 0.0)
+            if base <= 0 or reserves <= 0:
+                return
+            k = float(b.get("impact_k") or 2.0)
+            if kind == "buy":
+                q = amount_raw / (10 ** int(b.get("quote_decimals") or 18))
+                new_price = base * (1.0 + k * q / (reserves + q))
+            else:
+                q = amount_raw / 1e18 * base
+                new_price = base * max(0.05, 1.0 - k * q / (reserves + q))
+            b["feed_est"] = {"price": new_price, "seq": seq, "ts": now, "kind": kind, "exact": False}
+        if not notify:
+            return
         self.stats["feed_ticks"] = self.stats.get("feed_ticks", 0) + 1
         try:
             self.state.rh_paper.on_feed_tick(token, b, new_price, seq, now, kind)
@@ -179,26 +216,37 @@ class RHSequencerFeed:
             logger.debug(f"feed tick handler failed: {e}")
 
     def _maybe_rug(self, token: str, b: dict, tokens_raw: int, seq: int, now: float, positions: dict):
+        """Big ordered sell on a curve we hold → exit before it lands. 'Big' = the sell
+        would knock the price down ≥ rh_rug_sell_curve_pct % (exact curve math), or
+        is worth ≥ rh_rug_sell_usd."""
         cfg = self.state.config
-        price = float(b.get("last_price_quote") or 0.0)
-        if price <= 0:
-            return
-        est_quote = tokens_raw / 1e18 * price
-        reserves = max(float(b.get("net_quote") or 0.0), 1e-12)
         quote_usd = self.state.rh_discovery._quote_usd(b.get("quote_symbol")) if hasattr(self.state.rh_discovery, "_quote_usd") else 0.0
+        proj = self._project(b, "sell", tokens_raw, now)
+        if proj:
+            a, a2, new_price = proj
+            est_quote = a - a2                         # gross quote leaving the curve
+            drop_pct = max(0.0, (1.0 - (a2 / a) ** 2) * 100.0) if a > 0 else 0.0
+        else:
+            price = float(b.get("last_price_quote") or 0.0)
+            if price <= 0:
+                return
+            est_quote = tokens_raw / 1e18 * price
+            reserves = max(float(b.get("net_quote") or 0.0), 1e-12)
+            drop_pct = est_quote / reserves * 100.0     # legacy proxy: share of real reserves
+            new_price = price
         est_usd = est_quote * quote_usd
-        frac = est_quote / reserves * 100.0
-        big = est_usd >= float(getattr(cfg, "rh_rug_sell_usd", 300.0)) or frac >= float(getattr(cfg, "rh_rug_sell_curve_pct", 15.0))
-        b["last_seq_sell"] = {"seq": seq, "est_quote": est_quote, "est_usd": est_usd, "curve_pct": frac, "ts": now}
+        big = est_usd >= float(getattr(cfg, "rh_rug_sell_usd", 300.0)) or drop_pct >= float(getattr(cfg, "rh_rug_sell_curve_pct", 15.0))
+        b["last_seq_sell"] = {"seq": seq, "est_quote": est_quote, "est_usd": est_usd, "curve_pct": drop_pct, "ts": now}
         if not big:
             return
         pos = positions.get(token)
         if pos is None or pos.get("_exiting"):
             return
-        pos["_rug_alert"] = {"seq": seq, "est_usd": round(est_usd, 2), "curve_pct": round(frac, 1), "ts": now}
+        pos["_rug_alert"] = {"seq": seq, "est_usd": round(est_usd, 2), "curve_pct": round(drop_pct, 1),
+                             "exact": bool(proj), "est_price": new_price, "ts": now}
         self.stats["rug_alerts"] += 1
-        logger.warning(f"rh_feed RUG ALERT {b.get('symbol')} {token[:10]}: sell ≈ ${est_usd:,.0f} ({frac:.0f}% of curve) seq={seq}")
+        logger.warning(f"rh_feed RUG ALERT {b.get('symbol')} {token[:10]}: sell ≈ ${est_usd:,.0f} → price {-drop_pct:.0f}% seq={seq}")
         try:
-            self.state.rh_paper.on_rug_alert(token, b, seq, now)
+            self.state.rh_paper.on_rug_alert(token, b, seq, now, est_price=new_price)
         except Exception as e:
             logger.debug(f"rug alert handler failed: {e}")

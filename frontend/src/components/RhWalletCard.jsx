@@ -63,7 +63,7 @@ export default function RhWalletCard({ config }) {
               title={`Sequencer feed: sees every ordered tx before the RPC. curve sells seen ${feed.curve_sells} · rug alerts ${feed.rug_alerts} · reconnects ${feed.reconnects}${feed.last_error ? ` · ${feed.last_error}` : ""}`}
               data-testid="rh-seq-feed-pill"
             >
-              seq feed {feed.connected ? `● +${Math.max(0, (feed.last_seq || 0) - (feed.head || 0))} blk ahead` : "○ down"} · ticks {feed.feed_ticks ?? 0} · rugs {feed.rug_alerts}
+              seq feed {feed.connected ? `● +${Math.max(0, (feed.last_seq || 0) - (feed.head || 0))} blk ahead` : "○ down"} · ticks {feed.feed_ticks ?? 0} · rugs {feed.rug_alerts}{feed.feed_scored ? ` · est err ${Number(feed.feed_abs_err_ema_pct).toFixed(2)}% (${feed.feed_scored})` : ""}
             </span>
           )}
         </span>
