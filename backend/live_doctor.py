@@ -488,7 +488,7 @@ class LiveDoctor:
                 # PAUSED so the user sees the regime degradation, but the
                 # entry guard in _enter ignores it (and the config reload
                 # broadcast won't wipe the user's in-flight UI edits).
-                advisory = bool(cfg.get("doctor_advisory_only", False))
+                advisory = False  # advisory mode retired with Doctor v1
                 if advisory:
                     logger.warning(
                         f"DOCTOR TRAIL STOP TRIPPED (advisory only): score={score} peak={peak} — NOT writing pause"

@@ -1,0 +1,56 @@
+{
+  "summary": "House-cleaning verification (read-only): dashboard renders cleanly under the seeded session cookie; backend endpoints all 200; no backend tracebacks; RH paper bot actively entering/exiting (paper PONS BOMB +4.4% during the run). Strategy Doctor now shows only $-expectancy learning content with an explicit 'Win-rate (v1) rules are retired' banner — no legacy suggestion cards. Bot Control has no '-60% SL floor' or 'old time exit' wording. Momentum Scanner shows both Solana (NEW + SEASONED) and Robinhood (PONS) columns; Recent Launches shows both chains (30 sol + 30 rh); Trade History non-empty (live history intact). Two minor backend-config deviations vs the request spec noted (see minor issues).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/bot/config", "issue": "Spec expected classifier_action_whitelist=[] but actual value is ['momentum_new']. Not blocking trading (0 'action not in whitelist' skip lines in supervisor logs and paper trades are firing), but it deviates from the stated house-cleaning end-state."},
+      {"endpoint": "/api/bot/config", "issue": "Spec expected doctor_legacy_auto_apply_enabled=false but the key is absent from the response (fully removed from models.py). This is arguably consistent with the intent of retiring the v1 legacy path, but the spec explicitly asked for the key to remain present with value false — please confirm which is desired."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Global console", "issues": ["Recharts warning 'width(-1) and height(-1) of chart should be greater than 0' fires for a chart inside an initially-collapsed section (renders before layout has real dimensions). Cosmetic warning only; chart displays correctly once the section is expanded.", "One 401 network log at page load (likely the /api/ws upgrade or an early fetch before the session cookie is honored on that request); no user-facing breakage. WebSocket then successfully connects (WS LIVE pill lit)."]}
+    ]
+  },
+  "verified_expectations": {
+    "header": "AUTOPILOT lime badge visible (label reads 'AUTOPILOT'), WS LIVE, LISTENER LIVE, user email nbobby79@gmail.com, RUNNING pill, PAPER MODE subline — all present.",
+    "autopilot_card": "data-testid=autopilot-card renders: bankroll $986.27 (paper), TODAY'S P/L -$13.73, STAKE/CAP/KILL $19.73/20/$99, RISK/EXPOSURE/DAILY-LOSS inputs, book multipliers momentum/greylist_snipe/reentry/rh_pons all ×1.00, last-change + next-review lines, Profit Sweep panel with OFF switch.",
+    "strategy_doctor": "data-testid=strategy-doctor renders after expanding section-doctor toggle. Banner explicitly states 'Win-rate (v1) rules are retired; only $-expectancy proposals appear here.' Only expectancy-based book cards (MOMENTUM, GREYLIST SNIPE, RE-ENTRY, RH·PONS PAPER) are shown; no legacy suggestion cards, no legacy auto-apply toggle. 'win rate · payoff' text on the page is a per-book stats column label (alongside expectancy/fill), not a v1 rule. Applied History audit trail contains historical WR references (e.g. 'WR 80%') from pre-cleanup entries — these are historical audit rows analogous to the allowed 'Legacy Sniper' bucket in P/L By Source and are not active legacy rule cards.",
+    "bot_control": "data-testid=bot-control-card renders TP/SL/TRAILING STOP inputs, RUG SELL, SPEED MODE, MAX HOLD, STALE EXIT, per-band gates, RH PAPER GATES. No '-60% SL floor' or 'old time exit' wording present. Tooltips render (16 HelpHint svgs inside Strategy Doctor alone); hover triggered no console errors.",
+    "rh_wallet": "data-testid=rh-wallet-card header shows 'seq feed ●' pill (rh-seq-feed-pill), ETH balance, PAPER badge; expanding works.",
+    "scanner_and_launches": "Scanner Candidates section shows NEW (PUMP.FUN 1M-31M), SEASONED (PUMPFAM), and ROBINHOOD (PONS) columns with populated rows (37 candidates, 21 rh_new + 16 new). Recent Launches shows 60 rows (30 sol + 30 rh); chain filter chips (launch-chain-filter-sol / -rh / -all) present.",
+    "trade_history": "trade-history-table renders with rows (live history preserved). Paper reset was previously applied — paper rows may be sparse, which the spec flags as expected."
+  },
+  "backend_endpoint_snapshot": {
+    "/api/bot/status": "200 — enabled:true, live_trading:false, kill_switch_tripped:false, listener_connected:true",
+    "/api/bot/config": "200 — autopilot_enabled:true, rh_paper_enabled:true, live_trading:false, enabled:true, classifier_action_whitelist:['momentum_new'] (spec expected []), doctor_legacy_auto_apply_enabled: <absent> (spec expected false)",
+    "/api/autopilot/status": "200 — driving:true, books present: momentum, greylist_snipe, reentry, rh_pons",
+    "/api/doctor/learning": "200 — books present: momentum, greylist_snipe, reentry, rh_pons, global",
+    "/api/rh/status": "200 — enabled:true, paused:false, head advancing (56611242→56611266), seq_feed connected, 3 paper entries + 3 paper exits during run",
+    "/api/scanner/candidates": "200 — 37 items (rh_new:21, new:16)",
+    "/api/launches/recent": "200 — 60 items (sol:30, rh:30)"
+  },
+  "log_check": "tail -n 2000 of /var/log/supervisor/backend.err.log and backend.out.log: 0 Python tracebacks, 0 'action not in whitelist' skip lines, no errors from bot.py/strategy_doctor.py/doctor_learning.py/rh_paper.py/rh_feed.py. Only INFO-level rh_paper ENTER/EXIT lines observed.",
+  "test_report_links": [],
+  "action_items": [
+    "Decide whether classifier_action_whitelist should be [] (spec) or ['momentum_new'] (current) — if [] is the desired cleaned state, reset the config; if 'momentum_new' is the intentional post-cleanup gate for RH paper vs SOL, update the spec/doc.",
+    "Decide whether doctor_legacy_auto_apply_enabled key should be retained in /api/bot/config with a false default for backwards-compat, or considered fully retired (current behavior).",
+    "Minor: guard the P/L sparkline / small chart component against 0-dimension render when its parent accordion is collapsed to silence the Recharts warning.",
+    "Investigate the one 401 seen at page load (likely a first-paint fetch that races the session cookie); confirm it is not a real regression."
+  ],
+  "critical_code_review_comments": [
+    "Strategy Doctor cleanup looks well-executed: single explicit retirement banner + only $-expectancy book cards + AUTO-APPLY/RE-ANALYZE controls remain. Consider surfacing a small tooltip on the 'win rate · payoff' column header clarifying it's a passive stat and not a decision input, to preempt user confusion after v1 removal.",
+    "Applied History still shows pre-cleanup entries referencing WR%; consider tagging them with a 'v1 (retired)' marker rather than removing them, to preserve audit trail without implying the rules are live.",
+    "models.py Config default classifier_action_whitelist=[] but the live DB value is ['momentum_new'] — snapshot/restore in conftest.py appears to work per the request, so this is likely user-edited state; noting for awareness."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (7/7 endpoints 200, 0 tracebacks; 2 minor spec deviations, 0 functional failures)", "frontend": "100% (all requested cards + wording checks pass)"},
+  "test_credentials": "Used /tmp/tok=ui_smoke_1788761220047 (Bearer for curl and session_token cookie for browser); ALLOWED_EMAIL=nbobby79@gmail.com.",
+  "seed_data_creation": "None. Session token pre-seeded by user at /tmp/tok — reused as-is. No writes to Mongo, no destructive endpoints called.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Bot is intentionally left RUNNING in PAPER mode with AUTOPILOT ON — do not stop it. Autopilot rewrites min_trade/max_trade/kill_switch every 60s (bankroll-derived); changing sizing numbers between polls are NOT a bug. Paper trade history was previously reset so it may be sparse; live history has ~1582 rows and is preserved. Two spec/actual deviations were left as-is because fixing them would require backend edits which are forbidden this iteration (uvicorn --reload watches backend/ and would auto-disable the bot).",
+  "rca of the issue": "N/A — no functional bug found. The two spec deviations on /api/bot/config are configuration/documentation questions, not defects."
+}

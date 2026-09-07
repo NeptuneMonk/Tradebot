@@ -82,7 +82,9 @@ class TestCurveFillGuard:
 
 @pytest.fixture(scope="module")
 def auth_headers():
-    tok = os.environ.get("TESTER_TOK", "tester_iter8_tok")
+    tok = os.environ.get("TESTER_TOK")
+    if not tok:
+        pytest.skip("API round-trip needs TESTER_TOK (a seeded session token)")
     return {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
 
 

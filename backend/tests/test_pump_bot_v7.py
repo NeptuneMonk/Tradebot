@@ -195,12 +195,13 @@ class TestV7SourceInspection:
         assert "take_profit_pct" in body, "TP check missing"
         assert "trailing_stop_pct" in body, "trailing-stop check missing"
         assert "stop_loss_pct" in body, "SL check missing"
-        # Order: TP first, trailing second, SL last (by string position)
-        tp_pos = body.find("take_profit_pct")
-        tr_pos = body.find("trailing_stop_pct")
-        sl_pos = body.find("stop_loss_pct")
-        assert tp_pos < tr_pos < sl_pos, \
-            f"Order must be TP -> trailing -> SL; got TP@{tp_pos}, TRAIL@{tr_pos}, SL@{sl_pos}"
+        # Order of *decisions*: TP first, then SL, then trailing (SL before trail so a
+        # collapse isn't misattributed to trailing-stop with a tiny peak)
+        tp_pos = body.find("take-profit hit")
+        sl_pos = body.find("stop-loss hit")
+        tr_pos = body.find("trailing-stop hit")
+        assert 0 <= tp_pos < sl_pos < tr_pos, \
+            f"Order must be TP -> SL -> trailing; got TP@{tp_pos}, SL@{sl_pos}, TRAIL@{tr_pos}"
 
     def test_check_fast_exit_uses_peak_for_trailing(self, bot_src):
         m = re.search(
@@ -213,21 +214,24 @@ class TestV7SourceInspection:
         assert re.search(r"peak\s*>\s*entry", body), "trailing-stop must require peak > entry"
 
     def test_exit_uses_exit_slippage_bps_when_set(self, bot_src):
-        m = re.search(
-            r"async def _exit\(self, mint: str, reason: str\):(.*?)(?=\n    async def |\n    def |\nclass |\Z)",
-            bot_src, re.S,
-        )
-        assert m, "_exit method not found"
+        # Exit slip is resolved centrally in _resolve_fees (exit_slippage_bps > 0 else slippage_bps)
+        m = re.search(r"def _resolve_fees\(self\)(.*?)(?=\n    async def |\n    def |\nclass |\Z)", bot_src, re.S)
+        assert m, "_resolve_fees method not found"
         body = m.group(1)
-        # Must reference exit_slippage_bps with a fallback to slippage_bps
-        assert "exit_slippage_bps" in body, "_exit must reference exit_slippage_bps"
-        # Conditional: use exit_slippage_bps when > 0, else slippage_bps
+        assert "exit_slippage_bps" in body, "_resolve_fees must reference exit_slippage_bps"
         assert re.search(
             r"exit_slippage_bps\s+(?:>|!=)\s*0", body
-        ), "_exit must conditionally check exit_slippage_bps > 0 (or != 0)"
-        assert "slippage_bps" in body, "_exit must fall back to slippage_bps"
-        # The chosen slip variable must be fed into quote_sell_sol
-        assert re.search(r"quote_sell_sol\([^)]+\)", body), "_exit must call quote_sell_sol with slip"
+        ), "_resolve_fees must conditionally check exit_slippage_bps > 0 (or != 0)"
+        assert "slippage_bps" in body, "_resolve_fees must fall back to slippage_bps"
+        # _exit_impl consumes the resolved exit slip and feeds it into quote_sell_sol
+        m2 = re.search(
+            r"async def _exit_impl\(self, mint: str, reason: str, slot: dict\):(.*?)(?=\n    async def |\n    def |\nclass |\Z)",
+            bot_src, re.S,
+        )
+        assert m2, "_exit_impl method not found"
+        body2 = m2.group(1)
+        assert "_resolve_fees()" in body2, "_exit_impl must resolve fees via _resolve_fees"
+        assert re.search(r"quote_sell_sol\([^)]+\)", body2), "_exit_impl must call quote_sell_sol with slip"
 
 
 # ---------------- Regression: scanner & paper reset ----------------
@@ -244,6 +248,8 @@ class TestRegression:
                 assert key in row
 
     def test_paper_reset_still_works(self, api, baseline_config):
+        from conftest import destructive_guard
+        destructive_guard("POST /api/paper/reset wipes the paper trade history the Doctor learns from")
         # paper_reset refuses while live_trading is enabled — guard first
         if baseline_config.get("live_trading"):
             pytest.skip("live_trading enabled — paper reset would 400 by design")

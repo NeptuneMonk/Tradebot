@@ -137,7 +137,7 @@ export default function PLBySourceCard({ refreshSignal }) {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
         {sources.length > 0
-          ? sources.map((s) => <SourceRow key={s.source} s={s} />)
+          ? sources.filter((s) => !(s.source === "legacy" && !(s.n || s.count || s.trades))).map((s) => <SourceRow key={s.source} s={s} />)
           : ["new", "seasoned", "reentry", "legacy"].map((src) => (
               <SourceRow
                 key={src}
@@ -147,7 +147,7 @@ export default function PLBySourceCard({ refreshSignal }) {
                     new: "New Momentum",
                     seasoned: "Seasoned Momentum",
                     reentry: "Winner Re-entry",
-                    legacy: "Legacy Sniper",
+                    legacy: "Pre-classifier",
                   }[src],
                   trades: 0,
                   wins: 0,

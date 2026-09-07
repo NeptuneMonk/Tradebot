@@ -459,35 +459,6 @@ async def update_config(body: dict = Body(...)):
     # Advisory→Enforced reset: when the user flips Advisory OFF, reset the
     # Doctor trail-stop's peak so it doesn't immediately slam a pause based
     # on historical regime drift. Fresh baseline = fresh decisions.
-    # 2026-02-08: user feedback — "If I switch to enforced dr it should keep
-    # my settings initially and only make adjustments if there are trends
-    # into negative pnl."
-    prev_advisory = bool(bot_state.config.doctor_advisory_only)
-    new_advisory = bool(cfg.doctor_advisory_only)
-    if prev_advisory and not new_advisory:
-        try:
-            await db.doctor_trail_state.update_one(
-                {"_id": "trail"},
-                {"$set": {
-                    "peak": 0,           # next loop will seed from current score
-                    "peak_ts": 0,
-                    "paused": False,
-                    "paused_peak": 0,
-                    "advisory_reset_at": datetime.now(timezone.utc).isoformat(),
-                }},
-                upsert=True,
-            )
-            # Also clear any stale pause that was sitting around from a prior
-            # enforcement period (otherwise the enforced bot stays paused).
-            cfg.doctor_pause_until_ts = 0
-            cfg.doctor_pause_reason = ""
-            logger.warning(
-                "Advisory→Enforced: reset doctor trail-stop peak. Doctor will "
-                "now adopt the current regime score as its new baseline and only "
-                "pause on future drawdown from this point."
-            )
-        except Exception as e:
-            logger.warning(f"advisory→enforced trail reset failed: {e}")
     bot_state.config = cfg
     await bot_state.save_config()
     # Sync the Helius gate with the new config value. Without this, the
@@ -1940,7 +1911,7 @@ async def rh_wallet_import(body: dict = Body(...)):
 
 # ---------- Autopilot ----------
 AUTOPILOT_ON = {"autopilot_enabled": True, "doctor_learning_enabled": True, "doctor_auto_apply_enabled": True,
-                "doctor_auto_apply_live": True, "doctor_advisory_only": False, "bankroll_sizing_enabled": True}
+                "doctor_auto_apply_live": True, "bankroll_sizing_enabled": True}
 AUTOPILOT_OFF = {"autopilot_enabled": False, "doctor_auto_apply_enabled": False, "doctor_auto_apply_live": False,
                  "bankroll_sizing_enabled": False}
 
@@ -2157,7 +2128,6 @@ async def tracking_summary():
         "active_trade_count": len(st.active_trades),
         "max_concurrent_positions": cfg.max_concurrent_positions,
         "doctor_pause_until_ts": cfg.doctor_pause_until_ts,
-        "doctor_advisory_only": cfg.doctor_advisory_only,
         "sample": sample,
     }
 

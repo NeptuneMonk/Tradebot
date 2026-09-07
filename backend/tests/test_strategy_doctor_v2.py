@@ -1,4 +1,5 @@
 """Strategy Doctor — MFE-based, chain-scoped rules + stale-card handling + load() re-entrancy."""
+import pytest
 import asyncio
 import os
 import sys
@@ -123,6 +124,7 @@ class _Coll:
         return {}
 
 
+@pytest.mark.skip(reason="Doctor v1 win-rate rules retired 2026-09-07; only the expectancy learning loop acts")
 def test_run_once_retires_needs_more_data_card_when_enough_trades():
     trades = [trade(5, 10, "trailing-stop hit") for _ in range(35)]
     db = type("DB", (), {})()
@@ -198,6 +200,7 @@ def _doctor_with(cfg, trades, suggestions=None):
     return d, db
 
 
+@pytest.mark.skip(reason="Doctor v1 win-rate rules retired 2026-09-07; only the expectancy learning loop acts")
 def test_auto_apply_only_high_confidence_actionable_non_classifier():
     cfg = {"doctor_auto_apply_enabled": True, "doctor_legacy_auto_apply_enabled": True, "stop_loss_pct": 56.0, "take_profit_pct": 120.0}
     trades = [trade(5, 10, "trailing-stop hit") for _ in range(20)]
@@ -222,6 +225,7 @@ def test_auto_apply_only_high_confidence_actionable_non_classifier():
     assert cfg2["stop_loss_pct"] == 56.0
 
 
+@pytest.mark.skip(reason="Doctor v1 win-rate rules retired 2026-09-07; only the expectancy learning loop acts")
 def test_watchdog_reverts_on_wr_drop_and_settles_otherwise():
     applied_at = (NOW - timedelta(hours=3)).isoformat()
     base_sugg = {"id": "a", "title": "sl", "category": "sl", "status": "applied", "auto_applied": True,
@@ -247,3 +251,8 @@ def test_watchdog_reverts_on_wr_drop_and_settles_otherwise():
     asyncio.run(d._auto_revert_watchdog(cfg, good))
     s = db.strategy_suggestions.docs[0]
     assert s["status"] == "applied" and s["auto_settled"] is True and cfg["stop_loss_pct"] == 20.0
+
+
+def test_v1_rules_are_retired():
+    import strategy_doctor as sd
+    assert sd.LEGACY_RULES_ENABLED is False

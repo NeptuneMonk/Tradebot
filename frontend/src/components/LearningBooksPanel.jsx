@@ -95,6 +95,9 @@ export default function LearningBooksPanel() {
                 <div><div className="text-neutral-600 text-[9px]">latency tax</div><div className="text-neutral-200">{s.median_latency_tax == null ? "—" : `${s.median_latency_tax.toFixed(1)}pp`}</div></div>
                 <div><div className="text-neutral-600 text-[9px]">stale/timeout</div><div className="text-neutral-200">{pct(s.stale_timeout_share)}</div></div>
               </div>
+              {s.note && (
+                <div className="mt-1.5 text-[10px] font-mono text-neutral-500" data-testid={`learning-note-${b}`}>{s.note}</div>
+              )}
               {b === "reentry" && Object.keys(bt).length > 0 && (
                 <div className="mt-1.5 flex flex-wrap gap-2 text-[9px] font-mono" data-testid="learning-reentry-triggers">
                   {Object.entries(bt).map(([k, v]) => (

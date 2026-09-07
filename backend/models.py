@@ -101,13 +101,11 @@ class BotConfig(BaseModel):
     # faded. If, in the last `exit_momentum_window_s`, >= min_buyers distinct
     # wallets bought AND >= min_inflow_sol flowed in, the exit is DEFERRED
     # (re-checked every tick) for at most `exit_momentum_max_defer_s`.
-    # Hard floor: SL always fires past `exit_momentum_hard_sl_pct`.
     exit_momentum_gate_enabled: bool = True
     exit_momentum_window_s: int = 10
     exit_momentum_min_buyers: int = 3
     exit_momentum_min_inflow_sol: float = 0.25
     exit_momentum_max_defer_s: int = 20
-    exit_momentum_hard_sl_pct: float = 60.0
     # While an SL is deferred on momentum, fire anyway once the loss runs this
     # many points past the SL line (bounds a deferred SL at SL+X, not -60%).
     exit_momentum_max_extra_loss_pct: float = 5.0
@@ -123,13 +121,6 @@ class BotConfig(BaseModel):
     # Panic-exit slippage: applied on stop-loss, hard-stop, classifier abort,
     # and bonding-curve-complete exits where landing the sell matters more
     # than the fill price. 25% lets us escape sharp dumps without 6003 reverts.
-    # Per-classifier-action whitelist. Empty list = all actions allowed.
-    # When populated, entries are ONLY allowed for these classifier_action
-    # values. Strategy Doctor can suggest tightening this when a clear
-    # outperforming bucket emerges in trade history.
-    # Known actions: momentum_new, scanner_momentum, bonded_dip,
-    # whale_follow, social_breakout (subject to classifier changes).
-    classifier_action_whitelist: list[str] = []
     panic_exit_slippage_bps: int = 2500  # 25% emergency exit slippage
 
     # Intelligent Exit v2 — exchange-style exit logic.
@@ -307,7 +298,6 @@ class BotConfig(BaseModel):
     # but doesn't actually block new entries. Use this while you're actively
     # supervising the bot in the UI — you decide when to stop, Doctor only
     # advises. Defaults False (full enforcement).
-    doctor_advisory_only: bool = False
     # Doctor auto-apply (2026-06): high-confidence suggestions with concrete
     # actions are applied automatically; a watchdog reverts them if the win
     # rate since apply drops by >= `doctor_auto_revert_wr_drop_pp` vs the
@@ -321,8 +311,6 @@ class BotConfig(BaseModel):
     doctor_learning_canary_trades: int = 12
     doctor_learning_canary_hours: float = 6.0
     doctor_auto_apply_live: bool = False
-    doctor_learning_optimize: str = "expectancy_sol"
-    doctor_legacy_auto_apply_enabled: bool = False   # v1 win-rate rules stay advisory unless opted in
     # ---- Autopilot: fund it, the Doctor drives ----
     autopilot_enabled: bool = False
     bankroll_sizing_enabled: bool = False
@@ -346,8 +334,6 @@ class BotConfig(BaseModel):
     book_momentum_size_mult: float = 1.0
     book_snipe_size_mult: float = 1.0
     doctor_auto_revert_hours: int = 24
-    doctor_auto_revert_wr_drop_pp: float = 10.0
-    doctor_auto_revert_min_trades: int = 12
     doctor_trail_drawdown_pct: float = 40.0     # pause if score drops this far from peak
     doctor_trail_recovery_pct: float = 70.0     # resume when score recovers to this fraction of pre-pause peak
     doctor_trail_lookback_minutes: int = 240    # peak rolls over this many minutes
@@ -616,7 +602,7 @@ class BotStatus(BaseModel):
     live_trading: bool
     kill_switch_tripped: bool
     listener_connected: bool
-    daily_pnl_usd: float          # legacy combined (live + paper) — kept for compat
+    daily_pnl_usd: float          # combined live + paper; see daily_pnl_live_usd / daily_pnl_paper_usd for the split
     daily_pnl_live_usd: float = 0.0   # real-money PnL (drives kill switch)
     daily_pnl_paper_usd: float = 0.0  # paper-mode simulated PnL
     daily_loss_usd: float  # positive number representing LIVE loss magnitude (kill-switch ref)

@@ -224,7 +224,7 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
           <HelpHint label="Robinhood Chain Feed">
             <div className="space-y-1.5">
               <div>Polls Robinhood Chain&apos;s public RPC (one batched request every 2s) for PONS launchpad events — new launches, curve buys/sells, graduations. Tokens appear in Recent Launches with an <span className="text-lime-300">RH</span> badge and in the scanner&apos;s Robinhood band.</div>
-              <div><strong>Paper execution.</strong> RH tokens are paper-traded (auto + manual buy). Live execution needs an EVM wallet funded with bridged ETH (Phase C).</div>
+              <div><strong>Paper by default, live when enabled.</strong> RH launches are paper-traded (auto + manual buy); flip "RH Live Trading" below to execute ETH-quoted curves with the Robinhood hot wallet.</div>
               <div className="text-neutral-400">Uses zero Helius credits in either state.</div>
             </div>
           </HelpHint>
@@ -395,7 +395,7 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                value={local.exit_momentum_min_inflow_sol ?? 0.25}
                onChange={(v) => setLocal({ ...local, exit_momentum_min_inflow_sol: parseFloat(v) || 0 })} step="0.05" />
         <Field label="Mom Defer Max (s)" testid="exit-momentum-defer-input"
-               hint="Longest an SL/TP can be deferred on momentum before it fires anyway. SL also always fires past the hard floor (exit_momentum_hard_sl_pct, default 60%)."
+               hint="Longest an SL/TP can be deferred on momentum before it fires anyway. A deferred SL is also capped at SL + 'SL Defer Max Extra %' — that bound is the only floor."
                value={local.exit_momentum_max_defer_s ?? 20}
                onChange={(v) => setLocal({ ...local, exit_momentum_max_defer_s: parseInt(v, 10) || 0 })} step="5" />
         <Field label="SL Defer Max Extra %" testid="exit-momentum-extra-loss-input"

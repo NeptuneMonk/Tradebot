@@ -371,13 +371,30 @@ class LearningEngine:
     # ---------- gates ----------
     @staticmethod
     def auto_apply_allowed(cfg: dict) -> bool:
-        if not cfg.get("doctor_auto_apply_enabled") or cfg.get("doctor_advisory_only"):
+        if not cfg.get("doctor_auto_apply_enabled"):
             return False
         if cfg.get("live_trading") and not cfg.get("doctor_auto_apply_live"):
             return False
         return True
 
     # ---------- main cycle ----------
+    @staticmethod
+    def _book_note(book: str, st: dict, min_n: int) -> str:
+        """One line per book: why the Doctor did or didn't act."""
+        n = st.get("n", 0)
+        if n == 0:
+            return "no fills in the last 24h"
+        if n < min_n:
+            return f"{n}/{min_n} fills — collecting evidence before acting"
+        e = st.get("expectancy_usd") or 0.0
+        e7 = st.get("expectancy_7d")
+        if e < 0 and e7 is not None and e7 > 0:
+            return f"24h negative ({e:+.3f} $/fill) but 7d positive ({e7:+.3f}) — treating as noise, not a regime change"
+        if e < 0:
+            return f"losing {e:+.3f} $/fill — candidate for a corrective canary"
+        pr = st.get("payoff_ratio")
+        return f"earning {e:+.3f} $/fill" + (f", payoff {pr:.2f}" if pr else "") + " — no structural edge to fix; scale-up needs 7d confirmation"
+
     async def cycle(self, cfg: dict, trades_24h: list[dict], trades_7d: list[dict]) -> list[dict]:
         """Returns 0–1 suggestion dicts (category 'learning') for the Doctor to
         surface. Handles canary evaluation + optional auto-apply itself."""
@@ -392,6 +409,8 @@ class LearningEngine:
             s24["expectancy_7d"] = s7.get("expectancy_usd")
             s24["n_7d"] = s7.get("n", 0)
             books[b] = s24
+        for b, st in books.items():
+            st["note"] = self._book_note(b, st, min_n)
         self.last["books"] = books
 
         can = await self.canary()

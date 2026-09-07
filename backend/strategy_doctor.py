@@ -52,6 +52,11 @@ logger = logging.getLogger("strategy_doctor")
 # How long an analysis window covers
 ANALYSIS_LOOKBACK_HOURS = 24
 # Minimum closed trades before any sizing/exit suggestion fires
+# RETIRED 2026-09-07: the v1 rule set scored on WIN RATE and once whitelisted
+# 'reentry' (freezing every other entry). Only the expectancy learning loop
+# (doctor_learning.py) proposes/applies now; this module keeps the
+# applied-history + revert plumbing. Flip to re-enable for research only.
+LEGACY_RULES_ENABLED = False
 MIN_TRADES_FOR_SUGGESTION = 30
 # MFE-based (peak-vs-entry) rules need fewer trades per chain scope
 MIN_TRADES_MFE_RULES = 20
@@ -199,7 +204,7 @@ class StrategyDoctor:
         # No-data case: surface a single "need more data" card
         if learning_out or learning_busy:
             pass  # one change at a time — legacy rules yield to the learning loop
-        elif len(trades) < MIN_TRADES_FOR_SUGGESTION:
+        elif LEGACY_RULES_ENABLED and len(trades) < MIN_TRADES_FOR_SUGGESTION:
             # Keep ONE card and refresh its counter in place (the signature
             # dedup would otherwise freeze the first "0/30" forever).
             await self.db.strategy_suggestions.update_many(
@@ -222,7 +227,7 @@ class StrategyDoctor:
                 "confidence": "low",
                 "metrics": {"n_trades": len(trades)},
             })
-        else:
+        elif LEGACY_RULES_ENABLED:
             # Enough data now — retire any lingering "need more data" card.
             await self.db.strategy_suggestions.update_many(
                 {"status": "pending", "category": "needs_more_data"},
@@ -341,7 +346,7 @@ class StrategyDoctor:
         # Legacy v1 rules are WIN-RATE based (they once whitelisted 'reentry'
         # and froze every other entry). Only the expectancy learning loop may
         # auto-apply unless the operator explicitly opts the v1 rules back in.
-        if not cfg_doc.get("doctor_legacy_auto_apply_enabled", False):
+        if not LEGACY_RULES_ENABLED:
             return
         if not LearningEngine.auto_apply_allowed(cfg_doc):
             return  # live without doctor_auto_apply_live, or advisory-only
@@ -375,6 +380,8 @@ class StrategyDoctor:
                     pass
 
     async def _auto_revert_watchdog(self, cfg_doc: dict, trades: list[dict]):
+        if not LEGACY_RULES_ENABLED:
+            return  # WR-based watchdog retired with the v1 rules; the learning canary judges by $ expectancy
         """Revert auto-applied changes whose post-apply win rate fell by more
         than the configured drop vs the pre-apply baseline. After the watch
         window closes without a revert the change is kept and marked settled."""

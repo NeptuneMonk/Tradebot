@@ -161,7 +161,6 @@ def test_live_without_auto_apply_live_blocks_auto_apply():
     assert A({"doctor_auto_apply_enabled": True, "live_trading": True, "doctor_auto_apply_live": False}) is False
     assert A({"doctor_auto_apply_enabled": True, "live_trading": True, "doctor_auto_apply_live": True}) is True
     assert A({"doctor_auto_apply_enabled": True, "live_trading": False}) is True
-    assert A({"doctor_auto_apply_enabled": True, "live_trading": False, "doctor_advisory_only": True}) is False
     assert A({"doctor_auto_apply_enabled": False}) is False
     c = BotConfig()
     assert c.doctor_auto_apply_enabled is False and c.doctor_auto_apply_live is False and c.doctor_learning_enabled is True

@@ -397,8 +397,6 @@ class RHPaperTrader:
                 return False
             key = f"_mom_defer_{kind}"
             if kind == "sl":
-                if pnl_pct <= -float(getattr(cfg, "exit_momentum_hard_sl_pct", 60.0)):
-                    return False
                 # bounded deferral: never ride more than X points past the SL line
                 if pnl_pct <= -(cfg.stop_loss_pct + float(getattr(cfg, "exit_momentum_max_extra_loss_pct", 5.0))):
                     pos["_mom_defer_bounded"] = True

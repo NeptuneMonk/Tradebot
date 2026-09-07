@@ -1425,3 +1425,23 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - Root cause: legacy Strategy Doctor **v1 (win-rate rules)** auto-applied "Restrict to 'reentry' — outperforming by 27pp (WR)" → `classifier_action_whitelist=['reentry']` → every momentum entry skipped ("action not in whitelist"). Autopilot's `doctor_auto_apply_enabled` had also armed the v1 engine.
 - Fix: whitelist cleared + those suggestions marked reverted; `strategy_doctor._auto_apply` returns unless `doctor_legacy_auto_apply_enabled` (new, default False) — only the expectancy learning loop auto-applies; whitelist actions are never auto-applied even if opted in. Testing agent iteration_12: all pass (entries resumed, manual buy ok, no legacy auto-applies).
 - Note: v1 WR-based changes still in config from earlier (TP lowered, trail tightened) were left for the v2 Doctor/user to re-tune.
+
+
+## 2026-09-07 — House cleaning wrap-up: test suite repaired, last legacy gate removed
+- ✅ **`backend/tests/conftest.py`** (new) — loads backend + frontend `.env`, seeds a fresh 1-hour `pytest_session_<ms>` token in Mongo (email = `ALLOWED_EMAIL`) once per run → `TEST_SESSION_TOKEN`, `auth_headers` / `base_url` fixtures, and a `requests.Session.request` patch that adds the Bearer header to every call at `REACT_APP_BACKEND_URL` (so pre-auth legacy API tests pass unchanged). No test carries a hardcoded token anymore.
+- ✅ **Config snapshot/restore** — conftest snapshots `/api/bot/config` at session start and PUTs it back at the end, so clamp/toggle tests can't leave the user's config mutated.
+- ✅ **`destructive_guard()`** — `POST /api/paper/reset` (v7) and bot start + hard-stop (api) are skipped unless `PYTEST_ALLOW_DESTRUCTIVE=1`.
+- ✅ **Stale assertions updated** for the current codebase: kill-switch clamp 1000 (was 100), max_trade cap $100, scanner_window_hours ceiling 720, snapshot lives in `scanner.py`, fast-exit order TP → SL → trailing, exit slip resolved in `_resolve_fees` + `_exit_impl`, RH launches carry `classifier_action="tracking"`, RH rows excluded from Solana-shape checks, autopilot sizing asserted against bankroll × risk (not hardcoded $20), social-score test skips when external sources are throttled.
+- ✅ **Full suite: 578 passed / 4 skipped / 0 failed.**
+- ✅ **Removed `classifier_action_whitelist` gate** (bot.py + BotConfig field, DB key unset). It was a v1 win-rate artifact; a stale `['momentum_new']` value was silently skipping every `scanner_momentum` (seasoned) entry. Legacy rule bodies remain in `strategy_doctor.py` behind `LEGACY_RULES_ENABLED=False` for research only.
+- ✅ Testing agent iteration 13: UI clean (no v1 cards / wording), all endpoints 200, no tracebacks, RH paper entering/exiting live.
+- ⚠️ **Incident (disclosed to user)**: the first (pre-guard) test runs executed `POST /api/paper/reset`, wiping the paper trade history accumulated since the user's own reset on 2026-09-06 (Doctor books read n=0 again until new fills land), and PUT clamp values over the running config. Config was restored from the user's saved defaults snapshot (TP 30 / SL 35 / hold 45 / slip 750 / prio 600k) + manual sizing 100/90/8/47; autopilot, RH paper and the bot were switched back on. Live trade history (1,582 rows) untouched.
+- ⚠️ **Environment note**: uvicorn `--reload` watches `backend/tests/` too — any backend file edit restarts the server and the restart-safety rule auto-disables the bot. Press Start after edits.
+
+### Remaining backlog
+- P2: Creator Greylist Phase 3 (1-hop linked-wallet traversal via Helius)
+- P2: Age-tiered gates for seasoned tokens
+- P2: Telegram alerts (Doctor changes, rug exits, kill-switch, live fills)
+- P2: Config-change audit timeline (you / Doctor / autopilot sizing)
+- P2: Feed accuracy report (feed-estimated vs poll price)
+- P3: Jito bundle support

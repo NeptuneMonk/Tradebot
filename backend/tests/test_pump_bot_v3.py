@@ -23,7 +23,7 @@ BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
 API = f"{BASE_URL}/api"
 # Derive ws scheme/host from REACT_APP_BACKEND_URL
 _WS_BASE = BASE_URL.replace("https://", "wss://").replace("http://", "ws://")
-WS_URL = f"{_WS_BASE}/api/ws"
+WS_URL = f"{_WS_BASE}/api/ws?token={os.environ['TEST_SESSION_TOKEN']}"
 
 
 @pytest.fixture(scope="module")
@@ -230,7 +230,9 @@ class TestLaunchCreatorFields:
             time.sleep(3)
         assert arr, "No launches in 60s"
         required = ("creator_tokens_created", "creator_tokens_failed", "creator_tokens_graduated")
-        for L in arr:
+        sol_rows = [L for L in arr if L.get("chain") in (None, "sol")]  # RH (EVM) rows carry no Solana creator stats
+        assert sol_rows, "No Solana launches in the recent feed"
+        for L in sol_rows:
             for k in required:
                 assert k in L, f"launch missing {k}: keys={list(L.keys())}"
                 assert isinstance(L[k], int), f"{k} wrong type: {type(L[k]).__name__}"
@@ -286,18 +288,18 @@ class TestRegressionSmoke:
     def test_bot_config_safety_caps(self, client):
         payload = {
             "enabled": False, "live_trading": False,
-            "min_trade_usd": 0.05, "max_trade_usd": 10.0,
-            "slippage_bps": 10, "daily_kill_switch_usd": 500.0,
+            "min_trade_usd": 0.05, "max_trade_usd": 250.0,
+            "slippage_bps": 10, "daily_kill_switch_usd": 5000.0,
             "priority_fee_microlamports": 500000,
             "hold_max_seconds": 30, "take_profit_pct": 25.0, "stop_loss_pct": 30.0,
         }
         r = client.put(f"{API}/bot/config", json=payload)
         assert r.status_code == 200
         d = r.json()
-        assert d["max_trade_usd"] == 5.0
+        assert d["max_trade_usd"] == 100.0
         assert d["min_trade_usd"] == 0.10
         assert d["slippage_bps"] == 50
-        assert d["daily_kill_switch_usd"] == 100
+        assert d["daily_kill_switch_usd"] == 1000
 
     def test_bot_start_stop_reset(self, client):
         assert client.post(f"{API}/bot/reset-kill-switch").status_code == 200

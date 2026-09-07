@@ -424,8 +424,6 @@ class BotState:
         cfg = self.config
         if not cfg.exit_momentum_gate_enabled:
             return False
-        if kind == "sl" and pct_change <= -float(cfg.exit_momentum_hard_sl_pct):
-            return False
         if kind == "sl" and pct_change <= -(float(cfg.stop_loss_pct) + float(getattr(cfg, "exit_momentum_max_extra_loss_pct", 5.0))):
             return False  # bounded deferral: SL + X points, never further
         bucket = self.tracking.get(mint) or {}
@@ -2076,7 +2074,6 @@ class BotState:
         # is actively supervising and decides when to stop.
         pause_until = float(getattr(self.config, "doctor_pause_until_ts", 0) or 0)
         if (pause_until and time.time() < pause_until
-                and not getattr(self.config, "doctor_advisory_only", False)
                 and not is_manual):
             logger.debug(
                 f"doctor pause: skipping entry for {launch.mint[:8]}… "
@@ -2333,20 +2330,6 @@ class BotState:
                 f"greylist_snipe: bypassing momentum gates for {launch.mint[:8]}… "
                 f"(creator={launch.creator[:8]}…, protocol={protocol})"
             )
-
-        # Classifier-action whitelist gate. When non-empty, only the listed
-        # actions are allowed to enter. Strategy Doctor populates this when
-        # a clear outperforming bucket emerges (rule_classifier_bucket_focus).
-        wl = self.config.classifier_action_whitelist or []
-        if wl and action not in wl and not bypass_gates:
-            logger.info(f"skip {launch.mint} [{action}]: action not in whitelist {wl}")
-            await hub.broadcast("scanner_skip", {
-                "mint": launch.mint, "symbol": launch.symbol,
-                "band": "new" if is_new_band else "seasoned",
-                "reason": "classifier_whitelist",
-                "details": [f"action '{action}' not in whitelist"],
-            })
-            return
 
         min_liq = self.config.min_curve_liquidity_sol_new if is_new_band else self.config.min_curve_liquidity_sol
         min_buyers = self.config.min_buyers_for_entry_new if is_new_band else self.config.min_buyers_for_entry

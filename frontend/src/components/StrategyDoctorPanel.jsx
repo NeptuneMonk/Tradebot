@@ -44,8 +44,6 @@ export default function StrategyDoctorPanel({ onApplied, config, onConfigUpdate 
   const [running, setRunning] = useState(false);
   const [busyId, setBusyId] = useState(null);
   const [lastRun, setLastRun] = useState(null);
-  const [advisoryToggling, setAdvisoryToggling] = useState(false);
-  const advisoryOnly = !!config?.doctor_advisory_only;
   const autoApply = !!config?.doctor_auto_apply_enabled;
   const [autoToggling, setAutoToggling] = useState(false);
 
@@ -67,23 +65,6 @@ export default function StrategyDoctorPanel({ onApplied, config, onConfigUpdate 
     }
   };
 
-  const toggleAdvisory = async () => {
-    if (advisoryToggling) return;
-    setAdvisoryToggling(true);
-    try {
-      const upd = await api.updateConfig({ doctor_advisory_only: !advisoryOnly });
-      toast.success(
-        !advisoryOnly
-          ? "Doctor → Advisory only (won't pause the bot)"
-          : "Doctor → Full enforcement (can pause the bot)"
-      );
-      onConfigUpdate && onConfigUpdate(upd);
-    } catch (e) {
-      toast.error("Toggle failed: " + (e?.response?.data?.detail || e.message));
-    } finally {
-      setAdvisoryToggling(false);
-    }
-  };
 
   const refresh = useCallback(async () => {
     try {
@@ -179,22 +160,6 @@ export default function StrategyDoctorPanel({ onApplied, config, onConfigUpdate 
           </button>
           <button
             type="button"
-            onClick={toggleAdvisory}
-            disabled={advisoryToggling}
-            data-testid="doctor-advisory-toggle"
-            title={advisoryOnly
-              ? "Currently advisory only — doctor logs warnings but won't pause the bot. Click to re-enable full enforcement."
-              : "Currently full enforcement — doctor can pause the bot on circuit-breaker. Click to switch to advisory-only mode (recommended while you're actively supervising)."}
-            className={`px-2 py-1 text-[10px] uppercase tracking-wider font-mono border inline-flex items-center gap-1 transition-colors duration-100 ${
-              advisoryOnly
-                ? "border-amber-700/60 text-amber-300 hover:bg-amber-950/50"
-                : "border-emerald-800/60 text-emerald-300 hover:bg-emerald-950/50"
-            }`}
-          >
-            {advisoryOnly ? "Advisory" : "Enforced"}
-          </button>
-          <button
-            type="button"
             onClick={runNow}
             disabled={running}
             data-testid="doctor-run-now"
@@ -211,17 +176,17 @@ export default function StrategyDoctorPanel({ onApplied, config, onConfigUpdate 
           <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
           loading…
         </div>
-      ) : items.length === 0 ? (
+      ) : items.filter((s) => s.learning || s.category === "learning").length === 0 ? (
         <div className="text-[11px] font-mono text-neutral-500 py-6 text-center border border-dashed border-neutral-800 rounded-sm">
           <Sparkles className="w-4 h-4 inline mr-1 text-emerald-700" />
-          No suggestions. Bot's running healthy by my measure.
+          No expectancy edge to act on this cycle — see the book notes below.
           <div className="text-[10px] text-neutral-700 mt-1">
-            Doctor re-checks every 30 min. Tap Re-analyze to force a cycle.
+            Win-rate (v1) rules are retired; only $-expectancy proposals appear here. Doctor re-checks every 30 min.
           </div>
         </div>
       ) : (
         <div className="space-y-2">
-          {items.map((s) => (
+          {items.filter((s) => s.learning || s.category === "learning").map((s) => (
             <SuggestionCard
               key={s.id}
               s={s}

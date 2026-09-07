@@ -71,7 +71,12 @@ def test_default_slippage_values():
     print(f"default_slippage_values: OK  (exit={cfg.exit_slippage_bps}bps, panic={cfg.panic_exit_slippage_bps}bps)")
 
 
-async def test_sell_ix_shape():
+def test_sell_ix_shape():
+    import asyncio
+    asyncio.run(_sell_ix_shape())
+
+
+async def _sell_ix_shape():
     """Verify build_sell_ix produces the right account count for both variants."""
     user = Pubkey.from_string("Gbp9yFREc9dPvnfSjBmi9udg3UCrMmjZh2rjaPebRPrR")
     mint = Pubkey.from_string("4L4hou7WevgyukfR6QMRb3TGxQve3Uvzpqf11pMWpump")

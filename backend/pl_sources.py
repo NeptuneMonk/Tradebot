@@ -18,7 +18,7 @@ SOURCE_LABELS = {
     "greylist_snipe": "Greylist Sniper",
     "rh_pons": "RH · PONS (paper)",
     "manual": "Manual Buy",
-    "legacy": "Legacy Sniper",
+    "legacy": "Pre-classifier",
 }
 
 

@@ -52,9 +52,10 @@ def test_deferred_sl_is_bounded_at_sl_plus_extra():
     assert st._buy_momentum_holds(MINT, slot, "tp", 45.0) is True      # TP deferral unaffected
 
 
-def test_hard_sl_floor_and_defer_budget():
-    st, slot = make({"exit_momentum_max_extra_loss_pct": 50.0}, buyers=6, sol_each=0.2)
-    assert st._buy_momentum_holds(MINT, slot, "sl", -61.0) is False  # past hard floor 60
+def test_bound_is_the_only_floor_and_defer_budget():
+    st, slot = make({"exit_momentum_max_extra_loss_pct": 50.0}, buyers=6, sol_each=0.2)   # SL 20 + 50 = -70
+    assert st._buy_momentum_holds(MINT, slot, "sl", -71.0) is False  # past SL+extra
+    assert st._buy_momentum_holds(MINT, slot, "sl", -61.0) is True   # no separate -60 hard floor any more
     assert st._buy_momentum_holds(MINT, slot, "sl", -30.0) is True
     slot["_mom_defer_sl"] = time.time() - 21                         # budget (20s) spent
     assert st._buy_momentum_holds(MINT, slot, "sl", -30.0) is False

@@ -4,8 +4,8 @@ import time
 import pytest
 import requests
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://micro-stake-trader.preview.emergentagent.com").rstrip("/")
-TOKEN = os.environ.get("TEST_SESSION_TOKEN", "test_session_1788718227979")
+BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
+TOKEN = os.environ["TEST_SESSION_TOKEN"]  # seeded by tests/conftest.py
 H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 
 
@@ -32,13 +32,16 @@ def test_autopilot_status_shape_defaults():
         assert k in s, f"missing {k}"
     br = s["bankroll"]
     assert br["bankroll_source"] == "paper"
-    assert abs(br["bankroll_usd"] - 1000.0) < 500  # paper bankroll ballpark
+    b = br["bankroll_usd"]
+    assert abs(b - 1000.0) < 500  # paper bankroll ballpark ($1000 seed + realised paper P/L)
     d = br["derived"]
-    # For $1000 defaults (risk 2%, max_exp 25%, dll 10%)
-    assert d["max_trade_usd"] == 20.0
-    assert d["min_trade_usd"] == 5.0
-    assert d["max_concurrent_positions"] == 12
-    assert d["daily_kill_switch_usd"] == 100.0
+    cfg = _get("/api/bot/config").json()
+    risk = max(0.1, cfg["risk_per_trade_pct"])  # the Doctor may steer the risk dial (0.5–5%)
+    # Derived sizing must follow bankroll × risk / exposure / daily-loss settings
+    assert d["max_trade_usd"] == pytest.approx(round(b * risk / 100, 2), abs=0.02)
+    assert d["min_trade_usd"] == pytest.approx(d["max_trade_usd"] / 4, abs=0.02)
+    assert d["max_concurrent_positions"] == max(1, min(20, int(cfg["max_exposure_pct"] // risk)))
+    assert d["daily_kill_switch_usd"] == pytest.approx(round(b * cfg["daily_loss_limit_pct"] / 100, 2), abs=0.02)
     for book in ("momentum", "greylist_snipe", "reentry", "rh_pons"):
         assert book in s["books"], f"missing book {book}"
 
@@ -54,14 +57,15 @@ def test_autopilot_on_applies_bankroll_and_flags():
 
     # bot config reflects flags
     cfg = _get("/api/bot/config").json()
+    d = body["bankroll"]["derived"] if "derived" in body.get("bankroll", {}) else _get("/api/autopilot/status").json()["bankroll"]["derived"]
     assert cfg["autopilot_enabled"] is True
     assert cfg["doctor_auto_apply_enabled"] is True
     assert cfg["doctor_auto_apply_live"] is True
     assert cfg["bankroll_sizing_enabled"] is True
-    assert cfg["max_trade_usd"] == 20.0
-    assert cfg["min_trade_usd"] == 5.0
-    assert cfg["max_concurrent_positions"] == 12
-    assert cfg["daily_kill_switch_usd"] == 100.0
+    assert cfg["max_trade_usd"] == pytest.approx(d["max_trade_usd"], abs=0.5)
+    assert cfg["min_trade_usd"] == pytest.approx(d["min_trade_usd"], abs=0.2)
+    assert cfg["max_concurrent_positions"] == d["max_concurrent_positions"]
+    assert cfg["daily_kill_switch_usd"] == pytest.approx(d["daily_kill_switch_usd"], abs=2.0)
 
     # status.driving true
     s = _get("/api/autopilot/status").json()
@@ -126,22 +130,10 @@ def test_doctor_learning_books_include_all_four_plus_global():
         assert "n" in books[k]
 
 
-# ---------- Restore user config (must run last) ----------
-def test_zz_restore_user_config():
-    # Ensure autopilot is OFF
-    _post("/api/autopilot/off")
-    r = _put("/api/bot/config", {
-        "max_trade_usd": 100,
-        "min_trade_usd": 90,
-        "max_concurrent_positions": 8,
-        "daily_kill_switch_usd": 47,
-        "risk_per_trade_pct": 2,
-    })
+# ---------- Leave autopilot as we found it (conftest restores the full user config afterwards) ----------
+def test_zz_autopilot_off_roundtrip():
+    r = _post("/api/autopilot/off")
     assert r.status_code == 200, r.text
-    cfg = r.json()
-    assert cfg["max_trade_usd"] == 100.0
-    assert cfg["min_trade_usd"] == 90.0
-    assert cfg["max_concurrent_positions"] == 8
-    assert cfg["daily_kill_switch_usd"] == 47.0
+    cfg = _get("/api/bot/config").json()
     assert cfg["autopilot_enabled"] is False
     assert cfg["bankroll_sizing_enabled"] is False

@@ -154,7 +154,7 @@ class TestEntryFilterClamps:
 class TestScannerClamps:
     def test_scanner_window_hours_clamp(self, client, baseline_config):
         try:
-            assert _put(client, scanner_window_hours=999)["scanner_window_hours"] == 24
+            assert _put(client, scanner_window_hours=9999)["scanner_window_hours"] == 720  # 30-day ceiling
             assert _put(client, scanner_window_hours=0)["scanner_window_hours"] == 1
         finally:
             _restore(client, baseline_config)
@@ -249,7 +249,7 @@ class TestScannerCandidatesEndpoint:
     def test_candidate_shape_when_present(self, client):
         """If any candidates exist, validate shape; else skip the shape check."""
         r = client.get(f"{API}/scanner/candidates", timeout=15)
-        data = r.json()
+        data = [c for c in r.json() if c.get("chain") in (None, "sol")]  # RH rows have their own shape
         if not data:
             pytest.skip("No candidates yet (live stream may be quiet); shape covered by accumulation test")
         c = data[0]
@@ -313,11 +313,12 @@ class TestModuleConstants:
         assert int(m.group(1)) > 0
 
     def test_scanner_candidates_snapshot_exists(self):
-        with open(os.path.join(_BACKEND_DIR, "bot.py"), "r") as f:
+        # Snapshot lives in scanner.py (MomentumScanner.candidates_snapshot) since the refactor
+        with open(os.path.join(_BACKEND_DIR, "scanner.py"), "r") as f:
             src = f.read()
-        assert "def _scanner_candidates_snapshot" in src
+        assert "def candidates_snapshot" in src
         # Extract body: from the def line to the next top-level def in class
-        start = src.index("def _scanner_candidates_snapshot")
+        start = src.index("def candidates_snapshot")
         rest = src[start:]
         # Body ends at next method def at the same indent (def or async def)
         next_def = len(rest)

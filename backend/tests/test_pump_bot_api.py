@@ -100,7 +100,7 @@ class TestBotConfig:
             "min_trade_usd": 0.05,   # below 0.10 floor -> 0.10
             "max_trade_usd": 250.0,   # above 100.0 cap -> 100.0
             "slippage_bps": 10,        # below 50 -> 50
-            "daily_kill_switch_usd": 500.0,  # above 100 -> 100
+            "daily_kill_switch_usd": 5000.0,  # above 1000 -> 1000
             "priority_fee_microlamports": 500000,
             "hold_max_seconds": 30,
             "take_profit_pct": 25.0,
@@ -112,7 +112,7 @@ class TestBotConfig:
         assert d["max_trade_usd"] == 100.0, f"max_trade_usd not clamped: {d['max_trade_usd']}"
         assert d["min_trade_usd"] == 0.10, f"min_trade_usd not clamped: {d['min_trade_usd']}"
         assert d["slippage_bps"] == 50, f"slippage_bps not clamped low: {d['slippage_bps']}"
-        assert d["daily_kill_switch_usd"] == 100, f"kill switch not clamped: {d['daily_kill_switch_usd']}"
+        assert d["daily_kill_switch_usd"] == 1000, f"kill switch not clamped: {d['daily_kill_switch_usd']}"
 
         # Slippage upper clamp
         payload2 = {**payload, "slippage_bps": 99999, "max_trade_usd": 1.0, "min_trade_usd": 0.5,
@@ -148,6 +148,8 @@ class TestBotConfig:
 # ---------- Bot Lifecycle ----------
 class TestBotLifecycle:
     def test_start_stop(self, client):
+        from conftest import destructive_guard
+        destructive_guard("bot start + hard stop force-closes every open position")
         # Ensure kill switch is cleared first
         rr = client.post(f"{API}/bot/reset-kill-switch")
         assert rr.status_code == 200
@@ -158,7 +160,8 @@ class TestBotLifecycle:
         s = client.get(f"{API}/bot/status").json()
         assert s["enabled"] is True
 
-        r2 = client.post(f"{API}/bot/stop")
+        # Hard stop: graceful mode (default) keeps enabled=True while positions drain
+        r2 = client.post(f"{API}/bot/stop", params={"mode": "hard"})
         assert r2.status_code == 200
         assert r2.json().get("enabled") is False
         s2 = client.get(f"{API}/bot/status").json()

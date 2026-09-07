@@ -6,8 +6,8 @@ import json
 import pytest
 import requests
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://micro-stake-trader.preview.emergentagent.com").rstrip("/")
-TOKEN = "test_session_1788677619688"
+BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
+TOKEN = os.environ["TEST_SESSION_TOKEN"]  # seeded by tests/conftest.py
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 
 EVM_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
@@ -64,7 +64,7 @@ def test_launches_recent_contains_both_chains(s):
     for k in ["quote_symbol", "quote_inflow", "curve_fill_pct", "usd_market_cap",
               "unique_buyers", "buy_count", "graduated", "classifier_action"]:
         assert k in rh, f"RH row missing {k}"
-    assert rh["classifier_action"] == "watch"
+    assert rh["classifier_action"] in ("watch", "tracking", "rh_pons_paper", "rh_pons_live")
 
 
 # --- /api/scanner/candidates ---

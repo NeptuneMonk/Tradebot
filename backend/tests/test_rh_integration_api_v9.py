@@ -9,8 +9,8 @@ import copy
 import pytest
 import requests
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://micro-stake-trader.preview.emergentagent.com").rstrip("/")
-TOKEN = "test_session_1788677619688"
+BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
+TOKEN = os.environ["TEST_SESSION_TOKEN"]  # seeded by tests/conftest.py
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 
 
@@ -82,7 +82,7 @@ class TestLaunchesRecent:
         assert rh
         row = rh[0]
         assert row["protocol"] == "pons"
-        assert row["classifier_action"] in ("watch", "rh_pons_paper") or (row.get("entered") and row.get("entry_action") == "rh_pons_paper")
+        assert row["classifier_action"] in ("watch", "tracking", "rh_pons_paper", "rh_pons_live") or (row.get("entered") and row.get("entry_action") == "rh_pons_paper")
         assert row["mint"].startswith("0x")
         assert row.get("quote_symbol") in ("ETH", "USDG") or isinstance(row.get("quote_symbol"), str)
         assert "curve_fill_pct" in row

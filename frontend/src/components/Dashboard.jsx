@@ -451,7 +451,7 @@ export default function Dashboard() {
           description="advisory toggle · pending suggestions · live panels"
           storageKey="ui.section.doctor"
           testId="section-doctor"
-          badge={config?.doctor_advisory_only ? "advisory" : null}
+          badge={config?.autopilot_enabled ? "autopilot" : null}
         >
           <StrategyDoctorPanel
             config={config}

@@ -4,8 +4,8 @@ import time
 import pytest
 import requests
 
-BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://micro-stake-trader.preview.emergentagent.com').rstrip('/')
-TOKEN = "test_session_1788718227979"
+BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
+TOKEN = os.environ["TEST_SESSION_TOKEN"]  # seeded by tests/conftest.py
 H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 
 

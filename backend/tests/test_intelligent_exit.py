@@ -172,7 +172,12 @@ def test_severity_override_fires_immediately_on_sharp_dump():
         persistence_ms=1200, min_samples=3,
         severity_pct=6.0, severity_threshold_pct=5.0,
     )
-    assert fired is True, "severity override should fire on first tick"
+    # 2026-02-08 change: even a severity override needs ≥2 samples (single-tick
+    # spikes were faking stop-outs). First tick arms, second tick fires.
+    assert fired is False
+    fired = bs._check_breach_persistence(slot, kind="sl", breached=True, persistence_ms=1200, min_samples=3,
+                                         severity_pct=6.0, severity_threshold_pct=5.0)
+    assert fired is True, "severity override should fire on the second tick"
 
 
 def test_severity_below_threshold_still_uses_persistence():
