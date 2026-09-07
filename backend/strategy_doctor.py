@@ -338,6 +338,11 @@ class StrategyDoctor:
     async def _auto_apply(self, fresh: list[dict], cfg_doc: dict, trades: list[dict]):
         if not cfg_doc.get("doctor_auto_apply_enabled"):
             return
+        # Legacy v1 rules are WIN-RATE based (they once whitelisted 'reentry'
+        # and froze every other entry). Only the expectancy learning loop may
+        # auto-apply unless the operator explicitly opts the v1 rules back in.
+        if not cfg_doc.get("doctor_legacy_auto_apply_enabled", False):
+            return
         if not LearningEngine.auto_apply_allowed(cfg_doc):
             return  # live without doctor_auto_apply_live, or advisory-only
         can = await self.learning.canary()
@@ -349,6 +354,8 @@ class StrategyDoctor:
                 continue
             if s.get("category") in self.AUTO_APPLY_BLOCKED_CATEGORIES:
                 continue
+            if "classifier_action_whitelist" in (s.get("actions") or {}):
+                continue  # never let the Doctor freeze entry sources automatically
             before = await self._apply_actions(s, cfg_doc, {
                 "auto_applied": True,
                 "auto_baseline_wr": baseline_wr,

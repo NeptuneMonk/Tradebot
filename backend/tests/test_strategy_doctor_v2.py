@@ -199,7 +199,7 @@ def _doctor_with(cfg, trades, suggestions=None):
 
 
 def test_auto_apply_only_high_confidence_actionable_non_classifier():
-    cfg = {"doctor_auto_apply_enabled": True, "stop_loss_pct": 56.0, "take_profit_pct": 120.0}
+    cfg = {"doctor_auto_apply_enabled": True, "doctor_legacy_auto_apply_enabled": True, "stop_loss_pct": 56.0, "take_profit_pct": 120.0}
     trades = [trade(5, 10, "trailing-stop hit") for _ in range(20)]
     d, db = _doctor_with(cfg, trades)
     fresh = [

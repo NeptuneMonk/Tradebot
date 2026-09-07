@@ -1419,3 +1419,9 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 ## 2026-09-07 — Feed-driven RH exits
 - ✅ Every ordered `buy()`/`sell()` on a held curve from the sequencer feed becomes an **estimated price tick**: Δp/p ≈ k·q/(reserves+q), `k` calibrated per curve in `rh_discovery.apply_trade` from real (quote, price) pairs (EMA, default 2 = constant-product), compounding across feed txs via `bucket["feed_est"]` until the poll lands a real trade (`last_block`, `feed_est` reset). `rh_paper.on_feed_tick` runs `_decide_exit(price_override=est)`; on breach sets `exit_trigger{source:"feed", block=seq, fill_block=seq+latency}`. Fills still resolve on REAL block prices (`resolve_pending`), so only the trigger is earlier (~5s / ~50 blocks). Trade doc: `exit_trigger_source`. Stats `feed_ticks`/`feed_exits` (rh status + wallet-card pill); tooltip marks feed-triggered exits.
 - Tests: `tests/test_rh_feed.py` (5) — SL from compounding feed sells, buy tick estimate, poll reset.
+
+
+## 2026-09-07 — "Bot not buying" regression (legacy Doctor whitelist)
+- Root cause: legacy Strategy Doctor **v1 (win-rate rules)** auto-applied "Restrict to 'reentry' — outperforming by 27pp (WR)" → `classifier_action_whitelist=['reentry']` → every momentum entry skipped ("action not in whitelist"). Autopilot's `doctor_auto_apply_enabled` had also armed the v1 engine.
+- Fix: whitelist cleared + those suggestions marked reverted; `strategy_doctor._auto_apply` returns unless `doctor_legacy_auto_apply_enabled` (new, default False) — only the expectancy learning loop auto-applies; whitelist actions are never auto-applied even if opted in. Testing agent iteration_12: all pass (entries resumed, manual buy ok, no legacy auto-applies).
+- Note: v1 WR-based changes still in config from earlier (TP lowered, trail tightened) were left for the v2 Doctor/user to re-tune.

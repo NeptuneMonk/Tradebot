@@ -322,6 +322,7 @@ class BotConfig(BaseModel):
     doctor_learning_canary_hours: float = 6.0
     doctor_auto_apply_live: bool = False
     doctor_learning_optimize: str = "expectancy_sol"
+    doctor_legacy_auto_apply_enabled: bool = False   # v1 win-rate rules stay advisory unless opted in
     # ---- Autopilot: fund it, the Doctor drives ----
     autopilot_enabled: bool = False
     bankroll_sizing_enabled: bool = False
