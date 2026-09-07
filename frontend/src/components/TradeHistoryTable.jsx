@@ -125,7 +125,7 @@ function TradeHistoryTable({ history }) {
                         {(t.exit_trigger_pnl_pct != null || t.exit_deferred_s != null || t.rug_alert) && (
                           <div className="mt-1 text-[10px] text-neutral-500" data-testid={`exit-audit-${t.id}`}>
                             {t.exit_trigger_pnl_pct != null && (
-                              <>trigger at <span className="text-neutral-300">{t.exit_trigger_pnl_pct >= 0 ? "+" : ""}{t.exit_trigger_pnl_pct.toFixed(1)}%</span> → fill {t.pnl_pct >= 0 ? "+" : ""}{Number(t.pnl_pct).toFixed(1)}% after {t.exit_latency_blocks ?? "?"} blocks of latency</>
+                              <>trigger at <span className="text-neutral-300">{t.exit_trigger_pnl_pct >= 0 ? "+" : ""}{t.exit_trigger_pnl_pct.toFixed(1)}%</span> → fill {t.pnl_pct >= 0 ? "+" : ""}{Number(t.pnl_pct).toFixed(1)}% after {t.exit_latency_blocks ?? "?"} blocks of latency{t.exit_trigger_source === "feed" ? <span className="text-lime-300"> · triggered from the sequencer feed (est. price)</span> : ""}</>
                             )}
                             {t.rug_alert && (
                               <div className="text-rose-300">rug detected on the sequencer feed: sell ≈ ${t.rug_alert.est_usd} ({t.rug_alert.curve_pct}% of curve) — exited ahead of the poll</div>

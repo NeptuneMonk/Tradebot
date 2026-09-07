@@ -374,10 +374,10 @@ class RHPaperTrader:
             await hub.broadcast("rh_live_kill", {"pnl_today_usd": pnl, "limit": cfg.rh_daily_kill_switch_usd})
 
     # ---------- exits ----------
-    def _decide_exit(self, pos: dict, b: dict, now: float) -> str | None:
+    def _decide_exit(self, pos: dict, b: dict, now: float, price_override: float | None = None) -> str | None:
         cfg = self.state.config
         t = pos["trade"]
-        price = b["last_price_quote"] or pos["_last_price"]
+        price = price_override or b["last_price_quote"] or pos["_last_price"]
         pos["_last_price"] = price
         entry = t["entry_price_quote"] or 0.0
         if entry <= 0 or price <= 0:
@@ -476,6 +476,28 @@ class RHPaperTrader:
             "fill_block": tr["block"] + self.latency_blocks(),
         }
 
+    def on_feed_tick(self, token: str, b: dict, est_price: float, seq: int, now: float, kind: str):
+        """Sequencer feed saw an ordered buy/sell on a curve we hold; evaluate
+        SL/TP/trail on the ESTIMATED post-trade price (~5s before the poll).
+        The fill still resolves on real block prices ≥ seq + latency."""
+        pos = self.positions.get(token)
+        if not pos or pos.get("_exiting") or est_price <= 0:
+            return
+        self.stats["feed_ticks"] = self.stats.get("feed_ticks", 0) + 1
+        reason = self._decide_exit(pos, b, now, price_override=est_price)
+        if not reason:
+            return
+        pos["_exiting"] = True
+        pos["exit_trigger"] = {
+            "reason": reason,
+            "block": seq,
+            "price": est_price,
+            "fill_block": seq + self.latency_blocks(),
+            "source": "feed",
+            "feed_kind": kind,
+        }
+        self.stats["feed_exits"] = self.stats.get("feed_exits", 0) + 1
+
     def on_rug_alert(self, token: str, b: dict, seq: int, now: float):
         """Sequencer feed saw a big sell for a curve we hold: exit NOW (bypasses
         the momentum gate). The sell is already ordered ahead of us, so the
@@ -573,6 +595,7 @@ class RHPaperTrader:
                     "exit_trigger_price_quote": trigger["price"],
                     "exit_trigger_pnl_pct": round((trigger["price"] / ep - 1.0) * 100.0, 2) if (ep and trigger["price"]) else None,
                     "exit_latency_blocks": trigger["fill_block"] - trigger["block"],
+                    "exit_trigger_source": trigger.get("source", "poll"),
                 })
             await self.state.db.trades.update_one({"_id": t["id"]}, {"$set": t}, upsert=True)
             launch_update = {"pin_exited": True, "exit_pnl_pct": t["pnl_pct"], "exit_reason": reason}

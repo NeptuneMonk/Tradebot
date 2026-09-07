@@ -74,3 +74,49 @@ def test_sell_on_untracked_curve_ignored_and_no_position_no_alert():
     st.rh_discovery._curve_to_token.clear()
     feed._on_message(_feed_message(2, [_signed_sell(400_000_000 * 10**18)]))
     assert feed.stats["curve_sells"] == 1
+
+
+def _signed_buy(quote_wei: int) -> bytes:
+    data = rh_wallet.calldata(rh_live.BUY_SIG, ["uint256", "uint256", "address"], [quote_wei, 0, ME.address])
+    tx = {"type": 2, "chainId": 4663, "nonce": 2, "to": rh_wallet.checksum(CURVE), "value": quote_wei, "data": data,
+          "gas": 160000, "maxPriorityFeePerGas": 1, "maxFeePerGas": 2, "accessList": []}
+    return bytes(ME.sign_transaction(tx).raw_transaction)
+
+
+def test_feed_ticks_estimate_price_and_trigger_sl_early():
+    import rh_paper as rp
+    st, b = _state(price=1e-9, net_quote=2.0)
+    b["impact_k"] = 2.0
+    paper = st.rh_paper
+    paper.state = st
+    paper.on_feed_tick = lambda *a, **k: rp.RHPaperTrader.on_feed_tick(paper, *a, **k)
+    paper._decide_exit = lambda *a, **k: rp.RHPaperTrader._decide_exit(paper, *a, **k)
+    st.config.stop_loss_pct = 20.0
+    st.config.rh_rug_sell_usd = 1e9
+    st.config.rh_rug_sell_curve_pct = 100.0
+    st.config.exit_momentum_gate_enabled = False
+    st.config.no_momentum_exit_enabled = False
+    st.config.hold_max_seconds = 600
+    pos = paper.positions[TOKEN]
+    pos.update({"trade": {"entry_price_quote": 1e-9, "entry_usd": 5.0, "entry_tokens": 1.0}, "peak_price": 1e-9, "opened": time.time() - 5})
+    feed = rh_feed.RHSequencerFeed(st)
+    # small sell: 50,000,000 tokens ≈ 0.05 ETH of a 2 ETH curve → ~-4.9%, no exit
+    feed._on_message(_feed_message(10, [_signed_sell(50_000_000 * 10**18)]))
+    assert "_exiting" not in pos and b["feed_est"]["seq"] == 10 and 0.94e-9 < b["feed_est"]["price"] < 0.96e-9
+    # compounding sells on the same base (poll hasn't caught up): 250,000,000 tokens ≈ 0.24 ETH → past -20% → SL now
+    feed._on_message(_feed_message(11, [_signed_sell(250_000_000 * 10**18)]))
+    assert pos["_exiting"] is True and pos["exit_trigger"]["reason"] == "stop_loss"
+    assert pos["exit_trigger"]["source"] == "feed" and pos["exit_trigger"]["block"] == 11 and pos["exit_trigger"]["fill_block"] == 17
+    assert paper.stats["feed_exits"] == 1
+
+
+def test_feed_buy_tick_raises_estimate_and_poll_resets_it():
+    st, b = _state(price=1e-9, net_quote=1.0, with_pos=True)
+    st.rh_paper.on_feed_tick = lambda *a, **k: None
+    feed = rh_feed.RHSequencerFeed(st)
+    feed._on_message(_feed_message(5, [_signed_buy(int(0.1 * 10**18))]))
+    assert b["feed_est"]["kind"] == "buy" and b["feed_est"]["price"] > 1.15e-9
+    b["last_block"] = 6
+    b.pop("feed_est")           # what apply_trade does when the poll lands a real trade
+    feed._on_message(_feed_message(7, [_signed_buy(int(0.1 * 10**18))]))
+    assert abs(b["feed_est"]["price"] - 1e-9 * (1 + 2.0 * 0.1 / 1.1)) < 1e-15

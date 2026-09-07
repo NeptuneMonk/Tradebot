@@ -144,11 +144,39 @@ class RHSequencerFeed:
                 if not token or token not in tracking:
                     continue
                 c = classify(tx)
-                if not c or c[0] != "sell":
+                if not c:
                     continue
-                self.stats["curve_sells"] += 1
                 b = tracking[token]
-                self._maybe_rug(token, b, c[1], seq, now, positions)
+                if c[0] == "sell":
+                    self.stats["curve_sells"] += 1
+                    self._maybe_rug(token, b, c[1], seq, now, positions)
+                if token in positions and not positions[token].get("_exiting"):
+                    self._feed_tick(token, b, c[0], c[1], seq, now)
+
+    def _feed_tick(self, token: str, b: dict, kind: str, amount_raw: int, seq: int, now: float):
+        """Estimate the post-trade price from the ordered tx and hand it to the
+        exit logic. Δp/p ≈ k·q/reserves with k calibrated per curve from the
+        poll's real (quote, price) pairs (constant-product ⇒ k≈2)."""
+        base = float(b.get("last_price_quote") or 0.0)
+        est = b.get("feed_est")
+        if est and est.get("seq", 0) >= int(b.get("last_block") or 0):
+            base = float(est.get("price") or base)
+        reserves = float(b.get("net_quote") or 0.0)
+        if base <= 0 or reserves <= 0:
+            return
+        k = float(b.get("impact_k") or 2.0)
+        if kind == "buy":
+            q = amount_raw / 1e18
+            new_price = base * (1.0 + k * q / (reserves + q))
+        else:
+            q = amount_raw / 1e18 * base           # quote value of the tokens being sold
+            new_price = base * max(0.05, 1.0 - k * q / (reserves + q))
+        b["feed_est"] = {"price": new_price, "seq": seq, "ts": now, "kind": kind}
+        self.stats["feed_ticks"] = self.stats.get("feed_ticks", 0) + 1
+        try:
+            self.state.rh_paper.on_feed_tick(token, b, new_price, seq, now, kind)
+        except Exception as e:
+            logger.debug(f"feed tick handler failed: {e}")
 
     def _maybe_rug(self, token: str, b: dict, tokens_raw: int, seq: int, now: float, positions: dict):
         cfg = self.state.config

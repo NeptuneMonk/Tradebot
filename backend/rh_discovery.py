@@ -424,8 +424,19 @@ class RHDiscovery:
         if tr["price"] > 0:
             if b["first_price_quote"] <= 0:
                 b["first_price_quote"] = tr["price"]
+            # calibrate the feed's price-impact coefficient: Δp/p ≈ k · quote/reserves
+            prev = b.get("last_price_quote") or 0.0
+            reserves_before = b["net_quote"] - tr["quote"] if tr["side"] == "buy" else b["net_quote"] + tr["quote"]
+            if prev > 0 and reserves_before > 0 and tr["quote"] > 0:
+                x = tr["quote"] / reserves_before
+                r = tr["price"] / prev - 1.0
+                if x > 1e-4 and (r > 0) == (tr["side"] == "buy"):
+                    k = max(0.2, min(6.0, abs(r) / x))
+                    b["impact_k"] = 0.7 * b.get("impact_k", 2.0) + 0.3 * k
             b["last_price_quote"] = tr["price"]
+            b.pop("feed_est", None)
             b["block_prices"].append((tr.get("block") or 0, tr["price"]))
+            b["last_block"] = max(int(b.get("last_block") or 0), int(tr.get("block") or 0))
             if now - b["last_price_sample_ts"] >= 1.0:
                 b["price_samples"].append((now, tr["price"]))
                 b["last_price_sample_ts"] = now
