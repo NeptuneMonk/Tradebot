@@ -2085,6 +2085,13 @@ def _now_iso_srv() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+@api.get("/doctor/rails")
+async def doctor_rails():
+    """Immutable rails: bounds the Doctor/allocator can never cross (code, not config)."""
+    from rails import describe
+    return describe()
+
+
 @api.get("/doctor/autopsy")
 async def doctor_autopsy():
     """Loss autopsy per book (7d) + universe replay — the Doctor's causal view, refreshed each learning cycle."""

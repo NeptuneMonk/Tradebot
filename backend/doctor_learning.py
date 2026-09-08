@@ -707,6 +707,12 @@ class LearningEngine:
         for k in actions:
             if not key_ok(k):
                 raise ValueError(f"key {k} not allowed")
+        from rails import clamp_actions
+        actions, rail_notes = clamp_actions(actions, "doctor")
+        if not actions:
+            raise ValueError("proposal touches only immutable rails: " + "; ".join(rail_notes))
+        if rail_notes:
+            proposal = {**proposal, "rail_notes": rail_notes, "value": actions.get(key, value)}
         if await self.canary() and (await self.canary()).get("state") == "running":
             raise RuntimeError("canary already running — one change at a time")
         book = proposal["book"]

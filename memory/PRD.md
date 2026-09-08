@@ -1588,3 +1588,8 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - P2: Lazy creator backfill — call the Enhanced Transactions API only when a token reaches the entry gate, not on every first-seen creator (~80% fewer 100-credit calls).
 - P2: Batch curve reads with `getMultipleAccounts` for the seasoned scan + 5–10s TTL cache per curve `getAccountInfo`.
 - P2: Count Enhanced API calls at 100 credits in `helius_budget` so the meter matches Helius billing (current estimate 1.17M / 105d ≈ 3.3% of plan, likely undercounted).
+
+### 2026-09-08 — Holistic Doctor plan reviewed with user → see memory/ROADMAP.md (plan of record). Step 4 built: Decision ledger + Immutable rails
+- **Decision ledger (RH)**: `rh_paper._ledger` appends (ts, reason, price) on every gate-verdict transition per token (≤12; skips already-entered/max-positions/unpriced/stale/graduated) → persisted in `tick_paths.decisions` → `replay.gate_ledger()` enters at the blocked sample and runs the ladder: per gate `n`, counterfactual $ (`cf_pnl_usd`), `would_win`, verdict saving/costing/neutral. Shown in the universe-replay panel ("gate ledger: what blocked tokens did next"). Fills as soon as the bot runs.
+- **Immutable rails (`rails.py`)**: code-level bounds the Doctor/allocator can never cross (book mults 0.25–2, SL 5–40, TP 8–200, trail 2–25, hold 20s–1h, positions, slippage 1–15, flush hold ≤30, breakdown 15–60) + NEVER_TOUCH (kill switches, live toggles, enabled, max stakes, gas reserve) + ≤6 changes/day. `LearningEngine.apply` clamps/drops (records `rail_notes`), `allocator.apply` clamps. `GET /api/doctor/rails`; rails box in the Autopilot card.
+- Tests: `tests/test_ledger_rails.py` (+4); 32 Doctor/RH tests green.

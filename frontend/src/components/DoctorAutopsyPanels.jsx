@@ -119,6 +119,17 @@ export function ReplayPanel({ replay, tickStore }) {
             {r.best
               ? <div className="text-lime-300" data-testid={`replay-best-${book}`}>best: {r.best.param} → {r.best.value} = {r.best.fills} fills · {signedUsd(r.best.total_usd)} ({signedUsd(r.best.gain_total_usd)} vs now) · {signedUsd(r.best.expectancy_usd)}/fill</div>
               : <div className="text-neutral-600">no gate change beats the current set over this window</div>}
+            {(r.ledger || []).length > 0 && (
+              <div className="pt-0.5" data-testid={`replay-ledger-${book}`}>
+                <span className="text-neutral-500">gate ledger (what blocked tokens did next): </span>
+                {r.ledger.map((g) => (
+                  <span key={g.gate} className={`mr-2 ${g.verdict === "saving" ? "text-emerald-300" : g.verdict === "costing" ? "text-rose-300" : "text-neutral-400"}`}
+                        title={`${g.n} blocked · counterfactual ${signedUsd(g.cf_pnl_usd)} (${signedUsd(g.per_block_usd)} each) · ${g.would_win} would have won`}>
+                    {g.gate} {g.n}× {signedUsd(g.cf_pnl_usd)} {g.verdict === "saving" ? "saved" : g.verdict === "costing" ? "cost us" : "neutral"}
+                  </span>
+                ))}
+              </div>
+            )}
             <div>
               missed winners: <span className="text-amber-300">{r.missed_winners_n}</span> ({signedUsd(r.missed_winners_usd)} left on the table) · dodged rugs: <span className="text-emerald-300">{r.dodged_rugs_n}</span>
               {(r.missed_winners || []).slice(0, 3).map((m) => (

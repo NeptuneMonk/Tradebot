@@ -163,6 +163,36 @@ def _calibration(tokens: list, trades: list[dict], ladder: dict, stake: float) -
             "trusted": (s - r) <= max(0.5, 0.05 * stake)}
 
 
+def gate_ledger(tokens: list, docs: list[dict], ladder: dict, stake: float) -> list[dict]:
+    """Score every gate by what the tokens it blocked did next: enter at the blocked sample, run the book's
+    ladder. Negative counterfactual $ = the gate SAVED money; positive = it COST money (missed winners)."""
+    by_mint = {t.mint: t for t in tokens}
+    agg: dict[str, dict] = {}
+    for d in docs:
+        tk = by_mint.get(d.get("mint"))
+        if tk is None:
+            continue
+        for ts, reason, _px in d.get("decisions") or ():
+            if reason == "entered":
+                continue
+            idx = next((i for i, t in enumerate(tk.ts) if t >= ts), None)
+            if idx is None or idx >= len(tk.ts) - 2:
+                continue
+            o = tk.outcome(idx, ladder, stake)
+            a = agg.setdefault(reason, {"gate": reason, "n": 0, "cf_pnl_usd": 0.0, "would_win": 0})
+            a["n"] += 1
+            a["cf_pnl_usd"] += o["pnl_usd"]
+            a["would_win"] += o["pnl_usd"] > 0
+    out = []
+    for a in agg.values():
+        a["cf_pnl_usd"] = round(a["cf_pnl_usd"], 2)
+        a["per_block_usd"] = round(a["cf_pnl_usd"] / a["n"], 4)
+        a["verdict"] = "saving" if a["cf_pnl_usd"] < 0 else ("costing" if a["cf_pnl_usd"] > max(0.5, 0.05 * stake) * max(1, a["n"] ** 0.5) else "neutral")
+        out.append(a)
+    out.sort(key=lambda r: r["cf_pnl_usd"])
+    return out
+
+
 def replay_book(book: str, docs: list[dict], cfg, quote_usd: dict, min_n: int, window_h: float, real_trades: list[dict] | None = None) -> dict:
     chain = CHAIN_OF[book]
     stake = float(_g(cfg, "rh_max_trade_usd" if chain == "rh" else "max_trade_usd", 10.0) or 10.0)
@@ -198,7 +228,8 @@ def replay_book(book: str, docs: list[dict], cfg, quote_usd: dict, min_n: int, w
            "current": {k: base[k] for k in ("fills", "total_usd", "expectancy_usd", "winrate")}, "gates": base_g,
            "rows": rows[:12], "best": None, "missed_winners": missed[:5], "missed_winners_n": len(missed),
            "missed_winners_usd": round(sum(r["pnl_usd"] for r in missed), 2), "dodged_rugs_n": len(dodged), "proposal": None,
-           "calibration": _calibration(tokens, real_trades or [], ladder, stake)}
+           "calibration": _calibration(tokens, real_trades or [], ladder, stake),
+           "ledger": gate_ledger(tokens, docs, ladder, stake)}
     cal = out["calibration"]
     if cal and not cal["trusted"]:
         out["note"] = (f"replay is {cal['gap_usd']:+.2f} $/fill rosier than our {cal['n']} real fills on the same tokens — "

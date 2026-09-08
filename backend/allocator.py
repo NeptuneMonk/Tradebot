@@ -62,6 +62,9 @@ async def apply(db, rows: list[dict], reload_cb=None) -> list[dict]:
     changes = [r for r in rows if r["change"]]
     if not changes:
         return []
+    from rails import clamp_actions
+    clamped, _ = clamp_actions({r["key"]: r["next"] for r in changes}, "allocator")
+    changes = [{**r, "next": clamped[r["key"]]} for r in changes if r["key"] in clamped]
     await db.bot_config.update_one({}, {"$set": {r["key"]: r["next"] for r in changes}})
     now = datetime.now(timezone.utc).isoformat()
     docs = [{"category": "allocator", "title": f"[{r['book']}] {r['key']} {r['current']:g} → {r['next']:g}", "rationale": r["reason"],

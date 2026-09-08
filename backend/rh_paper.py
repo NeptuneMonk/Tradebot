@@ -176,9 +176,24 @@ class RHPaperTrader:
                 self._pending_entries.add(token)
                 self._last_fresh_entry_ts = now
                 focus_block = self._focus_blocks_fresh(now)   # one fresh entry per cooldown while focused
+                self._ledger(b, now, "entered")
                 asyncio.create_task(self._enter(token))
             else:
                 self.stats["skipped"] += 1
+                self._ledger(b, now, reason)
+
+    @staticmethod
+    def _ledger(b: dict, now: float, reason: str):
+        """Decision ledger: record each gate verdict transition (ts, reason, price) so the replay can score
+        every gate by what the token did afterwards. Only transitions are kept — ~12 per token max."""
+        if reason in ("already-entered", "max-positions", "unpriced-quote", "stale", "graduated"):
+            return
+        log = b.setdefault("decisions", [])
+        if log and log[-1][1] == reason:
+            return
+        if len(log) >= 12:
+            return
+        log.append((round(now, 1), reason, float(b.get("last_price_quote") or 0.0)))
 
     def _quote_usd(self, sym: str) -> float:
         return self.state.rh_discovery._quote_usd(sym)

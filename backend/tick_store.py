@@ -24,7 +24,7 @@ def _bucket_view(chain: str, mint: str, b: dict) -> dict:
         return {"symbol": b.get("symbol"), "start": b.get("start"), "first_price": b.get("first_price_quote") or 0.0,
                 "quote_symbol": b.get("quote_symbol") or "ETH", "graduated": bool(b.get("graduated")),
                 "curve_fill_pct": b.get("curve_fill_pct") or 0.0, "mc_usd": b.get("usd_market_cap") or 0.0,
-                "creator": b.get("creator"), "buy_scale": 1.0}
+                "creator": b.get("creator"), "buy_scale": 1.0, "decisions": list(b.get("decisions") or [])}
     return {"symbol": b.get("symbol"), "start": b.get("start"), "first_price": b.get("first_seen_price_sol") or 0.0,
             "quote_symbol": "SOL", "graduated": bool(b.get("graduated_at")), "curve_fill_pct": b.get("curve_fill_pct") or 0.0,
             "mc_usd": b.get("usd_market_cap") or 0.0, "creator": b.get("creator"), "buy_scale": 1e-9}

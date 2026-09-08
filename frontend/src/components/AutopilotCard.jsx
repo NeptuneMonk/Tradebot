@@ -183,6 +183,9 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
           {Object.entries(books).some(([, v]) => v > 0 && v < 1) && !s.allocator.driving && (
             <div className="text-[10px] font-mono text-amber-300" data-testid="allocator-reduced-note">a book is running below ×1 — the Doctor reduced it; restore above or let Autopilot drive the allocator</div>
           )}
+          <div className="text-[9px] font-mono text-neutral-600 pt-1 border-t border-neutral-800/50" data-testid="immutable-rails">
+            immutable rails (code, never learned): book size ×0.25–×2 · SL 5–40% · TP 8–200% · trail 2–25% · hold 20s–1h · slippage 1–15% · flush hold ≤30s · kill switches, live toggles, max stake and gas reserve are never touched · ≤6 changes/day
+          </div>
         </div>
       )}
 
