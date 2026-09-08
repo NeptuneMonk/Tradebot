@@ -110,6 +110,12 @@ export function ReplayPanel({ replay, tickStore }) {
               current gates → <span className="text-neutral-200">{r.current.fills} fills</span> · {signedUsd(r.current.total_usd)} total · {r.current.expectancy_usd != null ? `${signedUsd(r.current.expectancy_usd)}/fill` : "no fills"}
               {r.current.winrate != null ? ` · ${Math.round(r.current.winrate * 100)}% win` : ""}
             </div>
+            {r.calibration && (
+              <div className={r.calibration.trusted ? "text-neutral-500" : "text-rose-300"} data-testid={`replay-calibration-${book}`}>
+                reality check: on {r.calibration.n} tokens we really traded, replay says {signedUsd(r.calibration.sim_usd_per_fill)}/fill vs real {signedUsd(r.calibration.real_usd_per_fill)}/fill{r.calibration.trusted ? (r.calibration.gap_usd < -0.5 ? " — conservative (sim is harsher than reality)" : " — calibrated") : " — too rosy, proposals withheld"}
+              </div>
+            )}
+            {r.note && !r.calibration?.trusted && <div className="text-rose-300/80">{r.note}</div>}
             {r.best
               ? <div className="text-lime-300" data-testid={`replay-best-${book}`}>best: {r.best.param} → {r.best.value} = {r.best.fills} fills · {signedUsd(r.best.total_usd)} ({signedUsd(r.best.gain_total_usd)} vs now) · {signedUsd(r.best.expectancy_usd)}/fill</div>
               : <div className="text-neutral-600">no gate change beats the current set over this window</div>}

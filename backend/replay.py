@@ -8,6 +8,7 @@ from __future__ import annotations
 import time
 
 from book_params import book_exit_view
+from rh_paper import fee_fraction
 
 GATE_GRID = {
     "rh_pons": {"rh_min_growth_pct": [10, 20, 30, 45, 60, 80], "rh_max_growth_pct": [60, 80, 100, 150, 200, 400],
@@ -18,6 +19,7 @@ GATE_GRID = {
 CHAIN_OF = {"rh_pons": "rh", "momentum": "sol"}
 FEE_IN = {"rh": 0.01, "sol": 0.01}
 FEE_OUT = {"rh": 0.01, "sol": 0.01}
+IMPACT = {"rh": 0.01, "sol": 0.01}          # own price impact / slippage per side on a thin micro-cap curve
 GAS_SIDE_USD = {"rh": 0.09, "sol": 0.05}
 SUPPLY = 1_000_000_000
 MAX_SAMPLES_PER_TOKEN = 400
@@ -74,13 +76,16 @@ class _Token:
         return None
 
     def outcome(self, i: int, ladder: dict, stake: float) -> dict:
+        """Entry one sample AFTER the gate passes (latency), stops filled at the next OBSERVED price (gap-aware —
+        a rug that prints −60% costs −60%, not −SL), TP filled at the TP level, RH snipe tax by token age."""
         if i in self._outcome:
             return self._outcome[i]
-        e = self.px[i]
+        k = min(i + 1, len(self.ts) - 1)
+        e = self.px[k] * (1.0 + IMPACT[self.chain])
         tp, sl = ladder["take_profit_pct"] / 100.0, ladder["stop_loss_pct"] / 100.0
         arm, trail, hold = ladder["trailing_arm_pct"] / 100.0, ladder["trailing_stop_pct"] / 100.0, ladder["hold_max_seconds"]
         peak, ret, reason = e, None, "open"
-        for j in range(i + 1, len(self.ts)):
+        for j in range(k + 1, len(self.ts)):
             p = self.px[j]
             peak = max(peak, p)
             r = p / e - 1.0
@@ -88,18 +93,19 @@ class _Token:
                 ret, reason = tp, "tp"
                 break
             if r <= -sl:
-                ret, reason = -sl, "sl"
+                ret, reason = r, "sl"                       # gap-aware: whatever the next print was
                 break
             if peak / e - 1.0 >= arm and (peak - p) / peak >= trail:
-                ret, reason = peak * (1 - trail) / e - 1.0, "trail"
+                ret, reason = r, "trail"
                 break
-            if self.ts[j] - self.ts[i] >= hold:
+            if self.ts[j] - self.ts[k] >= hold:
                 ret, reason = r, "hold"
                 break
         if ret is None:
             ret = self.px[-1] / e - 1.0
+        fee_in = fee_fraction(self.feat[k]["age"]) if self.chain == "rh" else FEE_IN[self.chain]
         gas = GAS_SIDE_USD[self.chain]
-        proceeds = stake * (1 - FEE_IN[self.chain]) * (1 + ret) * (1 - FEE_OUT[self.chain]) - gas
+        proceeds = stake * (1 - fee_in) * (1 + ret) * (1 - IMPACT[self.chain]) * (1 - FEE_OUT[self.chain]) - gas
         out = {"pnl_usd": proceeds - stake - gas, "ret_pct": ret * 100.0, "reason": reason, "mfe_pct": (peak / e - 1.0) * 100.0}
         self._outcome[i] = out
         return out
@@ -131,7 +137,33 @@ def _run(tokens: list[_Token], gates: dict, ladder: dict, stake: float) -> dict:
             "winrate": round(wins / fills, 3) if fills else None, "per": per}
 
 
-def replay_book(book: str, docs: list[dict], cfg, quote_usd: dict, min_n: int, window_h: float) -> dict:
+def _calibration(tokens: list, trades: list[dict], ladder: dict, stake: float) -> dict | None:
+    """Honesty check: replay OUR real fills (entry at the sample nearest the real entry time) and compare
+    the simulated $/fill with what we actually made on the same tokens."""
+    by_mint = {t.mint: t for t in tokens}
+    sim, real = [], []
+    for tr in trades:
+        tk = by_mint.get(tr.get("mint"))
+        if tk is None or tr.get("pnl_usd") is None or not tr.get("entry_time"):
+            continue
+        try:
+            from autopsy import _ts
+            et = _ts(tr["entry_time"]).timestamp()
+        except Exception:
+            continue
+        idx = next((i for i, ts in enumerate(tk.ts) if ts >= et), None)
+        if idx is None or idx >= len(tk.ts) - 1:
+            continue
+        sim.append(tk.outcome(max(0, idx - 1), ladder, stake)["pnl_usd"])
+        real.append(float(tr["pnl_usd"]))
+    if len(sim) < 3:
+        return None
+    s, r = sum(sim) / len(sim), sum(real) / len(real)
+    return {"n": len(sim), "sim_usd_per_fill": round(s, 4), "real_usd_per_fill": round(r, 4), "gap_usd": round(s - r, 4),
+            "trusted": (s - r) <= max(0.5, 0.05 * stake)}
+
+
+def replay_book(book: str, docs: list[dict], cfg, quote_usd: dict, min_n: int, window_h: float, real_trades: list[dict] | None = None) -> dict:
     chain = CHAIN_OF[book]
     stake = float(_g(cfg, "rh_max_trade_usd" if chain == "rh" else "max_trade_usd", 10.0) or 10.0)
     tokens = [_Token(d, cfg, float(quote_usd.get(d.get("quote_symbol") or "", 0.0) or 0.0), chain)
@@ -165,7 +197,13 @@ def replay_book(book: str, docs: list[dict], cfg, quote_usd: dict, min_n: int, w
     out = {"book": book, "chain": chain, "n_tokens": len(tokens), "window_h": window_h, "stake_usd": stake, "ladder": ladder,
            "current": {k: base[k] for k in ("fills", "total_usd", "expectancy_usd", "winrate")}, "gates": base_g,
            "rows": rows[:12], "best": None, "missed_winners": missed[:5], "missed_winners_n": len(missed),
-           "missed_winners_usd": round(sum(r["pnl_usd"] for r in missed), 2), "dodged_rugs_n": len(dodged), "proposal": None}
+           "missed_winners_usd": round(sum(r["pnl_usd"] for r in missed), 2), "dodged_rugs_n": len(dodged), "proposal": None,
+           "calibration": _calibration(tokens, real_trades or [], ladder, stake)}
+    cal = out["calibration"]
+    if cal and not cal["trusted"]:
+        out["note"] = (f"replay is {cal['gap_usd']:+.2f} $/fill rosier than our {cal['n']} real fills on the same tokens — "
+                       f"proposals withheld until the simulator matches reality")
+        return out
     if best and best["gain_total_usd"] >= max(MIN_GAIN_TOTAL_USD, 0.05 * abs(base["total_usd"])):
         out["best"] = best
         cur = base_g[best["param"]]
@@ -178,7 +216,8 @@ def replay_book(book: str, docs: list[dict], cfg, quote_usd: dict, min_n: int, w
     return out
 
 
-async def replay_universe(tick_store, cfg, quote_usd: dict, min_n: int, window_h: float = 24.0, limit: int = 600) -> dict:
+async def replay_universe(tick_store, cfg, quote_usd: dict, min_n: int, window_h: float = 24.0, limit: int = 600,
+                          trades_by_book: dict | None = None) -> dict:
     """{book: replay_book(...)} for every book with tick data; skips books with no paths."""
     out = {}
     since = time.time() - window_h * 3600
@@ -189,5 +228,5 @@ async def replay_universe(tick_store, cfg, quote_usd: dict, min_n: int, window_h
             docs = []
         if not docs:
             continue
-        out[book] = replay_book(book, docs, cfg, quote_usd, min_n, window_h)
+        out[book] = replay_book(book, docs, cfg, quote_usd, min_n, window_h, (trades_by_book or {}).get(book))
     return out

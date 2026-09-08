@@ -57,13 +57,14 @@ def test_summarize_chased_whatif_proposal():
     assert s2["proposal"]["key"] == "rh_min_unique_buyers" and s2["proposal"]["estimated"]
 
 
-def _path(mint, symbol, start, prices, buys_per_step=2, q=0.002):
+def _path(mint, symbol, start, prices, buys_per_step=2, q=0.002, age0=600.0):
+    start = start + age0                      # samples begin age0 seconds after launch (past the PONS snipe tax)
     samples = [[start + i * 5.0, p] for i, p in enumerate(prices)]
     buys = []
     for i in range(len(prices)):
         for k in range(buys_per_step):
             buys.append([start + i * 5.0 - 0.5, q, f"w{mint}{i}{k}"])
-    return {"chain": "rh", "mint": mint, "symbol": symbol, "start": start, "first_price": prices[0], "quote_symbol": "ETH",
+    return {"chain": "rh", "mint": mint, "symbol": symbol, "start": start - age0, "first_price": prices[0], "quote_symbol": "ETH",
             "samples": samples, "buys": buys}
 
 
@@ -79,17 +80,33 @@ def test_replay_book_measures_gates_on_the_universe():
     dud = _path("0xd", "DUD", t0 + 20, [1e-9] * 10, buys_per_step=0)
     res = replay.replay_book("rh_pons", [runner, rug, dud], cfg, {"ETH": 2500.0}, min_n=1, window_h=24)
     assert res["n_tokens"] == 3 and res["current"]["fills"] == 2                 # runner + rug enter (≥30% growth, ≥8 buyers)
-    per = {r["param"]: r for r in res["rows"]}
-    assert any(r["param"] == "rh_max_growth_pct" for r in res["rows"]) and "rh_min_unique_buyers" in per
-    runner_only = [r for r in res["rows"] if r["param"] == "rh_max_growth_pct" and r["value"] == 60]
-    # cap ≥60% run-in: the rug (enters at +35%) still enters; the ceiling can't save us here — but a strict buyers floor could
-    assert runner_only and runner_only[0]["fills"] >= 1
+    assert res["rows"] and all(r["fills"] <= 3 for r in res["rows"])
     assert res["ladder"]["take_profit_pct"] == 25 and res["stake_usd"] == 10
     # strict current gates → the runner becomes a "missed winner" a looser variant would have caught
     cfg2 = {**cfg, "rh_min_unique_buyers": 30}
     res2 = replay.replay_book("rh_pons", [runner, rug, dud], cfg2, {"ETH": 2500.0}, min_n=1, window_h=24)
     assert res2["current"]["fills"] == 0 and res2["missed_winners_n"] >= 1 and res2["missed_winners"][0]["symbol"] == "RUN"
-    assert res2["best"] is not None and res2["proposal"]["key"] in ("rh_min_unique_buyers", "rh_min_growth_pct", "rh_min_inflow_usd", "rh_min_mc_usd", "rh_max_growth_pct")
+    # …but every looser variant also lets the RUG in, whose gap-aware stop (−60% print) outweighs the runner → no proposal
+    assert res2["best"] is None and res2["proposal"] is None and res2["dodged_rugs_n"] == 1
+
+
+def test_replay_fills_are_gap_aware_and_calibration_withholds_rosy_proposals():
+    cfg = BotConfig().model_dump()
+    cfg.update(rh_min_age_s=0, rh_max_age_min=30, rh_min_mc_usd=0, rh_max_mc_usd=1e12, rh_min_unique_buyers=1, rh_min_growth_pct=0,
+               rh_max_growth_pct=400, rh_min_new_buyers_1m=0, rh_min_inflow_usd=0, stop_loss_pct=12, take_profit_pct=25, hold_max_seconds=600)
+    t0 = time.time() - 3600
+    rug = _path("0xg", "RUG", t0, [1e-9, 1.05e-9, 0.4e-9, 0.4e-9, 0.4e-9, 0.4e-9])       # gaps −60% in one print
+    tk = replay._Token(rug, cfg, 2500.0, "rh")
+    o = tk.outcome(0, replay.book_exit_view(cfg, "rh_pons"), 10.0)
+    assert o["reason"] == "sl" and o["ret_pct"] < -55                                    # not −12: the next print was −60%
+    # calibration: our real fills on the same token lost far more than the replay claims → untrusted, no proposal
+    docs = [_path(f"0x{i}", f"T{i}", t0 + i, [1e-9 * (1 + g / 100) for g in (0, 5, 12, 30, 40, 40, 40, 40)]) for i in range(6)]
+    from datetime import datetime, timezone
+    real = [{"mint": f"0x{i}", "pnl_usd": -6.0, "entry_time": datetime.fromtimestamp(t0 + 600 + i + 4.0, tz=timezone.utc).isoformat()} for i in range(6)]
+    res = replay.replay_book("rh_pons", docs, cfg, {"ETH": 2500.0}, min_n=1, window_h=24, real_trades=real)
+    cal = res["calibration"]
+    assert cal and cal["n"] == 6 and cal["sim_usd_per_fill"] > cal["real_usd_per_fill"] and cal["trusted"] is False
+    assert res["proposal"] is None and "rosier" in res["note"]
 
 
 def test_universe_proposal_needs_no_fills():

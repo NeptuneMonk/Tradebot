@@ -579,7 +579,8 @@ class LearningEngine:
             from rh_discovery import _eth_usd_cache
             from solana_client import _sol_price_cache
             quote_usd = {"ETH": float(_eth_usd_cache.get("price") or 0), "USDG": 1.0, "SOL": float(_sol_price_cache.get("price") or 0)}
-            out["replay"] = await replay_universe(ts, cfg, quote_usd, min_n)
+            by_book = {b: [t for t in trades_7d if book_of(t) == b] for b in BOOKS}
+            out["replay"] = await replay_universe(ts, cfg, quote_usd, min_n, trades_by_book=by_book)
         except Exception as e:
             logger.warning(f"universe replay failed: {e}")
             out["replay"] = {}
