@@ -98,6 +98,6 @@ def classify(metrics: dict, rules: dict) -> dict:
         risk = max(20, risk - 15)
     elif inflow < 0.2:
         risk = min(85, risk + 15)
-    if social >= 50:
+    if metrics.get("project_score", 0) >= 4:
         risk = max(15, risk - 10)
     return {"action": action, "risk": risk, "reasons": reasons}

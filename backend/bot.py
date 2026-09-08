@@ -3,7 +3,7 @@ Bot orchestrator:
 - Holds BotConfig & ClassifierRules state (persisted in Mongo)
 - Receives new launches + trade events from the listener
 - Tracks per-mint mempool metrics (unique buyers, SOL inflow) for first ~60s
-- Computes a "social trending" score for the token name (no X API)
+- Computes a Project Score (0–5: logo/website/X/creator graduated/posts) from Pump.fun metadata
 - Decides entry after a small assessment delay; monitors held positions for exit
 """
 import asyncio
@@ -20,7 +20,6 @@ import pumpfun
 import pumpswap
 from solana_client import get_sol_usd_price, LAMPORTS_PER_SOL
 from wallet import get_keypair, get_pubkey
-from social import score_term  # noqa: F401 (legacy name-trending; superseded by project_score)
 from ws_hub import hub
 from creator_history import record_new_launch, mark_outcome, get_creator, derive_rug_count
 from project_score import project_score
@@ -1112,7 +1111,6 @@ class BotState:
             "buy_count": 0,
             "curve_fill_pct": 0.0,
             "social_score": 0,
-            "social_sources": {},
             "project_score": 0,
             "project_flags": {},
             "creator_tokens_graduated": (creator_doc or {}).get("tokens_graduated", 0),
@@ -1733,7 +1731,6 @@ class BotState:
             "buy_count": b["buy_count"],
             "curve_fill_pct": b["curve_fill_pct"],
             "social_score": b["social_score"],
-            "social_sources": b["social_sources"],
             "project_score": b.get("project_score", 0),
             "project_flags": b.get("project_flags", {}),
             "peak_mc_usd": b.get("peak_mc_usd", 0.0),
@@ -1756,6 +1753,21 @@ class BotState:
         if now_b - last_bcast >= 5.0:
             b["last_ws_broadcast"] = now_b
             await hub.broadcast("launch_update", {"id": b["launch_id"], "mint": mint, **update})
+
+    def _ledger_sol(self, mint: str, reason: str):
+        """Decision ledger (Pump.fun): gate-verdict transitions per token → tick_paths.decisions → replay.gate_ledger."""
+        b = self.tracking.get(mint)
+        if not b:
+            return
+        log = b.setdefault("decisions", [])
+        r = str(reason).split(" ")[0].split("(")[0][:32]
+        if (log and log[-1][1] == r) or len(log) >= 12:
+            return
+        log.append((round(time.time(), 1), r, float(b.get("last_price_sol") or b.get("price_sol") or 0.0)))
+
+    async def _skip_event(self, payload: dict):
+        self._ledger_sol(payload.get("mint", ""), payload.get("reason") or "skip")
+        await hub.broadcast("scanner_skip", payload)
 
     def _rules_for_classify(self) -> dict:
         """Classifier rules + the Doctor-tunable Project Score floor from BotConfig (the stricter wins)."""
@@ -2408,7 +2420,7 @@ class BotState:
                 buyers = int(b.get("buy_count") or 0)
             if buyers < min_buyers:
                 logger.info(f"skip {launch.mint} [{action}]: only {buyers} buyers < min {min_buyers}")
-                await hub.broadcast("scanner_skip", {
+                await self._skip_event({
                     "mint": launch.mint, "symbol": launch.symbol,
                     "band": "new" if is_new_band else "seasoned",
                     "reason": "buyers",
@@ -2449,7 +2461,7 @@ class BotState:
                     f"skip {launch.mint} [{action}]: pre-trade classifier "
                     f"{veto_reason} — {verdict['reasons']}"
                 )
-                await hub.broadcast("scanner_skip", {
+                await self._skip_event({
                     "mint": launch.mint, "symbol": launch.symbol,
                     "band": "new", "reason": veto_reason,
                     "details": verdict["reasons"],
@@ -2473,7 +2485,7 @@ class BotState:
                 f"{velocity:+.2f}% over {vel_window}s < min "
                 f"{self.config.scanner_entry_velocity_min_pct:.2f}% (dead-cat filter)"
             )
-            await hub.broadcast("scanner_skip", {
+            await self._skip_event({
                 "mint": launch.mint, "symbol": launch.symbol,
                 "band": "new" if is_new_band else "seasoned",
                 "reason": "entry_velocity",
@@ -2525,7 +2537,7 @@ class BotState:
                     f"reply_count={reply_count} (min {min_replies}), "
                     f"has_social={has_social}"
                 )
-                await hub.broadcast("scanner_skip", {
+                await self._skip_event({
                     "mint": launch.mint, "symbol": launch.symbol,
                     "band": "new" if is_new_band else "seasoned",
                     "reason": "socials",
@@ -2609,6 +2621,7 @@ class BotState:
         # launch was deployed via a service that reports a different creator.
         curve_creator = (state or {}).get("creator") if protocol != "pumpswap" else None
         trade_creator = curve_creator or launch.creator
+        self._ledger_sol(launch.mint, "entered")
 
         trade = Trade(
             mint=launch.mint,
@@ -4308,7 +4321,7 @@ class BotState:
                 "last_exit_was_sl": False,
                 "attempts": int(prev_watch.get("attempts") or 0) if prev_watch else 0,
                 "hot": pnl_pct >= self.config.hot_token_pnl_pct,
-                "max_attempts": self.config.reentry_max_attempts + (self.config.hot_reentry_extra_attempts if pnl_pct >= self.config.hot_token_pnl_pct else 0),
+                "max_attempts": self.config.reentry_max_attempts + (2 if pnl_pct >= self.config.hot_token_pnl_pct else 0),
                 "window_s": self.config.reentry_window_seconds * (2 if pnl_pct >= self.config.hot_token_pnl_pct else 1),
                 "pullback_pct": self.config.reentry_pullback_pct,
                 "size_multiplier": self.config.reentry_size_multiplier * (self.config.hot_reentry_size_mult if pnl_pct >= self.config.hot_token_pnl_pct else 1.0),

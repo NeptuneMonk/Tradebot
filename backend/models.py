@@ -277,7 +277,6 @@ class BotConfig(BaseModel):
     # Hot tokens: a winner that reached ≥ this % gets a boosted re-entry watch (bigger size, more attempts, longer window)
     hot_token_pnl_pct: float = 25.0
     hot_reentry_size_mult: float = 1.5
-    hot_reentry_extra_attempts: int = 2
     # Hot focus: while a HOT token is in play (hot re-entry watch or a riding position) fresh discovery
     # slows down — "slow": one fresh entry per cooldown + reserved slots; "pause": no fresh entries; "off".
     hot_focus_mode: str = "slow"
@@ -538,7 +537,6 @@ class Launch(BaseModel):
     curve_fill_pct: float = 0.0
     # Social trending score (0..100)
     social_score: int = 0
-    social_sources: dict = {}
     project_score: int = 0
     project_flags: dict = {}
     entered: bool = False  # did the bot enter this trade?

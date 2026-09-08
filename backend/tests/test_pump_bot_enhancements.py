@@ -46,7 +46,6 @@ class TestLaunchFieldsContract:
             "buy_count": int,
             "curve_fill_pct": (int, float),
             "social_score": int,
-            "social_sources": dict,
             "entered": bool,
         }
         for l in launches:

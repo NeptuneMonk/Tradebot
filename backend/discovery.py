@@ -544,7 +544,6 @@ class PumpfunDiscovery:
             "curve_fill_pct": (100.0 if is_pumpswap else
                                (min(100.0, max(0.0, (vsr - 30_000_000_000) / 85_000_000_000 * 100)) if vsr else 0.0)),
             "social_score": 0,
-            "social_sources": {},
             "last_persist": 0.0,
             "name": coin.get("name"),
             "symbol": coin.get("symbol"),
