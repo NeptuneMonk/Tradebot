@@ -152,6 +152,13 @@ function TradeHistoryTable({ history }) {
                         title={t.partial_reason || "partial TP fired"}
                       >½TP</span>
                     )}
+                    {t.exit_venue === "pool" && (
+                      <span
+                        data-testid={`pool-badge-${t.id}`}
+                        className="mr-1 inline-block px-1 py-0 border border-fuchsia-800 text-fuchsia-300 text-[9px] font-mono align-middle"
+                        title={`Graduated while held${t.graduated_at_pnl_pct != null ? ` at ${t.graduated_at_pnl_pct >= 0 ? "+" : ""}${t.graduated_at_pnl_pct.toFixed(1)}%` : ""}; sold on the Uniswap v4 pool${t.pool_hold_s != null ? ` after ${Math.round(t.pool_hold_s)}s on the pool` : ""}.`}
+                      >POOL</span>
+                    )}
                     <span className="mr-1.5 align-middle inline-flex"><ChainBadge chain={t.chain} mint={t.mint} /></span>
                     {t.symbol || "?"} <span className="text-neutral-600 text-[10px]">{short(t.mint)}</span>
                     {(t.reentry_trigger || t.reentry) && (

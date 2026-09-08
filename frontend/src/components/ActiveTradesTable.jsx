@@ -48,6 +48,13 @@ function ActiveTradesTable({ trades, onExit }) {
                       title={`Partial TP done — runner on tightened trail. Banked $${(t.partial_realized_usd || 0).toFixed(2)}`}
                     >RUNNER · +${(t.partial_realized_usd || 0).toFixed(2)}</span>
                   )}
+                  {t.venue === "pool" && (
+                    <span
+                      data-testid={`active-pool-badge-${t.id}`}
+                      className="mr-1 inline-block px-1 py-0 border border-fuchsia-700 text-fuchsia-300 bg-fuchsia-950/40 text-[9px] font-mono align-middle"
+                      title={`Graduated while held (${t.graduated_at_pnl_pct != null ? (t.graduated_at_pnl_pct >= 0 ? "+" : "") + t.graduated_at_pnl_pct.toFixed(1) + "%" : "?"}) — riding on the Uniswap v4 pool; exits route through the Universal Router.`}
+                    >POOL</span>
+                  )}
                   <span className="mr-1.5 align-middle inline-flex"><ChainBadge chain={t.chain} mint={t.mint} /></span>
                   {t.symbol ? <span className="text-neutral-200">{t.symbol}</span> : <span className="text-neutral-500">—</span>}
                   <span className="text-neutral-600 ml-2 text-[10px]">{short(t.mint)}</span>

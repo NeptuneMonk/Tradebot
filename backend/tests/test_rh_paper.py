@@ -185,7 +185,10 @@ def test_stop_loss_trailing_graduation_and_hold():
     pos["peak_price"] = 1e-9
     assert check(1.15e-9, False) is None                  # +15% arms trail
     assert check(1.07e-9, True) == "trailing_stop"        # 7% off peak
-    assert check(1.0e-9, True, graduated=True) == "graduated"
+    pos["peak_price"] = 1e-9
+    assert check(1.0e-9, True, graduated=True) is None    # graduation no longer forces an exit (rides on the pool)
+    assert pos["trade"]["venue"] == "pool"
+    b["graduated"] = False
     pos["peak_price"] = 1e-9
     assert check(1.0e-9, True, opened_ago=40) == "max_hold"
 

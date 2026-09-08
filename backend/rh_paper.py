@@ -6,8 +6,9 @@ and exits with pessimistic realism:
   - PONS curve fee (1%) on both legs, launch-window snipe tax, flat RH gas,
   - `paper_entry_latency_ms` / `paper_exit_latency_ms` (fills use the price
     observed AFTER the delay, not the decision price),
-  - standard TP / SL / trailing / max-hold from BotConfig, plus a forced exit
-    on graduation (curve is swept — the position can't stay on the curve).
+  - standard TP / SL / trailing / max-hold from BotConfig. A held token that
+    graduates keeps riding the same ladder on the Uniswap v4 pool (`rh_dex`):
+    prices come from PoolManager Swap events, fills from the V4Quoter / router.
 
 Isolation: positions live in `RHPaperTrader.positions`, never in
 `BotState.active_trades`; nothing here can send a Solana or EVM transaction.
@@ -25,6 +26,7 @@ from typing import TYPE_CHECKING
 from models import Trade, now_utc
 from ws_hub import hub
 from reentry_logic import decide_reentry, recent_buyers_and_inflow, trigger_context
+import rh_dex
 import rh_live
 import rh_wallet
 
@@ -37,6 +39,7 @@ CHAIN = "rh"
 PROTOCOL = "pons"
 ENTRY_ACTION = "rh_pons_paper"
 CURVE_FEE_BPS = 100
+POOL_FEE_FRACTION = rh_dex.POOL_FEE_BPS / 10_000.0  # hook take on the post-graduation v4 pool (paper fallback)
 SNIPE_TAX_START_BPS = 9900
 SNIPE_TAX_SECONDS = 3
 RH_GAS_USD = 0.09  # fallback per-side gas; live fills refine it (observed ~$0.08 buy / ~$0.10 sell)
@@ -448,12 +451,15 @@ class RHPaperTrader:
     async def _live_sell(self, token: str, t: dict, price: float) -> dict | None:
         cfg = self.state.config
         raw = int(t.get("entry_tokens_raw") or int(float(t["entry_tokens"]) * 1e18))
-        curve = t.get("curve") or (self.state.rh_discovery.tracking.get(token) or {}).get("curve") or token
+        b = self.state.rh_discovery.tracking.get(token) or {}
+        curve = t.get("curve") or b.get("curve") or token
+        pool = bool(b.get("graduated")) or t.get("venue") == "pool"
         try:
             on_chain = await rh_wallet.erc20_balance(token)
             if on_chain == 0:
                 # nothing left to sell — the sell may have landed without being booked (restart mid-exit)
-                fill = await rh_live.recover_sell(curve, int(t.get("entry_block") or 0))
+                fill = await (rh_dex.recover_sell(token, int(t.get("entry_block") or 0)) if pool
+                              else rh_live.recover_sell(curve, int(t.get("entry_block") or 0)))
                 if fill:
                     self.stats["live_sells"] = self.stats.get("live_sells", 0) + 1
                     return fill
@@ -466,13 +472,29 @@ class RHPaperTrader:
             logger.warning(f"rh_live balance check failed {token[:10]}: {e}")
         for attempt in range(3):
             try:
-                fill = await rh_live.sell(curve, raw, price, float(cfg.rh_live_slippage_pct) * (attempt + 1), token=token)
+                slip = float(cfg.rh_live_slippage_pct) * (attempt + 1)
+                if pool:
+                    fill = await rh_dex.sell(token, raw, slip)
+                else:
+                    fill = await rh_live.sell(curve, raw, price, slip, token=token)
                 self.stats["live_sells"] = self.stats.get("live_sells", 0) + 1
-                logger.warning(f"rh_live SELL {t.get('symbol')} {token[:10]} {fill['quote_wei'] / 1e18:.5f} ETH tx={fill['tx'][:12]} ({fill['latency_s']}s)")
+                logger.warning(f"rh_live SELL {t.get('symbol')} {token[:10]} {fill['quote_wei'] / 1e18:.5f} ETH tx={fill['tx'][:12]} "
+                               f"({fill['latency_s']}s){' [pool]' if pool else ''}")
                 return fill
             except Exception as e:
                 self.last_live_error = f"sell {t.get('symbol')}: {e}"
                 logger.error(f"rh_live sell attempt {attempt + 1} failed {token[:10]}: {e}")
+                if not pool and attempt == 0:
+                    # the curve may have been swept between our poll and this tx — pool initialised ⇒ graduated
+                    try:
+                        if await rh_dex.spot_price(token) > 0:
+                            pool = True
+                            b["graduated"] = True
+                            t["venue"] = "pool"
+                            logger.warning(f"rh_live {t.get('symbol')} curve closed — rerouting sell to the v4 pool")
+                            continue
+                    except Exception as e2:
+                        logger.debug(f"rh_dex pool probe failed {token[:10]}: {e2}")
                 await asyncio.sleep(1.0 + attempt)
         return None
 
@@ -489,6 +511,38 @@ class RHPaperTrader:
             await hub.broadcast("rh_live_kill", {"pnl_today_usd": pnl, "limit": cfg.rh_daily_kill_switch_usd})
 
     # ---------- exits ----------
+    def _switch_to_pool(self, pos: dict, b: dict, now: float):
+        """The curve was swept into the v4 pool while we hold: keep the ladder running on pool prices."""
+        t = pos["trade"]
+        t["venue"] = "pool"
+        t["graduated_during_hold"] = True
+        t["graduated_at_pnl_pct"] = round(((pos["_last_price"] or 0) / t["entry_price_quote"] - 1.0) * 100.0, 2) if t.get("entry_price_quote") else None
+        t["graduated_hold_s"] = round(now - pos["opened"], 1)
+        pos["pool_since"] = now
+        self.stats["graduated_holds"] = self.stats.get("graduated_holds", 0) + 1
+        logger.warning(f"rh_paper {t.get('symbol')} GRADUATED while held ({t['graduated_at_pnl_pct']:+.1f}%) — riding on the v4 pool")
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return  # sync caller (tests) — nothing to persist from here
+        asyncio.create_task(self.state.db.trades.update_one({"_id": t["id"]}, {"$set": {
+            "venue": "pool", "graduated_during_hold": True, "graduated_at_pnl_pct": t["graduated_at_pnl_pct"],
+            "graduated_hold_s": t["graduated_hold_s"]}}))
+        asyncio.create_task(hub.broadcast("trade_update", {"id": t["id"], "mint": t["mint"], "chain": CHAIN, "venue": "pool",
+                                                           "graduated_at_pnl_pct": t["graduated_at_pnl_pct"]}))
+
+    async def _paper_pool_proceeds(self, token: str, t: dict, price: float) -> tuple[float, float]:
+        """Paper fill on the pool: the real V4Quoter output for our size, else spot minus the hook take."""
+        tokens = float(t.get("entry_tokens") or 0.0)
+        fee = POOL_FEE_FRACTION
+        try:
+            out = await asyncio.wait_for(rh_dex.quote_sell(token, int(tokens * 1e18)), timeout=4.0)
+            if out > 0:
+                return out / 1e18, fee
+        except Exception as e:
+            logger.debug(f"rh_dex paper quote failed {token[:10]}: {e}")
+        return tokens * price * (1.0 - fee), fee
+
     def _decide_exit(self, pos: dict, b: dict, now: float, price_override: float | None = None) -> str | None:
         cfg = self.state.config
         t = pos["trade"]
@@ -508,8 +562,8 @@ class RHPaperTrader:
         pnl_pct = (price - entry) / entry * 100.0
         peak_pct = (pos["peak_price"] - entry) / entry * 100.0
         dd_from_peak = (pos["peak_price"] - price) / pos["peak_price"] * 100.0 if pos["peak_price"] > 0 else 0.0
-        if b.get("graduated"):
-            return "graduated"
+        if b.get("graduated") and t.get("venue") != "pool":
+            self._switch_to_pool(pos, b, now)
         # Buy-momentum gate (buyers-only on RH — quote assets differ): defer
         # SL/TP while >= exit_momentum_min_buyers distinct wallets bought in
         # the window, bounded by max_defer_s and the hard SL floor.
@@ -587,8 +641,8 @@ class RHPaperTrader:
     # ---------- pyramid into a riding winner ----------
     def _maybe_pyramid(self, token: str, pos: dict, b: dict, now: float):
         cfg = self.state.config
-        if not getattr(cfg, "pyramid_enabled", True):
-            return
+        if not getattr(cfg, "pyramid_enabled", True) or b.get("graduated"):
+            return  # no pool buys (exits only post-graduation)
         t = pos["trade"]
         price = float(b.get("last_price_quote") or 0.0)
         adds = int(t.get("pyramids") or 0)
@@ -776,7 +830,11 @@ class RHPaperTrader:
                 exit_usd = max(0.0, proceeds_quote * quote_usd - gas_usd)
                 t.update({"exit_sig": live_fill["tx"], "exit_gas_usd": gas_usd, "exit_latency_s": live_fill["latency_s"]})
             else:
-                proceeds_quote = t["entry_tokens"] * price * (1.0 - fee)
+                if t.get("venue") == "pool":
+                    proceeds_quote, fee = await self._paper_pool_proceeds(token, t, price)
+                    price = proceeds_quote / (t["entry_tokens"] * (1.0 - fee)) if t.get("entry_tokens") else price
+                else:
+                    proceeds_quote = t["entry_tokens"] * price * (1.0 - fee)
                 exit_usd = max(0.0, proceeds_quote * quote_usd - self._paper_gas_usd())
             # live: entry gas is a real cost of the round trip — book it against the trade
             pnl_usd = exit_usd - t["entry_usd"] - (float(t.get("entry_gas_usd") or 0.0) if live_fill else 0.0)
@@ -797,6 +855,8 @@ class RHPaperTrader:
                 "exit_deferred_s": round(time.time() - min(d["ts"] for d in pos["_mom_defer_log"]), 1) if pos.get("_mom_defer_log") else None,
                 "exit_defer_bounded": bool(pos.get("_mom_defer_bounded")),
                 "rug_alert": pos.get("_rug_alert"),
+                "exit_venue": "pool" if (t.get("venue") == "pool" or (live_fill or {}).get("venue") == "pool") else "curve",
+                "pool_hold_s": round(time.time() - pos["pool_since"], 1) if pos.get("pool_since") else None,
             })
             if trigger:
                 ep = t.get("entry_price_quote") or 0
@@ -873,4 +933,5 @@ class RHPaperTrader:
         return {**self.stats, "active": self._active(), "open_positions": len(self.positions), "hot_board": self.hot_board(),
                 "positions": [{"mint": m, "symbol": p["trade"].get("symbol"), "entry_price_quote": p["trade"].get("entry_price_quote"),
                                "last_price": p["_last_price"], "peak_price": p["peak_price"], "riding": bool(p.get("_riding")),
+                               "venue": p["trade"].get("venue") or "curve",
                                "pyramids": p["trade"].get("pyramids") or 0} for m, p in self.positions.items()]}

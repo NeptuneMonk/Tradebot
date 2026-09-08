@@ -1,0 +1,30 @@
+{
+  "summary": "Backend-only testing of Robinhood Chain DEX exit path (rh_dex, rh_paper, rh_discovery). All 38 targeted unit tests pass (test_rh_dex.py, test_rh_paper.py, test_rh_discovery.py). Broader RH suites (test_rh_feed, test_rh_integration_api, test_rh_integration_api_v9, test_rh_wallet_live) also pass (38 passed, 1 skipped). Live read-only checks against the real Robinhood RPC (chain 4663) confirm rh_dex correctness: pool_id matches on-chain Initialize event, spot_price returns positive for graduated token and 0.0 for non-graduated, quote_sell returns ~0.97x of spot*qty (matching the ~3% hook take), build_sell_calldata has correct UniversalRouter selector 0x3593564c with command 0x10 and actions 06 0c 0f, permit2_allowance returns a tuple. Live API smoke: GET /api/rh/status 200 (paper.positions present, empty currently), /api/trades/active 200 (empty), /api/trades/history 200. Backend logs show no tracebacks mentioning rh_dex/rh_paper/rh_discovery. No transactions were sent; rh_dex.sell / ensure_permit2 / rh_wallet.send were NOT called.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_rh_dex.py",
+    "/app/backend/tests/test_rh_paper.py",
+    "/app/backend/tests/test_rh_discovery.py",
+    "/app/test_reports/pytest/rh_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "rh_dex.price_from_sqrt signature is (sqrt_price_x96: int) only - no token_is_token0 param. Callers must handle token0/token1 ordering externally; ensure decode_swap/spot_price consistently apply the correct orientation for the pool key (native ETH is token0)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "not tested (per request)"},
+  "test_credentials": "Seeded mongo session token test_session_1788826564905 (1h) for nbobby79@gmail.com; pytest conftest seeds its own token.",
+  "seed_data_creation": "One test user + user_sessions row inserted in pump_bot_db for /api/rh/status smoke.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "38 RH unit tests pass; live read-only rh_dex checks against graduated token 0x6ee1d6...391c and non-graduated 0xa02711...f8db confirmed correct (spot ~2.73e-8 ETH/token, quote_sell ratio 0.9700). paper.positions is currently empty in live status so POOL badge frontend verification requires manually seeded/held graduated positions. NEVER call rh_dex.sell / ensure_permit2 / rh_wallet.send - the RH wallet holds real ETH.",
+  "rca of the issue": "N/A - no issues found."
+}

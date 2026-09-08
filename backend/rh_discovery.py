@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+import rh_dex
 from models import Launch
 from ws_hub import hub
 
@@ -338,12 +339,18 @@ class RHDiscovery:
         if curves:
             trade_filter["address"] = curves
         meta_tokens = self._meta_pending[:META_PER_POLL]
+        # Post-graduation prices for tokens we still HOLD: PoolManager Swap logs for their v4 pools.
+        pool_tokens = self._pool_watch_tokens()
         calls: list[tuple[str, list]] = [
             ("eth_blockNumber", []),
             ("eth_getLogs", [{"address": FACTORY, "fromBlock": hex(fr), "toBlock": to_hex,
                               "topics": [[T_LAUNCHED, T_SWEPT, T_GRADUATED]]}]),
             ("eth_getLogs", [trade_filter]),
         ]
+        if pool_tokens:
+            calls.append(("eth_getLogs", [{"address": rh_dex.POOL_MANAGER, "fromBlock": hex(fr), "toBlock": to_hex,
+                                           "topics": [rh_dex.T_SWAP, ["0x" + rh_dex.pool_id(t).hex() for t in pool_tokens]]}]))
+        n_fixed = len(calls)
         for t in meta_tokens:
             calls.append(("eth_call", [{"to": t, "data": SEL_NAME}, "latest"]))
             calls.append(("eth_call", [{"to": t, "data": SEL_SYMBOL}, "latest"]))
@@ -353,18 +360,21 @@ class RHDiscovery:
         await get_eth_usd_price()
         head = int(res[0], 16)
         factory_logs, trade_logs = res[1] or [], res[2] or []
+        pool_logs = (res[3] or []) if pool_tokens else []
         self.stats["head"] = head
         now = time.time()
         max_block = head if to_hex == "latest" else int(to_hex, 16)
-        for log in factory_logs + trade_logs:
+        for log in factory_logs + trade_logs + pool_logs:
             max_block = max(max_block, int(log["blockNumber"], 16))
         new_tokens = await self._ingest_factory_logs(factory_logs, head, now)
         self._ingest_trade_logs(trade_logs, now)
+        if pool_logs:
+            self._ingest_pool_swaps(pool_logs, now)
         for i, t in enumerate(meta_tokens):
             b = self.tracking.get(t)
             if b:
-                b["name"] = _dec_str(res[3 + i * 2]) or None
-                b["symbol"] = _dec_str(res[4 + i * 2]) or None
+                b["name"] = _dec_str(res[n_fixed + i * 2]) or None
+                b["symbol"] = _dec_str(res[n_fixed + 1 + i * 2]) or None
                 await self._publish_launch(t)
         self._meta_pending = self._meta_pending[len(meta_tokens):] + new_tokens
         self._next_from = max_block + 1
@@ -452,6 +462,48 @@ class RHDiscovery:
             if paper is not None:
                 paper.on_trade(token, b, tr, now)
         self._score_feed_projections()
+
+    def _pool_watch_tokens(self) -> list[str]:
+        """Graduated tokens with an open RH position — the only pools whose price we need."""
+        paper = getattr(self.state, "rh_paper", None)
+        if paper is None:
+            return []
+        return [t for t in list(paper.positions.keys()) if (self.tracking.get(t) or {}).get("graduated")]
+
+    def _ingest_pool_swaps(self, logs: list[dict], now: float):
+        """PoolManager Swap events on pools we hold: same price/momentum bookkeeping the
+        curve path does, then hand each swap to rh_paper.on_trade for block-accurate stops."""
+        pid_to_token = {"0x" + rh_dex.pool_id(t).hex(): t for t in self._pool_watch_tokens()}
+        paper = getattr(self.state, "rh_paper", None)
+        for log in sorted(logs, key=lambda l: (int(l["blockNumber"], 16), int(l.get("logIndex", "0x0"), 16))):
+            token = pid_to_token.get((log["topics"][1] or "").lower())
+            b = self.tracking.get(token) if token else None
+            if not b:
+                continue
+            tr = rh_dex.decode_swap(log)
+            self.stats["pool_swaps_seen"] = self.stats.get("pool_swaps_seen", 0) + 1
+            if tr["side"] == "buy":
+                b["buyers"].add(tr["wallet"])
+                b["buy_count"] += 1
+                b["buy_events"].append((now, tr["quote"], tr["wallet"]))
+            else:
+                b["sell_count"] += 1
+                b.setdefault("sell_events", deque(maxlen=500)).append((now, tr["quote"], tr["wallet"]))
+            if tr["price"] > 0:
+                b["last_price_quote"] = tr["price"]
+                b["block_prices"].append((tr["block"], tr["price"]))
+                b["last_block"] = max(int(b.get("last_block") or 0), tr["block"])
+                if now - b["last_price_sample_ts"] >= 1.0:
+                    b["price_samples"].append((now, tr["price"]))
+                    b["last_price_sample_ts"] = now
+                usd = self._quote_usd(b["quote_symbol"])
+                if usd > 0:
+                    b["usd_market_cap"] = tr["price"] * TOKEN_SUPPLY * usd
+                    b["mc_samples"].append((now, b["usd_market_cap"]))
+            b["last_trade_ms"] = int(now * 1000)
+            self._dirty.add(token)
+            if paper is not None:
+                paper.on_trade(token, b, tr, now)
 
     def _score_feed_projections(self):
         """Compare each feed projection with the spot price after ALL trades of its block landed."""
@@ -618,10 +670,12 @@ class RHDiscovery:
             await hub.broadcast("launch_update", {"id": b["launch_id"], "mint": token, **update})
 
     def _gc(self, now: float):
-        stale = [t for t, b in self.tracking.items() if now - b["start"] > TRACK_MAX_AGE_S]
+        paper = getattr(self.state, "rh_paper", None)
+        held = set(paper.positions.keys()) if paper is not None else set()   # never evict a token we hold
+        stale = [t for t, b in self.tracking.items() if now - b["start"] > TRACK_MAX_AGE_S and t not in held]
         if len(self.tracking) - len(stale) > MAX_TRACKED:
             extra = sorted(
-                (t for t in self.tracking if t not in stale),
+                (t for t in self.tracking if t not in stale and t not in held),
                 key=lambda t: self.tracking[t]["start"],
             )[: len(self.tracking) - len(stale) - MAX_TRACKED]
             stale.extend(extra)
