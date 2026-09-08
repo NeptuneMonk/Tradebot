@@ -28,3 +28,5 @@ def test_classifier_project_score_gate():
     assert v2["action"] != "abort_trade"
     v3 = classify({**base, "project_score": 0}, {**rules, "project_score_min": 0})
     assert v3["action"] != "abort_trade"
+    v4 = classify({**base, "project_score": 0, "project_meta_seen": False}, rules)   # metadata not fetched yet → no verdict on it
+    assert v4["action"] != "abort_trade"

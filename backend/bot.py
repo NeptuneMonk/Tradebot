@@ -1731,7 +1731,7 @@ class BotState:
             "buy_count": b["buy_count"],
             "curve_fill_pct": b["curve_fill_pct"],
             "social_score": b["social_score"],
-            "project_score": b.get("project_score", 0),
+            "project_score": b.get("project_score", 0), "project_meta_seen": bool(b.get("meta_seen")),
             "project_flags": b.get("project_flags", {}),
             "peak_mc_usd": b.get("peak_mc_usd", 0.0),
         }
@@ -1930,7 +1930,7 @@ class BotState:
                 "sol_inflow": b.get("sol_inflow_lamports", 0) / LAMPORTS_PER_SOL,
                 "creator_rugs": creator_rugs,
                 "social_score": b.get("social_score", 0),
-                "project_score": b.get("project_score", 0),
+                "project_score": b.get("project_score", 0), "project_meta_seen": bool(b.get("meta_seen")),
                 "project_flags": b.get("project_flags", {}),
             }
             verdict = classify(metrics, self._rules_for_classify())
@@ -2442,7 +2442,7 @@ class BotState:
                 "sol_inflow": b.get("sol_inflow_lamports", 0) / LAMPORTS_PER_SOL,
                 "creator_rugs": b.get("creator_rugs", 0),
                 "social_score": b.get("social_score", 0),
-                "project_score": b.get("project_score", 0),
+                "project_score": b.get("project_score", 0), "project_meta_seen": bool(b.get("meta_seen")),
                 "project_flags": b.get("project_flags", {}),
             }
             verdict = classify(metrics, self._rules_for_classify())
@@ -3291,7 +3291,7 @@ class BotState:
                         "sol_inflow": b.get("sol_inflow_lamports", 0) / LAMPORTS_PER_SOL,
                         "creator_rugs": b.get("creator_rugs", 0),
                         "social_score": b.get("social_score", 0),
-                        "project_score": b.get("project_score", 0),
+                        "project_score": b.get("project_score", 0), "project_meta_seen": bool(b.get("meta_seen")),
                     }
                     verdict = classify(metrics, self._rules_for_classify())
                     trade_doc["risk_score"] = verdict["risk"]

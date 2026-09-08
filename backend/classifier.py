@@ -59,7 +59,7 @@ def classify(metrics: dict, rules: dict) -> dict:
     # Project Score gate (0–5: logo / website / X / creator graduated before / posts) — only if rule enabled
     proj_min = rules.get("project_score_min", 0)
     proj = metrics.get("project_score", social)
-    if proj_min and proj < proj_min:
+    if proj_min and metrics.get("project_meta_seen", True) and proj < proj_min:   # only once Pump.fun metadata has arrived
         action = "abort_trade"
         risk = 85
         reasons.append(f"project score {proj}/5 < min {proj_min}")
