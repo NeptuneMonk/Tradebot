@@ -421,19 +421,22 @@ def propose(cfg: dict, stats: dict[str, dict], min_n: int, trades_by_book: dict[
             continue
         if (st.get("expectancy_7d") or 0) > 0 and st.get("n_7d", 0) >= 3 * min_n:
             continue
-        if book == "momentum" and _f(cfg, "book_momentum_size_mult", 1.0) > 0:
-            return P("flag", book, "book_momentum_size_mult", 0.0,
-                     f"momentum book expectancy {st['expectancy_usd']:+.4f} $/fill over {st['n']} fills (total {st['total_usd']:+.2f} $) — disable the losing machine",
-                     "raise expectancy by cutting losing book", ev(st))
+        if book == "momentum" and _f(cfg, "book_momentum_size_mult", 1.0) > 0 and not cfg.get("allocator_enabled", True):
+            # only when the desk allocator is off — with it on, sizing is continuous and floored, never 0
+            return P("flag", book, "book_momentum_size_mult", 0.25,
+                     f"momentum book expectancy {st['expectancy_usd']:+.4f} $/fill over {st['n']} fills (total {st['total_usd']:+.2f} $) — cut to the exploration floor ×0.25",
+                     "raise expectancy by shrinking the losing book while it keeps learning", ev(st))
         if book == "greylist_snipe" and _f(cfg, "book_snipe_size_mult", 1.0) > 0:
             if st["n"] >= 3 * min_n and _f(cfg, "greylist_snipe_min_score", 45) < 70 and st["expectancy_usd"] > -0.10:
                 new = min(80.0, _f(cfg, "greylist_snipe_min_score", 45) + 5)
                 return P("threshold", book, "greylist_snipe_min_score", new,
                          f"snipe book slightly negative ({st['expectancy_usd']:+.4f} $/fill, n={st['n']}); raise score bar before disabling",
                          "raise expectancy by filtering weakest snipes", ev(st))
-            return P("flag", book, "book_snipe_size_mult", 0.0,
-                     f"snipe book expectancy {st['expectancy_usd']:+.4f} $/fill over {st['n']} fills (total {st['total_usd']:+.2f} $) — disable the losing machine",
-                     "raise expectancy by cutting losing book", ev(st))
+            if cfg.get("allocator_enabled", True):
+                continue   # allocator owns snipe sizing (floored, never off)
+            return P("flag", book, "book_snipe_size_mult", 0.25,
+                     f"snipe book expectancy {st['expectancy_usd']:+.4f} $/fill over {st['n']} fills (total {st['total_usd']:+.2f} $) — cut to the exploration floor ×0.25",
+                     "raise expectancy by shrinking the losing book while it keeps learning", ev(st))
         if book == "reentry" and cfg.get("reentry_enabled", True):
             bt = st.get("by_trigger") or {}
             bo, pb = bt.get("breakout", {"n": 0}), bt.get("pullback", {"n": 0})
@@ -655,6 +658,7 @@ class LearningEngine:
                 by_book[bk].append(t)
         extra = await self._universe_inputs(cfg, trades_7d, min_n)
         _, self.last["technique"] = propose_technique(cfg, by_book, min_n, extra)   # always refreshed for the UI
+        await self._allocate(cfg, books, trades_7d, min_n)
 
         can = await self.canary()
         if can and can.get("state") == "running":
@@ -790,6 +794,24 @@ class LearningEngine:
                 pass
         return done
 
+    async def _allocate(self, cfg: dict, books: dict, trades_7d: list[dict], min_n: int):
+        """Desk allocator: continuous per-book weights (floor ×0.25, cap ×2, one step per cycle)."""
+        import allocator
+        books7 = {b: book_stats([t for t in trades_7d if book_of(t) == b], cfg) for b in BOOKS}
+        enabled = {"momentum": bool(cfg.get("helius_tracker_enabled", True)), "greylist_snipe": bool(cfg.get("creator_greylist_enabled", True)),
+                   "reentry": bool(cfg.get("reentry_enabled", True)), "rh_pons": bool(cfg.get("rh_paper_enabled", True))}
+        rows = allocator.plan(cfg, {b: books.get(b) or {} for b in BOOKS}, books7, min_n, enabled)
+        self.last["allocator"] = {"enabled": bool(cfg.get("allocator_enabled", True)), "driving": bool(cfg.get("autopilot_enabled")),
+                                  "rows": rows, "floor": allocator.FLOOR, "cap": allocator.CAP, "step": allocator.STEP}
+        if not (cfg.get("allocator_enabled", True) and cfg.get("autopilot_enabled") and cfg.get("doctor_auto_apply_enabled", True)):
+            return
+        changes = await allocator.apply(self.db, rows, self._reload)
+        if changes and self.hub:
+            try:
+                await self.hub.broadcast("doctor_allocator", {"changes": changes})
+            except Exception:
+                pass
+
     async def _reload(self):
         if self.reload_cb:
             try:
@@ -800,4 +822,4 @@ class LearningEngine:
     async def status(self) -> dict:
         return {"books": self.last.get("books", {}), "proposal": self.last.get("proposal"),
                 "canary": await self.canary(), "note": self.last.get("note", ""),
-                "technique": self.last.get("technique", {})}
+                "technique": self.last.get("technique", {}), "allocator": self.last.get("allocator")}

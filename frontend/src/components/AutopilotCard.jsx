@@ -153,12 +153,38 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
 
       <div className="mt-3 flex flex-wrap gap-1.5 text-[9px] font-mono" data-testid="autopilot-books">
         {Object.entries(books).map(([k, v]) => (
-          <span key={k} className={`px-1.5 py-0.5 border ${v > 0 ? "border-neutral-700 text-neutral-300" : "border-rose-900 text-rose-400 line-through"}`}>
+          <span key={k} className={`px-1.5 py-0.5 border ${v >= 1 ? "border-neutral-700 text-neutral-300" : v > 0 ? "border-amber-800 text-amber-300" : "border-rose-900 text-rose-400 line-through"}`} data-testid={`book-chip-${k}`}>
             {k} ×{Number(v).toFixed(2)}
           </span>
         ))}
         {b.governor_size_mult && b.governor_size_mult < 1 && <span className="px-1.5 py-0.5 border border-rose-900 text-rose-300">governor ×{b.governor_size_mult}</span>}
       </div>
+      {s.allocator && (
+        <div className="mt-2 border border-neutral-800/70 p-2 space-y-1" data-testid="desk-allocator">
+          <div className="flex items-center justify-between text-[9px] uppercase tracking-[0.15em] text-neutral-600">
+            <span className="inline-flex items-center gap-1">desk allocator · capital per book
+              <HelpHint label="help: desk allocator">Every Doctor cycle each book's size multiplier moves one step (±0.25) toward a target set by its rolling net expectancy: losing books shrink to an exploration floor of ×0.25 — never 0, so they keep producing fills and can earn their way back — and paying books scale up to ×2. Replaces the old &quot;disable the losing machine&quot; switch. Runs only while Autopilot drives.</HelpHint>
+            </span>
+            <span className={s.allocator.driving && s.allocator.enabled ? "text-lime-400" : "text-neutral-500"} data-testid="allocator-state">
+              {!s.allocator.enabled ? "off" : s.allocator.driving ? "driving" : "advisory (autopilot off)"} · floor ×{s.allocator.floor} · cap ×{s.allocator.cap}
+            </span>
+          </div>
+          {(s.allocator.rows || []).map((r) => (
+            <div key={r.book} className="flex items-center justify-between gap-2 text-[10px] font-mono" data-testid={`allocator-row-${r.book}`}>
+              <span className="text-neutral-400 truncate" title={r.reason}>
+                <span className="text-neutral-200">{r.book}</span> ×{r.current} → ×{r.target}{r.change ? <span className="text-amber-300"> (next ×{r.next})</span> : ""} · {r.reason}
+              </span>
+              {r.current < 1 && (
+                <button type="button" onClick={() => setRisk({ [r.key]: 1.0 })} data-testid={`allocator-restore-${r.book}`}
+                        className="px-1.5 border border-neutral-700 hover:border-lime-600 hover:text-lime-300 uppercase text-[9px] whitespace-nowrap">restore ×1</button>
+              )}
+            </div>
+          ))}
+          {Object.entries(books).some(([, v]) => v > 0 && v < 1) && !s.allocator.driving && (
+            <div className="text-[10px] font-mono text-amber-300" data-testid="allocator-reduced-note">a book is running below ×1 — the Doctor reduced it; restore above or let Autopilot drive the allocator</div>
+          )}
+        </div>
+      )}
 
       {s.technique && Object.keys(s.technique).length > 0 && (
         <div className="mt-3 border border-neutral-800/70" data-testid="autopilot-technique">

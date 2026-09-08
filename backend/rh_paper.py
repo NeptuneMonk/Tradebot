@@ -399,7 +399,8 @@ class RHPaperTrader:
             if base_stake <= 0:
                 logger.info(f"rh_paper skip {b['symbol']}: RH stake is 0 — bankroll too small for the fee floor")
                 return
-            stake_usd = base_stake * max(0.1, float(size_mult)) * (_gov.size_mult("rh") if _gov else 1.0)
+            stake_usd = (base_stake * max(0.1, float(size_mult)) * (_gov.size_mult("rh") if _gov else 1.0)
+                         * max(0.1, float(getattr(cfg, "book_rh_size_mult", 1.0) or 1.0)))
             stake_quote = stake_usd / quote_usd
             ctx = {"reentry": reentry, "reentry_ctx": reentry_ctx, "manual": manual}
             if self.live_ok(b):

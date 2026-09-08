@@ -382,6 +382,8 @@ class BotConfig(BaseModel):
     # Structure flags the Doctor may flip. 0 disables that book.
     book_momentum_size_mult: float = 1.0
     book_snipe_size_mult: float = 1.0
+    book_rh_size_mult: float = 1.0            # desk-allocator weight for the RH curve book
+    allocator_enabled: bool = True             # desk allocator: continuous per-book capital weights (floor ×0.25, cap ×2)
     doctor_auto_revert_hours: int = 24
     doctor_trail_drawdown_pct: float = 40.0     # pause if score drops this far from peak
     doctor_trail_recovery_pct: float = 70.0     # resume when score recovers to this fraction of pre-pause peak
