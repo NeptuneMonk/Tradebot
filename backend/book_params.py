@@ -20,14 +20,16 @@ EXIT_GRID = {  # candidate values the optimizer may propose
 ENTRY_FEATURES = {
     "rh_pons": {"growth_pct": "rh_min_growth_pct", "inflow_usd": "rh_min_inflow_usd",
                 "unique_buyers": "rh_min_unique_buyers", "curve_fill_pct": "rh_min_curve_pct", "mc_usd": "rh_min_mc_usd"},
-    "momentum": {"curve_liquidity_sol": "min_curve_liquidity_sol", "unique_buyers": "min_buyers_for_entry", "project_score": "project_score_min"},
+    "momentum": {"curve_liquidity_sol": "min_curve_liquidity_sol", "unique_buyers": "min_buyers_for_entry", "project_score": "project_score_min",
+                 "creator_prior_launches": "serial_creator_min_launches"},
     "momentum_new": {"curve_liquidity_sol": "min_curve_liquidity_sol_new", "unique_buyers": "min_buyers_for_entry_new", "project_score": "project_score_min"},
     "greylist_snipe": {"creator_score": "greylist_snipe_min_score"},
 }
+CEILING_KEYS = {"serial_creator_min_launches", "rh_max_growth_pct"}   # keys where LOWER is stricter
 FEATURE_CAPS = {"rh_min_growth_pct": 150.0, "rh_min_inflow_usd": 3000.0, "rh_min_unique_buyers": 40, "rh_min_curve_pct": 40.0,
                 "rh_min_mc_usd": 50000.0, "min_curve_liquidity_sol": 60.0, "min_buyers_for_entry": 30,
                 "min_curve_liquidity_sol_new": 80.0, "min_buyers_for_entry_new": 40, "greylist_snipe_min_score": 85.0,
-                "project_score_min": 4}
+                "project_score_min": 4, "serial_creator_min_launches": 50}
 
 
 REGIMES = ("quiet", "busy")
@@ -239,10 +241,14 @@ def entry_feature_splits(trades: list[dict], book: str, cfg, min_side: int = 5) 
         e_low, e_high, e_all = statistics.mean(low), statistics.mean(high), statistics.mean(p for _, p in rows)
         cur = float(_get(cfg, key) or 0)
         cap = FEATURE_CAPS.get(key)
-        out.append({"feature": feat, "key": key, "n": len(rows), "split": med, "current": cur,
+        ceiling = key in CEILING_KEYS            # "fewer is better": propose LOWERING the key to the median
+        if ceiling:
+            gain, actionable = e_low - e_all, e_high < 0 < e_low and (cur == 0 or med < cur) and med >= 1
+        else:
+            gain, actionable = e_high - e_all, e_low < 0 < e_high and med > cur and (cap is None or med <= cap)
+        out.append({"feature": feat, "key": key, "n": len(rows), "split": med, "current": cur, "direction": "ceiling" if ceiling else "floor",
                     "low_expectancy_usd": e_low, "high_expectancy_usd": e_high, "all_expectancy_usd": e_all,
-                    "gain_usd_per_fill": e_high - e_all,
-                    "actionable": e_low < 0 < e_high and med > cur and (cap is None or med <= cap)})
+                    "gain_usd_per_fill": gain, "actionable": actionable})
     out.sort(key=lambda r: -r["gain_usd_per_fill"])
     return out
 

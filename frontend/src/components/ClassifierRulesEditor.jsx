@@ -50,7 +50,7 @@ export default function ClassifierRulesEditor({ rules, onSave }) {
           <NumField testid="rule-low-inflow" value={local.low_inflow_sol} step="0.1" onChange={set("low_inflow_sol")} suffix="SOL" />
           <NumField testid="rule-low-inflow-window" value={local.low_inflow_window_s} step="1" onChange={set("low_inflow_window_s")} suffix="s" />
         </Row>
-        <Row label="Creator rug threshold" hint="ABORT if the creator has ≥ X prior rugged tokens. This is a coarse pre-greylist filter; the Greylist Sniper has more nuanced scoring. Set 0 to disable.">
+        <Row label="Max prior failed launches" hint="ABORT if the creator has ≥ X prior tokens that died without graduating (this was mislabelled 'rug threshold' — it counts failed launches, not rugs). Coarse pre-greylist filter; the Greylist Sniper scores creators with more nuance. Set 0 to disable. The serial-creator gate (Bot Control → Entry) is the data-backed version: ≥N prior launches and never graduated one → skip.">
           <NumField testid="rule-rug-threshold" value={local.creator_rug_threshold} step="1" onChange={set("creator_rug_threshold")} />
         </Row>
         <Row label="Min project score" hint="ABORT entry if the token's Project Score (0–5: +1 logo, +1 website, +1 X account, +1 creator filled a curve before, +1 ≥3 Pump.fun posts) is below this floor. Uses data we already fetch — no Helius credits. The Doctor can also raise the floor (project_score_min in Bot Control) when high-score launches pay better. Set 0 to disable.">

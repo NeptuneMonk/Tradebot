@@ -37,7 +37,7 @@ ALLOWED_KEYS = {
     "reentry_enabled", "reentry_size_multiplier", "reentry_breakout_pct",
     "reentry_min_bounce_pct", "reentry_min_buyers",
     "rh_min_growth_pct", "rh_min_inflow_usd", "rh_min_unique_buyers", "rh_min_curve_pct", "rh_min_mc_usd",
-    "rh_max_growth_pct", "no_momentum_after_s", "flush_hold_s", "project_score_min",
+    "rh_max_growth_pct", "no_momentum_after_s", "flush_hold_s", "project_score_min", "serial_creator_min_launches", "serial_creator_requires_graduation", "creator_rug_threshold",
     "min_curve_liquidity_sol", "min_buyers_for_entry", "min_curve_liquidity_sol_new", "min_buyers_for_entry_new",
     "risk_per_trade_pct", "winner_ride_min_pnl_pct",
 } | GLOBAL_KEYS
@@ -137,9 +137,14 @@ def propose_technique(cfg: dict, trades_by_book: dict[str, list[dict]], min_n: i
         for sp in splits:
             if sp["actionable"] and sp["gain_usd_per_fill"] >= TECHNIQUE_MIN_GAIN_USD:
                 val = round(sp["split"], 2) if isinstance(cfg.get(sp["key"], 0.0), float) else int(round(sp["split"]))
+                if sp.get("direction") == "ceiling":
+                    reason = (f"{book} fills with {sp['feature']} ≥ {sp['split']:g} lose {sp['high_expectancy_usd']:+.4f} $/fill, "
+                              f"below earn {sp['low_expectancy_usd']:+.4f} (n={sp['n']}) → tighten {sp['key']} {sp['current']:g} → {val:g}")
+                else:
+                    reason = (f"{book} fills with {sp['feature']} < {sp['split']:g} lose {sp['low_expectancy_usd']:+.4f} $/fill, "
+                              f"above earn {sp['high_expectancy_usd']:+.4f} (n={sp['n']}) → raise {sp['key']} {sp['current']:g} → {val:g}")
                 cands.append({"type": "threshold", "book": book, "key": sp["key"], "value": val, "gain": sp["gain_usd_per_fill"],
-                              "reason": (f"{book} fills with {sp['feature']} < {sp['split']:g} lose {sp['low_expectancy_usd']:+.4f} $/fill, "
-                                         f"above earn {sp['high_expectancy_usd']:+.4f} (n={sp['n']}) → raise {sp['key']} {sp['current']:g} → {val:g}"),
+                              "reason": reason,
                               "direction": "raise expectancy by filtering the entries that lose — measured, not guessed",
                               "evidence": {k: sp[k] for k in ("feature", "n", "split", "current", "low_expectancy_usd", "high_expectancy_usd")}})
                 break  # one entry-filter candidate per book (the top-gain one)

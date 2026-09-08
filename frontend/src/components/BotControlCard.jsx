@@ -904,6 +904,26 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
         <div className="text-[10px] font-mono text-neutral-600">
           a losing re-entry leg ends a normal watch · a winning leg refreshes it (attempts carry over) · HOT tokens: no cap, no clock — the bot walks away when the chart goes stale (below)
         </div>
+        <div className="border border-neutral-800 p-2 space-y-2" data-testid="serial-creator-section">
+          <div className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 inline-flex items-center gap-1">
+            serial-creator gate (Pump.fun)
+            <HelpHint label="help: serial creator gate">Measured on 18,400 launches: creators with several prior launches and NO graduation produce runners 4–8× less often than first launches, while serial creators WITH a graduation launch near first-launch quality. This gate skips tokens whose creator has ≥ N prior launches unless one of them graduated. Both knobs are Doctor-tunable (the ledger measures what the skipped tokens did next).</HelpHint>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+            <label className="flex items-center gap-2 text-neutral-300 sm:col-span-1">
+              <input type="checkbox" data-testid="serial-gate-enabled" checked={local.serial_creator_gate_enabled !== false}
+                     onChange={(e) => setLocal({ ...local, serial_creator_gate_enabled: e.target.checked })} /> enabled
+            </label>
+            <Field label="Serial = ≥ N prior launches" testid="serial-min-launches-input"
+                   hint="A creator with this many prior launches or more counts as serial. 0 disables the gate."
+                   value={local.serial_creator_min_launches ?? 3}
+                   onChange={(v) => setLocal({ ...local, serial_creator_min_launches: parseInt(v, 10) || 0 })} step="1" />
+            <label className="flex items-center gap-2 text-neutral-300">
+              <input type="checkbox" data-testid="serial-requires-grad" checked={local.serial_creator_requires_graduation !== false}
+                     onChange={(e) => setLocal({ ...local, serial_creator_requires_graduation: e.target.checked })} /> skip unless a prior launch graduated
+            </label>
+          </div>
+        </div>
         <div className="border border-amber-900/50 p-2 space-y-2" data-testid="hot-focus-section">
           <div className="text-[10px] uppercase tracking-[0.15em] text-amber-400/90 inline-flex items-center gap-1">
             hot focus · play the runners out

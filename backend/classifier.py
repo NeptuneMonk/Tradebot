@@ -53,7 +53,16 @@ def classify(metrics: dict, rules: dict) -> dict:
     if rugs > 0 and rugs >= max(1, rules["creator_rug_threshold"]):
         action = "abort_trade"
         risk = 95
-        reasons.append(f"creator has {rugs} prior rugs")
+        reasons.append(f"creator has {rugs} prior failed launches (max {rules['creator_rug_threshold']})")
+        return {"action": action, "risk": risk, "reasons": reasons}
+    # Serial-creator gate: many prior launches and never graduated one → dull, not tradeable (see PRD data)
+    ser_min = int(rules.get("serial_creator_min_launches") or 0)
+    prior = int(metrics.get("creator_prior_launches") or 0)
+    if rules.get("serial_creator_gate_enabled", True) and ser_min and prior >= ser_min \
+            and rules.get("serial_creator_requires_graduation", True) and not metrics.get("creator_graduated_before"):
+        action = "abort_trade"
+        risk = 80
+        reasons.append(f"serial creator: {prior} prior launches, none graduated (gate ≥{ser_min})")
         return {"action": action, "risk": risk, "reasons": reasons}
 
     # Project Score gate (0–5: logo / website / X / creator graduated before / posts) — only if rule enabled

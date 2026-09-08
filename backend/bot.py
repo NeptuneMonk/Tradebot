@@ -1114,6 +1114,7 @@ class BotState:
             "project_score": 0,
             "project_flags": {},
             "creator_tokens_graduated": (creator_doc or {}).get("tokens_graduated", 0),
+            "creator_prior_launches": max(0, int((creator_doc or {}).get("tokens_created", 1) or 1) - 1),
             "last_persist": 0.0,
             "name": launch.name,
             "symbol": launch.symbol,
@@ -1732,6 +1733,7 @@ class BotState:
             "curve_fill_pct": b["curve_fill_pct"],
             "social_score": b["social_score"],
             "project_score": b.get("project_score", 0), "project_meta_seen": bool(b.get("meta_seen")),
+                "creator_prior_launches": int(b.get("creator_prior_launches") or 0), "creator_graduated_before": int(b.get("creator_tokens_graduated") or 0) >= 1,
             "project_flags": b.get("project_flags", {}),
             "peak_mc_usd": b.get("peak_mc_usd", 0.0),
         }
@@ -1773,6 +1775,9 @@ class BotState:
         """Classifier rules + the Doctor-tunable Project Score floor from BotConfig (the stricter wins)."""
         r = self.rules.model_dump()
         r["project_score_min"] = max(int(r.get("project_score_min") or 0), int(getattr(self.config, "project_score_min", 0) or 0))
+        r["serial_creator_gate_enabled"] = bool(getattr(self.config, "serial_creator_gate_enabled", True))
+        r["serial_creator_min_launches"] = int(getattr(self.config, "serial_creator_min_launches", 3) or 0)
+        r["serial_creator_requires_graduation"] = bool(getattr(self.config, "serial_creator_requires_graduation", True))
         return r
 
     async def _compute_social(self, mint: str):
@@ -1931,6 +1936,7 @@ class BotState:
                 "creator_rugs": creator_rugs,
                 "social_score": b.get("social_score", 0),
                 "project_score": b.get("project_score", 0), "project_meta_seen": bool(b.get("meta_seen")),
+                "creator_prior_launches": int(b.get("creator_prior_launches") or 0), "creator_graduated_before": int(b.get("creator_tokens_graduated") or 0) >= 1,
                 "project_flags": b.get("project_flags", {}),
             }
             verdict = classify(metrics, self._rules_for_classify())
@@ -2443,6 +2449,7 @@ class BotState:
                 "creator_rugs": b.get("creator_rugs", 0),
                 "social_score": b.get("social_score", 0),
                 "project_score": b.get("project_score", 0), "project_meta_seen": bool(b.get("meta_seen")),
+                "creator_prior_launches": int(b.get("creator_prior_launches") or 0), "creator_graduated_before": int(b.get("creator_tokens_graduated") or 0) >= 1,
                 "project_flags": b.get("project_flags", {}),
             }
             verdict = classify(metrics, self._rules_for_classify())
@@ -2651,6 +2658,8 @@ class BotState:
                        "usd_market_cap": float(getattr(launch, "usd_market_cap", 0) or 0),
                        "creator_score": greylist_ctx.get("score"),
                        "launch_rate_per_h": self._launch_rate(),
+                       "creator_prior_launches": int((self.tracking.get(launch.mint) or {}).get("creator_prior_launches") or 0),
+                       "creator_graduated_before": int((self.tracking.get(launch.mint) or {}).get("creator_tokens_graduated") or 0) >= 1,
                        "project_score": int((self.tracking.get(launch.mint) or {}).get("project_score") or getattr(launch, "project_score", 0) or 0),
                        "project_flags": (self.tracking.get(launch.mint) or {}).get("project_flags") or {},
                        "band": "new" if action == "momentum_new" else "seasoned"},
@@ -3292,6 +3301,7 @@ class BotState:
                         "creator_rugs": b.get("creator_rugs", 0),
                         "social_score": b.get("social_score", 0),
                         "project_score": b.get("project_score", 0), "project_meta_seen": bool(b.get("meta_seen")),
+                "creator_prior_launches": int(b.get("creator_prior_launches") or 0), "creator_graduated_before": int(b.get("creator_tokens_graduated") or 0) >= 1,
                     }
                     verdict = classify(metrics, self._rules_for_classify())
                     trade_doc["risk_score"] = verdict["risk"]

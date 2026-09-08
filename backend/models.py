@@ -197,6 +197,11 @@ class BotConfig(BaseModel):
     min_curve_liquidity_sol_new: float = 20.0
     min_buyers_for_entry_new: int = 8
     project_score_min: int = 0             # Pump.fun Project Score floor (0–5; 0 = off) — Doctor-tunable entry gate
+    # Serial-creator gate (data: creators with ≥3 prior launches and NO graduation run 4–8× less often than first launches;
+    # serial creators WITH a graduation launch near first-launch quality). Both knobs Doctor-tunable.
+    serial_creator_gate_enabled: bool = True
+    serial_creator_min_launches: int = 3   # "serial" = this many prior launches or more (0 = off)
+    serial_creator_requires_graduation: bool = True
     # Momentum scanner — 81% of recent profitable trades came from here
     scanner_enabled: bool = True
     # === Protocol-aware band definitions (2026-02-08) ===
