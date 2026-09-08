@@ -823,7 +823,7 @@ async def config_import(req: _ConfigImportReq):
     try:
         merged = BotConfig(**{**bot_state.config.model_dump(), **req.config})
         merged.enabled = False  # never auto-enable on import; user re-starts
-        return await update_config(merged)
+        return await update_config(merged.model_dump())
     except Exception as e:
         # Roll back the pause if import fails so the user isn't stuck
         bot_state.config.enabled = was_enabled
@@ -840,7 +840,88 @@ async def config_apply_recommended():
     merged_dict = {**bot_state.config.model_dump(), **RECOMMENDED_CONFIG_OVERRIDES}
     merged_dict["enabled"] = False
     merged = BotConfig(**merged_dict)
-    return await update_config(merged)
+    return await update_config(merged.model_dump())
+
+
+# ---------------------------------------------------------------- brain sync ----
+import brain as _brain
+from fastapi import Request as _Request
+from fastapi.responses import StreamingResponse as _StreamingResponse
+
+
+@api.get("/brain/summary")
+async def brain_summary():
+    return await _brain.summary(db)
+
+
+@api.get("/brain/export")
+async def brain_export(request: _Request, groups: str = ",".join(_brain.DEFAULT_GROUPS)):
+    wanted = [g for g in groups.split(",") if g in _brain.GROUPS]
+    if not wanted:
+        raise HTTPException(400, "no valid groups")
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+    env = "preview" if "preview.emergentagent.com" in host else "published"
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M")
+    return _StreamingResponse(
+        _brain.export_stream(db, wanted, env),
+        media_type="application/gzip",
+        headers={"Content-Disposition": f'attachment; filename="bot-brain-{env}-{ts}.ndjson.gz"'},
+    )
+
+
+class _BrainBegin(BaseModel):
+    filename: str = "brain.ndjson.gz"
+    size: int = 0
+
+
+@api.post("/brain/import/begin")
+async def brain_import_begin(req: _BrainBegin):
+    return {"upload_id": _brain.begin_upload(req.filename, req.size)}
+
+
+@api.put("/brain/import/chunk/{upload_id}")
+async def brain_import_chunk(upload_id: str, request: _Request, index: int = 0):
+    data = await request.body()
+    try:
+        st = _brain.append_chunk(upload_id, index, data)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"received": st["received"], "chunks": st["chunks"]}
+
+
+class _BrainCommit(BaseModel):
+    groups: list[str] = _brain.DEFAULT_GROUPS
+
+
+@api.post("/brain/import/commit/{upload_id}")
+async def brain_import_commit(upload_id: str, req: _BrainCommit):
+    st = _brain.IMPORTS.get(upload_id)
+    if not st or st["state"] != "uploading":
+        raise HTTPException(400, "unknown or already committed upload")
+    if st["received"] == 0:
+        raise HTTPException(400, "empty upload")
+    # SAFETY: pause trading while foreign state is merged in; user re-starts after review.
+    if bot_state.config.enabled:
+        bot_state.config.enabled = False
+        await bot_state.save_config()
+
+    async def _apply_config(cfg: dict):
+        await update_config(cfg)
+
+    async def _apply_rules(rules: dict):
+        bot_state.rules = ClassifierRules(**rules)
+        await bot_state.save_rules()
+
+    asyncio.create_task(_brain.run_import(db, upload_id, req.groups, _apply_config, _apply_rules))
+    return {"ok": True, "upload_id": upload_id, "state": "running"}
+
+
+@api.get("/brain/import/status/{upload_id}")
+async def brain_import_status(upload_id: str):
+    st = _brain.IMPORTS.get(upload_id)
+    if not st:
+        raise HTTPException(404, "unknown upload")
+    return st
 
 
 @api.post("/pnl/reset-live")

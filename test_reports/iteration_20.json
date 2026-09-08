@@ -1,0 +1,19 @@
+{
+  "summary": "Verified Brain Sync feature end-to-end (backend + frontend). Backend /api/brain/summary returns correct groups (config/doctor/creators/trades/ticks) with per-collection totals and defaults=['config','doctor','creators','trades']. GET /api/brain/export?groups=config,doctor returns 200 with Content-Disposition filename bot-brain-preview-<ts>.ndjson.gz, valid gzip whose first line is JSON header with schema_version=1. Frontend: BrainSyncPanel mounts at bottom of Bot Control card, 5 group checkboxes render with correct defaults (config/doctor/creators/trades ✓, ticks ✗), doc counts populate ('3 docs', '96 docs', '28.1k docs', '2.3k docs', '12.0k docs' — never '…'). Export flow: with only config+doctor selected, click brain-export-btn triggered download bot-brain-preview-2026-09-08-23-32.ndjson.gz (19,247 bytes) and success toast 'Brain exported · 0.0 MB'. Import flow: set_input_files on hidden brain-import-file-input, window.confirm accepted, brain-progress showed 'uploading 100%', brain-import-result showed 'from preview · bot_config: +0 ↑1 =0 · classifier_rules: +0 ↑1 =0 · bot_config_defaults: +0 ↑0 =1 · strategy_suggestions: +0 ↑0 =82 · autopilot_state: +0 ↑0 =1 · doctor_trail_state: +0 ↑0 =1 · doctor_canary: +0 ↑0 =1 · live_doctor_state: +0 ↑0 =1 · doctor_blacklist: +0 ↑0 =12' matching newer-wins spec (config/rules updated=1, rest kept — idempotent). Toast 'Brain imported · bot paused for review' displayed. Bot remained paused (enabled=false) and max_trade_usd unchanged (18.51 before/after). Re-checked 4 default groups at end. No console errors related to Brain Sync (only a pre-existing 401 on a WS resource unrelated to feature).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "brain.py _iter_lines: after loop uses buf += d.flush() which returns bytes (fine), but if the final line has no trailing newline it yields buf including any leading empty buffer — minor; current data always has newline.",
+    "BrainSyncPanel: import polling uses 1s fixed interval and only exits on state != 'running'; a stuck 'uploading' state (never happens today because commit flips to running) would loop until timeout. Consider handling 'uploading' explicitly.",
+    "No client-side gzip magic-number validation before upload — a bad file only surfaces server-side after commit as an 'error' state. Optional UX improvement."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "session_token=test_session_1788909052723 (Bearer + cookie)",
+  "seed_data_creation": "None; used existing preview DB",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Brain Sync feature is fully working. Export produces gzipped NDJSON with proper header; import is idempotent (config/rules report as updated=1 due to always-apply path, rest kept). Bot pauses on commit as expected."
+}

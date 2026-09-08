@@ -1619,3 +1619,12 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - P1: Execution learning (Guru step 6) — slippage/fee/gas/latency per venue → min viable stake + latency budget
 - P2: When-to-trade regime (step 7); Shadow-book harness (step 8)
 - P3: Opportunity Score (step 9); ERC-20 approval for USDG curves; Telegram alerts
+
+
+## 2026-09-08 — Brain Sync (learning export/import across environments)
+- Preview and Published have separate DBs; a republish moves code only. `brain.py` + Bot Control → **Brain Sync** panel carry the learning.
+- Groups: config+rules (minus `enabled`, live toggles, feed switches, sweep wallet), Doctor memory (suggestions/applied history, autopilot, breaker, canary, live-doctor, blacklist), creator intel (creators, wallet_links union-merge, wallet_graph), trade history (open positions never imported), tick store (48h, off by default).
+- Format: gzip NDJSON (bson json_util). Export streams (~7 MB for 30k docs in ~4s). Import = chunked upload (2 MB) → background merge, **newer copy wins** (first ts among updated_at / greylist_score_updated_at / last_seen / pnl_reconciled_at / exit_time / …), bot auto-paused.
+- Endpoints: `GET /api/brain/summary`, `GET /api/brain/export?groups=`, `POST /api/brain/import/begin|commit/{id}`, `PUT /api/brain/import/chunk/{id}?index=`, `GET /api/brain/import/status/{id}`.
+- Also fixed: `/config/import` + `/config/apply-recommended` passed a model where `update_config` expects a dict.
+- Tested: scratch-DB merge semantics + live API round-trip + testing agent iteration_20 (all pass).

@@ -88,6 +88,13 @@ export const api = {
   // Config sync (preview ↔ production)
   configExport: () => client.get("/config/export").then(r => r.data),
   configImport: (config) => client.post("/config/import", { config }).then(r => r.data),
+  brainSummary: () => client.get("/brain/summary").then(r => r.data),
+  brainExportUrl: (groups) => `${API}/brain/export?groups=${encodeURIComponent(groups.join(","))}`,
+  brainImportBegin: (filename, size) => client.post("/brain/import/begin", { filename, size }).then(r => r.data),
+  brainImportChunk: (uploadId, index, bytes) =>
+    longClient.put(`/brain/import/chunk/${uploadId}?index=${index}`, bytes, { headers: { "Content-Type": "application/octet-stream" } }).then(r => r.data),
+  brainImportCommit: (uploadId, groups) => client.post(`/brain/import/commit/${uploadId}`, { groups }).then(r => r.data),
+  brainImportStatus: (uploadId) => client.get(`/brain/import/status/${uploadId}`).then(r => r.data),
   configApplyRecommended: () => client.post("/config/apply-recommended").then(r => r.data),
   recipientHealth: () => client.get("/diagnostics/recipient-health").then(r => r.data),
   // Creator greylist (Phase 2 — telemetry-now / live-soon)

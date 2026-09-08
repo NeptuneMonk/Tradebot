@@ -4,6 +4,7 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import SpeedModeSlider from "./SpeedModeSlider";
 import ConfigSyncPanel from "./ConfigSyncPanel";
+import BrainSyncPanel from "./BrainSyncPanel";
 import HelpHint from "./HelpHint";
 
 export default function BotControlCard({ status, config, onUpdate, onStart, onStop }) {
@@ -1074,6 +1075,7 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
       )}
 
       <ConfigSyncPanel onApplied={(cfg) => setLocal(cfg)} />
+      <BrainSyncPanel onApplied={(cfg) => { setLocal(cfg); setBaseline(cfg); }} />
     </div>
   );
 }
