@@ -59,6 +59,7 @@ class BotConfig(BaseModel):
     rh_min_age_s: int = 5                 # snipe tax is 0 after 3s
     rh_max_age_min: float = 15.0
     rh_min_growth_pct: float = 30.0       # from first observed curve price
+    rh_max_growth_pct: float = 400.0      # ceiling: don't chase a curve that already ran this far (Doctor-tuned)
     rh_min_new_buyers_1m: int = 5
     rh_min_unique_buyers: int = 8
     rh_min_inflow_usd: float = 300.0      # net quote inflow over inflow window, in USD

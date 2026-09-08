@@ -120,6 +120,10 @@ async def lifespan(app: FastAPI):
     doctor = StrategyDoctor(db=db, hub=hub)
     doctor.reload_cb = bot_state.load
     doctor.learning.reload_cb = bot_state.load
+    from tick_store import TickStore
+    bot_state.tick_store = TickStore(bot_state)
+    bot_state.tick_store.start()
+    doctor.learning.tick_store = bot_state.tick_store
     set_doctor(doctor)
     await doctor.start()
     # Live Doctor — real-time archetype scorer + trailing-stop circuit
@@ -2078,6 +2082,17 @@ async def doctor_learning_revert():
 
 def _now_iso_srv() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+@api.get("/doctor/autopsy")
+async def doctor_autopsy():
+    """Loss autopsy per book (7d) + universe replay — the Doctor's causal view, refreshed each learning cycle."""
+    from strategy_doctor import get_doctor
+    d = get_doctor()
+    tech = (d.learning.last.get("technique") if d else None) or {}
+    ts = getattr(bot_state, "tick_store", None)
+    return {"autopsy": tech.get("autopsy") or {}, "replay": tech.get("replay") or {},
+            "tick_store": ts.stats if ts else None, "computed_at": tech.get("computed_at")}
 
 
 @api.get("/rh/status")

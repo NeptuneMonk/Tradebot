@@ -37,6 +37,7 @@ ALLOWED_KEYS = {
     "reentry_enabled", "reentry_size_multiplier", "reentry_breakout_pct",
     "reentry_min_bounce_pct", "reentry_min_buyers",
     "rh_min_growth_pct", "rh_min_inflow_usd", "rh_min_unique_buyers", "rh_min_curve_pct", "rh_min_mc_usd",
+    "rh_max_growth_pct", "no_momentum_after_s",
     "min_curve_liquidity_sol", "min_buyers_for_entry", "min_curve_liquidity_sol_new", "min_buyers_for_entry_new",
     "risk_per_trade_pct", "winner_ride_min_pnl_pct",
 } | GLOBAL_KEYS
@@ -80,12 +81,16 @@ def cfg_set(cfg: dict, key: str, value):
     cur[parts[-1]] = value
 
 
-def propose_technique(cfg: dict, trades_by_book: dict[str, list[dict]], min_n: int) -> tuple[dict | None, dict]:
+def propose_technique(cfg: dict, trades_by_book: dict[str, list[dict]], min_n: int, extra: dict | None = None) -> tuple[dict | None, dict]:
     """Technique first: per book, replay its own fills against the exit grid and split them by entry
-    feature; return the single best-gain proposal (or None) plus the full analysis for the UI."""
+    feature; return the single best-gain proposal (or None) plus the full analysis for the UI.
+    `extra` carries the async-computed inputs: post-exit peaks (tick store) and the universe replay."""
+    from autopsy import summarize as autopsy_summarize
     from book_params import (BOOKS as _B, REGIME_MULT_CAP, REGIME_MULT_STEP, REGIMES, book_exit_view, entry_feature_splits,
                              entry_pair_splits, regime_splits, ride_scorecard, trade_regime, whatif_exits)
-    analysis: dict = {}
+    extra = extra or {}
+    analysis: dict = {"autopsy": {}, "replay": extra.get("replay") or {}, "tick_store": extra.get("tick_store"),
+                      "computed_at": datetime.now(timezone.utc).isoformat()}
     best: dict | None = None
     for book in _B:
         rows = trades_by_book.get(book) or []
@@ -107,11 +112,19 @@ def propose_technique(cfg: dict, trades_by_book: dict[str, list[dict]], min_n: i
             sub = [t for t in rows if trade_regime(cfg, book, t) == reg]
             if len(sub) >= min_n:
                 regime_exits[reg] = {"n": len(sub), "current_exits": book_exit_view(cfg, book, reg), **whatif_exits(sub, book_exit_view(cfg, book, reg))}
+        aut = autopsy_summarize(rows, cfg, extra.get("post_peaks"), min_n=min_n) if rows else None
+        analysis["autopsy"][book] = aut
         analysis[book] = {"n": len(rows), "current_exits": cur, "whatif": wi, "splits": splits[:6], "pairs": pairs[:3],
                           "regime": regime, "regime_exits": regime_exits}
         if len(rows) < min_n:
             continue
         cands = []
+        if aut and aut.get("proposal"):
+            ap = aut["proposal"]
+            cands.append({"type": "threshold", "book": book, "key": ap["key"], "value": ap["value"], "gain": ap["gain"],
+                          "reason": f"autopsy [{ap['cause']}]: {ap['reason']}",
+                          "direction": "raise expectancy by removing the measured cause of this book's losses",
+                          "evidence": {"cause": ap["cause"], "estimated": bool(ap.get("estimated")), **ap["evidence"]}})
         b = wi.get("best")
         if b and wi["gain_usd_per_fill"] >= max(TECHNIQUE_MIN_GAIN_USD, TECHNIQUE_MIN_GAIN_REL * abs(wi["current"]["expectancy_usd"]))                 and float(b["value"]) != float(cur[b["param"]]):
             cands.append({"type": "threshold", "book": book, "key": f"book_exits.{book}.{b['param']}", "value": b["value"],
@@ -177,6 +190,17 @@ def propose_technique(cfg: dict, trades_by_book: dict[str, list[dict]], min_n: i
         for c in cands:
             if best is None or c["gain"] > best["gain"]:
                 best = c
+    # universe replay proposals need NO fills — they are measured on every tracked token
+    for book, rp in (extra.get("replay") or {}).items():
+        up = (rp or {}).get("proposal")
+        if not up:
+            continue
+        c = {"type": "threshold", "book": book, "key": up["key"], "value": up["value"], "gain": up["gain"],
+             "reason": f"universe replay: {up['reason']}",
+             "direction": "raise $ over the whole universe of launches — counts the tokens we did NOT buy",
+             "evidence": {"universe": True, **up["evidence"]}}
+        if best is None or c["gain"] > best["gain"]:
+            best = c
     # ride scorecard is global (all books share the ride threshold)
     all_rows = [t for rows in trades_by_book.values() for t in rows]
     rs = ride_scorecard(all_rows, cfg)
@@ -352,13 +376,14 @@ def _f(cfg: dict, key: str, default: float) -> float:
         return float(default)
 
 
-def propose(cfg: dict, stats: dict[str, dict], min_n: int, trades_by_book: dict[str, list[dict]] | None = None) -> dict | None:
+def propose(cfg: dict, stats: dict[str, dict], min_n: int, trades_by_book: dict[str, list[dict]] | None = None,
+            extra: dict | None = None) -> dict | None:
     """Priority ladder — first match wins. Every rule is scored on USD
     expectancy per fill (profit), never on win rate. Order: TECHNIQUE (per-book exit grid,
-    data-driven entry filters) → profit-shape rules → scale winners → LAST RESORT size cuts.
+    data-driven entry filters, loss autopsy, universe replay) → profit-shape rules → scale winners → LAST RESORT size cuts.
     Returns None when nothing qualifies."""
     if trades_by_book is not None:
-        tech, _ = propose_technique(cfg, trades_by_book, min_n)
+        tech, _ = propose_technique(cfg, trades_by_book, min_n, extra)
         if tech:
             return tech
     def P(kind, book, key, value, reason, direction, evidence):
@@ -510,7 +535,41 @@ class LearningEngine:
         self.db = db
         self.hub = hub
         self.reload_cb = reload_cb
+        self.tick_store = None          # set by server startup — universe replay + post-exit peaks
         self.last: dict = {"books": {}, "proposal": None, "canary": None, "note": ""}
+
+    async def _universe_inputs(self, cfg: dict, trades_7d: list[dict], min_n: int) -> dict:
+        """Tick-store-backed inputs for the technique pass: post-exit peaks (for `stopped_then_ran`) and the
+        universe replay. Best effort — the Doctor runs without them."""
+        ts = self.tick_store
+        if ts is None:
+            return {}
+        out: dict = {"tick_store": dict(ts.stats)}
+        peaks: dict = {}
+        try:
+            for t in trades_7d:
+                if (t.get("pnl_usd") or 0) >= 0 or not t.get("exit_time"):
+                    continue
+                chain = "rh" if t.get("chain") == "rh" else "sol"
+                ep = float(t.get("exit_price_quote" if chain == "rh" else "exit_price_sol") or 0)
+                from autopsy import _ts
+                xt = _ts(t["exit_time"]).timestamp()
+                pk = await ts.post_exit_peak_pct(chain, t["mint"], xt, ep)
+                if pk is not None:
+                    peaks[t.get("id")] = pk
+        except Exception as e:
+            logger.debug(f"post-exit peaks failed: {e}")
+        out["post_peaks"] = peaks
+        try:
+            from replay import replay_universe
+            from rh_discovery import _eth_usd_cache
+            from solana_client import _sol_price_cache
+            quote_usd = {"ETH": float(_eth_usd_cache.get("price") or 0), "USDG": 1.0, "SOL": float(_sol_price_cache.get("price") or 0)}
+            out["replay"] = await replay_universe(ts, cfg, quote_usd, min_n)
+        except Exception as e:
+            logger.warning(f"universe replay failed: {e}")
+            out["replay"] = {}
+        return out
 
     # ---------- persistence ----------
     async def canary(self) -> dict | None:
@@ -583,7 +642,8 @@ class LearningEngine:
             bk = book_of(t)
             if bk in by_book:
                 by_book[bk].append(t)
-        _, self.last["technique"] = propose_technique(cfg, by_book, min_n)   # always refreshed for the UI
+        extra = await self._universe_inputs(cfg, trades_7d, min_n)
+        _, self.last["technique"] = propose_technique(cfg, by_book, min_n, extra)   # always refreshed for the UI
 
         can = await self.canary()
         if can and can.get("state") == "running":
@@ -591,7 +651,7 @@ class LearningEngine:
             self.last["canary"] = await self.canary()
             return []  # one change at a time
 
-        proposal = propose(cfg, books, min_n, by_book)
+        proposal = propose(cfg, books, min_n, by_book, extra)
         self.last["canary"] = can
         if not proposal:
             self.last["proposal"] = None

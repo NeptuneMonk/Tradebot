@@ -4,6 +4,9 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import HelpHint from "./HelpHint";
 import ProfitSweepPanel from "./ProfitSweepPanel";
+import { AutopsyPanel, ReplayPanel } from "./DoctorAutopsyPanels";
+
+const NON_BOOK_KEYS = new Set(["ride", "autopsy", "replay", "tick_store", "computed_at"]);
 
 const usd = (v, d = 2) => (v == null ? "—" : `${v < 0 ? "-" : ""}$${Math.abs(Number(v)).toFixed(d)}`);
 const signedUsd = (v) => (v == null ? "—" : `${v >= 0 ? "+" : "-"}$${Math.abs(Number(v)).toFixed(2)}`);
@@ -167,7 +170,7 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
               ride scorecard: {s.technique.ride.n} rode-winner exits · <span className={s.technique.ride.gain_vs_clock_usd_per_ride >= 0 ? "text-lime-300" : "text-rose-300"}>{signedUsd(s.technique.ride.gain_vs_clock_usd_per_ride)}/ride vs the clock</span> · {s.technique.ride.rides_that_beat_clock}/{s.technique.ride.n} beat it · ride threshold {s.technique.ride.current_min_pnl_pct}%{s.technique.ride.proposal != null ? ` → ${s.technique.ride.proposal}%` : ""}
             </div>
           )}
-          {Object.entries(s.technique).filter(([k]) => k !== "ride").map(([book, t]) => {
+          {Object.entries(s.technique).filter(([k]) => !NON_BOOK_KEYS.has(k)).map(([book, t]) => {
             const ex = t.current_exits || {};
             const wi = t.whatif || {};
             const best = wi.best;
@@ -208,6 +211,8 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
               </div>
             );
           })}
+          <AutopsyPanel autopsy={s.technique.autopsy} />
+          <ReplayPanel replay={s.technique.replay} tickStore={s.technique.tick_store} />
         </div>
       )}
 

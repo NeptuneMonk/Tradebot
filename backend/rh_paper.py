@@ -143,6 +143,8 @@ class RHPaperTrader:
         growth = ((cur - first) / first * 100.0) if first > 0 and cur > 0 else 0.0
         if growth < cfg.rh_min_growth_pct * rm:
             return "growth"
+        if growth >= float(getattr(cfg, "rh_max_growth_pct", 400.0) or 400.0):
+            return "chased"
         cutoff_inflow = now - cfg.scanner_recent_inflow_window_s
         cutoff_vel = now - cfg.scanner_holder_velocity_window_s
         inflow = 0.0
