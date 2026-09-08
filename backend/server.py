@@ -1836,7 +1836,10 @@ async def reentry_watchlist():
     for w in bot_state.reentry_watch.values():
         out.append({**w, "remaining_window_s": max(0.0, w["window_s"] - (now - w["exit_time"]))})
     for w in bot_state.rh_paper.watch.values():
-        out.append({**w, "remaining_window_s": max(0.0, w["window_s"] - (now - w["exit_time"]))})
+        if w.get("hot"):
+            out.append({**w, "remaining_window_s": None})   # hot: no clock / no cap — walks away when stale
+        else:
+            out.append({**w, "remaining_window_s": max(0.0, w["window_s"] - (now - w["exit_time"]))})
     return out
 
 

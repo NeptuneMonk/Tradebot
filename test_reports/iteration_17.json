@@ -1,0 +1,29 @@
+{
+  "summary": "Full-stack test of Minimize-Any-Card + Hot Focus features. All acceptance criteria pass: 8 per-card minimize buttons (min-btn-*) collapse to strips (min-strip-*) with headline stats (min-stat-*); localStorage persistence verified across reload for wallet & pl (both minimized and expanded states); minimize-all-btn collapses all 8 cards (strips=8); expand-all-btn restores them (strips=0) without console errors; Bot Control hot-focus-section has all 9 fields (mode-select, cooldown, reserve, lower-lows, weak-bounce-s/pct, stagnant-s/range, breakdown); UI Save Config flow round-trips through PUT /api/bot/config (mode=pause, cooldown=120, breakdown=35 verified via GET, then restored to slow/90/40). GET /api/rh/status returns paper.focus/hot_dropped/hot_board (all empty as expected on paused bot). GET /api/reentry/watchlist → 200. Backend regression: pytest tests/test_rh_paper.py test_rh_dex.py test_rh_discovery.py test_reentry_logic.py → 48 passed.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard initial load", "issues": ["One benign 401 fetch during initial pre-cookie load (auth check race before session cookie applied). Does not affect functionality."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_rh_paper.py",
+    "/app/backend/tests/test_rh_dex.py",
+    "/app/backend/tests/test_rh_discovery.py",
+    "/app/backend/tests/test_reentry_logic.py"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Sections (section-bot-control, etc.) do not expose data-open state; minimize-all/expand-all functionality verified via strip counts and lack of console errors, but future automated regression would benefit from a data-open attribute on CollapsibleSection root."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Session token from /app/memory/.tmp_tok (test_session_1788834360) used as cookie session_token and Bearer token; still valid.",
+  "seed_data_creation": "None; used existing session token.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Config was mutated to (pause,120,35) via UI Save Config and restored to (slow,90,40) via PUT /api/bot/config. Verify defaults if in doubt. Bot remained STOPPED throughout — no start commands issued. Hot board/dropped/focus are all empty because bot is paused and no riding positions exist.",
+  "rca of the issue": "N/A — no issues found."
+}

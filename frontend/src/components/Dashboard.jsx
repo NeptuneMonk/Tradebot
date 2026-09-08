@@ -21,8 +21,11 @@ import CostTrackerCard from "@/components/CostTrackerCard";
 import CollapsibleSection from "@/components/CollapsibleSection";
 import AutopilotCard, { AutopilotSwitch } from "@/components/AutopilotCard";
 import RhWalletCard from "@/components/RhWalletCard";
+import MinimizableCard, { setAllMinimized } from "@/components/MinimizableCard";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Activity, LogOut } from "lucide-react";
+
+const fmtUsd = (v) => (v == null ? "—" : `${v >= 0 ? "+" : "-"}$${Math.abs(v).toFixed(2)}`);
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -347,6 +350,11 @@ export default function Dashboard() {
               {status.enabled ? "RUNNING" : "STOPPED"}
             </button>
           )}
+          <span className="hidden lg:inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-neutral-500" data-testid="minimize-all-group">
+            <button type="button" onClick={() => setAllMinimized(true)} data-testid="minimize-all-btn" className="hover:text-neutral-200 transition-colors duration-100" title="Minimize every window">minimize all</button>
+            <span className="text-neutral-700">/</span>
+            <button type="button" onClick={() => setAllMinimized(false)} data-testid="expand-all-btn" className="hover:text-neutral-200 transition-colors duration-100" title="Expand every window">expand all</button>
+          </span>
           <button
             type="button"
             onClick={handleLogout}
@@ -371,17 +379,28 @@ export default function Dashboard() {
             AUTOPILOT — the Doctor is driving: sizing from bankroll, tuning on $ expectancy, one canary at a time. You keep Start/Stop and live/paper.
           </div>
         )}
-        <AutopilotCard config={config} onConfigUpdate={setConfig} />
-        <RhWalletCard config={config} />
+        <MinimizableCard id="autopilot" title="Autopilot" stat={config?.autopilot_enabled ? "doctor is driving" : "manual"}>
+          <AutopilotCard config={config} onConfigUpdate={setConfig} />
+        </MinimizableCard>
+        <MinimizableCard id="rh-wallet" title="Robinhood wallet" stat={config?.rh_live_trading ? "LIVE" : config?.rh_paper_enabled ? "paper" : "off"}>
+          <RhWalletCard config={config} />
+        </MinimizableCard>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
-          <WalletCard wallet={wallet} />
-          <PLSummaryCard pl={pl} status={status} onReset={refreshAll} />
-          <DailyLossMeter status={status} onReset={refreshAll} />
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 items-start">
+          <MinimizableCard id="wallet" title="Wallet" stat={wallet ? `${wallet.sol_balance.toFixed(4)} SOL` : "—"}>
+            <WalletCard wallet={wallet} />
+          </MinimizableCard>
+          <MinimizableCard id="pl" title="P/L today" stat={fmtUsd(pl?.daily_pnl_usd)}>
+            <PLSummaryCard pl={pl} status={status} onReset={refreshAll} />
+          </MinimizableCard>
+          <MinimizableCard id="daily-loss" title="Daily loss" stat={`$${Number(status?.daily_loss_usd ?? 0).toFixed(2)} / $${Number(status?.daily_kill_switch_usd ?? 0).toFixed(0)}`}>
+            <DailyLossMeter status={status} onReset={refreshAll} />
+          </MinimizableCard>
         </div>
 
         {/* PRIMARY — Active Trades + Recent Launches always visible. */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 items-start">
+          <MinimizableCard id="active-trades" title="Active trades" stat={`${activeTrades.length} open`}>
           <ActiveTradesTable trades={activeTrades} onExit={async (id) => {
             try {
               await api.exitTrade(id);
@@ -397,6 +416,8 @@ export default function Dashboard() {
               refreshAll();
             }
           }} />
+          </MinimizableCard>
+          <MinimizableCard id="launch-feed" title="Live launch feed" stat={`${launches.length} tracked`}>
           <RecentLaunchesFeed
             launches={launches}
             onUnpin={(launchId) =>
@@ -409,13 +430,16 @@ export default function Dashboard() {
               )
             }
           />
+          </MinimizableCard>
         </div>
 
         {/* Trade History — always visible (collapsed cards above feed flow).
             Co-mounted with Classifier Rules so the second column on wide
             screens stays useful. */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
-          <TradeHistoryTable history={history} />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 items-start">
+          <MinimizableCard id="trade-history" title="Trade history" stat={`${history.length} trades`}>
+            <TradeHistoryTable history={history} />
+          </MinimizableCard>
           <CollapsibleSection
             title="Classifier Rules"
             description="entry/exit gates — abort & exit-early rules"

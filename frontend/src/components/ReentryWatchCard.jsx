@@ -56,9 +56,13 @@ export default function ReentryWatchCard({ watchlist, onRefresh }) {
                 <div className="text-[10px] font-mono text-neutral-500 mt-0.5">
                   awaiting <span className="text-amber-400">-{w.pullback_pct?.toFixed(0)}%</span> pullback{w.chain === "rh" && <> or <span className="text-lime-400">+5% breakout</span></>}
                   <span className="mx-1.5">·</span>
-                  attempts <span className="text-neutral-300">{w.attempts}/{w.max_attempts}</span>
+                  attempts <span className="text-neutral-300">{w.attempts}/{w.hot ? "∞" : w.max_attempts}</span>
                   <span className="mx-1.5">·</span>
-                  expires <span className="text-neutral-300" data-testid={`reentry-countdown-${w.mint}`}>{fmtCountdown(w.remaining_window_s ?? 0)}</span>
+                  {w.hot ? (
+                    <>hot <span className="text-amber-400" data-testid={`reentry-hot-${w.mint}`}>no clock · walks away when stale</span></>
+                  ) : (
+                    <>expires <span className="text-neutral-300" data-testid={`reentry-countdown-${w.mint}`}>{fmtCountdown(w.remaining_window_s ?? 0)}</span></>
+                  )}
                 </div>
               </div>
               <button

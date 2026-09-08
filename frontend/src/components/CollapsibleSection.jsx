@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { ChevronDown } from "lucide-react";
+import { MINIMIZE_ALL_EVENT } from "@/components/MinimizableCard";
 
 /**
  * Lazy-loading collapsible wrapper for secondary dashboard panels.
@@ -35,6 +36,16 @@ export default function CollapsibleSection({
 
   const [open, setOpen] = useState(readPref);
   const [everOpened, setEverOpened] = useState(readPref);
+
+  useEffect(() => {
+    const onAll = (e) => {
+      const next = !e.detail?.minimized;
+      setOpen(next);
+      if (next) setEverOpened(true);
+    };
+    window.addEventListener(MINIMIZE_ALL_EVENT, onAll);
+    return () => window.removeEventListener(MINIMIZE_ALL_EVENT, onAll);
+  }, []);
 
   useEffect(() => {
     if (!storageKey) return;

@@ -873,7 +873,63 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                  onChange={(v) => setLocal({ ...local, reentry_breakout_pct: parseFloat(v) || 0 })} step="1" />
         </div>
         <div className="text-[10px] font-mono text-neutral-600">
-          a losing re-entry leg ends the watch · a winning leg refreshes it (attempts carry over)
+          a losing re-entry leg ends a normal watch · a winning leg refreshes it (attempts carry over) · HOT tokens: no cap, no clock — the bot walks away when the chart goes stale (below)
+        </div>
+        <div className="border border-amber-900/50 p-2 space-y-2" data-testid="hot-focus-section">
+          <div className="text-[10px] uppercase tracking-[0.15em] text-amber-400/90 inline-flex items-center gap-1">
+            hot focus · play the runners out
+            <HelpHint label="help: hot focus">While any HOT token is in play (a hot re-entry watch, or a position that is riding / up ≥ the hot threshold) fresh token discovery slows down so the bot plays the runner out instead of chasing new launches. SLOW = one fresh entry per cooldown and reserved position slots kept free for hot re-entries. PAUSE = no fresh entries at all while hot. Re-entries and manual entries are never blocked.</HelpHint>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase tracking-[0.15em] text-neutral-500">Focus mode</span>
+              <select data-testid="hot-focus-mode-select" value={local.hot_focus_mode ?? "slow"}
+                      onChange={(e) => setLocal({ ...local, hot_focus_mode: e.target.value })}
+                      className="bg-neutral-950 border border-neutral-800 px-2 py-1 font-mono text-sm focus:border-blue-500 focus:outline-none">
+                <option value="slow">slow discovery</option>
+                <option value="pause">pause discovery</option>
+                <option value="off">off</option>
+              </select>
+            </label>
+            <Field label="Fresh cooldown (s)" testid="hot-focus-cooldown-input"
+                   hint="SLOW mode: at most one fresh (non-hot) entry per this many seconds while a hot token is in play."
+                   value={local.hot_focus_fresh_cooldown_s ?? 90}
+                   onChange={(v) => setLocal({ ...local, hot_focus_fresh_cooldown_s: parseInt(v, 10) || 0 })} step="15" />
+            <Field label="Reserved slots" testid="hot-focus-reserve-input"
+                   hint="SLOW mode: position slots kept free for hot re-entries — fresh entries can't fill them."
+                   value={local.hot_focus_reserve_slots ?? 1}
+                   onChange={(v) => setLocal({ ...local, hot_focus_reserve_slots: parseInt(v, 10) || 0 })} step="1" />
+          </div>
+          <div className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 inline-flex items-center gap-1">
+            walk away when
+            <HelpHint label="help: walk away">Hot tokens have no attempt cap or time window. Instead the watch is dropped when the token stops trending: N consecutive lower swing lows (with a lower high) or N losing legs in a row; sitting near its trough without a meaningful bounce; a flat range and/or no buyers for the stagnation window; or a price this far under the hot peak. The Hot Token Board shows why each token was dropped.</HelpHint>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+            <Field label="Lower lows (n)" testid="hot-lower-lows-input"
+                   hint="Consecutive lower swing lows (needs a lower high too) — or losing re-entry legs in a row — before walking away."
+                   value={local.hot_walk_lower_lows_n ?? 2}
+                   onChange={(v) => setLocal({ ...local, hot_walk_lower_lows_n: parseInt(v, 10) || 0 })} step="1" />
+            <Field label="Weak bounce (s)" testid="hot-weak-bounce-s-input"
+                   hint="After a real dip, if price sits this long near its trough…"
+                   value={local.hot_weak_bounce_s ?? 120}
+                   onChange={(v) => setLocal({ ...local, hot_weak_bounce_s: parseInt(v, 10) || 0 })} step="15" />
+            <Field label="Weak bounce (%)" testid="hot-weak-bounce-pct-input"
+                   hint="…without lifting at least this much off the trough, the bounce is insignificant → walk away."
+                   value={local.hot_weak_bounce_pct ?? 3}
+                   onChange={(v) => setLocal({ ...local, hot_weak_bounce_pct: parseFloat(v) || 0 })} step="0.5" />
+            <Field label="Stagnant (s)" testid="hot-stagnant-s-input"
+                   hint="Window for the stagnation checks: no buyers at all, or price range below Stagnant % for this long → walk away."
+                   value={local.hot_stagnant_s ?? 180}
+                   onChange={(v) => setLocal({ ...local, hot_stagnant_s: parseInt(v, 10) || 0 })} step="30" />
+            <Field label="Stagnant range (%)" testid="hot-stagnant-range-input"
+                   hint="Price high-low range over the stagnation window below this = flat → walk away."
+                   value={local.hot_stagnant_range_pct ?? 4}
+                   onChange={(v) => setLocal({ ...local, hot_stagnant_range_pct: parseFloat(v) || 0 })} step="0.5" />
+            <Field label="Breakdown (%)" testid="hot-breakdown-input"
+                   hint="Price this far below the post-exit peak = the run is over → walk away."
+                   value={local.hot_breakdown_pct ?? 40}
+                   onChange={(v) => setLocal({ ...local, hot_breakdown_pct: parseFloat(v) || 0 })} step="5" />
+          </div>
         </div>
       </div>
 

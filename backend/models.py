@@ -264,6 +264,18 @@ class BotConfig(BaseModel):
     hot_token_pnl_pct: float = 25.0
     hot_reentry_size_mult: float = 1.5
     hot_reentry_extra_attempts: int = 2
+    # Hot focus: while a HOT token is in play (hot re-entry watch or a riding position) fresh discovery
+    # slows down — "slow": one fresh entry per cooldown + reserved slots; "pause": no fresh entries; "off".
+    hot_focus_mode: str = "slow"
+    hot_focus_fresh_cooldown_s: int = 90
+    hot_focus_reserve_slots: int = 1
+    # Hot tokens have NO attempt cap / window — the bot walks away when the chart goes stale:
+    hot_walk_lower_lows_n: int = 2          # consecutive lower swing lows (or losing legs) before walking away
+    hot_weak_bounce_s: int = 120            # sitting near the trough this long …
+    hot_weak_bounce_pct: float = 3.0        # … without lifting this much off it
+    hot_stagnant_s: int = 180               # price range < range_pct and/or no buyers for this long
+    hot_stagnant_range_pct: float = 4.0
+    hot_breakdown_pct: float = 40.0         # price this far below the hot peak = broke down
     hold_timeout_velocity_extend_enabled: bool = True
     hold_timeout_velocity_window_s: int = 10
     hold_timeout_velocity_min_pct: float = 0.0

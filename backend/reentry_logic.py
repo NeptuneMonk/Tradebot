@@ -77,6 +77,76 @@ def recent_buyers_and_inflow(buy_events, now: float, window_s: float) -> tuple[i
     return len(wallets), amt
 
 
+def update_swings(w: dict, price: float, reversal_pct: float) -> None:
+    """Zig-zag swing tracker on the watch: a move of reversal_pct against the current leg
+    completes a swing high/low. Feeds the hot-token lower-lows walk-away rule."""
+    if price <= 0:
+        return
+    z = w.get("swings")
+    if z is None:
+        w["swings"] = {"dir": "up", "ext": price, "lows": [], "highs": []}
+        return
+    r = reversal_pct / 100.0
+    if z["dir"] == "up":
+        if price > z["ext"]:
+            z["ext"] = price
+        elif price <= z["ext"] * (1.0 - r):
+            z["highs"].append(z["ext"])
+            z["dir"], z["ext"] = "down", price
+    else:
+        if price < z["ext"]:
+            z["ext"] = price
+        elif price >= z["ext"] * (1.0 + r):
+            z["lows"].append(z["ext"])
+            z["dir"], z["ext"] = "up", price
+    del z["lows"][:-6], z["highs"][:-6]
+
+
+def _tail_declines(xs: list) -> int:
+    n = 0
+    for i in range(len(xs) - 1, 0, -1):
+        if xs[i] < xs[i - 1]:
+            n += 1
+        else:
+            break
+    return n
+
+
+def hot_walk_away_reason(w: dict, b: dict, price: float, now: float, cfg) -> str | None:
+    """Why a HOT watch should be dropped: the token stopped trending (user rule — no attempt cap,
+    just walk away on lower lows / weak bounce / stagnation / breakdown)."""
+    if price <= 0:
+        return None
+    n_lows = int(_cfg(cfg, "hot_walk_lower_lows_n", 2))
+    if int(w.get("strikes") or 0) >= n_lows:
+        return "losing_legs"
+    z = w.get("swings") or {}
+    if _tail_declines(z.get("lows") or []) >= n_lows and _tail_declines(z.get("highs") or []) >= 1:
+        return "lower_lows"
+    peak = float(w.get("peak_price_after_exit") or 0)
+    if peak > 0 and price < peak * (1.0 - float(_cfg(cfg, "hot_breakdown_pct", 40.0)) / 100.0):
+        return "broke_down"
+    trough = float(w.get("trough_after_peak") or price)
+    pullback_pct = float(w.get("pullback_pct") or _cfg(cfg, "reentry_pullback_pct", 25.0))
+    dipped = peak > 0 and (peak - trough) / peak * 100.0 >= pullback_pct / 2.0
+    weak_s = float(_cfg(cfg, "hot_weak_bounce_s", 120))
+    if (dipped and now - float(w.get("trough_ts") or now) >= weak_s
+            and price < trough * (1.0 + float(_cfg(cfg, "hot_weak_bounce_pct", 3.0)) / 100.0)):
+        return "weak_bounce"
+    stag_s = float(_cfg(cfg, "hot_stagnant_s", 180))
+    age = now - float(w.get("exit_time") or now)
+    if age < stag_s:
+        return None
+    if recent_buyers_and_inflow(b.get("buy_events"), now, stag_s)[0] == 0:
+        return "no_buyers"
+    recent = [p for ts, p in (b.get("price_samples") or ()) if ts >= now - stag_s and p > 0]
+    if len(recent) >= 3:
+        hi, lo = max(recent), min(recent)
+        if hi > 0 and (hi - lo) / hi * 100.0 < float(_cfg(cfg, "hot_stagnant_range_pct", 4.0)):
+            return "stagnant"
+    return None
+
+
 def trigger_context(w: dict, price: float, buyers_recent: int, trigger: str) -> dict:
     """Audit record stored on the re-entry trade: why it fired."""
     exit_price = float(w.get("exit_price_quote") or w.get("exit_price_sol") or 0)

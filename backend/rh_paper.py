@@ -20,12 +20,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from models import Trade, now_utc
 from ws_hub import hub
-from reentry_logic import decide_reentry, recent_buyers_and_inflow, trigger_context
+from reentry_logic import (decide_reentry, hot_walk_away_reason, recent_buyers_and_inflow, trigger_context,
+                           update_swings, update_watch_price)
 import rh_dex
 import rh_live
 import rh_wallet
@@ -71,6 +73,8 @@ class RHPaperTrader:
         self.positions: dict[str, dict] = {}
         self.entered: set[str] = set()
         self.watch: dict[str, dict] = {}   # re-entry watch after winning exits
+        self.hot_history: deque = deque(maxlen=20)   # hot tokens we walked away from (reason + stats)
+        self._last_fresh_entry_ts = 0.0
         self._task: asyncio.Task | None = None
         self._pending_entries: set[str] = set()
         self.pending_buys: dict[str, dict] = {}
@@ -159,10 +163,16 @@ class RHPaperTrader:
 
     def _scan_entries(self, now: float):
         self.stats["last_scan_ts"] = now
+        focus_block = self._focus_blocks_fresh(now)
         for token, b in list(self.state.rh_discovery.tracking.items()):
             reason = self._gates(token, b, now)
+            if reason is None and focus_block:
+                reason = focus_block   # would have entered — deferred by hot focus
+                self.stats["focus_deferred"] = self.stats.get("focus_deferred", 0) + 1
             if reason is None:
                 self._pending_entries.add(token)
+                self._last_fresh_entry_ts = now
+                focus_block = self._focus_blocks_fresh(now)   # one fresh entry per cooldown while focused
                 asyncio.create_task(self._enter(token))
             else:
                 self.stats["skipped"] += 1
@@ -184,44 +194,126 @@ class RHPaperTrader:
     def _watch_after_exit(self, token: str, t: dict, price: float, b: dict | None, now: float):
         cfg = self.state.config
         prev = self.watch.get(token)
+        n_lows = int(getattr(cfg, "hot_walk_lower_lows_n", 2))
         if (t.get("pnl_pct") or 0) <= 0:
-            # A losing leg ends the watch — no chained retries off a stale peak.
+            if prev and prev.get("hot"):
+                # HOT: a losing leg is one lower-low strike, not the end — walk away after n in a row
+                prev["strikes"] = int(prev.get("strikes") or 0) + 1
+                prev["last_exit_time"], prev["last_exit_was_sl"] = now, True
+                prev["exit_price_quote"] = price if price > 0 else prev.get("exit_price_quote")
+                if prev["strikes"] >= n_lows:
+                    self._drop_hot(token, prev, "losing_legs", now)
+                else:
+                    logger.info(f"rh_paper HOT {t.get('symbol')} losing leg — strike {prev['strikes']}/{n_lows}, still watching")
+                return
+            # A losing leg ends a normal watch — no chained retries off a stale peak.
             self.watch.pop(token, None)
             return
         if not getattr(cfg, "reentry_enabled", True) or price <= 0:
             return
         if not b or b.get("graduated"):
             return
-        hot = (t.get("pnl_pct") or 0) >= float(getattr(cfg, "hot_token_pnl_pct", 25.0))
-        extra_att = int(getattr(cfg, "hot_reentry_extra_attempts", 2)) if hot else 0
+        hot = bool(prev and prev.get("hot")) or (t.get("pnl_pct") or 0) >= float(getattr(cfg, "hot_token_pnl_pct", 25.0))
         hot_mult = float(getattr(cfg, "hot_reentry_size_mult", 1.5)) if hot else 1.0
-        if hot:
-            logger.info(f"rh_paper HOT {t.get('symbol')} (+{t.get('pnl_pct'):.0f}%) — boosted re-entry watch ×{hot_mult:g}, +{extra_att} attempts")
+        if hot and not (prev and prev.get("hot")):
+            self.stats["hot_tokens"] = self.stats.get("hot_tokens", 0) + 1
+            logger.info(f"rh_paper HOT {t.get('symbol')} (+{t.get('pnl_pct'):.0f}%) — no attempt cap, ×{hot_mult:g} size; walk away when it goes stale")
         self.watch[token] = {
             "hot": hot,
             "attempts": int(prev.get("attempts") or 0) if prev else 0,
+            "strikes": 0,
+            "swings": (prev or {}).get("swings") if hot else None,
+            "hot_since": (prev or {}).get("hot_since") or now if hot else None,
             "last_exit_time": now, "last_exit_was_sl": False,
-            "trough_after_peak": price,
+            "trough_after_peak": price, "trough_ts": now,
             "mint": token, "chain": CHAIN, "name": t.get("name"), "symbol": t.get("symbol"),
             "exit_price_quote": price, "exit_price_sol": 0.0, "quote_symbol": t.get("quote_symbol"),
-            "exit_time": now, "max_attempts": int(cfg.reentry_max_attempts) + extra_att,
-            "window_s": int(cfg.reentry_window_seconds) * (2 if hot else 1), "pullback_pct": float(cfg.reentry_pullback_pct),
+            "exit_time": now,
+            "max_attempts": None if hot else int(cfg.reentry_max_attempts),          # hot: uncapped
+            "window_s": None if hot else int(cfg.reentry_window_seconds),            # hot: no clock
+            "pullback_pct": float(cfg.reentry_pullback_pct),
             "size_multiplier": float(cfg.reentry_size_multiplier) * hot_mult, "original_pnl_usd": t.get("pnl_usd") or 0.0,
             "peak_price_after_exit": price, "creator": t.get("creator"),
         }
 
+    def _drop_hot(self, token: str, w: dict, reason: str, now: float):
+        self.watch.pop(token, None)
+        self.stats["hot_walk_aways"] = self.stats.get("hot_walk_aways", 0) + 1
+        self.hot_history.appendleft({"mint": token, "symbol": w.get("symbol"), "reason": reason, "ts": now,
+                                     "attempts": int(w.get("attempts") or 0), "strikes": int(w.get("strikes") or 0),
+                                     "played_s": round(now - float(w.get("hot_since") or w.get("exit_time") or now)),
+                                     "original_pnl_usd": w.get("original_pnl_usd")})
+        logger.warning(f"rh_paper HOT {w.get('symbol')} walk away — {reason} after {int(w.get('attempts') or 0)} re-entries")
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        asyncio.create_task(hub.broadcast("rh_hot_dropped", {"mint": token, "symbol": w.get("symbol"), "reason": reason, "chain": CHAIN}))
+
+    def hot_in_play(self) -> list[str]:
+        """Symbols keeping the bot in FOCUS: hot watches + positions that are riding / up ≥ hot threshold."""
+        cfg = self.state.config
+        thr = float(getattr(cfg, "hot_token_pnl_pct", 25.0))
+        out = [w.get("symbol") or m[:8] for m, w in self.watch.items() if w.get("hot")]
+        for m, p in self.positions.items():
+            t = p["trade"]
+            up = ((p.get("_last_price") or 0) / t["entry_price_quote"] - 1.0) * 100.0 if t.get("entry_price_quote") else 0.0
+            if p.get("_riding") or up >= thr:
+                out.append(t.get("symbol") or m[:8])
+        return out
+
+    def focus_state(self, now: float) -> dict:
+        cfg = self.state.config
+        mode = str(getattr(cfg, "hot_focus_mode", "slow") or "slow")
+        hot = self.hot_in_play()
+        active = mode != "off" and bool(hot)
+        cooldown = float(getattr(cfg, "hot_focus_fresh_cooldown_s", 90))
+        left = max(0.0, cooldown - (now - self._last_fresh_entry_ts)) if active and mode == "slow" else 0.0
+        return {"active": active, "mode": mode, "hot": hot, "cooldown_left_s": round(left),
+                "reserved_slots": int(getattr(cfg, "hot_focus_reserve_slots", 1)) if active else 0}
+
+    def _focus_blocks_fresh(self, now: float) -> str | None:
+        f = self.focus_state(now)
+        if not f["active"]:
+            return None
+        if f["mode"] == "pause":
+            return "focus_pause"
+        cfg = self.state.config
+        if f["cooldown_left_s"] > 0:
+            return "focus_cooldown"
+        if len(self.positions) + len(self._pending_entries) >= int(cfg.rh_max_positions) - f["reserved_slots"]:
+            return "focus_reserved_slot"
+        return None
+
     def _scan_reentries(self, now: float):
         cfg = self.state.config
+        bounce_confirm = float(getattr(cfg, "reentry_bounce_confirm_pct", 3.0))
         for token, w in list(self.watch.items()):
-            if now - w["exit_time"] > w["window_s"] or w["attempts"] >= w["max_attempts"]:
+            hot = bool(w.get("hot"))
+            if not hot and (now - w["exit_time"] > w["window_s"] or w["attempts"] >= w["max_attempts"]):
                 self.watch.pop(token, None)
                 continue
             b = self.state.rh_discovery.tracking.get(token)
             if not b or b.get("graduated"):
-                self.watch.pop(token, None)
+                if hot:
+                    self._drop_hot(token, w, "graduated" if b else "tracking_lost", now)
+                else:
+                    self.watch.pop(token, None)
                 continue
             price = b["last_price_quote"]
-            if price <= 0 or token in self.positions or token in self._pending_entries:
+            if price <= 0:
+                continue
+            if hot:
+                prev_trough = w.get("trough_after_peak")
+                update_watch_price(w, price)
+                if w.get("trough_after_peak") != prev_trough:
+                    w["trough_ts"] = now
+                update_swings(w, price, bounce_confirm)
+                reason = hot_walk_away_reason(w, b, price, now, cfg)
+                if reason and token not in self.positions:
+                    self._drop_hot(token, w, reason, now)
+                    continue
+            if token in self.positions or token in self._pending_entries:
                 continue
             window_s = float(getattr(cfg, "exit_momentum_window_s", 10))
             n_buyers, inflow_q = recent_buyers_and_inflow(b["buy_events"], now, window_s)
@@ -919,18 +1011,26 @@ class RHPaperTrader:
         now = time.time()
         out = []
         for token, w in self.watch.items():
-            left = float(w.get("window_s") or 0) - (now - float(w.get("exit_time") or now))
-            if left <= 0:
+            hot = bool(w.get("hot"))
+            left = None if hot else float(w.get("window_s") or 0) - (now - float(w.get("exit_time") or now))
+            if left is not None and left <= 0:
                 continue
-            out.append({"mint": token, "symbol": w.get("symbol"), "hot": bool(w.get("hot")),
-                        "attempts_left": max(0, int(w.get("max_attempts") or 0) - int(w.get("attempts") or 0)),
-                        "size_multiplier": w.get("size_multiplier"), "seconds_left": int(left),
+            z = w.get("swings") or {}
+            out.append({"mint": token, "symbol": w.get("symbol"), "hot": hot,
+                        "attempts": int(w.get("attempts") or 0),
+                        "attempts_left": None if hot else max(0, int(w.get("max_attempts") or 0) - int(w.get("attempts") or 0)),
+                        "strikes": int(w.get("strikes") or 0),
+                        "lows": len(z.get("lows") or []), "highs": len(z.get("highs") or []),
+                        "played_s": int(now - float(w.get("hot_since") or w.get("exit_time") or now)),
+                        "size_multiplier": w.get("size_multiplier"), "seconds_left": None if left is None else int(left),
                         "last_trigger": w.get("last_trigger"), "original_pnl_usd": w.get("original_pnl_usd")})
         out.sort(key=lambda r: (not r["hot"], -(r["original_pnl_usd"] or 0)))
         return out
 
     def status(self) -> dict:
+        now = time.time()
         return {**self.stats, "active": self._active(), "open_positions": len(self.positions), "hot_board": self.hot_board(),
+                "focus": self.focus_state(now), "hot_dropped": list(self.hot_history),
                 "positions": [{"mint": m, "symbol": p["trade"].get("symbol"), "entry_price_quote": p["trade"].get("entry_price_quote"),
                                "last_price": p["_last_price"], "peak_price": p["peak_price"], "riding": bool(p.get("_riding")),
                                "venue": p["trade"].get("venue") or "curve",

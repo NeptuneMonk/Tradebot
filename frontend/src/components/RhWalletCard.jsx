@@ -15,14 +15,15 @@ export default function RhWalletCard({ config }) {
   const [showImport, setShowImport] = useState(false);
   const [pk, setPk] = useState("");
   const [busy, setBusy] = useState(false);
-  const [board, setBoard] = useState({ hot: [], positions: [] });
+  const [board, setBoard] = useState({ hot: [], positions: [], focus: null, dropped: [] });
 
   const load = useCallback(async () => {
     try { setW(await api.rhWallet()); } catch { /* best effort */ }
     try {
       const st = await api.rhStatus();
       setFeed({ ...(st.seq_feed || {}), head: st.head });
-      setBoard({ hot: (st.paper && st.paper.hot_board) || [], positions: (st.paper && st.paper.positions) || [] });
+      setBoard({ hot: (st.paper && st.paper.hot_board) || [], positions: (st.paper && st.paper.positions) || [],
+                 focus: (st.paper && st.paper.focus) || null, dropped: (st.paper && st.paper.hot_dropped) || [] });
     } catch { /* best effort */ }
   }, []);
   useEffect(() => {
@@ -102,17 +103,34 @@ export default function RhWalletCard({ config }) {
               {w.stake_usd > 0 && w.stake_usd < w.fee_floor.min_stake_usd && <> · below the ${Number(w.fee_floor.min_stake_usd).toFixed(2)} fee floor — gas eats &gt;{w.fee_floor.max_gas_drag_pct}% of every trade</>}
             </div>
           )}
-          {(board.positions.some((p) => p.riding) || board.hot.length > 0) && (
-            <div className="mt-2 border border-neutral-800/70 p-2 space-y-1" data-testid="rh-hot-board">
-              <div className="text-[9px] uppercase tracking-[0.15em] text-neutral-600">hot token board</div>
+          {(board.positions.some((p) => p.riding) || board.hot.length > 0 || board.focus?.active || (board.dropped || []).length > 0) && (
+            <div className={`mt-2 border p-2 space-y-1 ${board.focus?.active ? "border-amber-800/70" : "border-neutral-800/70"}`} data-testid="rh-hot-board">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[9px] uppercase tracking-[0.15em] text-neutral-600">hot token board</div>
+                {board.focus?.active && (
+                  <span className="text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 border border-amber-700 text-amber-300 bg-amber-950/40" data-testid="rh-focus-badge"
+                        title={`Playing ${board.focus.hot.join(", ")} out — fresh discovery ${board.focus.mode === "pause" ? "paused" : `slowed (1 entry / cooldown${board.focus.cooldown_left_s ? `, ${board.focus.cooldown_left_s}s left` : ""}, ${board.focus.reserved_slots} slot reserved)`}`}>
+                    focus · {board.focus.mode === "pause" ? "discovery paused" : "discovery slowed"}{board.focus.cooldown_left_s ? ` · ${board.focus.cooldown_left_s}s` : ""}
+                  </span>
+                )}
+              </div>
               {board.positions.filter((p) => p.riding).map((p) => (
                 <div key={p.mint} className="text-[10px] font-mono text-lime-300" data-testid={`rh-riding-${p.mint}`}>
-                  ▲ riding {p.symbol} · {(((p.last_price || 0) / (p.entry_price_quote || 1) - 1) * 100).toFixed(0)}% · pyramids {p.pyramids || 0}
+                  ▲ riding {p.symbol} · {(((p.last_price || 0) / (p.entry_price_quote || 1) - 1) * 100).toFixed(0)}% · pyramids {p.pyramids || 0}{p.venue === "pool" ? " · pool" : ""}
                 </div>
               ))}
               {board.hot.map((h) => (
                 <div key={h.mint} className={`text-[10px] font-mono ${h.hot ? "text-amber-300" : "text-neutral-500"}`} data-testid={`rh-hot-${h.mint}`}>
-                  {h.hot ? "●" : "○"} {h.symbol || h.mint.slice(0, 8)} · {h.attempts_left} re-entr{h.attempts_left === 1 ? "y" : "ies"} left · size ×{Number(h.size_multiplier || 0).toFixed(2)} · {Math.floor(h.seconds_left / 60)}m{String(h.seconds_left % 60).padStart(2, "0")}s{h.last_trigger ? ` · last ${h.last_trigger}` : ""}
+                  {h.hot ? "●" : "○"} {h.symbol || h.mint.slice(0, 8)} · {h.hot
+                    ? <>{h.attempts} re-entr{h.attempts === 1 ? "y" : "ies"} · no cap · size ×{Number(h.size_multiplier || 0).toFixed(2)} · {Math.floor((h.played_s || 0) / 60)}m in play · lows {h.lows}{h.strikes ? ` · strikes ${h.strikes}` : ""}</>
+                    : <>{h.attempts_left} re-entr{h.attempts_left === 1 ? "y" : "ies"} left · size ×{Number(h.size_multiplier || 0).toFixed(2)} · {Math.floor((h.seconds_left || 0) / 60)}m{String((h.seconds_left || 0) % 60).padStart(2, "0")}s</>}
+                  {h.last_trigger ? ` · last ${h.last_trigger}` : ""}
+                </div>
+              ))}
+              {(board.dropped || []).slice(0, 5).map((d) => (
+                <div key={`${d.mint}-${d.ts}`} className="text-[10px] font-mono text-neutral-500" data-testid={`rh-hot-dropped-${d.mint}`}
+                     title={`Walked away: ${d.reason} · ${d.attempts} re-entries · ${d.strikes} strikes · ${Math.round((d.played_s || 0) / 60)}m in play`}>
+                  ✕ {d.symbol || d.mint.slice(0, 8)} · walked away · {String(d.reason || "").replace(/_/g, " ")} · {d.attempts} re-entr{d.attempts === 1 ? "y" : "ies"} · {Math.round((d.played_s || 0) / 60)}m
                 </div>
               ))}
             </div>

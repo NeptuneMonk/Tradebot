@@ -426,17 +426,91 @@ def test_winner_rides_past_hold_cap_until_trail_or_ceiling():
     assert st.rh_paper._decide_exit(pos3, b, now) == "max_hold"
 
 
-def test_hot_winner_gets_boosted_reentry_watch():
+def test_hot_winner_gets_uncapped_watch_and_focus():
     st = make_state(reentry_enabled=True, reentry_max_attempts=2, reentry_window_seconds=300, reentry_size_multiplier=0.5,
-                    hot_token_pnl_pct=25.0, hot_reentry_size_mult=1.5, hot_reentry_extra_attempts=2)
+                    hot_token_pnl_pct=25.0, hot_reentry_size_mult=1.5, hot_focus_mode="slow",
+                    hot_focus_fresh_cooldown_s=90, hot_focus_reserve_slots=1, rh_max_positions=3)
     now = time.time()
     b = hot_bucket(st.rh_discovery, now, price=1e-9)
     enter(st)
+    assert st.rh_paper.focus_state(now)["active"] is False
     b["last_price_quote"] = 1.6e-9                 # +60% → hot
     asyncio.run(st.rh_paper.exit(TOKEN, "take_profit"))
     w = st.rh_paper.watch[TOKEN]
-    assert w["hot"] and w["max_attempts"] == 4 and w["window_s"] == 600 and abs(w["size_multiplier"] - 0.75) < 1e-9
-    t = st.rh_paper.closed[-1] if hasattr(st.rh_paper, "closed") else None
+    assert w["hot"] and w["max_attempts"] is None and w["window_s"] is None and abs(w["size_multiplier"] - 0.75) < 1e-9
+    f = st.rh_paper.focus_state(now)
+    assert f["active"] and f["mode"] == "slow" and f["hot"] == [b["symbol"]] and f["reserved_slots"] == 1
+    # focus gating for FRESH entries: cooldown after the last fresh entry, then reserved slot
+    st.rh_paper._last_fresh_entry_ts = now - 10
+    assert st.rh_paper._focus_blocks_fresh(now) == "focus_cooldown"
+    st.rh_paper._last_fresh_entry_ts = now - 100
+    assert st.rh_paper._focus_blocks_fresh(now) is None
+    st.rh_paper._pending_entries.update({"0x1", "0x2"})    # 2 of 3 slots used → the last one is reserved
+    assert st.rh_paper._focus_blocks_fresh(now) == "focus_reserved_slot"
+    st.rh_paper._pending_entries.clear()
+    st.config.hot_focus_mode = "pause"
+    assert st.rh_paper._focus_blocks_fresh(now) == "focus_pause"
+    st.config.hot_focus_mode = "off"
+    assert st.rh_paper._focus_blocks_fresh(now) is None
+    board = st.rh_paper.status()
+    row = board["hot_board"][0]
+    assert row["hot"] and row["attempts_left"] is None and row["seconds_left"] is None and "focus" in board
+
+
+def test_hot_watch_walks_away_on_lower_lows_and_losing_legs():
+    st = make_state(reentry_enabled=True, hot_token_pnl_pct=25.0, hot_walk_lower_lows_n=2, reentry_bounce_confirm_pct=3.0,
+                    hot_stagnant_s=100000, hot_weak_bounce_s=100000, hot_breakdown_pct=90.0)
+    now = time.time()
+    b = hot_bucket(st.rh_discovery, now, price=1e-9)
+    enter(st)
+    b["last_price_quote"] = 1.6e-9
+    asyncio.run(st.rh_paper.exit(TOKEN, "take_profit"))
+    w = st.rh_paper.watch[TOKEN]
+    # zig-zag: 1.6 → 1.4 (low) → 1.55 (lower high) → 1.3 (lower low) → 1.4 (lower high) → 1.2 (lower low) → 1.3
+    for px in (1.6e-9, 1.4e-9, 1.55e-9, 1.3e-9, 1.4e-9, 1.2e-9, 1.3e-9):
+        b["last_price_quote"] = px
+        st.rh_paper._scan_reentries(now + 30)
+        if TOKEN not in st.rh_paper.watch:
+            break
+    assert TOKEN not in st.rh_paper.watch
+    d = st.rh_paper.hot_history[0]
+    assert d["reason"] == "lower_lows" and d["mint"] == TOKEN and st.rh_paper.stats["hot_walk_aways"] == 1
+    # losing legs: a losing re-entry on a hot token is a strike, the second one drops the watch
+    b["last_price_quote"] = 1e-9
+    st.rh_paper.entered.discard(TOKEN)
+    enter(st)
+    b["last_price_quote"] = 1.6e-9
+    asyncio.run(st.rh_paper.exit(TOKEN, "take_profit"))
+    assert st.rh_paper.watch[TOKEN]["hot"]
+    for _ in range(2):
+        b["last_price_quote"] = 1.5e-9
+        st.rh_paper.entered.discard(TOKEN)
+        enter(st)
+        b["last_price_quote"] = 1.3e-9
+        asyncio.run(st.rh_paper.exit(TOKEN, "stop_loss"))
+        w = st.rh_paper.watch.get(TOKEN)
+        if w:
+            assert w["hot"] and w["strikes"] == 1
+    assert TOKEN not in st.rh_paper.watch and st.rh_paper.hot_history[0]["reason"] == "losing_legs"
+
+
+def test_hot_watch_walks_away_when_stagnant_or_weak_bounce():
+    from reentry_logic import hot_walk_away_reason
+    cfg = dict(hot_walk_lower_lows_n=2, hot_weak_bounce_s=120, hot_weak_bounce_pct=3.0, hot_stagnant_s=180,
+               hot_stagnant_range_pct=4.0, hot_breakdown_pct=40.0, reentry_pullback_pct=25.0)
+    now = 1000.0
+    w = {"peak_price_after_exit": 2e-9, "trough_after_peak": 1.5e-9, "trough_ts": now - 130, "exit_time": now - 60, "pullback_pct": 25.0}
+    b = {"buy_events": [(now - 5, 0.01, "0xa")], "price_samples": []}
+    assert hot_walk_away_reason(w, b, 1.52e-9, now, cfg) == "weak_bounce"       # 25% dip, 130s near the trough, +1.3% only
+    assert hot_walk_away_reason(w, b, 1.6e-9, now, cfg) is None                # bounced +6.7% → still alive
+    assert hot_walk_away_reason(w, b, 1.1e-9, now, cfg) == "broke_down"        # 45% under the peak
+    w2 = {"peak_price_after_exit": 2e-9, "trough_after_peak": 1.98e-9, "trough_ts": now, "exit_time": now - 200, "pullback_pct": 25.0}
+    b2 = {"buy_events": [], "price_samples": [(now - 150, 1.99e-9), (now - 100, 2.0e-9), (now - 50, 1.98e-9)]}
+    assert hot_walk_away_reason(w2, b2, 1.99e-9, now, cfg) == "no_buyers"
+    b2["buy_events"] = [(now - 5, 0.01, "0xa")]
+    assert hot_walk_away_reason(w2, b2, 1.99e-9, now, cfg) == "stagnant"       # 1% range over 180s
+    b2["price_samples"].append((now - 10, 2.2e-9))
+    assert hot_walk_away_reason(w2, b2, 2.2e-9, now, cfg) is None             # 10% range → trending
 
 
 def test_pyramid_adds_on_higher_high_while_riding():
