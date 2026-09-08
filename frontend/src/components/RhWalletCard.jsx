@@ -121,9 +121,9 @@ export default function RhWalletCard({ config }) {
               ))}
               {board.hot.map((h) => (
                 <div key={h.mint} className={`text-[10px] font-mono ${h.hot ? "text-amber-300" : "text-neutral-500"}`} data-testid={`rh-hot-${h.mint}`}>
-                  {h.hot ? "●" : "○"} {h.symbol || h.mint.slice(0, 8)} · {h.hot
-                    ? <>{h.attempts} re-entr{h.attempts === 1 ? "y" : "ies"} · no cap · size ×{Number(h.size_multiplier || 0).toFixed(2)} · {Math.floor((h.played_s || 0) / 60)}m in play · lows {h.lows}{h.strikes ? ` · strikes ${h.strikes}` : ""}</>
-                    : <>{h.attempts_left} re-entr{h.attempts_left === 1 ? "y" : "ies"} left · size ×{Number(h.size_multiplier || 0).toFixed(2)} · {Math.floor((h.seconds_left || 0) / 60)}m{String((h.seconds_left || 0) % 60).padStart(2, "0")}s</>}
+                  {h.hot ? "●" : h.flush ? "◐" : "○"} {h.symbol || h.mint.slice(0, 8)} · {h.hot
+                    ? <>{h.attempts} re-entr{h.attempts === 1 ? "y" : "ies"} · no cap · size ×{Number(h.size_multiplier || 0).toFixed(2)} · {Math.floor((h.played_s || 0) / 60)}m in play · lows {h.lows}{h.strikes ? ` · strikes ${h.strikes}` : ""}{h.flush_exits ? ` · ${h.flush_exits} flush${h.flush_exits === 1 ? "" : "es"} survived` : ""}</>
+                    : <>{h.flush ? "flush recovery · " : ""}{h.attempts_left} re-entr{h.attempts_left === 1 ? "y" : "ies"} left · size ×{Number(h.size_multiplier || 0).toFixed(2)} · {Math.floor((h.seconds_left || 0) / 60)}m{String((h.seconds_left || 0) % 60).padStart(2, "0")}s</>}
                   {h.last_trigger ? ` · last ${h.last_trigger}` : ""}
                 </div>
               ))}

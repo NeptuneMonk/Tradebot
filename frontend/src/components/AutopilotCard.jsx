@@ -4,9 +4,9 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import HelpHint from "./HelpHint";
 import ProfitSweepPanel from "./ProfitSweepPanel";
-import { AutopsyPanel, ReplayPanel } from "./DoctorAutopsyPanels";
+import { AutopsyPanel, ReplayPanel, FlushPanel } from "./DoctorAutopsyPanels";
 
-const NON_BOOK_KEYS = new Set(["ride", "autopsy", "replay", "tick_store", "computed_at"]);
+const NON_BOOK_KEYS = new Set(["ride", "autopsy", "replay", "tick_store", "computed_at", "flush"]);
 
 const usd = (v, d = 2) => (v == null ? "—" : `${v < 0 ? "-" : ""}$${Math.abs(Number(v)).toFixed(d)}`);
 const signedUsd = (v) => (v == null ? "—" : `${v >= 0 ? "+" : "-"}$${Math.abs(Number(v)).toFixed(2)}`);
@@ -212,6 +212,7 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
             );
           })}
           <AutopsyPanel autopsy={s.technique.autopsy} />
+          <FlushPanel flush={s.technique.flush} />
           <ReplayPanel replay={s.technique.replay} tickStore={s.technique.tick_store} />
         </div>
       )}

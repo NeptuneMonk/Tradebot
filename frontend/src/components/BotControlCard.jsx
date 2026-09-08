@@ -402,6 +402,35 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                hint="While an SL is deferred on momentum, fire anyway once the loss runs this many points past the SL line. SL 20 + 5 ⇒ a deferred stop can never fill below −25% (on both SOL and RH). Also: RH deferral now needs net buy inflow, not just a few buyers."
                value={local.exit_momentum_max_extra_loss_pct ?? 5}
                onChange={(v) => setLocal({ ...local, exit_momentum_max_extra_loss_pct: parseFloat(v) || 0 })} step="1" />
+        <label className="flex flex-col gap-1" data-testid="flush-scope-field">
+          <span className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 inline-flex items-center gap-1">
+            Flush hold
+            <HelpHint label="help: flush hold">Robinhood: when a fast dip trips the SL or trailing stop, the bot checks WHO sold since the peak. If one wallet did ≥ the top-share of the selling (≤ max sellers) and buyers are still stepping in, it is a flush of weak hands, not distribution — the exit is held up to Flush hold (s), floored at Flush extra drop % under the flush trough. It also asks the chain whether the flusher emptied their bag. A stop that WAS caused by a flush primes a recovery re-entry watch instead of ending the token. Scope: hot tokens + re-entry legs, or every position.</HelpHint>
+          </span>
+          <select data-testid="flush-scope-select" value={local.flush_hold_enabled === false ? "off" : (local.flush_hold_scope ?? "hot_reentry")}
+                  onChange={(e) => { const v = e.target.value; setLocal({ ...local, flush_hold_enabled: v !== "off", flush_hold_scope: v === "off" ? (local.flush_hold_scope ?? "hot_reentry") : v }); }}
+                  className="bg-neutral-950 border border-neutral-800 px-2 py-1 font-mono text-sm focus:border-blue-500 focus:outline-none">
+            <option value="hot_reentry">hot + re-entries</option>
+            <option value="all">all positions</option>
+            <option value="off">off</option>
+          </select>
+        </label>
+        <Field label="Flush hold (s)" testid="flush-hold-s-input"
+               hint="Longest an SL/trail is held while the dip still looks like a single-seller flush. The Doctor tunes this from the flush scorecard."
+               value={local.flush_hold_s ?? 10}
+               onChange={(v) => setLocal({ ...local, flush_hold_s: parseInt(v, 10) || 0 })} step="5" />
+        <Field label="Flush top share" testid="flush-top-share-input"
+               hint="Share of the dip's sell volume one wallet must account for (0.7 = 70%) to call it a flush."
+               value={local.flush_top_share ?? 0.7}
+               onChange={(v) => setLocal({ ...local, flush_top_share: parseFloat(v) || 0 })} step="0.05" />
+        <Field label="Flush max sellers" testid="flush-max-sellers-input"
+               hint="More distinct sellers than this in the dip = distribution, never a flush."
+               value={local.flush_max_sellers ?? 2}
+               onChange={(v) => setLocal({ ...local, flush_max_sellers: parseInt(v, 10) || 0 })} step="1" />
+        <Field label="Flush extra drop %" testid="flush-extra-drop-input"
+               hint="Floor while holding a flush: if price falls this far below the flush trough, sell anyway — it was distribution after all."
+               value={local.flush_extra_drop_pct ?? 5}
+               onChange={(v) => setLocal({ ...local, flush_extra_drop_pct: parseFloat(v) || 0 })} step="1" />
         {showAdvancedFees && (
           <Field label="Priority µLamp" testid="prio-input"
                  hint="Compute-unit price in micro-lamports. Higher = better landing odds, higher fee. Speed Mode handles this; manual override only."

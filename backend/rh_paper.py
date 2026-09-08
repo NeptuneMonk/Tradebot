@@ -31,6 +31,7 @@ from reentry_logic import (decide_reentry, hot_walk_away_reason, recent_buyers_a
 import rh_dex
 import rh_live
 import rh_wallet
+from flush import dip_forensics, is_flush
 
 if TYPE_CHECKING:
     from bot import BotState
@@ -198,7 +199,15 @@ class RHPaperTrader:
         prev = self.watch.get(token)
         n_lows = int(getattr(cfg, "hot_walk_lower_lows_n", 2))
         if (t.get("pnl_pct") or 0) <= 0:
+            flushed = bool((t.get("dip_forensics") or {}).get("flush")) and t.get("exit_reason") in ("stop_loss", "trailing_stop")
             if prev and prev.get("hot"):
+                if flushed:
+                    # a single-seller flush is not the token failing — no strike, keep the hot watch armed
+                    prev["last_exit_time"], prev["last_exit_was_sl"] = now, False
+                    prev["exit_price_quote"] = price if price > 0 else prev.get("exit_price_quote")
+                    prev["flush_exits"] = int(prev.get("flush_exits") or 0) + 1
+                    logger.info(f"rh_paper HOT {t.get('symbol')} stopped by a flush — no strike, re-entry armed on recovery")
+                    return
                 # HOT: a losing leg is one lower-low strike, not the end — walk away after n in a row
                 prev["strikes"] = int(prev.get("strikes") or 0) + 1
                 prev["last_exit_time"], prev["last_exit_was_sl"] = now, True
@@ -207,6 +216,20 @@ class RHPaperTrader:
                     self._drop_hot(token, prev, "losing_legs", now)
                 else:
                     logger.info(f"rh_paper HOT {t.get('symbol')} losing leg — strike {prev['strikes']}/{n_lows}, still watching")
+                return
+            if flushed and getattr(cfg, "flush_reentry_enabled", True) and getattr(cfg, "reentry_enabled", True) and b and not b.get("graduated") and price > 0:
+                # we sold a flush: watch for the recovery (breakout path — price back ≥ breakout% above our exit with buyers)
+                self.stats["flush_reentry_watches"] = self.stats.get("flush_reentry_watches", 0) + 1
+                self.watch[token] = {
+                    "hot": False, "flush": True, "attempts": 0, "strikes": 0, "swings": None, "hot_since": None,
+                    "last_exit_time": now, "last_exit_was_sl": False, "trough_after_peak": price, "trough_ts": now,
+                    "mint": token, "chain": CHAIN, "name": t.get("name"), "symbol": t.get("symbol"),
+                    "exit_price_quote": price, "exit_price_sol": 0.0, "quote_symbol": t.get("quote_symbol"), "exit_time": now,
+                    "max_attempts": 1, "window_s": int(cfg.reentry_window_seconds), "pullback_pct": float(cfg.reentry_pullback_pct),
+                    "size_multiplier": float(cfg.reentry_size_multiplier), "original_pnl_usd": t.get("pnl_usd") or 0.0,
+                    "peak_price_after_exit": price, "creator": t.get("creator"),
+                }
+                logger.info(f"rh_paper {t.get('symbol')} stopped by a flush ({(t.get('dip_forensics') or {}).get('top_seller_share', 0)*100:.0f}% one seller) — recovery re-entry watch armed")
                 return
             # A losing leg ends a normal watch — no chained retries off a stale peak.
             self.watch.pop(token, None)
@@ -698,9 +721,9 @@ class RHPaperTrader:
         if pnl_pct >= bx["take_profit_pct"]:
             return "take_profit"
         if pnl_pct <= -bx["stop_loss_pct"]:
-            return "stop_loss"
+            return None if self._flush_holds(pos, b, now, "sl", pnl_pct, bx) else "stop_loss"
         if peak_pct >= bx["trailing_arm_pct"] and dd_from_peak >= bx["trailing_stop_pct"]:
-            return "trailing_stop"
+            return None if self._flush_holds(pos, b, now, "trail", pnl_pct, bx) else "trailing_stop"
         held = now - pos["opened"]
         if held >= bx["hold_max_seconds"]:
             # ride the winner: in profit and still near its highs (inside the trail) or still drawing buyers →
@@ -715,6 +738,55 @@ class RHPaperTrader:
                 return None
             return "max_hold"
         return None
+
+    def _flush_holds(self, pos: dict, b: dict, now: float, kind: str, pnl_pct: float, bx: dict) -> bool:
+        """Hold an SL/trail exit while the dip looks like a single-seller flush (not distribution):
+        bounded by flush_hold_s and an extra-drop floor below the trough seen when the hold started."""
+        cfg = self.state.config
+        t = pos["trade"]
+        if not getattr(cfg, "flush_hold_enabled", True):
+            return False
+        token = t.get("mint") or ""
+        in_scope = (str(getattr(cfg, "flush_hold_scope", "hot_reentry")) == "all" or bool(t.get("reentry"))
+                    or bool((self.watch.get(token) or {}).get("hot")) or pos.get("_riding")
+                    or (t.get("symbol") in self.hot_in_play()))
+        if not in_scope:
+            return False
+        f = dip_forensics(b, pos, now, float(getattr(cfg, "flush_window_s", 30)))
+        pos["_dip_forensics"] = {**f, "flush": is_flush(f, cfg), "kind": kind}
+        if not pos["_dip_forensics"]["flush"]:
+            return False
+        since = pos.get("_flush_hold_since")
+        if since is None:
+            pos["_flush_hold_since"] = now
+            pos["_flush_hold_trough"] = pos.get("trough_price") or pos["_last_price"]
+            pos["_flush_hold_at_pnl_pct"] = round(pnl_pct, 2)
+            self.stats["flush_holds"] = self.stats.get("flush_holds", 0) + 1
+            logger.warning(f"rh_paper FLUSH? {t.get('symbol')} {kind} at {pnl_pct:+.1f}%: {f['n_sellers']} seller(s), top {f['top_seller_share']*100:.0f}% "
+                           f"of {f['sold_quote']:.4f} sold, {f['buyers']} buyers still in — holding up to {getattr(cfg, 'flush_hold_s', 10)}s")
+            if f.get("top_seller"):
+                try:
+                    asyncio.get_running_loop()
+                    asyncio.create_task(self._probe_seller(pos, token, f["top_seller"], f["top_seller_quote"]))
+                except RuntimeError:
+                    pass
+            since = now
+        floor = float(pos.get("_flush_hold_trough") or 0) * (1.0 - float(getattr(cfg, "flush_extra_drop_pct", 5.0)) / 100.0)
+        if pos["_last_price"] <= floor:
+            pos["_dip_forensics"]["hold_broke_floor"] = True
+            return False                      # it kept falling — that was distribution after all
+        return now - since < float(getattr(cfg, "flush_hold_s", 10))
+
+    async def _probe_seller(self, pos: dict, token: str, seller: str, sold_quote: float):
+        """Did the flusher empty their bag? remaining tokens (at the current price) vs what they just sold."""
+        try:
+            left = await rh_wallet.erc20_balance(token, owner=seller)
+            price = float(pos.get("_last_price") or 0)
+            left_quote = left / 1e18 * price
+            pos.setdefault("_dip_forensics", {}).update({"seller_left_tokens": left / 1e18, "seller_left_quote": round(left_quote, 6),
+                                                          "seller_sold_all": bool(sold_quote > 0 and left_quote < 0.1 * sold_quote)})
+        except Exception as e:
+            logger.debug(f"flush seller probe failed {token[:10]}: {e}")
 
     async def _monitor(self, now: float):
         for token, pos in list(self.positions.items()):
@@ -951,6 +1023,10 @@ class RHPaperTrader:
                 "rug_alert": pos.get("_rug_alert"),
                 "exit_venue": "pool" if (t.get("venue") == "pool" or (live_fill or {}).get("venue") == "pool") else "curve",
                 "pool_hold_s": round(time.time() - pos["pool_since"], 1) if pos.get("pool_since") else None,
+                "dip_forensics": pos.get("_dip_forensics"),
+                "flush_held": bool(pos.get("_flush_hold_since")),
+                "flush_hold_at_pnl_pct": pos.get("_flush_hold_at_pnl_pct"),
+                "flush_held_s": round(time.time() - pos["_flush_hold_since"], 1) if pos.get("_flush_hold_since") else None,
             })
             if trigger:
                 ep = t.get("entry_price_quote") or 0
@@ -1018,7 +1094,8 @@ class RHPaperTrader:
             if left is not None and left <= 0:
                 continue
             z = w.get("swings") or {}
-            out.append({"mint": token, "symbol": w.get("symbol"), "hot": hot,
+            out.append({"mint": token, "symbol": w.get("symbol"), "hot": hot, "flush": bool(w.get("flush")),
+                        "flush_exits": int(w.get("flush_exits") or 0),
                         "attempts": int(w.get("attempts") or 0),
                         "attempts_left": None if hot else max(0, int(w.get("max_attempts") or 0) - int(w.get("attempts") or 0)),
                         "strikes": int(w.get("strikes") or 0),

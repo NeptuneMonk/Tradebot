@@ -113,6 +113,18 @@ class BotConfig(BaseModel):
     # While an SL is deferred on momentum, fire anyway once the loss runs this
     # many points past the SL line (bounds a deferred SL at SL+X, not -60%).
     exit_momentum_max_extra_loss_pct: float = 5.0
+    # Flush detector (RH): a fast dip that trips SL/trail but was ONE wallet selling (≥ top_share of the
+    # dip's sells, ≤ max_sellers) with buyers still arriving is a flush of weak hands, not distribution →
+    # hold the exit up to flush_hold_s (floor: extra_drop below the flush trough); scope hot/re-entry or all.
+    flush_hold_enabled: bool = True
+    flush_hold_scope: str = "hot_reentry"      # "hot_reentry" | "all"
+    flush_hold_s: int = 10
+    flush_top_share: float = 0.7
+    flush_max_sellers: int = 2
+    flush_min_buyers: int = 1
+    flush_extra_drop_pct: float = 5.0
+    flush_window_s: int = 30
+    flush_reentry_enabled: bool = True          # a flush-caused stop primes a re-entry watch (breakout path)
     take_profit_pct: float = 20.0    # data: 12% was cutting winners; 20% balanced
     stop_loss_pct: float = 12.0      # 2026-06-06: 15→12 — tighter live risk cap
     trailing_stop_pct: float = 6.0   # 2026-06-06: 8→6 — lock gains sooner

@@ -1,4 +1,4 @@
-import { Stethoscope, Globe } from "lucide-react";
+import { Stethoscope, Globe, Waves } from "lucide-react";
 
 const signedUsd = (v) => (v == null ? "—" : `${v >= 0 ? "+" : "-"}$${Math.abs(Number(v)).toFixed(2)}`);
 const label = (c) => String(c || "").replace(/_/g, " ");
@@ -57,6 +57,30 @@ export function AutopsyPanel({ autopsy }) {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+export function FlushPanel({ flush }) {
+  if (!flush || !flush.n) return null;
+  const g = (x, name) => (
+    <span>
+      {name}: {x.n} stops{x.n_post_known ? <> · <span className={(x.ran_share || 0) >= 0.5 ? "text-amber-300" : "text-neutral-300"}>{x.ran_after}/{x.n_post_known} ran ≥20% after we sold</span> · avg post-peak {x.avg_post_peak_pct != null ? `${x.avg_post_peak_pct >= 0 ? "+" : ""}${x.avg_post_peak_pct}%` : "—"}</> : " · post-exit paths pending"} · avg P/L {x.avg_pnl_pct}%
+    </span>
+  );
+  return (
+    <div className="border-t border-neutral-800/50" data-testid="doctor-flush">
+      <div className="px-2 py-1 text-[9px] uppercase tracking-[0.15em] text-neutral-600 flex items-center gap-1.5">
+        <Waves className="w-3 h-3" /> flush scorecard · stops caused by one seller vs real distribution (RH, 7d)
+      </div>
+      <div className="px-2 py-1.5 border-t border-neutral-800/30 text-[10px] font-mono text-neutral-400 space-y-0.5">
+        <div data-testid="flush-single">{g(flush.flush, "single-seller flush")}</div>
+        <div data-testid="flush-distributed">{g(flush.distributed, "distributed selling")}</div>
+        <div>
+          holds granted: <span className="text-neutral-200">{flush.held_n}</span>{flush.held_avg_delta_pct != null ? <> · avg {flush.held_avg_delta_pct >= 0 ? "+" : ""}{flush.held_avg_delta_pct} pts vs selling at the trigger</> : ""} · hold {flush.hold_s}s
+          {flush.proposal != null && <span className="text-lime-300"> → {flush.proposal}s · {flush.note}</span>}
+        </div>
+      </div>
     </div>
   );
 }

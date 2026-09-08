@@ -37,7 +37,7 @@ ALLOWED_KEYS = {
     "reentry_enabled", "reentry_size_multiplier", "reentry_breakout_pct",
     "reentry_min_bounce_pct", "reentry_min_buyers",
     "rh_min_growth_pct", "rh_min_inflow_usd", "rh_min_unique_buyers", "rh_min_curve_pct", "rh_min_mc_usd",
-    "rh_max_growth_pct", "no_momentum_after_s",
+    "rh_max_growth_pct", "no_momentum_after_s", "flush_hold_s",
     "min_curve_liquidity_sol", "min_buyers_for_entry", "min_curve_liquidity_sol_new", "min_buyers_for_entry_new",
     "risk_per_trade_pct", "winner_ride_min_pnl_pct",
 } | GLOBAL_KEYS
@@ -199,6 +199,17 @@ def propose_technique(cfg: dict, trades_by_book: dict[str, list[dict]], min_n: i
              "reason": f"universe replay: {up['reason']}",
              "direction": "raise $ over the whole universe of launches — counts the tokens we did NOT buy",
              "evidence": {"universe": True, **up["evidence"]}}
+        if best is None or c["gain"] > best["gain"]:
+            best = c
+    # flush scorecard (RH): stops we sold into a single-seller flush vs real distribution, and what ran afterwards
+    from flush import flush_scorecard
+    fs = flush_scorecard(trades_by_book.get("rh_pons") or [], extra.get("post_peaks"), cfg)
+    analysis["flush"] = fs
+    if fs and fs.get("proposal") is not None:
+        c = {"type": "threshold", "book": "rh_pons", "key": "flush_hold_s", "value": fs["proposal"],
+             "gain": max(TECHNIQUE_MIN_GAIN_USD, abs(fs["flush"]["avg_pnl_pct"] or 0) / 100.0 * 0.5),
+             "reason": f"flush scorecard: {fs.get('note')} → flush_hold_s {fs['hold_s']} → {fs['proposal']}",
+             "direction": "stop selling single-seller flushes that recover; sell faster when holding them costs", "evidence": fs}
         if best is None or c["gain"] > best["gain"]:
             best = c
     # ride scorecard is global (all books share the ride threshold)
