@@ -56,6 +56,21 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
     }
   };
 
+  // Optimistic single-key toggle: flip instantly, persist in the background,
+  // revert on failure. Merged into the edit-in-progress so unsaved edits survive.
+  const flipKey = async (key, next, onOk, onErr) => {
+    setLocal((cur) => ({ ...cur, [key]: next }));
+    setBaseline((b) => (b ? { ...b, [key]: next } : b));
+    try {
+      await onUpdate({ ...local, [key]: next });
+      onOk?.();
+    } catch (e) {
+      setLocal((cur) => ({ ...cur, [key]: !next }));
+      setBaseline((b) => (b ? { ...b, [key]: !next } : b));
+      toast.error(onErr?.(e) || "Toggle failed");
+    }
+  };
+
   return (
     <div className="control-card flex flex-col gap-3" data-testid="bot-control-card">
       <div className="flex items-center justify-between">
@@ -143,24 +158,11 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
       <button
         type="button"
         data-testid="helius-tracker-toggle"
-        onClick={async () => {
+        onClick={() => {
           const next = !(local.helius_tracker_enabled ?? true);
-          // Route through `onUpdate` (provided by Dashboard) so the
-          // dashboard's config refetch fires in lockstep — without it,
-          // a poll racing the PUT can re-deliver stale config and clobber
-          // the toggle back to its previous value from the user's POV.
-          // We MERGE the toggle into the current edit-in-progress so
-          // unrelated unsaved edits aren't lost.
-          try {
-            await onUpdate({ ...local, helius_tracker_enabled: next });
-            setLocal((cur) => ({ ...cur, helius_tracker_enabled: next }));
-            setBaseline((b) => (b ? { ...b, helius_tracker_enabled: next } : b));
-            toast.success(next
-              ? "Pump.fun feed ON — Solana trading resumes, listener reconnecting…"
-              : "Pump.fun feed OFF — no new Solana entries; Robinhood keeps trading");
-          } catch {
-            toast.error("Toggle failed");
-          }
+          flipKey("helius_tracker_enabled", next, () => toast.success(next
+            ? "Pump.fun feed ON — Solana trading resumes, listener reconnecting…"
+            : "Pump.fun feed OFF — no new Solana entries; Robinhood keeps trading"));
         }}
         className={`w-full flex items-center justify-between px-3 py-2 border text-xs uppercase tracking-[0.15em] font-mono transition-colors duration-100 ${
           (local.helius_tracker_enabled ?? true)
@@ -196,16 +198,9 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
       <button
         type="button"
         data-testid="rh-feed-toggle"
-        onClick={async () => {
+        onClick={() => {
           const next = !(local.rh_feed_enabled ?? true);
-          try {
-            await onUpdate({ ...local, rh_feed_enabled: next });
-            setLocal((cur) => ({ ...cur, rh_feed_enabled: next }));
-            setBaseline((b) => (b ? { ...b, rh_feed_enabled: next } : b));
-            toast.success(next ? "Robinhood Chain feed resumed" : "Robinhood Chain feed paused");
-          } catch {
-            toast.error("Toggle failed");
-          }
+          flipKey("rh_feed_enabled", next, () => toast.success(next ? "Robinhood Chain feed resumed" : "Robinhood Chain feed paused"));
         }}
         className={`w-full flex items-center justify-between px-3 py-2 border text-xs uppercase tracking-[0.15em] font-mono transition-colors duration-100 ${
           (local.rh_feed_enabled ?? true)
@@ -237,16 +232,9 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
       <button
         type="button"
         data-testid="rh-paper-toggle"
-        onClick={async () => {
+        onClick={() => {
           const next = !(local.rh_paper_enabled ?? false);
-          try {
-            await onUpdate({ ...local, rh_paper_enabled: next });
-            setLocal((cur) => ({ ...cur, rh_paper_enabled: next }));
-            setBaseline((b) => (b ? { ...b, rh_paper_enabled: next } : b));
-            toast.success(next ? "RH paper trading ON — fires while bot is running" : "RH paper trading OFF");
-          } catch {
-            toast.error("Toggle failed");
-          }
+          flipKey("rh_paper_enabled", next, () => toast.success(next ? "RH paper trading ON — fires while bot is running" : "RH paper trading OFF"));
         }}
         className={`w-full flex items-center justify-between px-3 py-2 border text-xs uppercase tracking-[0.15em] font-mono transition-colors duration-100 ${
           (local.rh_paper_enabled ?? false)
@@ -276,17 +264,12 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
       <button
         type="button"
         data-testid="rh-live-toggle"
-        onClick={async () => {
+        onClick={() => {
           const next = !(local.rh_live_trading ?? false);
           if (next && !window.confirm("Enable RH LIVE trading? Real ETH from the Robinhood hot wallet will buy ETH-quoted PONS curves that pass the RH gates. The RH daily kill switch and gas reserve apply.")) return;
-          try {
-            await onUpdate({ ...local, rh_live_trading: next });
-            setLocal((cur) => ({ ...cur, rh_live_trading: next }));
-            setBaseline((b) => (b ? { ...b, rh_live_trading: next } : b));
-            toast[next ? "warning" : "success"](next ? "RH LIVE trading ON — real ETH in play" : "RH live trading OFF");
-          } catch (e) {
-            toast.error(e?.response?.data?.detail || "Toggle failed");
-          }
+          flipKey("rh_live_trading", next,
+            () => toast[next ? "warning" : "success"](next ? "RH LIVE trading ON — real ETH in play" : "RH live trading OFF"),
+            (e) => e?.response?.data?.detail);
         }}
         className={`w-full flex items-center justify-between px-3 py-2 border text-xs uppercase tracking-[0.15em] font-mono transition-colors duration-100 ${
           (local.rh_live_trading ?? false)
@@ -366,6 +349,16 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                hint="If LIVE PnL drops by this much in a single day, the bot auto-disables. Manual reset required."
                value={local.daily_kill_switch_usd}
                onChange={(v) => setLocal({ ...local, daily_kill_switch_usd: parseFloat(v) || 0 })} step="1" />
+        <label className="flex flex-col gap-1 justify-end" data-testid="resume-on-restart-field">
+          <span className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 inline-flex items-center gap-1">
+            Resume after restart
+            <HelpHint label="help: resume after restart">Deployed app: the backend restarts on deploys and pod reschedules. ON = if the bot was running, it keeps running (positions re-attached) — you don't need the browser open. OFF = old behaviour: auto-disable for safety until you press Start.</HelpHint>
+          </span>
+          <span className="inline-flex items-center gap-2 text-xs text-neutral-300 h-[30px]">
+            <input type="checkbox" data-testid="resume-on-restart-toggle" checked={local.resume_on_restart !== false}
+                   onChange={(e) => setLocal({ ...local, resume_on_restart: e.target.checked })} /> keep trading through restarts
+          </span>
+        </label>
         <Field label="TP (%)" testid="tp-input"
                hint="Take-Profit target. When unrealized PnL hits +TP%, the bot exits (or sells the TP fraction below if partials are on)."
                value={local.take_profit_pct}

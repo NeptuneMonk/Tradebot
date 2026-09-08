@@ -1,0 +1,27 @@
+{
+  "summary": "Verified all three bug fixes for the pump.fun/RH micro-stake bot. (1) BACKEND: PUT /api/bot/config with body {enabled:false, rh_feed_enabled:true} while bot running — response.enabled stayed true, GET /api/bot/status.enabled stayed true, rh_feed_enabled applied. Restore + hard stop worked. (2) FRONTEND: rh-feed-toggle, helius-tracker-toggle, rh-paper-toggle all flip visually on click, persist after 2.5s, and restore correctly. STOPPED stays STOPPED after feed toggle; RUNNING stays RUNNING after feed toggle (no start/stop side effects). (3) FRONTEND: minimize-all yields uniform full-width strips — measured all 8 min-strips + 3 collapsible sections at 1550px vs section-bot-control reference 1552px (Δ=2px). expand-all restores wrap. Single-card minimize (min-btn-wallet) also produces full-width strip (1550px). Bot left in original PAPER/STOPPED state, all toggles restored to original values.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard (during single-card wallet minimize/expand)", "issues": ["Pre-existing React warning in console: 'Encountered two children with the same key, `null`' — appears multiple times during wallet minimize/expand and initial render. Likely from a list rendering with a null key (candidates: trade history, launch feed, or wallet holdings). Not caused by current fixes but worth flagging."]}
+    ]
+  },
+  "test_report_links": ["/app/tests/test_config_enabled_ignored.py"],
+  "action_items": [
+    "Investigate React duplicate key warning (key=null) triggered during dashboard re-renders — inspect .map() calls in TradeHistoryCard / LaunchFeed / WalletCard / RhWalletCard for items with null id."
+  ],
+  "critical_code_review_comments": [
+    "server.py update_config: body.pop('enabled') correctly ignores stale enabled key from clients — verified via test.",
+    "BotControlCard flipKey() optimistic pattern works well: label flips instantly, request runs in background, revert on failure. Confirmed 4 toggles wired identically.",
+    "MinimizableCard minimized strip uses col-span-full matching CollapsibleSection collapsed style — pixel-verified uniform 1550px across 11 strips/sections."
+  ],
+  "updated_files": ["/app/tests/test_config_enabled_ignored.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Bearer test_session_1788909052723 (session cookie) — from /app/memory/test_credentials.md, still valid.",
+  "seed_data_creation": "None; used existing seeded session token.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Bot left in PAPER + STOPPED with all feed toggles OFF (original state). Backend test at /app/tests/test_config_enabled_ignored.py can be re-run any time. Pre-existing 'duplicate key null' React warning is orthogonal to the reviewed fixes."
+}

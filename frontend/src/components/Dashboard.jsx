@@ -269,6 +269,9 @@ export default function Dashboard() {
           { duration: 12000 }
         );
         break;
+      case "bot_resumed_after_restart":
+        toast.success(`Backend restarted — bot resumed automatically (${data?.active_positions ?? 0} positions re-attached).`, { duration: 8000 });
+        break;
       case "bot_auto_disabled_on_restart":
         toast.warning(
           `Bot was auto-disabled after backend restart (${data?.active_positions ?? 0} positions retained). Press Start to resume.`,
@@ -464,7 +467,13 @@ export default function Dashboard() {
           <BotControlCard
             status={status}
             config={config}
-            onUpdate={async (cfg) => { setConfig(await api.updateConfig(cfg)); refreshAll(); }}
+            onUpdate={async (cfg) => {
+              // Config saves only need the fresh config + status back — not the 10-call refreshAll
+              // (that full refetch + re-render is what made toggles feel laggy on phones).
+              const saved = await api.updateConfig(cfg);
+              setConfig(saved);
+              api.status().then((st) => st && setStatus(st)).catch(() => {});
+            }}
             onStart={async () => { await api.start(); refreshAll(); }}
             onStop={async () => { await api.stop(); refreshAll(); }}
           />

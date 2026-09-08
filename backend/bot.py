@@ -214,9 +214,15 @@ class BotState:
         # auto-disable, or the doctor flips the bot off every cycle.
         first_load = not getattr(self, "_initial_load_done", False)
         was_running_before_restart = False
+        resumed = False
         if first_load:
             was_running_before_restart = self.config.enabled
-            if was_running_before_restart:
+            if was_running_before_restart and getattr(self.config, "resume_on_restart", True):
+                # Deployed app: pods restart on deploys/reschedules with nobody at the UI to press Start —
+                # keep trading (positions are re-attached below) and tell any connected client we resumed.
+                resumed = True
+                logger.warning("BOT WAS RUNNING BEFORE THIS PROCESS START — resuming (resume_on_restart=true).")
+            elif was_running_before_restart:
                 self.config.enabled = False
                 await self.db.bot_config.update_one(
                     {"_id": "current"},
@@ -312,7 +318,10 @@ class BotState:
             asyncio.create_task(self._active_trades_reconciler_loop())
         # Surface the auto-disable to any WS clients listening — front-end
         # will show "Bot auto-disabled on restart" toast if connected.
-        if was_running_before_restart:
+        if was_running_before_restart and resumed:
+            self.stats_restart_resumes = getattr(self, "stats_restart_resumes", 0) + 1
+            await hub.broadcast("bot_resumed_after_restart", {"active_positions": len(self.active_trades)})
+        elif was_running_before_restart:
             await hub.broadcast("bot_auto_disabled_on_restart", {
                 "active_positions": len(self.active_trades),
             })

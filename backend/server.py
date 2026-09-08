@@ -359,8 +359,12 @@ async def update_config(body: dict = Body(...)):
     currently-running config — previously `{doctor_advisory_only: true}`
     silently reset every other field to BotConfig defaults (max_trade $1,
     SL 12 …) because Pydantic filled the gaps."""
+    body = dict(body or {})
+    # `enabled` is owned by /bot/start + /bot/stop. A stale form snapshot on a
+    # feed toggle must never silently stop (or start) the bot.
+    body.pop("enabled", None)
     try:
-        cfg = BotConfig(**{**bot_state.config.model_dump(), **(body or {})})
+        cfg = BotConfig(**{**bot_state.config.model_dump(), **body})
     except Exception as e:
         raise HTTPException(422, f"invalid config: {e}")
     if cfg.max_trade_usd > 100.0:

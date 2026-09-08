@@ -62,7 +62,7 @@ export default function CollapsibleSection({
 
   return (
     <section
-      className="border border-neutral-800 bg-neutral-950 rounded-sm overflow-hidden"
+      className={`border border-neutral-800 bg-neutral-950 rounded-sm overflow-hidden ${open ? "" : "col-span-full"}`}
       data-testid={testId}
     >
       <button

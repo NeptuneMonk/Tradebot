@@ -1605,3 +1605,17 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - **Serial-creator gate** (BotConfig, Doctor-tunable): `serial_creator_gate_enabled` (True), `serial_creator_min_launches` (3; 0 = off), `serial_creator_requires_graduation` (True) → classifier aborts (risk 80) when `creator_prior_launches ≥ N` and no prior graduation. Metrics/entry_ctx carry `creator_prior_launches` + `creator_graduated_before`; bucket has `creator_prior_launches` (tokens_created − 1). Bot Control → Entry: "serial-creator gate" section (`serial-gate-enabled`, `serial-min-launches-input`, `serial-requires-grad`).
 - Doctor: `creator_prior_launches → serial_creator_min_launches` added as a momentum entry feature; `book_params.CEILING_KEYS` (+`rh_max_growth_pct`) teach feature splits the "fewer is better" direction (propose LOWERING the key to the median; reason text says "tighten"). Live: 24 of the last 40 SOL aborts are the serial gate; project_score_min currently 4 (strict — set by user/Doctor).
 - Tests: +2 (gate, ceiling split). 38 green.
+
+
+## 2026-09-08 — Mobile restart + toggle lag + uniform minimize
+- ✅ **Silent-stop root cause fixed**: `PUT /api/bot/config` now ignores `enabled` (only `/bot/start` + `/bot/stop` own it). A stale form snapshot on a feed toggle could previously stop the bot.
+- ✅ **`resume_on_restart`** verified end-to-end: bot running → `supervisorctl restart backend` → still `enabled=true`, log "resuming (resume_on_restart=true)".
+- ✅ **Optimistic feed toggles**: `flipKey()` helper in `BotControlCard.jsx`; Pump.fun / RH feed / RH paper / RH live toggles flip instantly, persist in background, revert on failure.
+- ✅ **Uniform minimize**: `MinimizableCard` minimized strip matches `CollapsibleSection` header (chevron + title + stat badge) and both span the full grid row when collapsed, so minimize-all stacks every window into one column.
+- Tested: testing agent iteration_19 — all backend + frontend flows pass, bot left PAPER/STOPPED.
+
+## Backlog (next)
+- P1: Helius API Diet (lazy creator backfill, `getMultipleAccounts` curve batching, 100-credit Enhanced API accounting)
+- P1: Execution learning (Guru step 6) — slippage/fee/gas/latency per venue → min viable stake + latency budget
+- P2: When-to-trade regime (step 7); Shadow-book harness (step 8)
+- P3: Opportunity Score (step 9); ERC-20 approval for USDG curves; Telegram alerts
