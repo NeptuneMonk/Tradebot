@@ -196,6 +196,7 @@ class BotConfig(BaseModel):
     # The base fields above apply to the "seasoned" band.
     min_curve_liquidity_sol_new: float = 20.0
     min_buyers_for_entry_new: int = 8
+    project_score_min: int = 0             # Pump.fun Project Score floor (0–5; 0 = off) — Doctor-tunable entry gate
     # Momentum scanner — 81% of recent profitable trades came from here
     scanner_enabled: bool = True
     # === Protocol-aware band definitions (2026-02-08) ===
@@ -509,7 +510,8 @@ class ClassifierRules(BaseModel):
     low_inflow_window_s: int = 8
     creator_rug_threshold: int = 1
     # Social trending threshold: abort entry if name's social_score < this value
-    social_score_min: int = 0  # 0 = disabled
+    social_score_min: int = 0  # legacy (name-trending) — superseded by project_score_min
+    project_score_min: int = 0  # 0 = disabled; Project Score 0–5 (logo, website, X, creator graduated before, posts)
 
 
 class Launch(BaseModel):
@@ -537,6 +539,8 @@ class Launch(BaseModel):
     # Social trending score (0..100)
     social_score: int = 0
     social_sources: dict = {}
+    project_score: int = 0
+    project_flags: dict = {}
     entered: bool = False  # did the bot enter this trade?
     # Greylist pinning (Phase 2.9) — when the bot enters on a greylisted
     # creator the mint card stays pinned at the top of its scanner feed

@@ -1,0 +1,30 @@
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from classifier import classify  # noqa: E402
+from project_score import project_score  # noqa: E402
+
+
+def test_project_score_counts_five_signals_only():
+    b = {"image_uri": "https://x/logo.png", "website": "https://site", "twitter": "https://x.com/a", "telegram": "t.me/a",
+         "creator_tokens_graduated": 2, "reply_count": 7, "meta_seen": True}
+    s, f = project_score(b)
+    assert s == 5 and f["telegram"] and f["meta_seen"]
+    b.update(telegram="", reply_count=2, creator_tokens_graduated=0)
+    s, f = project_score(b)
+    assert s == 3 and not f["posts"] and not f["creator_graduated"]
+    assert project_score({})[0] == 0
+
+
+def test_classifier_project_score_gate():
+    from models import ClassifierRules
+    rules = {**ClassifierRules().model_dump(), "project_score_min": 3}
+    base = {"curve_fill_pct": 10, "elapsed_s": 5, "unique_buyers": 5, "sol_inflow": 2, "creator_rugs": 0}
+    v = classify({**base, "project_score": 2}, rules)
+    assert v["action"] == "abort_trade" and "project score 2/5" in v["reasons"][0]
+    v2 = classify({**base, "project_score": 4}, rules)
+    assert v2["action"] != "abort_trade"
+    v3 = classify({**base, "project_score": 0}, {**rules, "project_score_min": 0})
+    assert v3["action"] != "abort_trade"

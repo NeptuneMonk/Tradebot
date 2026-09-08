@@ -20,9 +20,10 @@ import pumpfun
 import pumpswap
 from solana_client import get_sol_usd_price, LAMPORTS_PER_SOL
 from wallet import get_keypair, get_pubkey
-from social import score_term
+from social import score_term  # noqa: F401 (legacy name-trending; superseded by project_score)
 from ws_hub import hub
 from creator_history import record_new_launch, mark_outcome, get_creator, derive_rug_count
+from project_score import project_score
 from scanner import MomentumScanner, velocity_pct_strict
 from discovery import PumpfunDiscovery
 from rh_discovery import RHDiscovery
@@ -1061,7 +1062,7 @@ class BotState:
         # Initial baseline classification (no metrics yet, but we have rug count)
         verdict = classify(
             {"curve_fill_pct": 0, "elapsed_s": 0, "unique_buyers": 0,
-             "sol_inflow": 0, "creator_rugs": creator_rugs, "social_score": 0},
+             "sol_inflow": 0, "creator_rugs": creator_rugs, "social_score": 0, "project_score": 0},
             self.rules.model_dump(),
         )
         launch.classifier_action = verdict["action"]
@@ -1112,6 +1113,9 @@ class BotState:
             "curve_fill_pct": 0.0,
             "social_score": 0,
             "social_sources": {},
+            "project_score": 0,
+            "project_flags": {},
+            "creator_tokens_graduated": (creator_doc or {}).get("tokens_graduated", 0),
             "last_persist": 0.0,
             "name": launch.name,
             "symbol": launch.symbol,
@@ -1730,6 +1734,8 @@ class BotState:
             "curve_fill_pct": b["curve_fill_pct"],
             "social_score": b["social_score"],
             "social_sources": b["social_sources"],
+            "project_score": b.get("project_score", 0),
+            "project_flags": b.get("project_flags", {}),
             "peak_mc_usd": b.get("peak_mc_usd", 0.0),
         }
         if b.get("peak_mc_usd_at"):
@@ -1751,17 +1757,23 @@ class BotState:
             b["last_ws_broadcast"] = now_b
             await hub.broadcast("launch_update", {"id": b["launch_id"], "mint": mint, **update})
 
+    def _rules_for_classify(self) -> dict:
+        """Classifier rules + the Doctor-tunable Project Score floor from BotConfig (the stricter wins)."""
+        r = self.rules.model_dump()
+        r["project_score_min"] = max(int(r.get("project_score_min") or 0), int(getattr(self.config, "project_score_min", 0) or 0))
+        return r
+
     async def _compute_social(self, mint: str):
+        """Project Score (0–5) from data already in the bucket — replaces the old name-trending lookup."""
         b = self.tracking.get(mint)
         if not b:
             return
         try:
-            res = await score_term(b.get("name"), b.get("symbol"))
-            b["social_score"] = int(res.get("score", 0))
-            b["social_sources"] = res.get("sources", {})
+            b["project_score"], b["project_flags"] = project_score(b)
+            b["social_score"] = b["project_score"]
             await self._persist_metrics(mint)
         except Exception as e:
-            logger.debug(f"social score failed for {mint}: {e}")
+            logger.debug(f"project score failed for {mint}: {e}")
 
     async def _fetch_pumpfun_socials(self, mint: str):
         """Pull on-chain social proof fields (reply_count, twitter, telegram,
@@ -1789,6 +1801,9 @@ class BotState:
                     b["twitter"] = (c.get("twitter") or "").strip()
                     b["telegram"] = (c.get("telegram") or "").strip()
                     b["website"] = (c.get("website") or "").strip()
+                    b["image_uri"] = (c.get("image_uri") or "").strip()
+                    b["meta_seen"] = True
+                    await self._compute_social(mint)
                     # We got a real response — exit early. Any later updates
                     # will be picked up by the discovery refresh loop once the
                     # mint becomes discoverable.
@@ -1903,8 +1918,10 @@ class BotState:
                 "sol_inflow": b.get("sol_inflow_lamports", 0) / LAMPORTS_PER_SOL,
                 "creator_rugs": creator_rugs,
                 "social_score": b.get("social_score", 0),
+                "project_score": b.get("project_score", 0),
+                "project_flags": b.get("project_flags", {}),
             }
-            verdict = classify(metrics, self.rules.model_dump())
+            verdict = classify(metrics, self._rules_for_classify())
             await self.db.launches.update_one(
                 {"_id": launch.id},
                 {"$set": {
@@ -2413,8 +2430,10 @@ class BotState:
                 "sol_inflow": b.get("sol_inflow_lamports", 0) / LAMPORTS_PER_SOL,
                 "creator_rugs": b.get("creator_rugs", 0),
                 "social_score": b.get("social_score", 0),
+                "project_score": b.get("project_score", 0),
+                "project_flags": b.get("project_flags", {}),
             }
-            verdict = classify(metrics, self.rules.model_dump())
+            verdict = classify(metrics, self._rules_for_classify())
             # Reject abort/exit_early outright AND reject hold_briefly when
             # risk_score > 50 — those trades were the bulk of our last 50
             # exits via `classifier abort` at -13% to -25%, where the
@@ -2491,6 +2510,10 @@ class BotState:
                             b["twitter"] = (c.get("twitter") or "").strip()
                             b["telegram"] = (c.get("telegram") or "").strip()
                             b["website"] = (c.get("website") or "").strip()
+                            b["image_uri"] = (c.get("image_uri") or "").strip() or b.get("image_uri", "")
+                            b["meta_seen"] = True
+                            b["project_score"], b["project_flags"] = project_score(b)
+                            b["social_score"] = b["project_score"]
                             reply_count = b["reply_count"]
                             has_social = bool((b["twitter"] or b["telegram"] or b["website"]).strip())
                 except Exception as e:
@@ -2615,6 +2638,8 @@ class BotState:
                        "usd_market_cap": float(getattr(launch, "usd_market_cap", 0) or 0),
                        "creator_score": greylist_ctx.get("score"),
                        "launch_rate_per_h": self._launch_rate(),
+                       "project_score": int((self.tracking.get(launch.mint) or {}).get("project_score") or getattr(launch, "project_score", 0) or 0),
+                       "project_flags": (self.tracking.get(launch.mint) or {}).get("project_flags") or {},
                        "band": "new" if action == "momentum_new" else "seasoned"},
             greylist_pattern_suggested_tp_pct=greylist_ctx.get("pattern_tp_pct"),
             is_research_snipe=is_research_snipe,
@@ -3253,8 +3278,9 @@ class BotState:
                         "sol_inflow": b.get("sol_inflow_lamports", 0) / LAMPORTS_PER_SOL,
                         "creator_rugs": b.get("creator_rugs", 0),
                         "social_score": b.get("social_score", 0),
+                        "project_score": b.get("project_score", 0),
                     }
-                    verdict = classify(metrics, self.rules.model_dump())
+                    verdict = classify(metrics, self._rules_for_classify())
                     trade_doc["risk_score"] = verdict["risk"]
                     if verdict["action"] == "abort_trade":
                         slot["exit_in_progress"] = True

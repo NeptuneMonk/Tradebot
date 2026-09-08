@@ -117,7 +117,7 @@ function RecentLaunchesFeed({ launches: allLaunches, onUnpin }) {
                     {isRh && (l.usd_market_cap ?? 0) > 0 && (
                       <Stat icon={<DollarSign className="w-3 h-3" />} value={fmtUsd(l.usd_market_cap)} label="MC" data-testid={`launch-mc-${l.mint}`} />
                     )}
-                    {!isRh && <SocialBadge score={l.social_score} sources={l.social_sources} mint={l.mint} />}
+                    {!isRh && <ProjectBadge score={l.project_score} flags={l.project_flags} mint={l.mint} />}
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1 shrink-0">
@@ -239,22 +239,24 @@ function CreatorBadge({ l }) {
   );
 }
 
-function SocialBadge({ score, sources, mint }) {
+function ProjectBadge({ score, flags, mint }) {
   const s = score ?? 0;
+  const f = flags || {};
   let cls = "border-neutral-800 text-neutral-500";
-  if (s >= 60) cls = "border-emerald-700 text-emerald-300 bg-emerald-950/40";
-  else if (s >= 30) cls = "border-amber-700 text-amber-300 bg-amber-950/40";
-  const tooltip = sources
-    ? `Reddit hits (1h): ${sources.reddit_hour_hits ?? 0} · CoinGecko: ${sources.coingecko_match ? "yes" : "no"} · Wikipedia: ${sources.wikipedia_exists ? "yes" : "no"}`
-    : "Social trending score (Reddit + CoinGecko + Wikipedia)";
+  if (s >= 4) cls = "border-emerald-700 text-emerald-300 bg-emerald-950/40";
+  else if (s >= 2) cls = "border-amber-700 text-amber-300 bg-amber-950/40";
+  const yn = (k) => (f[k] ? "✓" : "✗");
+  const tooltip = f.meta_seen
+    ? `Project Score ${s}/5 · logo ${yn("logo")} · website ${yn("website")} · X ${yn("x")} · creator graduated before ${yn("creator_graduated")} · posts ${yn("posts")}${f.telegram ? " · telegram ✓" : ""}`
+    : "Project Score 0–5 (logo · website · X · creator graduated before · posts) — waiting for Pump.fun metadata";
   return (
     <span
-      data-testid={`launch-social-${mint}`}
+      data-testid={`launch-project-${mint}`}
       title={tooltip}
       className={`inline-flex items-center gap-1 px-1.5 py-0.5 border text-[10px] uppercase ${cls}`}
     >
-      <span className="font-bold">SOC</span>
-      <span>{s}</span>
+      <span className="font-bold">PRJ</span>
+      <span>{f.meta_seen ? `${s}/5` : "…"}</span>
     </span>
   );
 }

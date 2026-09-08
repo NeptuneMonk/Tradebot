@@ -20,13 +20,14 @@ EXIT_GRID = {  # candidate values the optimizer may propose
 ENTRY_FEATURES = {
     "rh_pons": {"growth_pct": "rh_min_growth_pct", "inflow_usd": "rh_min_inflow_usd",
                 "unique_buyers": "rh_min_unique_buyers", "curve_fill_pct": "rh_min_curve_pct", "mc_usd": "rh_min_mc_usd"},
-    "momentum": {"curve_liquidity_sol": "min_curve_liquidity_sol", "unique_buyers": "min_buyers_for_entry"},
-    "momentum_new": {"curve_liquidity_sol": "min_curve_liquidity_sol_new", "unique_buyers": "min_buyers_for_entry_new"},
+    "momentum": {"curve_liquidity_sol": "min_curve_liquidity_sol", "unique_buyers": "min_buyers_for_entry", "project_score": "project_score_min"},
+    "momentum_new": {"curve_liquidity_sol": "min_curve_liquidity_sol_new", "unique_buyers": "min_buyers_for_entry_new", "project_score": "project_score_min"},
     "greylist_snipe": {"creator_score": "greylist_snipe_min_score"},
 }
 FEATURE_CAPS = {"rh_min_growth_pct": 150.0, "rh_min_inflow_usd": 3000.0, "rh_min_unique_buyers": 40, "rh_min_curve_pct": 40.0,
                 "rh_min_mc_usd": 50000.0, "min_curve_liquidity_sol": 60.0, "min_buyers_for_entry": 30,
-                "min_curve_liquidity_sol_new": 80.0, "min_buyers_for_entry_new": 40, "greylist_snipe_min_score": 85.0}
+                "min_curve_liquidity_sol_new": 80.0, "min_buyers_for_entry_new": 40, "greylist_snipe_min_score": 85.0,
+                "project_score_min": 4}
 
 
 REGIMES = ("quiet", "busy")

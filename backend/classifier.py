@@ -56,12 +56,13 @@ def classify(metrics: dict, rules: dict) -> dict:
         reasons.append(f"creator has {rugs} prior rugs")
         return {"action": action, "risk": risk, "reasons": reasons}
 
-    # Social trending gate (only if rule enabled, i.e. > 0)
-    social_min = rules.get("social_score_min", 0)
-    if social_min and social < social_min:
+    # Project Score gate (0–5: logo / website / X / creator graduated before / posts) — only if rule enabled
+    proj_min = rules.get("project_score_min", 0)
+    proj = metrics.get("project_score", social)
+    if proj_min and proj < proj_min:
         action = "abort_trade"
         risk = 85
-        reasons.append(f"social score {social} < min {social_min} (not trending)")
+        reasons.append(f"project score {proj}/5 < min {proj_min}")
         return {"action": action, "risk": risk, "reasons": reasons}
 
     if elapsed >= rules["low_inflow_window_s"] and inflow < rules["low_inflow_sol"]:

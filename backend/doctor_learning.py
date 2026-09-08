@@ -37,7 +37,7 @@ ALLOWED_KEYS = {
     "reentry_enabled", "reentry_size_multiplier", "reentry_breakout_pct",
     "reentry_min_bounce_pct", "reentry_min_buyers",
     "rh_min_growth_pct", "rh_min_inflow_usd", "rh_min_unique_buyers", "rh_min_curve_pct", "rh_min_mc_usd",
-    "rh_max_growth_pct", "no_momentum_after_s", "flush_hold_s",
+    "rh_max_growth_pct", "no_momentum_after_s", "flush_hold_s", "project_score_min",
     "min_curve_liquidity_sol", "min_buyers_for_entry", "min_curve_liquidity_sol_new", "min_buyers_for_entry_new",
     "risk_per_trade_pct", "winner_ride_min_pnl_pct",
 } | GLOBAL_KEYS
