@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { Activity, X } from "lucide-react";
 import { ChainBadge } from "./ChainBadge";
+import { TradeTicket } from "./TradeTicket";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 
@@ -34,20 +35,7 @@ function ActiveTradesTable({ trades, onExit }) {
             {trades.map((t) => (
               <tr key={t.id} className="border-b border-neutral-900 hover:bg-neutral-900/40 transition-colors duration-100" data-testid={`active-trade-row-${t.mint}`}>
                 <td className="py-2 font-mono">
-                  {t.classifier_action === "greylist_snipe" && (
-                    <span
-                      data-testid={`active-snipe-badge-${t.id}`}
-                      className="mr-1 inline-block px-1 py-0 border border-rose-700 text-rose-300 bg-rose-950/40 text-[9px] font-mono align-middle"
-                      title={`Greylist Sniper — pattern-based exits only (no SL, no max-hold). Score at entry: ${t.greylist_score_at_entry ?? "?"}, pattern: ${t.greylist_pattern_at_entry ?? "?"}.`}
-                    >SNIPE</span>
-                  )}
-                  {t.partial_done && (
-                    <span
-                      data-testid={`active-partial-badge-${t.id}`}
-                      className="mr-1 inline-block px-1 py-0 border border-cyan-700 text-cyan-300 bg-cyan-950/40 text-[9px] font-mono align-middle"
-                      title={`Partial TP done — runner on tightened trail. Banked $${(t.partial_realized_usd || 0).toFixed(2)}`}
-                    >RUNNER · +${(t.partial_realized_usd || 0).toFixed(2)}</span>
-                  )}
+                  <span className="mr-1.5 inline-flex align-middle"><TradeTicket t={t} compact /></span>
                   {t.venue === "pool" && (
                     <span
                       data-testid={`active-pool-badge-${t.id}`}

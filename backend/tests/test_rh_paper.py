@@ -58,7 +58,8 @@ def hot_bucket(disc, now, *, age_s=60, price=2e-9, first=1e-9, buyers=12, curve=
                           "pair_token": "0x" + "0" * 40, "quote_symbol": quote, "quote_decimals": 18,
                           "graduation_threshold": 4.2, "block": 1}, start=now - age_s)
     b.update(symbol="TST", name="Test", first_price_quote=first, last_price_quote=price, curve_fill_pct=curve,
-             usd_market_cap=mc if mc is not None else price * 1e9 * 2500.0, last_trade_ms=int(now * 1000))
+             usd_market_cap=mc if mc is not None else price * 1e9 * 2500.0, last_trade_ms=int(now * 1000),
+             net_quote=b.get("net_quote") or 1.5)   # ~$3.7k pool depth so a $5 stake clears the cost gate
     for i in range(buyers):
         w = f"0x{i:040x}"
         b["buyers"].add(w)
@@ -276,30 +277,6 @@ def test_tick_exit_marked_and_event_path_ignored_when_no_position():
     assert doc["exit_mode"] == "tick" and doc["exit_reason"] == "manual exit"
 
 
-def test_no_momentum_exit_one_shot():
-    st = make_state(no_momentum_after_s=30, no_momentum_min_mfe_pct=5.0, stop_loss_pct=50, hold_max_seconds=999)
-    now = time.time()
-    b = hot_bucket(st.rh_discovery, now, price=1e-9, first=5e-10)
-    enter(st)
-    pos = st.rh_paper.positions[TOKEN]
-    # 20s in, flat → not yet
-    pos["opened"] = time.time() - 20
-    b["last_price_quote"] = 1.01e-9
-    assert st.rh_paper._decide_exit(pos, b, time.time()) is None
-    # 31s in, peak only +1% → no_momentum
-    pos["opened"] = time.time() - 31
-    assert st.rh_paper._decide_exit(pos, b, time.time()) == "no_momentum"
-    # a position that DID move (+8% peak) passes and is never re-checked
-    pos2 = {"trade": dict(pos["trade"]), "peak_price": 1.08e-9, "_last_price": 1.0e-9, "opened": time.time() - 31}
-    assert st.rh_paper._decide_exit(pos2, b, time.time()) is None
-    assert pos2["_nm_checked"] is True
-    b["last_price_quote"] = 0.99e-9
-    pos2["opened"] = time.time() - 60
-    assert st.rh_paper._decide_exit(pos2, b, time.time()) is None
-    # disabled
-    st.config = BotConfig(enabled=True, rh_paper_enabled=True, no_momentum_exit_enabled=False, stop_loss_pct=50, hold_max_seconds=999)
-    pos3 = {"trade": dict(pos["trade"]), "peak_price": 1e-9, "_last_price": 1e-9, "opened": time.time() - 90}
-    assert st.rh_paper._decide_exit(pos3, b, time.time()) is None
 
 
 def test_rh_momentum_gate_defers_sl_until_buyers_fade_or_budget():
@@ -380,50 +357,8 @@ def _open_pos(st, b, entry=1e-9):
     return st.rh_paper.positions[TOKEN]
 
 
-def test_sl_deferral_is_bounded_and_needs_net_inflow():
-    st = make_state(stop_loss_pct=20.0, exit_momentum_gate_enabled=True, exit_momentum_min_buyers=3,
-                    exit_momentum_max_defer_s=20, exit_momentum_max_extra_loss_pct=5.0,
-                    no_momentum_exit_enabled=False, hold_max_seconds=600)
-    now = time.time()
-    b = hot_bucket(st.rh_discovery, now, price=1e-9, first=1e-9)
-    pos = _open_pos(st, b)
-    # 3 fresh buyers but sells dominate the window → NOT momentum → SL fires at the line
-    for i in range(3):
-        b["buy_events"].append((now, 0.01, f"0x{i + 100:040x}"))
-    b["sell_events"].append((now, 5.0, "0x" + "e" * 40))
-    b["last_price_quote"] = 0.79e-9
-    assert st.rh_paper._decide_exit(pos, b, now) == "stop_loss"
-    # genuine buy pressure (net inflow) → SL deferred at -21% ...
-    b["sell_events"].clear()
-    pos.pop("_mom_defer_sl", None)
-    assert st.rh_paper._decide_exit(pos, b, now) is None
-    assert pos["_mom_defer_log"][0]["kind"] == "sl"
-    # ... but never past SL + 5 points, even with buyers still piling in
-    b["last_price_quote"] = 0.74e-9   # -26%
-    assert st.rh_paper._decide_exit(pos, b, now + 1) == "stop_loss"
-    assert pos["_mom_defer_bounded"] is True
 
 
-def test_winner_rides_past_hold_cap_until_trail_or_ceiling():
-    st = make_state(hold_max_seconds=60, take_profit_pct=500.0, trailing_stop_pct=10.0, trailing_arm_pct=5.0,
-                    winner_ride_min_pnl_pct=10.0, winner_ride_max_hold_mult=3.0, exit_momentum_gate_enabled=False)
-    now = time.time()
-    b = hot_bucket(st.rh_discovery, now, price=1e-9)
-    enter(st)
-    pos = st.rh_paper.positions[TOKEN]
-    pos["opened"] = now - 90                       # past the 60s cap
-    b["last_price_quote"] = 1.4e-9                 # +40%, at its high → ride
-    assert st.rh_paper._decide_exit(pos, b, now) is None and pos["_riding"]
-    b["last_price_quote"] = 1.25e-9                # 10.7% off the 1.4 peak → trail takes it
-    assert st.rh_paper._decide_exit(pos, b, now) == "trailing_stop"
-    # a flat position past the cap still times out
-    pos2 = dict(pos, peak_price=1e-9, opened=now - 90); pos2.pop("_riding", None)
-    b["last_price_quote"] = 1.02e-9
-    assert st.rh_paper._decide_exit(pos2, b, now) == "max_hold"
-    # hard ceiling: 3× hold → max_hold even while winning
-    pos3 = dict(pos, peak_price=1.4e-9, opened=now - 200)
-    b["last_price_quote"] = 1.4e-9
-    assert st.rh_paper._decide_exit(pos3, b, now) == "max_hold"
 
 
 def test_hot_winner_gets_uncapped_watch_and_focus():

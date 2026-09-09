@@ -56,8 +56,8 @@ def exit_class(t: dict) -> str:
         return "trail"
     if "timeout" in r or r == "max_hold":
         return "timeout"
-    if "exit_early" in r or "classifier abort" in r:
-        return "churn"
+    if "scalp clock" in r:
+        return "clock"
     if "graduat" in r:
         return "graduated"
     if "rug" in r:

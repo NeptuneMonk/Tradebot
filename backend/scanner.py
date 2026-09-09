@@ -281,6 +281,21 @@ class MomentumScanner:
                     and m["new_buyers_recent"] >= g["min_new_buyers"]
                     and m["real_sol_reserves"] >= g["min_liquidity_sol"]
                 )
+                # Second impulse only: the first vertical leg is exit liquidity. A new-band scalp needs a
+                # dip from the tracked peak (≥ scanner_second_impulse_dip_pct) that is now recovering with
+                # buyers still expanding — the same tracking samples, no second scanner.
+                ps = list(b.get("price_samples") or ())
+                cur_price = float(m.get("cur_price_sol") or 0)
+                if m["passes"] and cfg.scanner_second_impulse_enabled and len(ps) >= 4 and cur_price > 0:
+                    peak_p = max(p for _, p in ps)
+                    tail = ps[-max(2, len(ps) // 4):]
+                    trough = min(p for _, p in tail)
+                    dip_pct = (peak_p - trough) / peak_p * 100 if peak_p > 0 else 0.0
+                    recovering = cur_price > trough
+                    m["second_impulse"] = {"dip_pct": round(dip_pct, 2), "recovering": recovering}
+                    if not (dip_pct >= cfg.scanner_second_impulse_dip_pct and recovering and m["new_buyers_recent"] > 0):
+                        m["passes"] = False
+                        m["fail_reason"] = f"first impulse: dip {dip_pct:.1f}% < {cfg.scanner_second_impulse_dip_pct:g}% or not recovering — wait for the second leg"
             # Distribution-vacuum filter (both bands): if every tracked holder
             # appeared within the most-recent holder-velocity window AND the
             # token is older than that window AND we have a meaningful sample

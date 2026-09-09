@@ -1,0 +1,27 @@
+{
+  "summary": "Verified profitability refactor migration end-to-end. Backend: 9/9 API tests pass — /api/bot/config exposes book_exits + max_concurrent_positions=3 with no legacy exit keys; PUT clamps mcp to 8; book_exits.hunt persists; /api/scorecard cells + min_n=30 + upweight_r=0.3; POST /api/scorecard/cell round-trips; /api/inventory shape correct; /api/doctor/learning returns books {scalp,hunt,rh_pons,global} after run-now; /api/doctor/rails max_concurrent_positions max=8 and never_touch includes max_trade_usd; /api/suggestions is 404 (removed); classifier rules payload no longer has creator_rug_threshold / project_score_min; POST /api/doctor/run-now returns 200. Frontend: book-exits-editor with rows scalp/hunt/rh_pons visible; book-exit-hunt-hold_max_seconds=0; legacy tp/sl/hold/trailing/partial-tp/winner-ride inputs GONE; max-positions-input=3. Save flow: changed book-exit-scalp-target_r 1.5→2 via UI, toast 'Config saved' displayed, GET confirmed target_r=2, restored to 1.5. Classifier section has no rule-rug-threshold / rule-project-min; rule-fast-curve-pct present. TradeTicket (ticket-book-*, ticket-r-*, ticket-cost-*, ticket-doctor-*) renders inside the row tooltip on hover with correct 'rh_pons' badge and R/cost/doctor fields. Config fully restored. Bot remained STOPPED throughout.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_refactor_api.py",
+    "/app/test_reports/pytest/iter21_api.xml"
+  ],
+  "action_items": [
+    "Review request said 'GET /api/bot/rules' — actual endpoint is /api/classifier/rules. Not a bug, but the migration doc / spec should be aligned. Test uses the real endpoint.",
+    "TradeTicket badges (ticket-book-*) render only inside the row tooltip (hover on search icon). If the spec expects them visible without hover on the row itself, consider mounting a compact <TradeTicket compact/> beside the mint name in TradeHistoryTable (already done in ActiveTradesTable). Currently no active trades since bot is stopped, so only tooltip path was exercised."
+  ],
+  "critical_code_review_comments": [
+    "TradeHistoryTable only shows TradeTicket inside the exit-audit Tooltip (line 126) — badges are invisible until the user hovers the search icon. ActiveTradesTable renders it inline. Consider surfacing the book badge on the row for parity.",
+    "doctor_learning.status() returns empty books dict until first cycle() runs (self.last seeded with books:{}). Fresh backend after restart therefore returns books:{} — a cold-start defence (auto-warm on first status call, or gate the UI on a 'ready' flag) would avoid flaky UI/tests. Worked around in tests by POST /api/doctor/run-now first."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_refactor_api.py (new — API-level integration tests)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Bearer token from /app/memory/.tok (email nbobby79@gmail.com, single-user whitelist)",
+  "seed_data_creation": "None — used existing paper trades and live config; all mutations (scalp target_r, hunt exits, max_concurrent_positions, scorecard cell disable) were reverted after each test.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Bot is PAPER and STOPPED. Bearer token in /app/memory/.tok. Backend has 9-test API suite at backend/tests/test_refactor_api.py covering the refactor. When testing /api/doctor/learning always POST /api/doctor/run-now first — status() returns empty books until cycle() ran once. TradeTicket is only rendered inside the trade-row Tooltip (hover on button svg.lucide-search) in TradeHistoryTable; ActiveTradesTable renders it inline. Real endpoint for classifier rules is /api/classifier/rules (not /api/bot/rules).",
+  "rca of the issue": "N/A — no issues found. Two initial test failures were spec/env mismatches: (1) /api/bot/rules → 404 because real path is /api/classifier/rules (spec typo); (2) /api/doctor/learning books empty on cold read — resolved by triggering /api/doctor/run-now first (doctor_learning.status() reads cached self.last which is empty until cycle() populates it)."
+}

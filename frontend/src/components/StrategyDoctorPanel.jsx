@@ -16,9 +16,11 @@ const CATEGORY_LABEL = {
   hold: "Max-hold tuning — time cap on a position",
   gate: "Entry gates — what tokens are allowed through to a buy",
   scanner: "Scanner timing / bands — what tokens get tracked",
-  classifier: "Classifier rules — abort/exit-early on real-time signals",
+  classifier: "Classifier routing — scalp / hunt / skip",
+  allocator: "Desk allocator — book size weights from expectancy in R",
+  scorecard: "Scorecard — situation cells enabled / disabled",
   timing: "Re-entry & cooldown — handling exits and re-buys",
-  greylist_sniper: "Greylist Sniper tuning — auto-adjusts min_score based on win-rate feedback",
+  greylist_sniper: "Hunt book entry bar (greylist_snipe_min_score)",
   needs_more_data: "Doctor needs more trades before it can suggest changes",
 };
 
@@ -54,8 +56,8 @@ export default function StrategyDoctorPanel({ onApplied, config, onConfigUpdate 
       const upd = await api.updateConfig({ doctor_auto_apply_enabled: !autoApply });
       toast.success(
         !autoApply
-          ? `Doctor auto-apply ON — high-confidence changes apply themselves; auto-revert if win rate drops ≥${config?.doctor_auto_revert_wr_drop_pp ?? 10}pp within ${config?.doctor_auto_revert_hours ?? 24}h`
-          : "Doctor auto-apply OFF — suggestions wait for your click"
+          ? "Autopilot ON — one book-scoped canary per cycle; promoted on post-start expectancy in R, reverted if worse or drawdown +15%"
+          : "Autopilot OFF — proposals wait for your click"
       );
       onConfigUpdate && onConfigUpdate(upd);
     } catch (e) {
@@ -147,8 +149,8 @@ export default function StrategyDoctorPanel({ onApplied, config, onConfigUpdate 
             disabled={autoToggling}
             data-testid="doctor-auto-apply-toggle"
             title={autoApply
-              ? "Auto-apply ON: high-confidence suggestions (SL/TP/hold/sizing/gates — never classifier whitelists) are applied automatically. A watchdog reverts any change whose win rate since apply drops ≥ the configured pp vs baseline inside the watch window. Click to turn off."
-              : "Auto-apply OFF: suggestions wait for your click. Click to let the doctor apply high-confidence changes itself with a 24h auto-revert guard."}
+              ? "Autopilot ON: the learning loop applies ONE book-scoped change per cycle (a book exit key, a book entry threshold, or an allocator size step) as a canary. It is promoted only if expectancy in R on fills AFTER the canary start beats baseline; reverted if worse or drawdown +15%. Click to turn off."
+              : "Autopilot OFF: proposals wait for your click. Click to let the learning loop canary book-scoped changes itself."}
             className={`px-2 py-1 text-[10px] uppercase tracking-wider font-mono border inline-flex items-center gap-1 transition-colors duration-100 ${
               autoApply
                 ? "border-lime-700/60 text-lime-300 bg-lime-950/40 hover:bg-lime-900/40"

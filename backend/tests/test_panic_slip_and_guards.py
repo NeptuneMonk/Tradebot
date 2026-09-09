@@ -33,8 +33,7 @@ def test_panic_helper_classification():
         "stop-loss hit (-15.2%)",
         "stop-loss hit (-22.0%) [fast]",
         "hard-stop (user requested)",
-        "classifier abort: low momentum",
-        "classifier exit_early: bad pattern",
+        "ladder stop +2.0% hit (1.2%)",
         "bonding curve completed (LP about to deploy)",
     ]
     chill_reasons = [
@@ -42,6 +41,7 @@ def test_panic_helper_classification():
         "take-profit hit (+20.0%) [fast]",
         "timeout after 45s",
         "partial take-profit at +18%",
+        "scalp clock 40s (-3.0%)",
     ]
     for r in panic_reasons:
         assert s._is_panic_exit(r), f"{r!r} should be PANIC"

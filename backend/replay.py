@@ -82,7 +82,8 @@ class _Token:
             return self._outcome[i]
         k = min(i + 1, len(self.ts) - 1)
         e = self.px[k] * (1.0 + IMPACT[self.chain])
-        tp, sl = ladder["take_profit_pct"] / 100.0, ladder["stop_loss_pct"] / 100.0
+        sl = ladder["stop_loss_pct"] / 100.0
+        tp = (ladder["target_r"] * sl) if ladder.get("target_r") else ladder["take_profit_pct"] / 100.0
         arm, trail, hold = ladder["trailing_arm_pct"] / 100.0, ladder["trailing_stop_pct"] / 100.0, ladder["hold_max_seconds"]
         peak, ret, reason = e, None, "open"
         for j in range(k + 1, len(self.ts)):

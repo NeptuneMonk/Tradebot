@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import SpeedModeSlider from "./SpeedModeSlider";
 import ConfigSyncPanel from "./ConfigSyncPanel";
 import BrainSyncPanel from "./BrainSyncPanel";
+import BookExitsEditor from "./BookExitsEditor";
 import HelpHint from "./HelpHint";
 
 export default function BotControlCard({ status, config, onUpdate, onStart, onStop }) {
@@ -360,20 +361,8 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                    onChange={(e) => setLocal({ ...local, resume_on_restart: e.target.checked })} /> keep trading through restarts
           </span>
         </label>
-        <Field label="TP (%)" testid="tp-input"
-               hint="Take-Profit target. When unrealized PnL hits +TP%, the bot exits (or sells the TP fraction below if partials are on)."
-               value={local.take_profit_pct}
-               onChange={(v) => setLocal({ ...local, take_profit_pct: parseFloat(v) || 0 })} step="1" />
-        <Field label="SL (%)" testid="sl-input"
-               hint="Stop-Loss. When unrealized PnL drops to -SL%, the bot exits the full position with the configured exit slippage."
-               value={local.stop_loss_pct}
-               onChange={(v) => setLocal({ ...local, stop_loss_pct: parseFloat(v) || 0 })} step="1" />
-        <Field label="Max Hold (s)" testid="hold-input"
-               hint="Hard time cap on a position. If neither TP nor SL fires within this window, the bot exits as 'timeout'."
-               value={local.hold_max_seconds}
-               onChange={(v) => setLocal({ ...local, hold_max_seconds: parseInt(v, 10) || 0 })} step="1" />
         <Field label="No-Mo Check (s)" testid="no-momentum-after-input"
-               hint="No-momentum exit: one-shot check this many seconds after entry (both chains). If the position never reached the MFE floor below, exit as 'no-momentum'. Snipes and positions that already took partial TP are exempt. Set 0 to disable."
+               hint="No-momentum exit: one-shot check this many seconds after entry (all books). If the position never reached the MFE floor below, exit as 'no-momentum'. Positions that already banked a ladder leg are exempt. This flattens a dead runner — it is not a clock. Set 0 to disable."
                value={local.no_momentum_after_s ?? 30}
                onChange={(v) => { const n = parseInt(v, 10) || 0; setLocal({ ...local, no_momentum_after_s: n, no_momentum_exit_enabled: n > 0 }); }} step="5" />
         <Field label="No-Mo MFE (%)" testid="no-momentum-mfe-input"
@@ -431,25 +420,15 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                  value={local.priority_fee_microlamports}
                  onChange={(v) => setLocal({ ...local, priority_fee_microlamports: parseInt(v, 10) || 0 })} step="100000" />
         )}
-        <Field label="Trailing Stop (%)" testid="trailing-input"
-               hint="Once price moves favorably, trail by this %. Locks in gains if the move reverses before TP. Set 0 to disable."
-               value={local.trailing_stop_pct}
-               onChange={(v) => setLocal({ ...local, trailing_stop_pct: parseFloat(v) || 0 })} step="1" />
         {showAdvancedFees && (
           <Field label="Exit Slip (bps)" testid="exit-slip-input"
                  hint="Slippage tolerance for sells. Higher = better landing in fast dumps; lower = preserves more value on the way out."
                  value={local.exit_slippage_bps}
                  onChange={(v) => setLocal({ ...local, exit_slippage_bps: parseInt(v, 10) || 0 })} step="50" />
         )}
-        <Field label="TP Sell Frac (%)" testid="partial-tp-input"
-               hint="When TP hits, sell only this % of the position. Set 100 to disable partial-TP. The remainder rides with a tightened trailing stop ('runner')."
-               value={local.partial_tp_pct}
-               onChange={(v) => setLocal({ ...local, partial_tp_pct: parseFloat(v) || 0 })} step="5" />
-        <Field label="Runner Trail (%)" testid="partial-trail-input"
-               hint="Tighter trailing stop applied to the leftover 'runner' position after a partial TP fires. Locks in the rest of the move."
-               value={local.partial_tp_trail_tighten_pct}
-               onChange={(v) => setLocal({ ...local, partial_tp_trail_tighten_pct: parseFloat(v) || 0 })} step="1" />
       </div>
+
+      <BookExitsEditor local={local} setLocal={setLocal} />
 
       {/* Portfolio / global entry settings (per-band liquidity & buyer thresholds live in the gates table below) */}
       <div className="border-t border-neutral-800 pt-3 mt-1">
@@ -870,10 +849,6 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
                  hint="Extra size multiplier applied to re-entries on HOT tokens (stacked on Size ×). 1.5 = half again as big."
                  value={local.hot_reentry_size_mult ?? 1.5}
                  onChange={(v) => setLocal({ ...local, hot_reentry_size_mult: parseFloat(v) || 0 })} step="0.1" />
-          <Field label="Ride winner ≥ %" testid="winner-ride-min-pnl-input"
-                 hint="Positions up at least this % when the hold cap arrives are NOT cut by the clock while they stay inside the trailing stop (or keep drawing buyers) — TP / trail decide instead. Hard ceiling = hold cap × 6. Set 0 to always ride, 999 to disable."
-                 value={local.winner_ride_min_pnl_pct ?? 10}
-                 onChange={(v) => setLocal({ ...local, winner_ride_min_pnl_pct: parseFloat(v) || 0 })} step="5" />
           <Field label="Min wait (s)" testid="reentry-min-wait-input"
                  hint="Quiet time after ANY exit on the token before a re-entry may fire on either path. Stops the instant re-buy after a stop-loss."
                  value={local.reentry_min_wait_s ?? 20}

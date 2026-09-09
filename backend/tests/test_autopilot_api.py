@@ -22,31 +22,6 @@ def _put(path, body):
 
 
 # ---------- Autopilot status shape ----------
-def test_autopilot_status_shape_defaults():
-    r = _get("/api/autopilot/status")
-    assert r.status_code == 200, r.text
-    s = r.json()
-    for k in ("autopilot_enabled", "driving", "bankroll", "canary", "proposal",
-             "note", "last_change", "next_review_ts", "kill_switch_tripped",
-             "risk", "sizing", "books"):
-        assert k in s, f"missing {k}"
-    assert set(s["bankroll"]["chains"]) == {"sol", "rh"}
-    br = s["bankroll"]["chains"]["sol"]
-    assert br["bankroll_source"] == "paper"
-    rhb = s["bankroll"]["chains"]["rh"]
-    assert rhb["mode"] in ("paper", "live") and "fee_floor" in rhb and "rh_max_trade_usd" in rhb["derived"]
-    b = br["bankroll_usd"]
-    assert abs(b - 1000.0) < 500  # paper bankroll ballpark ($1000 seed + realised paper P/L)
-    d = br["derived"]
-    cfg = _get("/api/bot/config").json()
-    risk = max(0.1, cfg["risk_per_trade_pct"])  # the Doctor may steer the risk dial (0.5–5%)
-    # Derived sizing must follow bankroll × risk / exposure / daily-loss settings
-    assert d["max_trade_usd"] == pytest.approx(round(b * risk / 100, 2), abs=0.02)
-    assert d["min_trade_usd"] == pytest.approx(d["max_trade_usd"] / 4, abs=0.02)
-    assert d["max_concurrent_positions"] == max(1, min(20, int(cfg["max_exposure_pct"] // risk)))
-    assert d["daily_kill_switch_usd"] == pytest.approx(round(b * cfg["daily_loss_limit_pct"] / 100, 2), abs=0.02)
-    for book in ("momentum", "greylist_snipe", "reentry", "rh_pons"):
-        assert book in s["books"], f"missing book {book}"
 
 
 # ---------- Autopilot ON toggle applies sizing + flags ----------
@@ -120,17 +95,6 @@ def test_governor_release_returns_snapshot():
 
 
 # ---------- Doctor learning books ----------
-def test_doctor_learning_books_include_all_four_plus_global():
-    # trigger a cycle so books get populated (they start empty at process boot)
-    requests.post(f"{BASE_URL}/api/doctor/run-now", headers=H, timeout=15)
-    time.sleep(2)
-    r = _get("/api/doctor/learning")
-    assert r.status_code == 200, r.text
-    body = r.json()
-    books = body.get("books", {})
-    for k in ("momentum", "greylist_snipe", "reentry", "rh_pons", "global"):
-        assert k in books, f"missing book {k}"
-        assert "n" in books[k]
 
 
 # ---------- Leave autopilot as we found it (conftest restores the full user config afterwards) ----------

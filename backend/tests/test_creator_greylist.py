@@ -156,7 +156,7 @@ def test_strategy_overrides_unknown_strategy_returns_empty():
 
 def test_strategy_overrides_aggressive_full_shape():
     ov = strategy_overrides("aggressive")
-    # Must have ALL the keys exit logic reads via _exit_param + the size_mult
+    # Must have ALL the strategy override keys (telemetry) + the size_mult
     for k in ("size_mult", "tp_pct", "sl_pct", "trail_pct", "trail_arm_pct"):
         assert k in ov, f"missing key {k} in aggressive overrides"
     # Aggressive should be the largest size + tightest exits

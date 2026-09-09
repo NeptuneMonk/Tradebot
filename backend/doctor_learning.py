@@ -1,8 +1,8 @@
 """
 doctor_learning — Strategy Doctor LEARNING POLICY LOOP.
 
-Turns the Doctor from "suggest knobs" into: measure each BOOK (momentum,
-greylist_snipe, reentry, rh_pons — SOL and RH alike) on FILL expectancy in USD
+Turns the Doctor from "suggest knobs" into: measure each BOOK (scalp, hunt,
+rh_pons — SOL and RH alike) on FILL expectancy in R
 (mean pnl_usd after fees — profit, never win rate), emit AT MOST one
 structural proposal per cycle (feature flag / threshold from a whitelist),
 run it as a paper-first CANARY, then PROMOTE or REVERT on measured expectancy
@@ -24,44 +24,37 @@ from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("doctor_learning")
 
-BOOKS = ("momentum", "greylist_snipe", "reentry", "rh_pons")
-BOOK_LABELS = {"momentum": "Momentum book", "greylist_snipe": "Greylist snipe book",
-               "reentry": "Re-entry book", "rh_pons": "RH · PONS book (paper)", "global": "All books"}
-# Keys the Doctor may move. Shared exit keys (TP/SL/trail/no-momentum) affect
-# every book on both chains, so their proposals are scored as book="global".
-GLOBAL_KEYS = {"take_profit_pct", "stop_loss_pct", "trailing_stop_pct", "no_momentum_min_mfe_pct",
-               "hold_max_seconds", "speed_mode", "scanner_interval_s"}
+from book_params import BOOKS
+BOOK_LABELS = {"scalp": "Scalp book (momentum)", "hunt": "Hunt book (greylist snipe + re-entry)",
+               "rh_pons": "RH · PONS book", "global": "All books"}
+# The Doctor may move: one BOOK-SCOPED exit key (book_exits.<book>.<param>), book entry thresholds, or a book
+# size mult via the allocator. There are no shared exit keys any more.
+BOOK_EXIT_KEYS = {"stop_loss_pct", "target_r", "trailing_stop_pct", "trailing_arm_pct", "hold_max_seconds",
+                  "ladder_1r_sell_pct", "ladder_2r_sell_pct", "take_profit_pct"}
 ALLOWED_KEYS = {
-    "book_momentum_size_mult", "book_snipe_size_mult", "greylist_snipe_min_score",
-    "greylist_snipe_stale_seconds",
-    "reentry_enabled", "reentry_size_multiplier", "reentry_breakout_pct",
-    "reentry_min_bounce_pct", "reentry_min_buyers",
-    "rh_min_growth_pct", "rh_min_inflow_usd", "rh_min_unique_buyers", "rh_min_curve_pct", "rh_min_mc_usd",
-    "rh_max_growth_pct", "no_momentum_after_s", "flush_hold_s", "project_score_min", "serial_creator_min_launches", "serial_creator_requires_graduation", "creator_rug_threshold",
+    "book_scalp_size_mult", "book_hunt_size_mult", "book_rh_size_mult", "greylist_snipe_min_score",
+    "greylist_snipe_stale_seconds", "reentry_enabled", "reentry_breakout_pct", "reentry_min_bounce_pct", "reentry_min_buyers",
+    "rh_min_growth_pct", "rh_min_inflow_usd", "rh_min_unique_buyers", "rh_min_curve_pct", "rh_min_mc_usd", "rh_max_growth_pct",
+    "flush_hold_s", "serial_creator_min_launches", "serial_creator_requires_graduation",
     "min_curve_liquidity_sol", "min_buyers_for_entry", "min_curve_liquidity_sol_new", "min_buyers_for_entry_new",
-    "risk_per_trade_pct", "winner_ride_min_pnl_pct",
-} | GLOBAL_KEYS
-FORBIDDEN_KEYS = {"live_trading", "enabled", "daily_kill_switch_usd", "max_trade_usd"}
-TECHNIQUE_MIN_GAIN_USD = 0.02        # $/fill a technique change must add to be worth a canary
-TECHNIQUE_MIN_GAIN_REL = 0.15        # …and ≥15% of |current expectancy|
-LAST_RESORT_MULT = 3                 # size cuts / disables need 3× the minimum sample
+}
+FORBIDDEN_KEYS = {"live_trading", "rh_live_trading", "enabled", "daily_kill_switch_usd", "rh_daily_kill_switch_usd", "max_trade_usd", "rh_max_trade_usd"}
+TECHNIQUE_MIN_GAIN_R = 0.05          # R/fill a technique change must add to be worth a canary
+TECHNIQUE_MIN_GAIN_REL = 0.15        # …and ≥15% of |current expectancy_r|
+LAST_RESORT_MULT = 3
+CANARY_ID = "current"
+PROMOTION_MIN_FILLS = {"scalp": 30, "hunt": 20, "rh_pons": 20, "global": 30}   # post-canary-start fills, per book
 
 
 def key_ok(key: str) -> bool:
-    """Flat whitelist, or a per-book exit override `book_exits.<book>.<param>`."""
     if key in FORBIDDEN_KEYS:
         return False
-    if key in ALLOWED_KEYS:
+    if key.startswith("book_exits."):
+        parts = key.split(".")
+        return len(parts) in (3, 4) and parts[1] in BOOKS and parts[-1] in BOOK_EXIT_KEYS
+    if key.startswith("regime_gate_mult."):
         return True
-    parts = key.split(".")
-    from book_params import BOOKS as _B, EXIT_PARAMS, REGIMES
-    if len(parts) == 3 and parts[0] == "book_exits" and parts[1] in _B and parts[2] in EXIT_PARAMS:
-        return True
-    if len(parts) == 4 and parts[0] == "book_exits" and parts[1] in _B and parts[2] in REGIMES and parts[3] in EXIT_PARAMS:
-        return True
-    if len(parts) == 3 and parts[0] == "regime_gate_mult" and parts[1] in _B and parts[2] in REGIMES:
-        return True
-    return len(parts) == 2 and parts[0] == "regime_busy_threshold" and parts[1] in _B
+    return key in ALLOWED_KEYS
 
 
 def cfg_get(cfg: dict, key: str):
@@ -82,189 +75,74 @@ def cfg_set(cfg: dict, key: str, value):
 
 
 def propose_technique(cfg: dict, trades_by_book: dict[str, list[dict]], min_n: int, extra: dict | None = None) -> tuple[dict | None, dict]:
-    """Technique first: per book, replay its own fills against the exit grid and split them by entry
-    feature; return the single best-gain proposal (or None) plus the full analysis for the UI.
-    `extra` carries the async-computed inputs: post-exit peaks (tick store) and the universe replay."""
-    from autopsy import summarize as autopsy_summarize
-    from book_params import (BOOKS as _B, REGIME_MULT_CAP, REGIME_MULT_STEP, REGIMES, book_exit_view, entry_feature_splits,
-                             entry_pair_splits, regime_splits, ride_scorecard, trade_regime, whatif_exits)
-    extra = extra or {}
-    analysis: dict = {"autopsy": {}, "replay": extra.get("replay") or {}, "tick_store": extra.get("tick_store"),
-                      "computed_at": datetime.now(timezone.utc).isoformat()}
-    best: dict | None = None
-    for book in _B:
+    """One book-scoped candidate per cycle, ranked by R/fill gain: an exit key from the counterfactual grid,
+    an entry threshold from feature splits, or a regime gate multiplier. Never a shared key."""
+    from book_params import whatif_exits, entry_feature_splits, entry_pair_splits, regime_splits, book_exit_view, REGIME_MULT_STEP, REGIME_MULT_CAP
+    cands, analysis = [], {}
+    for book in BOOKS:
         rows = trades_by_book.get(book) or []
-        if book == "momentum":
-            by_band = {"new": [t for t in rows if (t.get("entry_ctx") or {}).get("band") == "new"],
-                       "seasoned": [t for t in rows if (t.get("entry_ctx") or {}).get("band") != "new"]}
-        cur = book_exit_view(cfg, book)
-        wi = whatif_exits(rows, cur) if len(rows) >= min_n else {"n": len(rows)}
-        splits = entry_feature_splits(rows, book, cfg) if len(rows) >= min_n else []
-        if book == "momentum" and len(by_band["new"]) >= min_n:
-            splits += entry_feature_splits(by_band["new"], "momentum_new", cfg)
-        pairs = []
-        if len(rows) >= min_n and not any(sp["actionable"] for sp in splits):
-            pairs = entry_pair_splits(rows, book, cfg)   # only when no single feature is clean enough
-        regime = regime_splits(rows, book, cfg) if len(rows) >= min_n else None
-        # exits per regime: busy hours may deserve a tighter trail than quiet ones
-        regime_exits = {}
-        for reg in REGIMES:
-            sub = [t for t in rows if trade_regime(cfg, book, t) == reg]
-            if len(sub) >= min_n:
-                regime_exits[reg] = {"n": len(sub), "current_exits": book_exit_view(cfg, book, reg), **whatif_exits(sub, book_exit_view(cfg, book, reg))}
-        aut = autopsy_summarize(rows, cfg, extra.get("post_peaks"), min_n=min_n) if rows else None
-        analysis["autopsy"][book] = aut
-        analysis[book] = {"n": len(rows), "current_exits": cur, "whatif": wi, "splits": splits[:6], "pairs": pairs[:3],
-                          "regime": regime, "regime_exits": regime_exits}
         if len(rows) < min_n:
             continue
-        cands = []
-        if aut and aut.get("proposal"):
-            ap = aut["proposal"]
-            cands.append({"type": "threshold", "book": book, "key": ap["key"], "value": ap["value"], "gain": ap["gain"],
-                          "reason": f"autopsy [{ap['cause']}]: {ap['reason']}",
-                          "direction": "raise expectancy by removing the measured cause of this book's losses",
-                          "evidence": {"cause": ap["cause"], "estimated": bool(ap.get("estimated")), **ap["evidence"]}})
+        cur = book_exit_view(cfg, book)
+        wi = whatif_exits(rows, cur)
+        analysis[book] = {"whatif": wi}
         b = wi.get("best")
-        if b and wi["gain_usd_per_fill"] >= max(TECHNIQUE_MIN_GAIN_USD, TECHNIQUE_MIN_GAIN_REL * abs(wi["current"]["expectancy_usd"]))                 and float(b["value"]) != float(cur[b["param"]]):
-            cands.append({"type": "threshold", "book": book, "key": f"book_exits.{book}.{b['param']}", "value": b["value"],
-                          "gain": wi["gain_usd_per_fill"],
-                          "reason": (f"replaying {wi['n']} {book} fills: {b['param']} {cur[b['param']]:g} → {b['value']:g} lifts expectancy "
-                                     f"{wi['current']['expectancy_usd']:+.4f} → {b['expectancy_usd']:+.4f} $/fill (median MFE {wi['median_mfe']:+.1f}%, MAE {wi['median_mae']:+.1f}%)"),
-                          "direction": "raise expectancy by tuning this book's exit — measured on its own fills",
-                          "evidence": {"n": wi["n"], "expectancy_now": wi["current"]["expectancy_usd"], "expectancy_whatif": b["expectancy_usd"],
-                                       "median_mfe": wi["median_mfe"], "median_mae": wi["median_mae"], "grid": wi["rows"][:24]}})
+        if b and wi["gain_r_per_fill"] >= max(TECHNIQUE_MIN_GAIN_R, TECHNIQUE_MIN_GAIN_REL * abs(wi["current"]["expectancy_r"])) \
+                and float(b["value"]) != float(cur[b["param"]]):
+            cands.append({"type": "exit", "book": book, "key": f"book_exits.{book}.{b['param']}", "value": b["value"], "gain": wi["gain_r_per_fill"],
+                          "reason": (f"{book}: {b['param']} {cur[b['param']]:g} → {b['value']:g} would move expectancy "
+                                     f"{wi['current']['expectancy_r']:+.3f} → {b['expectancy_r']:+.3f} R/fill (median MFE {wi['median_mfe']:+.1f}%, MAE {wi['median_mae']:+.1f}%)"),
+                          "direction": "tighten" if b["param"] in ("stop_loss_pct", "hold_max_seconds") and b["value"] < cur[b["param"]] else "widen",
+                          "evidence": {"n": wi["n"], "expectancy_now": wi["current"]["expectancy_r"], "expectancy_whatif": b["expectancy_r"], "grid": wi["rows"][:24]}})
+        splits = entry_feature_splits(rows, book, cfg)
+        analysis[book]["entry_splits"] = splits
         for sp in splits:
-            if sp["actionable"] and sp["gain_usd_per_fill"] >= TECHNIQUE_MIN_GAIN_USD:
-                val = round(sp["split"], 2) if isinstance(cfg.get(sp["key"], 0.0), float) else int(round(sp["split"]))
-                if sp.get("direction") == "ceiling":
-                    reason = (f"{book} fills with {sp['feature']} ≥ {sp['split']:g} lose {sp['high_expectancy_usd']:+.4f} $/fill, "
-                              f"below earn {sp['low_expectancy_usd']:+.4f} (n={sp['n']}) → tighten {sp['key']} {sp['current']:g} → {val:g}")
-                else:
-                    reason = (f"{book} fills with {sp['feature']} < {sp['split']:g} lose {sp['low_expectancy_usd']:+.4f} $/fill, "
-                              f"above earn {sp['high_expectancy_usd']:+.4f} (n={sp['n']}) → raise {sp['key']} {sp['current']:g} → {val:g}")
-                cands.append({"type": "threshold", "book": book, "key": sp["key"], "value": val, "gain": sp["gain_usd_per_fill"],
-                              "reason": reason,
-                              "direction": "raise expectancy by filtering the entries that lose — measured, not guessed",
-                              "evidence": {k: sp[k] for k in ("feature", "n", "split", "current", "low_expectancy_usd", "high_expectancy_usd")}})
-                break  # one entry-filter candidate per book (the top-gain one)
-        for pr in pairs:
-            if pr["actionable"] and pr["gain_usd_per_fill"] >= TECHNIQUE_MIN_GAIN_USD:
-                acts = {}
-                for k, split, curv in zip(pr["keys"], pr["splits"], pr["current"]):
-                    if split > curv:
-                        acts[k] = round(split, 2) if isinstance(cfg.get(k, 0.0), float) else int(round(split))
-                if not acts:
-                    break
-                cands.append({"type": "threshold", "book": book, "key": "+".join(acts), "value": acts, "actions": acts,
-                              "gain": pr["gain_usd_per_fill"],
-                              "reason": (f"{book}: no single gate separates winners, but fills with {pr['features'][0]} ≥ {pr['splits'][0]:g} AND "
-                                         f"{pr['features'][1]} ≥ {pr['splits'][1]:g} earn {pr['high_high_expectancy_usd']:+.4f} $/fill (n={pr['high_high_n']}) "
-                                         f"while the rest lose {pr['rest_expectancy_usd']:+.4f} → raise both gates together"),
-                              "direction": "raise expectancy by requiring both signals at entry — measured on this book's fills",
-                              "evidence": {k: pr[k] for k in ("features", "n", "splits", "current", "high_high_n", "high_high_expectancy_usd", "rest_expectancy_usd")}})
+            if sp["actionable"] and sp["gain_r_per_fill"] >= TECHNIQUE_MIN_GAIN_R:
+                val = round(sp["split"], 2) if isinstance(sp["split"], float) and not float(sp["split"]).is_integer() else int(sp["split"])
+                side = ("≥", "lose", sp["high_expectancy_r"], "below earn", sp["low_expectancy_r"], "tighten") if sp["direction"] == "ceiling" \
+                    else ("<", "lose", sp["low_expectancy_r"], "above earn", sp["high_expectancy_r"], "raise")
+                cands.append({"type": "threshold", "book": book, "key": sp["key"], "value": val, "gain": sp["gain_r_per_fill"],
+                              "reason": (f"{book} fills with {sp['feature']} {side[0]} {sp['split']:g} {side[1]} {side[2]:+.3f} R/fill, "
+                                         f"{side[3]} {side[4]:+.3f} (n={sp['n']}) → {side[5]} {sp['key']} {sp['current']:g} → {val:g}"),
+                              "direction": side[5], "evidence": {k: sp[k] for k in ("feature", "n", "split", "current", "low_expectancy_r", "high_expectancy_r")}})
                 break
-        for reg, rw in regime_exits.items():
-            rb = rw.get("best")
-            if not rb:
-                continue
-            cur_r = rw["current_exits"]
-            # weight the regime gain by its share of fills so it competes fairly with book-wide changes
-            gain_w = rw["gain_usd_per_fill"] * rw["n"] / max(1, len(rows))
-            if rw["gain_usd_per_fill"] >= max(TECHNIQUE_MIN_GAIN_USD, TECHNIQUE_MIN_GAIN_REL * abs(rw["current"]["expectancy_usd"])) \
-                    and float(rb["value"]) != float(cur_r[rb["param"]]):
-                cands.append({"type": "threshold", "book": book, "key": f"book_exits.{book}.{reg}.{rb['param']}", "value": rb["value"],
-                              "gain": gain_w,
-                              "reason": (f"{book} fills entered in {reg} hours ({rw['n']}): {rb['param']} {cur_r[rb['param']]:g} → {rb['value']:g} lifts "
-                                         f"{rw['current']['expectancy_usd']:+.4f} → {rb['expectancy_usd']:+.4f} $/fill in that regime only"),
-                              "direction": f"raise expectancy with a {reg}-hour exit ladder for this book — measured on its {reg}-hour fills",
-                              "evidence": {"regime": reg, "n": rw["n"], "expectancy_now": rw["current"]["expectancy_usd"],
-                                           "expectancy_whatif": rb["expectancy_usd"], "grid": rw["rows"][:24]}})
-        if regime and regime["actionable"] and regime["gain_usd_per_fill"] >= TECHNIQUE_MIN_GAIN_USD:
+        pairs = entry_pair_splits(rows, book, cfg)
+        analysis[book]["entry_pairs"] = pairs
+        for pr in pairs:
+            if pr["actionable"] and pr["gain_r_per_fill"] >= TECHNIQUE_MIN_GAIN_R:
+                vals = [round(x, 2) if isinstance(x, float) and not float(x).is_integer() else int(x) for x in pr["splits"]]
+                cands.append({"type": "threshold_pair", "book": book, "key": pr["keys"][0], "value": vals[0],
+                              "extra_actions": {pr["keys"][1]: vals[1]}, "gain": pr["gain_r_per_fill"],
+                              "reason": (f"{book} fills with {pr['features'][0]} ≥ {pr['splits'][0]:g} AND {pr['features'][1]} ≥ {pr['splits'][1]:g} "
+                                         f"earn {pr['high_high_expectancy_r']:+.3f} R/fill (n={pr['high_high_n']}) while the rest lose {pr['rest_expectancy_r']:+.3f} → raise both gates"),
+                              "direction": "raise", "evidence": {k: pr[k] for k in ("features", "n", "splits", "current", "high_high_n", "high_high_expectancy_r", "rest_expectancy_r")}})
+                break
+        regime = regime_splits(rows, book, cfg)
+        analysis[book]["regime"] = regime
+        if regime and regime["actionable"] and regime["gain_r_per_fill"] >= TECHNIQUE_MIN_GAIN_R:
             lose = regime["losing"]
-            new_mult = round(min(REGIME_MULT_CAP, regime["current_mult"] + REGIME_MULT_STEP), 2)
-            acts = {f"regime_gate_mult.{book}.{lose}": new_mult, f"regime_busy_threshold.{book}": round(regime["threshold_per_h"], 1)}
-            cands.append({"type": "threshold", "book": book, "key": "+".join(acts), "value": acts, "actions": acts,
-                          "gain": regime["gain_usd_per_fill"],
-                          "reason": (f"{book} in {lose} hours (launch rate {'<' if lose == 'quiet' else '≥'} {regime['threshold_per_h']:g}/h) "
-                                     f"earns {regime[lose]['expectancy_usd']:+.4f} $/fill (n={regime[lose]['n']}) vs "
-                                     f"{regime['quiet' if lose == 'busy' else 'busy'][ 'expectancy_usd']:+.4f} in the other regime → "
-                                     f"tighten every {book} entry gate ×{new_mult:g} during {lose} hours"),
-                          "direction": "raise expectancy by demanding more from entries in the regime that loses",
-                          "evidence": regime})
-        for c in cands:
-            if best is None or c["gain"] > best["gain"]:
-                best = c
-    # universe replay proposals need NO fills — they are measured on every tracked token
-    for book, rp in (extra.get("replay") or {}).items():
-        up = (rp or {}).get("proposal")
-        if not up:
-            continue
-        c = {"type": "threshold", "book": book, "key": up["key"], "value": up["value"], "gain": up["gain"],
-             "reason": f"universe replay: {up['reason']}",
-             "direction": "raise $ over the whole universe of launches — counts the tokens we did NOT buy",
-             "evidence": {"universe": True, **up["evidence"]}}
-        if best is None or c["gain"] > best["gain"]:
-            best = c
-    # flush scorecard (RH): stops we sold into a single-seller flush vs real distribution, and what ran afterwards
-    from flush import flush_scorecard
-    fs = flush_scorecard(trades_by_book.get("rh_pons") or [], extra.get("post_peaks"), cfg)
-    analysis["flush"] = fs
-    if fs and fs.get("proposal") is not None:
-        c = {"type": "threshold", "book": "rh_pons", "key": "flush_hold_s", "value": fs["proposal"],
-             "gain": max(TECHNIQUE_MIN_GAIN_USD, abs(fs["flush"]["avg_pnl_pct"] or 0) / 100.0 * 0.5),
-             "reason": f"flush scorecard: {fs.get('note')} → flush_hold_s {fs['hold_s']} → {fs['proposal']}",
-             "direction": "stop selling single-seller flushes that recover; sell faster when holding them costs", "evidence": fs}
-        if best is None or c["gain"] > best["gain"]:
-            best = c
-    # ride scorecard is global (all books share the ride threshold)
-    all_rows = [t for rows in trades_by_book.values() for t in rows]
-    rs = ride_scorecard(all_rows, cfg)
-    analysis["ride"] = rs
-    if rs and rs.get("proposal") is not None and abs(rs["gain_vs_clock_usd_per_ride"]) >= TECHNIQUE_MIN_GAIN_USD:
-        c = {"type": "threshold", "book": "global", "key": "winner_ride_min_pnl_pct", "value": rs["proposal"],
-             "gain": abs(rs["gain_vs_clock_usd_per_ride"]),
-             "reason": (f"{rs['n']} rode-winner exits {'beat' if rs['gain_vs_clock_usd_per_ride'] > 0 else 'trailed'} the clock by "
-                        f"{rs['gain_vs_clock_usd_per_ride']:+.4f} $/ride ({rs['rides_that_beat_clock']}/{rs['n']} beat it) → "
-                        f"winner_ride_min_pnl_pct {rs['current_min_pnl_pct']:g} → {rs['proposal']:g}"),
-             "direction": "let more winners ride when riding pays; demand a bigger lead when it gives back",
-             "evidence": rs}
-        if best is None or c["gain"] > best["gain"]:
-            best = c
-    if best:
-        prop = {"type": best["type"], "book": best["book"], "key": best["key"], "value": best["value"], "reason": best["reason"],
-                "expected_direction": best["direction"], "evidence": best["evidence"], "technique": True}
-        if best.get("actions"):
-            prop["actions"] = best["actions"]
-        return prop, analysis
-    return None, analysis
-CANARY_ID = "current"
+            cands.append({"type": "regime", "book": book, "key": f"regime_gate_mult.{book}.{lose}",
+                          "value": round(min(REGIME_MULT_CAP, regime["current_mult"] + REGIME_MULT_STEP), 2), "gain": regime["gain_r_per_fill"],
+                          "reason": (f"{book} in {lose} hours (launch rate {'≥' if lose == 'busy' else '<'} {regime['threshold_per_h']:.0f}/h) "
+                                     f"earns {regime[lose]['expectancy_r']:+.3f} R/fill (n={regime[lose]['n']}) vs "
+                                     f"{regime['quiet' if lose == 'busy' else 'busy']['expectancy_r']:+.3f} in the other regime → tighten that regime's gates"),
+                          "direction": "tighten", "evidence": regime})
+    if not cands:
+        return None, analysis
+    best = max(cands, key=lambda c: c["gain"])
+    return {"kind": best["type"], "book": best["book"], "key": best["key"], "value": best["value"], "reason": best["reason"],
+            "expected_direction": best["direction"], "evidence": best["evidence"], "gain_r_per_fill": round(best["gain"], 4),
+            "technique": True, "actions": {best["key"]: best["value"], **(best.get("extra_actions") or {})}}, analysis
 
 
 def book_of(t: dict) -> str | None:
-    """Which learning book a closed trade belongs to. Manual buys are the
-    operator's decision, not a tunable strategy → None (still shown in P/L)."""
+    """Learning book of a closed trade. Manual buys are the operator's decision → None (still shown in P/L)."""
+    from book_params import book_for_action
     a = t.get("classifier_action") or ""
     if a in ("manual", "rh_pons_manual"):
         return None
-    if t.get("chain") == "rh" or a.startswith("rh_pons"):
-        return "rh_pons"          # chain wins: legacy RH docs carry the model default book="momentum"
     b = t.get("book")
-    if b in BOOKS:
-        return b
-    if a == "reentry":
-        return "reentry"
-    return "greylist_snipe" if a == "greylist_snipe" else "momentum"
-
-
-def book_size_mult(cfg, action: str) -> float:
-    """Sizing helper used by bot._enter / reentry. 0.0 ⇒ skip that book."""
-    key = "book_snipe_size_mult" if action == "greylist_snipe" else "book_momentum_size_mult"
-    v = cfg.get(key, 1.0) if isinstance(cfg, dict) else getattr(cfg, key, 1.0)
-    try:
-        return max(0.0, float(v if v is not None else 1.0))
-    except (TypeError, ValueError):
-        return 1.0
+    return b if b in BOOKS else book_for_action(a, t.get("chain"))
 
 
 def _pnl(t: dict) -> float | None:
@@ -342,7 +220,10 @@ def book_stats(trades: list[dict], cfg: dict | None = None) -> dict:
         c = _exit_class(t)
         classes[c] = classes.get(c, 0) + 1
     stale_or_timeout = [p for t, p in rows if _exit_class(t) in ("stale", "timeout")]
-    tp = float((cfg or {}).get("take_profit_pct") or 0) if cfg else 0.0
+    from book_params import pnl_r
+    rs = [r for r in (pnl_r(t) for t, _ in rows) if r is not None]
+    win_r = [r for r in rs if r > 0]
+    loss_r = [r for r in rs if r <= 0]
     winner_mean = statistics.mean(p for _, p in wins) if wins else None
     loser_mean = statistics.mean(p for _, p in losses) if losses else None
     by_trigger: dict[str, dict] = {}
@@ -358,6 +239,9 @@ def book_stats(trades: list[dict], cfg: dict | None = None) -> dict:
         d["winrate"] = d["wins"] / d["n"] * 100.0
     return {
         "n": n,
+        "expectancy_r": statistics.mean(rs) if rs else None,
+        "avg_win_r": statistics.mean(win_r) if win_r else None,
+        "avg_loss_r": statistics.mean(loss_r) if loss_r else None,
         "expectancy_usd": statistics.mean(pnls),
         "total_usd": sum(pnls),
         "winrate": len(wins) / n * 100.0,
@@ -367,7 +251,6 @@ def book_stats(trades: list[dict], cfg: dict | None = None) -> dict:
         "median_hold_s": statistics.median(holds) if holds else None,
         "median_mfe": statistics.median(mfes) if mfes else None,
         "winners_median_mfe": statistics.median(win_mfes) if win_mfes else None,
-        "mfe_over_tp_share": (sum(1 for m in win_mfes if tp and m >= 1.5 * tp) / len(win_mfes) * 100.0) if (win_mfes and tp) else None,
         "median_giveback": statistics.median(givebacks) if givebacks else None,
         "median_latency_tax": statistics.median(lat) if lat else None,
         "max_drawdown_usd": _max_drawdown(pnls),
@@ -394,158 +277,33 @@ def _f(cfg: dict, key: str, default: float) -> float:
 
 def propose(cfg: dict, stats: dict[str, dict], min_n: int, trades_by_book: dict[str, list[dict]] | None = None,
             extra: dict | None = None) -> dict | None:
-    """Priority ladder — first match wins. Every rule is scored on USD
-    expectancy per fill (profit), never on win rate. Order: TECHNIQUE (per-book exit grid,
-    data-driven entry filters, loss autopsy, universe replay) → profit-shape rules → scale winners → LAST RESORT size cuts.
-    Returns None when nothing qualifies."""
-    if trades_by_book is not None:
-        tech, _ = propose_technique(cfg, trades_by_book, min_n, extra)
-        if tech:
-            return tech
+    """Structural proposal (rare, needs LAST_RESORT_MULT × min_n fills): raise a book's entry bar when it loses in R.
+    Size cuts are the allocator's job; exits are the technique proposer's job."""
     def P(kind, book, key, value, reason, direction, evidence):
-        assert key_ok(key)
-        return {"type": kind, "book": book, "key": key, "value": value, "reason": reason,
-                "expected_direction": direction, "evidence": evidence}
+        return {"kind": kind, "book": book, "key": key, "value": value, "reason": reason, "expected_direction": direction, "evidence": evidence}
 
     def S(book):
         return stats.get(book) or {"n": 0}
 
-    def ev(st, **extra):
-        base = {"expectancy_usd": st.get("expectancy_usd"), "n": st.get("n"), "winrate": st.get("winrate"),
-                "total_usd": st.get("total_usd")}
-        base.update(extra)
-        return base
+    def ev(st):
+        return {"expectancy_r": st.get("expectancy_r"), "n": st.get("n"), "winrate": st.get("winrate"), "payoff_ratio": st.get("payoff_ratio")}
 
-    mom, sn, re_, rh = S("momentum"), S("greylist_snipe"), S("reentry"), S("rh_pons")
-    # 1. a losing book (negative USD expectancy over a real sample, and not
-    #    just a bad hour: the 7d expectancy must not contradict it)
-    for book, st in (("momentum", mom), ("greylist_snipe", sn), ("reentry", re_), ("rh_pons", rh)):
-        # LAST RESORT: only after technique found nothing, on 3× the sample, and never while a
-        # smaller fix is plausible on a thin sample
-        if st["n"] < LAST_RESORT_MULT * min_n or st["expectancy_usd"] >= 0:
-            continue
-        if (st.get("expectancy_7d") or 0) > 0 and st.get("n_7d", 0) >= 3 * min_n:
-            continue
-        if book == "momentum" and _f(cfg, "book_momentum_size_mult", 1.0) > 0 and not cfg.get("allocator_enabled", True):
-            # only when the desk allocator is off — with it on, sizing is continuous and floored, never 0
-            return P("flag", book, "book_momentum_size_mult", 0.25,
-                     f"momentum book expectancy {st['expectancy_usd']:+.4f} $/fill over {st['n']} fills (total {st['total_usd']:+.2f} $) — cut to the exploration floor ×0.25",
-                     "raise expectancy by shrinking the losing book while it keeps learning", ev(st))
-        if book == "greylist_snipe" and _f(cfg, "book_snipe_size_mult", 1.0) > 0:
-            if st["n"] >= 3 * min_n and _f(cfg, "greylist_snipe_min_score", 45) < 70 and st["expectancy_usd"] > -0.10:
-                new = min(80.0, _f(cfg, "greylist_snipe_min_score", 45) + 5)
-                return P("threshold", book, "greylist_snipe_min_score", new,
-                         f"snipe book slightly negative ({st['expectancy_usd']:+.4f} $/fill, n={st['n']}); raise score bar before disabling",
-                         "raise expectancy by filtering weakest snipes", ev(st))
-            if cfg.get("allocator_enabled", True):
-                continue   # allocator owns snipe sizing (floored, never off)
-            return P("flag", book, "book_snipe_size_mult", 0.25,
-                     f"snipe book expectancy {st['expectancy_usd']:+.4f} $/fill over {st['n']} fills (total {st['total_usd']:+.2f} $) — cut to the exploration floor ×0.25",
-                     "raise expectancy by shrinking the losing book while it keeps learning", ev(st))
-        if book == "reentry" and cfg.get("reentry_enabled", True):
-            bt = st.get("by_trigger") or {}
-            bo, pb = bt.get("breakout", {"n": 0}), bt.get("pullback", {"n": 0})
-            half = max(3, min_n // 2)
-            if bo.get("n", 0) >= half and bo["expectancy_usd"] < 0 and (pb.get("n", 0) < half or pb["expectancy_usd"] >= 0) \
-                    and _f(cfg, "reentry_breakout_pct", 5) < 60:
-                return P("threshold", book, "reentry_breakout_pct", min(60.0, _f(cfg, "reentry_breakout_pct", 5) + 10),
-                         f"breakout re-entries lose {bo['expectancy_usd']:+.4f} $/fill (n={bo['n']}) while pullbacks hold up — demand a bigger breakout",
-                         "raise expectancy by cutting the losing trigger", ev(st, breakout=bo, pullback=pb))
-            if pb.get("n", 0) >= half and pb["expectancy_usd"] < 0 and _f(cfg, "reentry_min_bounce_pct", 5) < 30:
-                return P("threshold", book, "reentry_min_bounce_pct", min(30.0, _f(cfg, "reentry_min_bounce_pct", 5) + 5),
-                         f"pullback re-entries lose {pb['expectancy_usd']:+.4f} $/fill (n={pb['n']}) — require a bigger run-on before buying the dip",
-                         "raise expectancy by filtering weak pullbacks", ev(st, breakout=bo, pullback=pb))
-            if pb.get("n", 0) >= half and pb["expectancy_usd"] < 0 and int(_f(cfg, "reentry_min_buyers", 2)) < 5:
-                return P("threshold", book, "reentry_min_buyers", int(_f(cfg, "reentry_min_buyers", 2)) + 1,
-                         f"pullback re-entries still negative ({pb['expectancy_usd']:+.4f} $/fill, n={pb['n']}) with the bounce bar maxed — require more buyers",
-                         "raise expectancy by filtering weak pullbacks", ev(st, pullback=pb))
-            return P("flag", book, "reentry_enabled", False,
-                     f"re-entry book expectancy {st['expectancy_usd']:+.4f} $/fill over {st['n']} fills (total {st['total_usd']:+.2f} $) after trigger filters — switch it off",
-                     "raise expectancy by cutting losing book", ev(st, by_trigger=bt))
-        if book == "rh_pons":
-            if _f(cfg, "rh_min_growth_pct", 30) < 100:
-                return P("threshold", book, "rh_min_growth_pct", min(100.0, _f(cfg, "rh_min_growth_pct", 30) + 10),
-                         f"RH paper book expectancy {st['expectancy_usd']:+.4f} $/fill over {st['n']} fills — demand more growth before entry",
-                         "raise expectancy by taking fewer, stronger RH entries", ev(st))
-            if _f(cfg, "rh_min_inflow_usd", 300) < 2000:
-                return P("threshold", book, "rh_min_inflow_usd", min(2000.0, _f(cfg, "rh_min_inflow_usd", 300) + 100),
-                         f"RH paper book still negative ({st['expectancy_usd']:+.4f} $/fill, n={st['n']}) with growth bar maxed — demand more inflow",
-                         "raise expectancy by taking fewer, stronger RH entries", ev(st))
-    # 1b. bankroll risk dial DOWN: the whole machine is losing → risk less per trade
-    g = S("global")
-    if cfg.get("bankroll_sizing_enabled") and g["n"] >= LAST_RESORT_MULT * min_n and g["expectancy_usd"] < 0 \
-            and (g.get("expectancy_7d") is None or g["expectancy_7d"] <= 0) and _f(cfg, "risk_per_trade_pct", 2.0) > 0.5:
-        return P("threshold", "global", "risk_per_trade_pct", round(max(0.5, _f(cfg, "risk_per_trade_pct", 2.0) - 0.5), 2),
-                 f"all books together lose {g['expectancy_usd']:+.4f} $/fill over {g['n']} fills — risk less of the bankroll per trade while the edge is missing",
-                 "protect bankroll by shrinking stake while expectancy is negative", ev(g))
-    # 2. profit shape on the shared exit keys (scored across every book)
-    if g["n"] >= min_n:
-        wm, lm = g.get("winner_mean_usd"), g.get("loser_mean_usd")
-        sl = _f(cfg, "stop_loss_pct", 20)
-        if wm and lm and abs(lm) > 1.5 * wm and (g.get("sl_share") or 0) > 30 and sl > 10:
-            return P("threshold", "global", "stop_loss_pct", max(10.0, sl - 3),
-                     f"average loser (-{abs(lm):.3f} $) is {abs(lm) / wm:.1f}x the average winner (+{wm:.3f} $) and {g['sl_share']:.0f}% of exits are stop-loss — cut losers sooner",
-                     "raise expectancy by shrinking the average loss", ev(g, winner_mean_usd=wm, loser_mean_usd=lm, sl_share=g.get("sl_share")))
-        tp = _f(cfg, "take_profit_pct", 45)
-        if (g.get("mfe_over_tp_share") or 0) > 40 and (g.get("tp_share") or 0) > 40 and tp < 100:
-            return P("threshold", "global", "take_profit_pct", min(100.0, tp + 5),
-                     f"{g['mfe_over_tp_share']:.0f}% of winners ran ≥1.5x past TP ({tp:g}%) and {g['tp_share']:.0f}% of exits are TP — money left on the table",
-                     "raise expectancy by letting winners run", ev(g, mfe_over_tp_share=g.get("mfe_over_tp_share"), tp_share=g.get("tp_share"),
-                                                                    winners_median_mfe=g.get("winners_median_mfe")))
-    # 3. momentum giveback
-    if mom["n"] >= min_n and (mom.get("median_giveback") or 0) > 10 and _f(cfg, "trailing_stop_pct", 6) > 4:
-        new = max(4.0, _f(cfg, "trailing_stop_pct", 6) - 1)
-        return P("threshold", "global", "trailing_stop_pct", new,
-                 f"momentum winners give back a median {mom['median_giveback']:.1f}pp of their peak",
-                 "raise expectancy by cutting giveback",
-                 {"median_giveback": mom["median_giveback"], "median_mfe": mom.get("median_mfe"), "n": mom["n"]})
-    # 4. stale / timeout heavy book
-    for book, st in (("greylist_snipe", sn), ("momentum", mom)):
-        if st["n"] >= min_n and st["stale_timeout_share"] > 40 and (st.get("stale_timeout_mean_pnl") or 0) < 0:
-            if book == "greylist_snipe":
-                cur = int(_f(cfg, "greylist_snipe_stale_seconds", 60))
-                if cur > 30:
-                    return P("threshold", book, "greylist_snipe_stale_seconds", max(30, cur - 15),
-                             f"{st['stale_timeout_share']:.0f}% of snipe exits are stale/timeout with mean {st['stale_timeout_mean_pnl']:+.4f} $",
-                             "raise expectancy by cutting dead holds", {"share": st["stale_timeout_share"], "n": st["n"]})
-            else:
-                cur = int(_f(cfg, "hold_max_seconds", 35))
-                if cur > 20:
-                    return P("threshold", "global", "hold_max_seconds", max(20, cur - 5),
-                             f"{st['stale_timeout_share']:.0f}% of momentum exits are timeout with mean {st['stale_timeout_mean_pnl']:+.4f} $",
-                             "raise expectancy by cutting dead holds", {"share": st["stale_timeout_share"], "n": st["n"]})
-    # 5. latency tax
-    for book, st in (("momentum", mom), ("greylist_snipe", sn)):
-        if st["n"] >= min_n and (st.get("median_latency_tax") or 0) > 8:
-            mode = str(cfg.get("speed_mode", "manual"))
-            if mode in ("eco", "manual"):
-                return P("flag", "global", "speed_mode", "fast",
-                         f"{book} median latency tax {st['median_latency_tax']:.1f}pp (decision→fill); TP is NOT loosened",
-                         "raise expectancy by landing exits closer to decision price", {"latency_tax": st["median_latency_tax"]})
-            cur = int(_f(cfg, "scanner_interval_s", 15))
-            return P("threshold", "global", "scanner_interval_s", min(60, cur + 5),
-                     f"latency tax {st['median_latency_tax']:.1f}pp at speed_mode={mode}; reduce entry rate instead of loosening TP",
-                     "raise expectancy by taking fewer, better fills", {"latency_tax": st["median_latency_tax"]})
-    # 6. scale what is making money (profit, not win rate): a book with
-    #    positive 24h AND 7d expectancy on a solid sample earns more size
-    for book, st, key, step, cap in (("momentum", mom, "book_momentum_size_mult", 0.25, 2.0),
-                                     ("greylist_snipe", sn, "book_snipe_size_mult", 0.25, 2.0),
-                                     ("reentry", re_, "reentry_size_multiplier", 0.1, 1.0)):
-        if st["n"] >= 2 * min_n and st["expectancy_usd"] > 0 and (st.get("expectancy_7d") or 0) > 0 \
-                and (st.get("payoff_ratio") or 0) >= 1.0:
-            cur = _f(cfg, key, 1.0 if key != "reentry_size_multiplier" else 0.5)
-            if cur > 0 and cur < cap:
-                return P("threshold", book, key, round(min(cap, cur + step), 2),
-                         f"{book} book earns {st['expectancy_usd']:+.4f} $/fill (n={st['n']}, 7d {st['expectancy_7d']:+.4f}) with payoff {st['payoff_ratio']:.2f} — scale the winner",
-                         "raise total profit by sizing up a positive-expectancy book", ev(st, payoff_ratio=st.get("payoff_ratio")))
-    # 7. bankroll risk dial UP: positive 24h AND 7d expectancy across the
-    #    machine with payoff ≥ 1 → compound harder (Doctor-steered, capped 5%)
-    if cfg.get("bankroll_sizing_enabled") and g["n"] >= 2 * min_n and g["expectancy_usd"] > 0 \
-            and (g.get("expectancy_7d") or 0) > 0 and (g.get("payoff_ratio") or 0) >= 1.0 \
-            and _f(cfg, "risk_per_trade_pct", 2.0) < 5.0:
-        return P("threshold", "global", "risk_per_trade_pct", round(min(5.0, _f(cfg, "risk_per_trade_pct", 2.0) + 0.5), 2),
-                 f"machine earns {g['expectancy_usd']:+.4f} $/fill (n={g['n']}, 7d {g['expectancy_7d']:+.4f}) with payoff {g['payoff_ratio']:.2f} — risk a little more of the bankroll per trade",
-                 "raise total profit by compounding a positive-expectancy machine", ev(g, payoff_ratio=g.get("payoff_ratio")))
+    h = S("hunt")
+    if h["n"] >= LAST_RESORT_MULT * min_n and (h.get("expectancy_r") or 0) < 0 and _f(cfg, "greylist_snipe_min_score", 45) < 85:
+        return P("threshold", "hunt", "greylist_snipe_min_score", min(85.0, _f(cfg, "greylist_snipe_min_score", 45) + 10),
+                 f"hunt book {h['expectancy_r']:+.3f} R/fill over {h['n']} fills — raise the creator score bar", "tighten", ev(h))
+    r = S("rh_pons")
+    if r["n"] >= LAST_RESORT_MULT * min_n and (r.get("expectancy_r") or 0) < 0:
+        if _f(cfg, "rh_min_growth_pct", 20) < 150:
+            return P("threshold", "rh_pons", "rh_min_growth_pct", min(150.0, _f(cfg, "rh_min_growth_pct", 20) + 10),
+                     f"RH book {r['expectancy_r']:+.3f} R/fill over {r['n']} fills — demand more growth before entry", "tighten", ev(r))
+        if _f(cfg, "rh_min_inflow_usd", 200) < 3000:
+            return P("threshold", "rh_pons", "rh_min_inflow_usd", min(3000.0, _f(cfg, "rh_min_inflow_usd", 200) * 1.5),
+                     f"RH book still negative ({r['expectancy_r']:+.3f} R/fill, n={r['n']}) with growth bar maxed — demand more inflow", "tighten", ev(r))
+    sc = S("scalp")
+    if sc["n"] >= LAST_RESORT_MULT * min_n and (sc.get("expectancy_r") or 0) < 0 and _f(cfg, "min_buyers_for_entry_new", 8) < 40:
+        return P("threshold", "scalp", "min_buyers_for_entry_new", int(_f(cfg, "min_buyers_for_entry_new", 8) + 4),
+                 f"scalp book {sc['expectancy_r']:+.3f} R/fill over {sc['n']} fills — require more real buyers on new-band entries", "tighten", ev(sc))
     return None
 
 
@@ -630,14 +388,14 @@ class LearningEngine:
             return "no fills in the last 24h"
         if n < min_n:
             return f"{n}/{min_n} fills — collecting evidence before acting"
-        e = st.get("expectancy_usd") or 0.0
+        e = st.get("expectancy_r") or 0.0
         e7 = st.get("expectancy_7d")
         if e < 0 and e7 is not None and e7 > 0:
-            return f"24h negative ({e:+.3f} $/fill) but 7d positive ({e7:+.3f}) — treating as noise, not a regime change"
+            return f"24h negative ({e:+.3f} R/fill) but 7d positive ({e7:+.3f}) — treating as noise, not a regime change"
         if e < 0:
-            return f"losing {e:+.3f} $/fill — candidate for a corrective canary"
+            return f"losing {e:+.3f} R/fill — candidate for a corrective canary"
         pr = st.get("payoff_ratio")
-        return f"earning {e:+.3f} $/fill" + (f", payoff {pr:.2f}" if pr else "") + " — no structural edge to fix; scale-up needs 7d confirmation"
+        return f"earning {e:+.3f} R/fill" + (f", payoff {pr:.2f}" if pr else "") + " — no structural edge to fix; scale-up needs 7d confirmation"
 
     async def cycle(self, cfg: dict, trades_24h: list[dict], trades_7d: list[dict]) -> list[dict]:
         """Returns 0–1 suggestion dicts (category 'learning') for the Doctor to
@@ -650,7 +408,7 @@ class LearningEngine:
             sel = (lambda t: book_of(t) is not None) if b == "global" else (lambda t, _b=b: book_of(t) == _b)
             s24 = book_stats([t for t in trades_24h if sel(t)], cfg)
             s7 = book_stats([t for t in trades_7d if sel(t)], cfg)
-            s24["expectancy_7d"] = s7.get("expectancy_usd")
+            s24["expectancy_7d"] = s7.get("expectancy_r")
             s24["n_7d"] = s7.get("n", 0)
             books[b] = s24
         for b, st in books.items():
@@ -691,13 +449,12 @@ class LearningEngine:
             "title": f"[{proposal['book']}] {proposal['key']} → {proposal['value']}",
             "rationale": (
                 f"{proposal['reason']}. Expected: {proposal['expected_direction']}. Runs as a canary for "
-                f"{int(cfg.get('doctor_learning_canary_trades', 12))} trades / "
-                f"{float(cfg.get('doctor_learning_canary_hours', 6.0)):g}h; promoted only if fill expectancy "
+                f"{PROMOTION_MIN_FILLS.get(proposal['book'], 30)} fills AFTER the canary start; promoted only if expectancy in R "
                 "improves and drawdown is not >15% worse — otherwise reverted and blacklisted 24h. "
-                "Optimises USD expectancy after fill (profit), not win rate."
+                "Optimises R expectancy after fill, never win rate."
             ),
             "actions": proposal.get("actions") or {proposal["key"]: proposal["value"]},
-            "confidence": "high" if proposal["type"] == "flag" else "med",
+            "confidence": "med",
             "metrics": {"book": proposal["book"], "fingerprint": fp, **{k: (round(v, 6) if isinstance(v, float) else v) for k, v in proposal["evidence"].items()}},
             "learning": True,
         }
@@ -736,7 +493,7 @@ class LearningEngine:
             "baseline_config_subset": baseline,
             "started_at": datetime.now(timezone.utc).isoformat(),
             "trades_at_start": st.get("n", 0),
-            "baseline_expectancy_usd": st.get("expectancy_usd"),
+            "baseline_expectancy_r": st.get("expectancy_r"),
             "baseline_max_drawdown_usd": st.get("max_drawdown_usd"),
             "auto": auto,
         }
@@ -758,20 +515,19 @@ class LearningEngine:
         book = can.get("book")
         since = [t for t in trades_24h if str(t.get("exit_time") or "") >= started
                  and (book_of(t) is not None if book == "global" else book_of(t) == book)]
-        n_req = int(cfg.get("doctor_learning_canary_trades", 12))
-        hours_req = float(cfg.get("doctor_learning_canary_hours", 6.0))
+        n_req = PROMOTION_MIN_FILLS.get(book or "global", 30)
         try:
             age_h = (datetime.now(timezone.utc) - datetime.fromisoformat(started)).total_seconds() / 3600.0
         except Exception:
             age_h = 0.0
-        if len(since) < n_req and age_h < hours_req:
-            return
+        if len(since) < n_req:
+            return   # promotion is judged on post-start fills only — never on the clock
         st = book_stats(since, cfg)
-        base_e = can.get("baseline_expectancy_usd", can.get("baseline_expectancy_sol"))
-        base_dd = can.get("baseline_max_drawdown_usd", can.get("baseline_max_drawdown_sol")) or 0.0
-        exp_ok = st.get("n", 0) >= max(3, n_req // 2) and base_e is not None and st["expectancy_usd"] > base_e
+        base_e = can.get("baseline_expectancy_r")
+        base_dd = can.get("baseline_max_drawdown_usd") or 0.0
+        exp_ok = base_e is not None and (st.get("expectancy_r") or 0) > base_e
         dd_ok = st.get("max_drawdown_usd", 0.0) <= base_dd * 1.15 + 1e-9
-        verdict = {"expectancy_since": st.get("expectancy_usd"), "n_since": st.get("n", 0),
+        verdict = {"expectancy_r_since": st.get("expectancy_r"), "n_since": st.get("n", 0),
                    "drawdown_since": st.get("max_drawdown_usd"), "age_h": round(age_h, 2)}
         if exp_ok and dd_ok:
             await self._set_canary({**can, "state": "promote", "ended_at": datetime.now(timezone.utc).isoformat(), **verdict})
@@ -810,8 +566,8 @@ class LearningEngine:
         """Desk allocator: continuous per-book weights (floor ×0.25, cap ×2, one step per cycle)."""
         import allocator
         books7 = {b: book_stats([t for t in trades_7d if book_of(t) == b], cfg) for b in BOOKS}
-        enabled = {"momentum": bool(cfg.get("helius_tracker_enabled", True)), "greylist_snipe": bool(cfg.get("creator_greylist_enabled", True)),
-                   "reentry": bool(cfg.get("reentry_enabled", True)), "rh_pons": bool(cfg.get("rh_paper_enabled", True))}
+        enabled = {"scalp": bool(cfg.get("helius_tracker_enabled", True)), "hunt": bool(cfg.get("creator_greylist_enabled", True)),
+                   "rh_pons": bool(cfg.get("rh_paper_enabled", True))}
         rows = allocator.plan(cfg, {b: books.get(b) or {} for b in BOOKS}, books7, min_n, enabled)
         self.last["allocator"] = {"enabled": bool(cfg.get("allocator_enabled", True)), "driving": bool(cfg.get("autopilot_enabled")),
                                   "rows": rows, "floor": allocator.FLOOR, "cap": allocator.CAP, "step": allocator.STEP}

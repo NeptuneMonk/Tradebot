@@ -414,10 +414,40 @@ class RHPaperTrader:
             if base_stake <= 0:
                 logger.info(f"rh_paper skip {b['symbol']}: RH stake is 0 — bankroll too small for the fee floor")
                 return
-            stake_usd = (base_stake * max(0.1, float(size_mult)) * (_gov.size_mult("rh") if _gov else 1.0)
-                         * max(0.1, float(getattr(cfg, "book_rh_size_mult", 1.0) or 1.0)))
+            # R sizing inside the RH operator cap + cost gate against the first target (1R)
+            import cost_gate as _cg
+            import r_sizer as _rs
+            from book_params import book_exit_view as _bev
+            bx0 = _bev(cfg, "rh_pons")
+            bank_usd = float(getattr(cfg, "paper_bankroll_usd", 1000.0) or 0)
+            if _gov:
+                try:
+                    bank_usd, _ = await _gov.bankroll_usd("rh")
+                except Exception:
+                    pass
+            depth_usd = float(b.get("net_quote") or 0) * quote_usd
+            tol_bps = int(float(getattr(cfg, "rh_live_slippage_pct", 8.0)) * 100)
+            exit_slip_pct = _cg.expected_slip_pct(base_stake, depth_usd, tol_bps)
+            sz = _rs.size_trade(bankroll_usd=bank_usd, risk_per_trade_pct=float(cfg.risk_per_trade_pct), sl_pct=bx0["stop_loss_pct"],
+                                exit_slip_pct=exit_slip_pct, book_mult=max(0.0, float(getattr(cfg, "book_rh_size_mult", 1.0) or 1.0)) * max(0.1, float(size_mult)),
+                                doctor_mult=1.0, governor_mult=(_gov.size_mult("rh") if _gov else 1.0),
+                                min_trade_usd=min(base_stake, float(getattr(cfg, "min_trade_usd", 0.5))), max_trade_usd=base_stake)
+            if sz["skip"]:
+                logger.info(f"rh_paper skip {b['symbol']}: r-size — {sz['reason']}")
+                return
+            first_r = float(bx0["target_r"]) if bx0["target_r"] else float(bx0["take_profit_pct"]) / sz["sl_pct_with_slip"]   # RH: TP% is the first cash-out
+            q = _cg.quote(size_usd=sz["size_usd"], r_usd=sz["r_usd"], first_target_r=first_r, protocol="rh", entry_slip_bps=tol_bps,
+                          exit_slip_bps=tol_bps, fee_usd_round_trip=2 * self._paper_gas_usd(), ladder=False, depth_usd=depth_usd)
+            if not q["cost_gate_pass"]:
+                logger.info(f"rh_paper skip {b['symbol']}: cost-gate — {q['cost_gate_reason']}")
+                return
+            stake_usd = sz["size_usd"]
             stake_quote = stake_usd / quote_usd
-            ctx = {"reentry": reentry, "reentry_ctx": reentry_ctx, "manual": manual}
+            ctx = {"reentry": reentry, "reentry_ctx": reentry_ctx, "manual": manual,
+                   "plan": {"r_usd": sz["r_usd"], "r_usd_nominal": sz["r_usd_nominal"], "size_usd": sz["size_usd"], "size_clamped": sz["size_clamped"],
+                            "sl_pct": bx0["stop_loss_pct"], "sl_pct_with_slip": sz["sl_pct_with_slip"], "target_r": bx0["target_r"] or None,
+                            "expected_cost_pct": q["expected_cost_pct"], "expected_cost_usd": q["expected_cost_usd"],
+                            "expected_target_pct": q["expected_target_pct"], "cost_gate_pass": True, "doctor_decision": "full"}}
             if self.live_ok(b):
                 live_fill = await self._live_buy(token, b, stake_quote, price)
                 if live_fill is None:
@@ -498,6 +528,7 @@ class RHPaperTrader:
             trade = Trade(
                 mint=token, creator=b["creator"], name=b["name"], symbol=b["symbol"],
                 mode=mode, entry_usd=stake_usd, entry_tokens=tokens, book="rh_pons",
+                **((ctx or {}).get("plan") or {}),
                 protocol=PROTOCOL, classifier_action=ENTRY_ACTION, risk_score=50,
                 chain=CHAIN, quote_symbol=b["quote_symbol"], entry_quote=stake_quote,
                 entry_price_quote=price,
@@ -692,6 +723,8 @@ class RHPaperTrader:
             pos["trough_ts"] = now
         from book_params import book_exit_view, trade_regime
         bx = book_exit_view(cfg, "rh_pons", trade_regime(cfg, "rh_pons", t))   # RH's own ladder, per entry regime
+        if bx.get("target_r"):
+            bx["take_profit_pct"] = bx["target_r"] * float(t.get("sl_pct_with_slip") or bx["stop_loss_pct"])   # R target when set
         pnl_pct = (price - entry) / entry * 100.0
         peak_pct = (pos["peak_price"] - entry) / entry * 100.0
         dd_from_peak = (pos["peak_price"] - price) / pos["peak_price"] * 100.0 if pos["peak_price"] > 0 else 0.0
@@ -741,17 +774,7 @@ class RHPaperTrader:
         if peak_pct >= bx["trailing_arm_pct"] and dd_from_peak >= bx["trailing_stop_pct"]:
             return None if self._flush_holds(pos, b, now, "trail", pnl_pct, bx) else "trailing_stop"
         held = now - pos["opened"]
-        if held >= bx["hold_max_seconds"]:
-            # ride the winner: in profit and still near its highs (inside the trail) or still drawing buyers →
-            # let TP / trailing stop decide, not the clock (hard ceiling keeps it bounded)
-            if (getattr(cfg, "winner_ride_enabled", True) and pnl_pct >= float(getattr(cfg, "winner_ride_min_pnl_pct", 10.0))
-                    and held < bx["hold_max_seconds"] * float(getattr(cfg, "winner_ride_max_hold_mult", 6.0))
-                    and (dd_from_peak < bx["trailing_stop_pct"] or _mom_holds("max_hold"))):
-                if not pos.get("_riding"):
-                    pos["_riding"] = True
-                    pos["_ride_started_pnl_pct"] = round(pnl_pct, 2)
-                    logger.info(f"rh_paper RIDING {t.get('symbol')} past hold cap at {pnl_pct:+.1f}% — trail/TP govern now")
-                return None
+        if bx["hold_max_seconds"] > 0 and held >= bx["hold_max_seconds"]:
             return "max_hold"
         return None
 

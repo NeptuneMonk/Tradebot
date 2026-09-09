@@ -1630,3 +1630,13 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - Tested: scratch-DB merge semantics + live API round-trip + testing agent iteration_20 (all pass).
 
 - 2026-09-09 fix: "unexpected whitespace" on import = brain file dropped into the old Config **Import** (JSON.parse) or Safari auto-unzipping the .gz. Now: export is `.brain` (octet-stream, no auto-unzip), importer sniffs gzip vs plain NDJSON, config import rejects brain files with a pointer to "Import brain", brain import rejects non-brain files with a clear message.
+
+
+## 2026-09-09 — Profitability refactor (migration, no dual systems) — see /app/MIGRATION.md
+- Cost gate (`cost_gate.py`), R sizing (`r_sizer.py`, r_usd = actual post-cap risk + r_usd_nominal), books scalp/hunt/rh_pons with exits ONLY under `book_exits.<book>` (`book_params.BOOK_DEFAULTS`), hunt R ladder (+1R 35 % & BE stop, +2R 30 %, trail; no clock), scalp single exit + 40 s clock.
+- Classifier closed set {scalp, hunt, skip}; creator history routes; project score tie-break only. Live doctor `decide()` skip/half/full on entry; book breaker (payoff < 1, median MFE < first target).
+- Scorecard cells (`scorecard.py`, n≥30 & E[R]<0 → disabled; reopen 72 h + 10 paper fills), inventory halt (5 loss closes / 90 min), hunt ≤ 2 of 3 slots, default max positions 3 (rail 8).
+- Doctor: legacy rules / auto-apply watchdog / suggestions.py deleted; one book-scoped canary per cycle, promotion on post-start fills in R (per-book min fills); allocator target 0.30 R; TECHNIQUE_MIN_GAIN_R 0.05.
+- UI: BookExitsEditor (per-book), TradeTicket (R / size / cost / doctor / cell / ladder legs) on trade rows; legacy global TP/SL/hold/partial/ride inputs and rule inputs removed; copy updated to R.
+- Startup migration `_migrate_books` ran on preview (books_migrated_v2). Operator note: migrated `book_exits` carry the OLD Doctor-tuned globals (scalp SL 8 / trail 2, RH SL 35 / TP 100 / trail 2) — shown amber in the editor; reset to defaults if unwanted.
+- Tests: 497 pass (obsolete tests deleted, 17 new in test_profitability_refactor.py).

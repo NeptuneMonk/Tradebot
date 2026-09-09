@@ -27,7 +27,13 @@ from scanner import MomentumScanner, velocity_pct_strict
 from discovery import PumpfunDiscovery
 from rh_discovery import RHDiscovery
 from rh_paper import RHPaperTrader
-from doctor_learning import book_size_mult
+from book_params import book_for_action, book_size_mult, exit_param, FIRST_TARGET_R
+from slippage import pool_depth_sol, auto_exit_slip_bps, recent_vol_pct, entry_slip_bps
+import cost_gate
+import r_sizer
+import exits
+from scorecard import Scorecard
+from inventory import InventoryHalt, HUNT_SLOT_CAP
 from reentry_logic import decide_reentry, recent_buyers_and_inflow, trigger_context
 from speed_modes import (
     speed_mode_resolve, estimate_tx_fee_sol, auto_tuner,
@@ -138,6 +144,9 @@ class BotState:
         self.rh_discovery = RHDiscovery(self)
         self.rh_paper = RHPaperTrader(self)
         self.pnl_reconciler = PnLReconciler(self)
+        self.scorecard = Scorecard(db)
+        self.inventory = InventoryHalt()
+        self.live_doctor = None   # set by server.py after LiveDoctor is built
 
     async def load(self):
         cfg = await self.db.bot_config.find_one({"_id": "current"}, {"_id": 0})
@@ -197,6 +206,8 @@ class BotState:
                     f"new=[0, {self.config.band_new_max_age_min}] min, "
                     f"seasoned=[0, {self.config.band_seasoned_max_age_min}] min"
                 )
+        if cfg:
+            await self._migrate_books(cfg)
         rules = await self.db.classifier_rules.find_one({"_id": "current"}, {"_id": 0})
         if rules:
             self.rules = ClassifierRules(**rules)
@@ -267,6 +278,8 @@ class BotState:
                     or t.get("entry_price_sol") or 0,
                     "first_seen_price_sol": t.get("first_seen_price_sol") or 0,
                     "partial_done": bool(t.get("partial_done", False)),
+                    "ladder_legs_done": int(t.get("ladder_legs_done") or 0),
+                    "ladder_stop_pct": float(t.get("ladder_stop_pct") or 0),
                     "_entry_ts_mono": t.get("_entry_ts_mono") or time.time(),
                 }
             # Sweep duplicate active rows in DB. Concurrent _enter races (now fixed
@@ -326,6 +339,41 @@ class BotState:
                 "active_positions": len(self.active_trades),
             })
 
+    async def _migrate_books(self, cfg: dict):
+        """One-time: global TP/SL/trail/hold → book_exits (scalp + rh_pons), momentum/snipe size mults →
+        scalp/hunt, trade.book momentum|greylist_snipe|reentry → scalp|hunt. Old keys are then unset."""
+        if cfg.get("books_migrated_v2"):
+            return
+        bx = dict(self.config.book_exits or {})
+        for old_book, new_book in (("momentum", "scalp"), ("greylist_snipe", "hunt"), ("reentry", "hunt")):
+            if old_book in bx:
+                bx[new_book] = {**(bx.get(new_book) or {}), **{k: v for k, v in bx.pop(old_book).items() if k != "take_profit_pct"}}
+        for book in ("scalp", "rh_pons"):
+            for k in ("stop_loss_pct", "trailing_stop_pct", "trailing_arm_pct"):
+                if cfg.get(k) is not None and (bx.get(book) or {}).get(k) is None:
+                    bx.setdefault(book, {})[k] = cfg[k]
+        if cfg.get("take_profit_pct") is not None and (bx.get("rh_pons") or {}).get("take_profit_pct") is None:
+            bx.setdefault("rh_pons", {})["take_profit_pct"] = cfg["take_profit_pct"]
+        self.config.book_exits = bx
+        self.config.book_scalp_size_mult = float(cfg.get("book_momentum_size_mult") or 1.0)
+        self.config.book_hunt_size_mult = float(cfg.get("book_snipe_size_mult") or 1.0)
+        # the old 8/20-slot spray was never a real operating point — reset to the new default
+        if int(self.config.max_concurrent_positions) > 3:
+            self.config.max_concurrent_positions = 3
+        await self.save_config()
+        await self.db.bot_config.update_one({"_id": "current"}, {"$set": {"books_migrated_v2": True}, "$unset": {
+            k: "" for k in ("take_profit_pct", "stop_loss_pct", "trailing_stop_pct", "trailing_arm_pct", "hold_max_seconds",
+                            "partial_tp_pct", "partial_tp_trail_tighten_pct", "book_momentum_size_mult", "book_snipe_size_mult",
+                            "winner_ride_enabled", "winner_ride_min_pnl_pct", "winner_ride_max_hold_mult", "project_score_min",
+                            "hold_timeout_velocity_extend_enabled", "hold_timeout_velocity_window_s", "hold_timeout_velocity_min_pct",
+                            "greylist_snipe_research_size_mult")}})
+        await self.db.trades.update_many({"book": "momentum"}, {"$set": {"book": "scalp"}})
+        await self.db.trades.update_many({"book": {"$in": ["greylist_snipe", "reentry"]}}, {"$set": {"book": "hunt"}})
+        await self.db.trades.update_many({"chain": "rh"}, {"$set": {"book": "rh_pons"}})
+        await self.db.trades.update_many({"book": None, "classifier_action": {"$in": ["greylist_snipe", "reentry"]}}, {"$set": {"book": "hunt"}})
+        await self.db.trades.update_many({"book": None}, {"$set": {"book": "scalp"}})
+        logger.warning("books migrated → scalp/hunt/rh_pons; global exit keys removed from bot_config")
+
     def _resolve_fees(self) -> tuple[int, int, int]:
         """Return (priority_fee_microlamports, slippage_bps, exit_slippage_bps)
         applying the current speed_mode preset. Falls back to raw config when
@@ -342,7 +390,7 @@ class BotState:
 
     def _is_panic_exit(self, reason: str) -> bool:
         """Return True for exits where landing the sell matters more than the
-        price (stop-loss, hard-stop, classifier abort, bonding-curve complete,
+        price (stop-loss, ladder stop, rip-cord, hard-stop, bonding-curve complete,
         OR trailing-stop on a position that already peaked >20% — those are
         volatile exits where price can drop another 10-20% between IX build
         and tx land, and the standard 10% slippage gets exceeded).
@@ -350,7 +398,7 @@ class BotState:
         """
         r = (reason or "").lower()
         if any(k in r for k in (
-            "stop-loss", "hard-stop", "classifier", "bonding curve completed"
+            "stop-loss", "ladder stop", "rip-cord", "ripcord", "hard-stop", "bonding curve completed"
         )):
             return True
         # Trailing-stop on a hot position — extract peak pct from the reason
@@ -380,51 +428,6 @@ class BotState:
         return base_exit_slip_bps
 
     # ---------- Intelligent Exit v2 helpers ----------
-    def _compute_auto_exit_slip_bps(self, *, panic: bool, pool_depth_sol: float,
-                                    recent_vol_pct: float | None) -> int:
-        """Exchange-style exit slippage: base 3% + thin-pool/vol/panic adders,
-        hard-capped. Replaces the flat panic_exit_slippage_bps=2500 (25%).
-
-        Same formula for pumpfun AND pumpswap — both protocols expose pool depth
-        in SOL (vsr for pumpfun, quote_reserves for pumpswap).
-        """
-        cfg = self.config
-        bps = int(cfg.auto_exit_slip_base_bps)
-        if pool_depth_sol > 0 and pool_depth_sol < cfg.auto_exit_slip_thin_pool_sol:
-            bps += int(cfg.auto_exit_slip_thin_pool_extra_bps)
-        if recent_vol_pct is not None and recent_vol_pct >= cfg.auto_exit_slip_vol_threshold_pct:
-            bps += int(cfg.auto_exit_slip_high_vol_extra_bps)
-        if panic:
-            bps += int(cfg.auto_exit_slip_panic_extra_bps)
-        return min(bps, int(cfg.auto_exit_slip_cap_bps))
-
-    def _recent_vol_pct(self, samples: list[tuple[float, float]],
-                        window_s: int) -> float | None:
-        """Std-dev / mean × 100 over the last `window_s` seconds of price
-        samples. None if insufficient data."""
-        if not samples or len(samples) < 4:
-            return None
-        now = time.time()
-        recent = [p for (ts, p) in samples if now - ts <= window_s]
-        if len(recent) < 4:
-            return None
-        mean = sum(recent) / len(recent)
-        if mean <= 0:
-            return None
-        var = sum((p - mean) ** 2 for p in recent) / len(recent)
-        std = var ** 0.5
-        return (std / mean) * 100.0
-
-    def _pool_depth_sol(self, state: dict, protocol: str) -> float:
-        """Effective SOL liquidity depth, protocol-agnostic.
-        - pumpfun: virtual SOL reserves of the bonding curve
-        - pumpswap: WSOL reserves of the AMM pool"""
-        if not state:
-            return 0.0
-        if protocol == "pumpswap":
-            return (state.get("quote_reserves") or 0) / LAMPORTS_PER_SOL
-        return (state.get("virtual_sol_reserves") or 0) / LAMPORTS_PER_SOL
-
     def _buy_momentum_holds(self, mint: str, slot: dict, kind: str, pct_change: float) -> bool:
         """True ⇒ DEFER this SL/TP exit because buyers are still piling in.
         Pure read of the discovery bucket's buy_events (ts, lamports, wallet);
@@ -433,7 +436,7 @@ class BotState:
         cfg = self.config
         if not cfg.exit_momentum_gate_enabled:
             return False
-        if kind == "sl" and pct_change <= -(float(cfg.stop_loss_pct) + float(getattr(cfg, "exit_momentum_max_extra_loss_pct", 5.0))):
+        if kind == "sl" and pct_change <= -(exits.levels(cfg, slot)["stop_loss_pct"] + float(getattr(cfg, "exit_momentum_max_extra_loss_pct", 5.0))):
             return False  # bounded deferral: SL + X points, never further
         bucket = self.tracking.get(mint) or {}
         events = bucket.get("buy_events") or ()
@@ -646,6 +649,8 @@ class BotState:
                     "peak_price_sol": t.get("peak_price_sol") or t.get("entry_price_sol") or 0,
                     "first_seen_price_sol": t.get("first_seen_price_sol") or 0,
                     "partial_done": bool(t.get("partial_done", False)),
+                    "ladder_legs_done": int(t.get("ladder_legs_done") or 0),
+                    "ladder_stop_pct": float(t.get("ladder_stop_pct") or 0),
                     "_entry_ts_mono": t.get("_entry_ts_mono") or time.time(),
                     "snipe_pattern_ctx": t.get("snipe_pattern_ctx"),
                 }
@@ -909,15 +914,6 @@ class BotState:
     async def _attempt_reentry_impl(self, w: dict):
         mint = w["mint"]
         sol_price = await get_sol_usd_price()
-        base_usd = max(self.config.min_trade_usd, self.config.max_trade_usd)
-        _book_mult = book_size_mult(self.config, "reentry")
-        if _book_mult <= 0:
-            return
-        trade_usd = max(self.config.min_trade_usd, base_usd * w["size_multiplier"] * _book_mult)
-        trade_sol = trade_usd / sol_price if sol_price > 0 else 0
-        sol_in_lamports = int(trade_sol * LAMPORTS_PER_SOL)
-        if sol_in_lamports <= 0:
-            return
         protocol = w.get("protocol") or "pumpfun"
         pumpswap_state = None
         if protocol == "pumpswap":
@@ -934,6 +930,17 @@ class BotState:
         if real_sol < self.config.min_curve_liquidity_sol:
             return
         eff_priority, eff_slip, _ = self._resolve_fees()
+        eff_slip = entry_slip_bps(protocol, pool_depth_sol(pumpswap_state if protocol == "pumpswap" else state, protocol), eff_slip)
+        plan = await self._plan_entry(mint, "hunt", protocol, eff_slip, eff_priority, sol_price,
+                                      depth_sol=pool_depth_sol(pumpswap_state if protocol == "pumpswap" else state, protocol),
+                                      book_mult_override=book_size_mult(self.config, "hunt") * float(w["size_multiplier"]))
+        if not plan:
+            return
+        trade_usd = plan["size_usd"]
+        trade_sol = trade_usd / sol_price if sol_price > 0 else 0
+        sol_in_lamports = int(trade_sol * LAMPORTS_PER_SOL)
+        if sol_in_lamports <= 0:
+            return
         tokens_out, max_sol = (
             pumpswap.quote_buy_tokens(pumpswap_state, sol_in_lamports, eff_slip)
             if protocol == "pumpswap"
@@ -948,6 +955,7 @@ class BotState:
         trade = Trade(
             mint=mint,
             creator=creator_str or None,
+            book="hunt",
             name=w.get("name"),
             symbol=w.get("symbol"),
             status="active",
@@ -960,6 +968,7 @@ class BotState:
             speed_mode_at_entry=self.config.speed_mode,
             risk_score=40,
             classifier_action="reentry",
+            **plan["trade_fields"],
             reentry_trigger=w.get("last_trigger"),
             reentry_ctx=w.get("last_ctx"),
             protocol=protocol,
@@ -1069,9 +1078,9 @@ class BotState:
 
         # Initial baseline classification (no metrics yet, but we have rug count)
         verdict = classify(
-            {"curve_fill_pct": 0, "elapsed_s": 0, "unique_buyers": 0,
-             "sol_inflow": 0, "creator_rugs": creator_rugs, "social_score": 0, "project_score": 0},
-            self.rules.model_dump(),
+            {"curve_fill_pct": 0, "elapsed_s": 0, "unique_buyers": 0, "sol_inflow": 0, "creator_rugs": creator_rugs,
+             "creator_pattern": (creator_doc or {}).get("greylist_pattern"), "project_score": 0},
+            self._rules_for_classify(),
         )
         launch.classifier_action = verdict["action"]
         launch.classifier_risk = verdict["risk"]
@@ -1214,33 +1223,110 @@ class BotState:
             bucket["last_persist"] = now
             await self._persist_metrics(mint)
 
-    def _exit_param(self, slot: dict, key: str, default: float) -> float:
-        """Read an exit-side parameter for a position, preferring the trade's
-        per-position greylist override (when present) over BotConfig.
-        Used so an open greylist-tier position keeps the override it was
-        opened with even if BotConfig changes mid-flight, AND so two
-        concurrent positions on different tiers each get their own values.
-        `key` is one of: tp_pct, sl_pct, trail_pct, trail_arm_pct."""
+    async def _run_ladder(self, mint: str, slot: dict, cur_price_sol: float, elapsed: float, tag: str = "") -> bool:
+        """Evaluate the position's BOOK ladder (exits.py) once. Returns True when the slot was closed."""
+        trade_doc = slot["trade"]
+        entry_p = float(trade_doc.get("entry_price_sol") or 0)
+        if entry_p <= 0:
+            return False
+        pct = (cur_price_sol - entry_p) / entry_p * 100
+        cfg = self.config
+
+        def sl_fire(breached: bool, severity: float) -> bool:
+            if not cfg.intelligent_exit_v2:
+                return breached
+            return self._check_breach_persistence(slot, kind="sl", breached=breached, persistence_ms=cfg.sl_persistence_ms,
+                                                  min_samples=cfg.sl_persistence_min_samples, severity_pct=severity, severity_threshold_pct=5.0)
+
+        def ts_fire(breached: bool) -> bool:
+            if not cfg.intelligent_exit_v2:
+                return breached
+            return self._check_breach_persistence(slot, kind="ts", breached=breached, persistence_ms=cfg.ts_persistence_ms,
+                                                  min_samples=cfg.ts_persistence_min_samples)
+
+        book = trade_doc.get("book") or "scalp"
+        d = exits.decide_hunt(cfg, slot, pct, cur_price_sol, elapsed, sl_fire, ts_fire) if book == "hunt" \
+            else exits.decide_scalp(cfg, slot, pct, cur_price_sol, elapsed, sl_fire, ts_fire)
+        if d.kind is None:
+            return False
+        kind = "sl" if ("stop-loss" in d.reason or "ladder stop" in d.reason) else "tp" if "target" in d.reason else None
+        if kind and self._buy_momentum_holds(mint, slot, kind, pct):
+            return False
+        slot["exit_in_progress"] = True
         try:
-            ov = (slot or {}).get("greylist_overrides") or {}
-            if key in ov and ov[key] is not None:
-                return float(ov[key])
-        except Exception:
-            pass
-        # Doctor-tuned per-book exits (book_exits) override the shared globals
-        try:
-            from book_params import book_for_action, exit_param, trade_regime
-            t = (slot or {}).get("trade") or {}
-            book = t.get("book") or book_for_action(t.get("classifier_action"))
-            param = {"tp_pct": "take_profit_pct", "sl_pct": "stop_loss_pct", "trail_pct": "trailing_stop_pct",
-                     "trail_arm_pct": "trailing_arm_pct"}.get(key)
-            bx = (self.config.book_exits or {}).get(book, {})
-            reg = trade_regime(self.config, book, t)
-            if param and (bx.get(param) is not None or (reg and isinstance(bx.get(reg), dict) and bx[reg].get(param) is not None)):
-                return exit_param(self.config, book, param, reg)
-        except Exception:
-            pass
-        return float(default)
+            if d.kind == "partial":
+                did = await self._partial_exit(mint, d.fraction, reason=d.reason + tag)
+                if did:
+                    exits.after_partial(slot, float(trade_doc.get("expected_cost_pct") or 4.0) / 2.0)
+                    trade_doc["ladder_legs_done"] = slot["ladder_legs_done"]
+                    await self.db.trades.update_one({"_id": trade_doc["id"]}, {"$set": {"ladder_legs_done": slot["ladder_legs_done"],
+                                                                                        "ladder_stop_pct": slot["ladder_stop_pct"]}})
+                    return False
+                return False
+            await self._exit(mint, reason=d.reason + tag)
+            return True
+        finally:
+            slot["exit_in_progress"] = False
+
+    async def _plan_entry(self, mint: str, book: str, protocol: str, entry_slip: int, priority_fee: int, sol_price: float, *,
+                          depth_sol: float = 0.0, book_mult_override: float | None = None, use_doctor: bool = True,
+                          pattern: str | None = None, band: str | None = None) -> dict | None:
+        """Scorecard cell → live-doctor decision → R sizing → cost gate. None ⇒ skip (reason logged + skip event)."""
+        cfg = self.config
+
+        async def skip(reason: str, details: dict | None = None):
+            logger.info(f"skip {mint[:8]}… [{book}] {reason}")
+            await self._skip_event({"mint": mint, "band": band or book, "reason": reason, "details": [str(details or "")]})
+
+        doctor = {"winner_likeness_pct": None, "exit_liquidity_likeness_pct": None, "doctor_decision": "full", "doctor_size_mult": 1.0}
+        if use_doctor and self.live_doctor is not None:
+            try:
+                doctor = await self.live_doctor.score_launch(mint)
+            except Exception as e:
+                logger.debug(f"live doctor score failed: {e}")
+            if doctor["doctor_decision"] == "skip":
+                await skip("live-doctor skip", doctor)
+                return None
+        sl_pct = exit_param(cfg, book, "stop_loss_pct")
+        target_r = exit_param(cfg, book, "target_r") or 1.0
+        exit_slip = auto_exit_slip_bps(cfg, panic=False, pool_depth_sol=depth_sol, recent_vol_pct=None)
+        depth_usd = depth_sol * sol_price
+        exit_slip_pct = cost_gate.expected_slip_pct(cfg.max_trade_usd, depth_usd, exit_slip)
+        bank = getattr(self, "bankroll", None)
+        bankroll_usd = cfg.paper_bankroll_usd
+        gov = 1.0
+        if bank is not None:
+            try:
+                bankroll_usd, _ = await bank.bankroll_usd("sol")
+                gov = bank.size_mult("sol")
+            except Exception:
+                pass
+        sz = r_sizer.size_trade(bankroll_usd=bankroll_usd, risk_per_trade_pct=cfg.risk_per_trade_pct, sl_pct=sl_pct, exit_slip_pct=exit_slip_pct,
+                                book_mult=book_mult_override if book_mult_override is not None else book_size_mult(cfg, book),
+                                doctor_mult=doctor["doctor_size_mult"], governor_mult=gov,
+                                min_trade_usd=cfg.min_trade_usd, max_trade_usd=cfg.max_trade_usd)
+        if sz["skip"]:
+            await skip("r-size", sz["reason"])
+            return None
+        cu = CU_PUMPSWAP if protocol == "pumpswap" else CU_PUMPFUN
+        fee_usd = estimate_tx_fee_sol(priority_fee, cu) * 2 * sol_price
+        q = cost_gate.quote(size_usd=sz["size_usd"], r_usd=sz["r_usd"], first_target_r=FIRST_TARGET_R[book], protocol=protocol,
+                            entry_slip_bps=entry_slip, exit_slip_bps=exit_slip, fee_usd_round_trip=fee_usd, ladder=(book == "hunt"), depth_usd=depth_usd)
+        if not q["cost_gate_pass"]:
+            await skip("cost-gate", q["cost_gate_reason"])
+            return None
+        from scorecard import cell_key
+        cell = cell_key(book=book, pattern=pattern, band=band, entry_time=now_utc().isoformat(), cost_pct=q["expected_cost_pct"])
+        if cfg.scorecard_enabled and self.scorecard.is_disabled(cell):
+            await skip("scorecard cell disabled", {"cell": cell})
+            return None
+        return {"size_usd": sz["size_usd"], "trade_fields": {
+            "r_usd": sz["r_usd"], "r_usd_nominal": sz["r_usd_nominal"], "size_usd": sz["size_usd"], "size_clamped": sz["size_clamped"],
+            "sl_pct": sl_pct, "sl_pct_with_slip": sz["sl_pct_with_slip"], "target_r": target_r,
+            "expected_cost_pct": q["expected_cost_pct"], "expected_cost_usd": q["expected_cost_usd"],
+            "expected_target_pct": q["expected_target_pct"], "cost_gate_pass": True,
+            "winner_likeness_pct": doctor["winner_likeness_pct"], "exit_liquidity_likeness_pct": doctor["exit_liquidity_likeness_pct"],
+            "doctor_decision": doctor["doctor_decision"], "scorecard_cell": cell}, "size_mult": sz.get("size_mult", 1.0)}
 
     def _is_snipe(self, slot: dict) -> bool:
         """True iff this position should follow the pattern-based exit ladder
@@ -1581,8 +1667,7 @@ class BotState:
         # Cache last seen price for the UI's live-PnL panel.
         slot["_last_price_sol"] = cur_price_sol
 
-        # Greylist snipes use pattern-based exits, NOT entry-loss SL/TP/trail
-        # ladder. Short-circuit the whole standard exit block here.
+        # hunt rip-cord (pattern exits) outranks the book ladder
         if self._is_snipe(slot):
             should_exit, reason = self._check_snipe_pattern_exit(slot, cur_price_sol)
             if should_exit:
@@ -1592,134 +1677,7 @@ class BotState:
                     return
                 finally:
                     slot["exit_in_progress"] = False
-            return
-
-        pct_change = (cur_price_sol - entry_p) / entry_p * 100
-
-        # Per-position thresholds — greylist overrides win when present.
-        tp_pct = self._exit_param(slot, "tp_pct", self.config.take_profit_pct)
-        sl_pct = self._exit_param(slot, "sl_pct", self.config.stop_loss_pct)
-        trail_pct_cfg = self._exit_param(slot, "trail_pct", self.config.trailing_stop_pct)
-        trail_arm_pct_cfg = self._exit_param(slot, "trail_arm_pct", self.config.trailing_arm_pct)
-
-        # Take profit — either full exit or partial-then-tighten-trailing.
-        # NOTE: after a successful partial, we skip the TP check entirely — the
-        # runner is governed by the tightened trailing stop only.
-        #
-        # 2026-02-08: wrapped in persistence check. Paper data showed TP
-        # firing on single-tick wicks (+15-23% message vs 0-5% raw move
-        # entry→exit) — one outsized buy event spikes curve, TP fires,
-        # then price reverts before the sell settles. Persistence kills
-        # the false positives without delaying real TP moves more than ~800ms.
-        tp_breached = pct_change >= tp_pct
-        tp_should_fire = False
-        if tp_breached and not slot.get("partial_done"):
-            if self.config.intelligent_exit_v2:
-                tp_should_fire = self._check_breach_persistence(
-                    slot, kind="tp", breached=tp_breached,
-                    persistence_ms=self.config.tp_persistence_ms,
-                    min_samples=self.config.tp_persistence_min_samples,
-                )
-            else:
-                tp_should_fire = True
-        elif not tp_breached:
-            # Recovery — clear the TP breach state so next breach restarts the clock.
-            self._check_breach_persistence(
-                slot, kind="tp", breached=False,
-                persistence_ms=self.config.tp_persistence_ms,
-                min_samples=self.config.tp_persistence_min_samples,
-            )
-        if tp_should_fire and not self._buy_momentum_holds(mint, slot, "tp", pct_change):
-            slot["exit_in_progress"] = True
-            try:
-                ptp = self.config.partial_tp_pct
-                if 0 < ptp < 100:
-                    # Reserve the partial flag synchronously to prevent concurrent
-                    # fast-exit invocations from racing into the same partial.
-                    slot["partial_done"] = True
-                    did = await self._partial_exit(
-                        mint, ptp / 100.0,
-                        reason=f"partial-tp ({ptp:.0f}%) at +{pct_change:.1f}% [fast]",
-                    )
-                    if did:
-                        slot["peak_price_sol"] = cur_price_sol
-                        return
-                    # Partial failed — clear the reservation and fall through to full exit
-                    slot["partial_done"] = False
-                await self._exit(mint, reason=f"take-profit hit (+{pct_change:.1f}%) [fast]")
-                return
-            finally:
-                slot["exit_in_progress"] = False
-        # Hard stop loss FIRST — protects against rugs that would otherwise
-        # be misattributed to trailing-stop with a tiny peak.
-        # v2: require sustained breach (kills millisecond dips from MEV/bad RPC quotes).
-        # v2.1: severity override — if price has fallen ≥ stop_loss + 5% beyond the
-        # gate, fire immediately. On thin pump.fun pools price can fall another
-        # 30% during the 1.2s persistence window, turning a -10% SL into a -40%
-        # actual exit. The override caps that bleed.
-        if self.config.intelligent_exit_v2:
-            sl_breached = pct_change <= -sl_pct
-            sl_severity = -pct_change - sl_pct  # positive when worse than SL
-            if self._check_breach_persistence(
-                slot, kind="sl", breached=sl_breached,
-                persistence_ms=self.config.sl_persistence_ms,
-                min_samples=self.config.sl_persistence_min_samples,
-                severity_pct=sl_severity,
-                severity_threshold_pct=5.0,
-            ) and not self._buy_momentum_holds(mint, slot, "sl", pct_change):
-                slot["exit_in_progress"] = True
-                try:
-                    await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%) [fast]")
-                    return
-                finally:
-                    slot["exit_in_progress"] = False
-        elif pct_change <= -sl_pct and not self._buy_momentum_holds(mint, slot, "sl", pct_change):
-            slot["exit_in_progress"] = True
-            try:
-                await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%) [fast]")
-                return
-            finally:
-                slot["exit_in_progress"] = False
-        # Trailing stop — only ARM once the trade has shown a real peak (above
-        # `trailing_arm_pct`). Below that, a +0.5% peak followed by a -10%
-        # drop would otherwise fire trailing instead of letting the SL handle
-        # it. After partial TP, use the tighter trail to lock in runner gains.
-        trail_pct = (
-            self.config.partial_tp_trail_tighten_pct
-            if slot.get("partial_done") and self.config.partial_tp_trail_tighten_pct > 0
-            else trail_pct_cfg
-        )
-        # peak_pct in % terms relative to entry
-        peak_pct = (peak - entry_p) / entry_p * 100 if entry_p > 0 else 0.0
-        arm_pct = trail_arm_pct_cfg if not slot.get("partial_done") else 0.0
-        if trail_pct > 0 and peak > entry_p and peak_pct >= arm_pct:
-            trail_drop = (peak - cur_price_sol) / peak * 100
-            ts_breached = trail_drop >= trail_pct
-            # v2: require sustained breach for trailing stop too
-            should_fire = False
-            if self.config.intelligent_exit_v2:
-                should_fire = self._check_breach_persistence(
-                    slot, kind="ts", breached=ts_breached,
-                    persistence_ms=self.config.ts_persistence_ms,
-                    min_samples=self.config.ts_persistence_min_samples,
-                )
-            else:
-                should_fire = ts_breached
-            if should_fire:
-                slot["exit_in_progress"] = True
-                try:
-                    await self._exit(
-                        mint,
-                        reason=f"trailing-stop hit (peak +{peak_pct:.1f}%, now +{pct_change:.1f}%) [fast]",
-                    )
-                finally:
-                    slot["exit_in_progress"] = False
-                return
-        else:
-            # Trail not armed yet → clear any pending TS breach state
-            if slot.get("ts_breached_since") is not None:
-                slot["ts_breached_since"] = None
-                slot["ts_breached_samples"] = 0
+        await self._run_ladder(mint, slot, cur_price_sol, time.time() - float(slot.get("_entry_ts_mono") or time.time()), " [fast]")
 
     async def _persist_metrics(self, mint: str):
         b = self.tracking.get(mint)
@@ -1783,7 +1741,6 @@ class BotState:
     def _rules_for_classify(self) -> dict:
         """Classifier rules + the Doctor-tunable Project Score floor from BotConfig (the stricter wins)."""
         r = self.rules.model_dump()
-        r["project_score_min"] = max(int(r.get("project_score_min") or 0), int(getattr(self.config, "project_score_min", 0) or 0))
         r["serial_creator_gate_enabled"] = bool(getattr(self.config, "serial_creator_gate_enabled", True))
         r["serial_creator_min_launches"] = int(getattr(self.config, "serial_creator_min_launches", 3) or 0)
         r["serial_creator_requires_graduation"] = bool(getattr(self.config, "serial_creator_requires_graduation", True))
@@ -1943,10 +1900,9 @@ class BotState:
                 "unique_buyers": len(b.get("buyers", set())),
                 "sol_inflow": b.get("sol_inflow_lamports", 0) / LAMPORTS_PER_SOL,
                 "creator_rugs": creator_rugs,
-                "social_score": b.get("social_score", 0),
-                "project_score": b.get("project_score", 0), "project_meta_seen": bool(b.get("meta_seen")),
+                "creator_pattern": (await self.db.creators.find_one({"_id": launch.creator}, {"greylist_pattern": 1}) or {}).get("greylist_pattern"),
+                "project_score": b.get("project_score", 0),
                 "creator_prior_launches": int(b.get("creator_prior_launches") or 0), "creator_graduated_before": int(b.get("creator_tokens_graduated") or 0) >= 1,
-                "project_flags": b.get("project_flags", {}),
             }
             verdict = classify(metrics, self._rules_for_classify())
             await self.db.launches.update_one(
@@ -2160,15 +2116,24 @@ class BotState:
         # Reservation gate — serialized so concurrent scanner attempts can't
         # all race past max_concurrent_positions. Holds the lock only for the
         # gate check + reservation (microseconds), not the tx.
+        book = book_for_action(action)
+        if not is_manual and self.inventory.active():
+            logger.info(f"inventory halt: skipping {launch.mint[:8]}… ({self.inventory.snapshot()})")
+            return
+        if not is_manual and self.live_doctor is not None and self.live_doctor.book_paused(book):
+            logger.info(f"book {book} paused by live-doctor breaker: skipping {launch.mint[:8]}…")
+            return
         async with self._entry_gate_lock:
-            # Already entering this mint? (race between concurrent triggers
-            # for the same mint, e.g., scanner + sniper firing in parallel)
             if launch.mint in self.active_trades or launch.mint in self._pending_entry_mints:
                 return
             cap = max(1, self.config.max_concurrent_positions)
             in_flight = len(self.active_trades) + len(self._pending_entry_mints)
             if in_flight >= cap:
                 return
+            if book == "hunt":
+                hunt_open = sum(1 for sl in self.active_trades.values() if (sl.get("trade") or {}).get("book") == "hunt")
+                if hunt_open >= min(HUNT_SLOT_CAP, cap):
+                    return   # greylist spray may not consume every slot
             # SL cooldown — if this mint just exited via stop-loss, refuse to
             # re-enter for the configured window. Buying back into a freshly
             # SL-tripped mint is the textbook "buy the exit" anti-pattern.
@@ -2321,46 +2286,11 @@ class BotState:
             logger.debug(f"greylist context skipped: {e}")
 
         sol_price = await get_sol_usd_price()
-        # Risk-based position sizing: borderline classifications get smaller
-        # trades. The bleed analysis showed many losers were borderline
-        # entries with risk_score 30-60 that classifier would re-evaluate
-        # as exit_early once curve filled. Halving size on these caps
-        # downside without giving up the rare winner.
-        if risk_score <= 30:
-            size_mult = 1.0           # green light
-        elif risk_score <= 60:
-            size_mult = 0.6           # borderline — half-size
-        else:
-            size_mult = 0.3           # high-risk — third-size
-        # Greylist size override (Phase 2 live mode only). Layered multiplicatively
-        # on top of the risk bucket. Capped at 2× the configured max_trade_usd
-        # so a hot creator can't blow the risk envelope (a 1.5× override on a
-        # 1.0× risk bucket lands at 1.5×, still inside the 2× ceiling).
-        gl_size_mult = float((greylist_ctx.get("overrides") or {}).get("size_mult") or 1.0)
-        if gl_size_mult != 1.0:
-            size_mult *= gl_size_mult
-        # Research-mode snipes use a reduced size multiplier — these are
-        # experimental positions on currently-blacklisted-as-noisy
-        # creators, so we cap exposure while collecting the win-rate data.
+        book = book_for_action(action)
         is_research_snipe = (action == "greylist_snipe"
                              and getattr(self, "_snipe_research_flags", {}).get(launch.mint, False))
-        if is_research_snipe:
-            size_mult *= float(self.config.greylist_snipe_research_size_mult or 0.5)
-        size_mult = min(size_mult, 2.0)
-        # Autopilot drawdown governor (bankroll.py) — half-size while engaged
-        _gov = getattr(self, "bankroll", None)
-        if _gov is not None:
-            size_mult *= _gov.size_mult("sol")
-        # Learning-loop book multiplier (0 ⇒ book disabled by the Doctor)
-        _book_mult = book_size_mult(self.config, action)
-        if _book_mult <= 0:
-            logger.info(f"skip {launch.mint[:8]} — book {'greylist_snipe' if action == 'greylist_snipe' else 'momentum'} disabled (size_mult=0)")
-            return
-        base_usd = self.config.max_trade_usd * size_mult * _book_mult
-        trade_usd = max(self.config.min_trade_usd, base_usd)
-        trade_sol = trade_usd / sol_price if sol_price > 0 else 0
-        sol_in_lamports = int(trade_sol * LAMPORTS_PER_SOL)
-        if sol_in_lamports <= 0:
+        if book_size_mult(self.config, book) <= 0:
+            logger.info(f"skip {launch.mint[:8]} — book {book} disabled (size_mult=0)")
             return
 
         # Route by protocol — graduated tokens trade on PumpSwap AMM
@@ -2445,7 +2375,7 @@ class BotState:
 
         # Pre-trade classifier gate (NEW band PumpFun only — seasoned/PumpSwap
         # tokens don't have mempool metrics so the classifier would spuriously
-        # abort them). If the classifier would abort/exit_early *immediately*
+        # abort them). If the classifier would route the launch to skip/hunt,
         # post-entry, refuse to enter — saves entry fees + exit slippage on a
         # certain loser.
         if is_new_band and protocol == "pumpfun" and not bypass_gates:
@@ -2456,22 +2386,18 @@ class BotState:
                 "unique_buyers": len(b.get("buyers", set())),
                 "sol_inflow": b.get("sol_inflow_lamports", 0) / LAMPORTS_PER_SOL,
                 "creator_rugs": b.get("creator_rugs", 0),
-                "social_score": b.get("social_score", 0),
-                "project_score": b.get("project_score", 0), "project_meta_seen": bool(b.get("meta_seen")),
+                "creator_pattern": greylist_ctx.get("pattern"),
+                "project_score": b.get("project_score", 0),
                 "creator_prior_launches": int(b.get("creator_prior_launches") or 0), "creator_graduated_before": int(b.get("creator_tokens_graduated") or 0) >= 1,
-                "project_flags": b.get("project_flags", {}),
             }
             verdict = classify(metrics, self._rules_for_classify())
-            # Reject abort/exit_early outright AND reject hold_briefly when
-            # risk_score > 50 — those trades were the bulk of our last 50
-            # exits via `classifier abort` at -13% to -25%, where the
-            # classifier flipped from hold_briefly→exit_early as the curve
-            # filled.
+            # scalp needs a scalp verdict: "skip" (late chase / dead / rug history) and "hunt" (patterned
+            # creator — belongs to the greylist sniper, not a momentum scalp) both refuse the entry
             veto_reason = None
-            if verdict["action"] in ("abort_trade", "exit_early"):
-                veto_reason = verdict["action"]
-            elif verdict["action"] == "hold_briefly" and risk_score > 50:
-                veto_reason = f"hold_briefly + high risk ({risk_score})"
+            if verdict["action"] != "scalp":
+                veto_reason = f"classifier {verdict['action']}"
+            elif risk_score > 60:
+                veto_reason = f"scalp + high risk ({risk_score})"
             if veto_reason:
                 logger.info(
                     f"skip {launch.mint} [{action}]: pre-trade classifier "
@@ -2574,33 +2500,20 @@ class BotState:
         # reverts. Auto-widen slippage for thin curves. Even deep curves
         # need a 8% floor on hot launches because a few sniper buys land
         # in the same slot and move price >3% before our tx confirms.
-        if protocol == "pumpfun":
-            vsr_sol = state.get("virtual_sol_reserves", 0) / LAMPORTS_PER_SOL
-            if vsr_sol < 32:        # very early — first ~2 SOL of buy pressure
-                eff_slip = max(eff_slip, 2500)  # 25%
-            elif vsr_sol < 40:      # early — first ~10 SOL
-                eff_slip = max(eff_slip, 2000)  # 20%
-            elif vsr_sol < 55:      # mid — first ~25 SOL
-                eff_slip = max(eff_slip, 1500)  # 15%
-            else:                   # deep curve — still need a floor
-                eff_slip = max(eff_slip, 1000)  # 10% minimum for any entry
-        elif protocol == "pumpswap":
-            # PumpSwap AMM pools also need a depth-aware entry-slip floor.
-            # `quote_reserves` (WSOL side) is the real liquidity. Thin pools
-            # move price faster per SOL of order, so the same floor strategy
-            # applies as Pump.fun curves — just based on WSOL reserves
-            # instead of virtual SOL reserves. Without this floor, Custom:6002
-            # (excess slippage) reverts at entry on hot graduated tokens.
-            quote_sol = (pumpswap_state.get("quote_reserves") or 0) / LAMPORTS_PER_SOL
-            if quote_sol < 5:        # ultra-thin AMM pool — rare, but real
-                eff_slip = max(eff_slip, 2500)  # 25%
-            elif quote_sol < 15:     # thin pool — typical fresh-graduate
-                eff_slip = max(eff_slip, 1800)  # 18%
-            elif quote_sol < 40:     # medium depth
-                eff_slip = max(eff_slip, 1200)  # 12%
-            else:                    # deep pool — still need floor for sniper races
-                eff_slip = max(eff_slip, 800)   # 8% minimum
+        eff_slip = entry_slip_bps(protocol, pool_depth_sol(pumpswap_state if protocol == "pumpswap" else state, protocol), eff_slip)
 
+        plan = await self._plan_entry(launch.mint, book, protocol, eff_slip, eff_priority, sol_price,
+                                      depth_sol=pool_depth_sol(pumpswap_state if protocol == "pumpswap" else state, protocol),
+                                      use_doctor=action != "manual", pattern=greylist_ctx.get("pattern"),
+                                      band="new" if is_new_band else "seasoned")
+        if not plan:
+            return
+        size_mult = plan["size_mult"]
+        trade_usd = plan["size_usd"]
+        trade_sol = trade_usd / sol_price if sol_price > 0 else 0
+        sol_in_lamports = int(trade_sol * LAMPORTS_PER_SOL)
+        if sol_in_lamports <= 0:
+            return
         tokens_out, max_sol = (
             pumpswap.quote_buy_tokens(pumpswap_state, sol_in_lamports, eff_slip)
             if protocol == "pumpswap"
@@ -2642,7 +2555,7 @@ class BotState:
         trade = Trade(
             mint=launch.mint,
             creator=trade_creator,
-            book="greylist_snipe" if action == "greylist_snipe" else "momentum",
+            book=book,
             name=launch.name,
             symbol=launch.symbol,
             status="active",
@@ -2674,6 +2587,7 @@ class BotState:
                        "band": "new" if action == "momentum_new" else "seasoned"},
             greylist_pattern_suggested_tp_pct=greylist_ctx.get("pattern_tp_pct"),
             is_research_snipe=is_research_snipe,
+            **plan["trade_fields"],
             # Persist the snipe ctx on the trade doc itself so a restart
             # can restore the slot without losing the pattern frame of
             # reference. `_load_active_trades` reads this back into the
@@ -2693,7 +2607,7 @@ class BotState:
             "protocol": protocol,
             "pumpswap_pool": bucket.get("pumpswap_pool", ""),
             # Per-trade greylist override slot — exit logic reads `greylist_overrides`
-            # via `_exit_param()` helper so each position respects ITS own creator's
+            # (exit ladder reads book_exits via exits.levels; greylist overrides are telemetry only)
             # tier (a hot greylist + a standard mint can be open concurrently).
             "greylist_overrides": greylist_ctx.get("overrides") or {},
             "greylist_strategy": greylist_ctx.get("strategy"),
@@ -2922,10 +2836,6 @@ class BotState:
         slot["last_monitor_tick"] = time.time()
         trade_doc = slot["trade"]
         start = time.time()
-        from book_params import book_for_action, exit_param, trade_regime
-        _bk = trade_doc.get("book") or book_for_action(trade_doc.get("classifier_action"))
-        max_hold = exit_param(self.config, _bk, "hold_max_seconds", trade_regime(self.config, _bk, trade_doc))
-        last_classify = 0.0
         # Rolling (ts, price_sol) samples for the velocity-aware timeout check.
         # Survives across this monitor's lifetime; reset if a new monitor takes over.
         if "monitor_price_samples" not in slot:
@@ -2986,6 +2896,8 @@ class BotState:
                                 "peak_price_sol": float(slot.get("peak_price_sol") or 0),
                                 "first_seen_price_sol": float(slot.get("first_seen_price_sol") or 0),
                                 "partial_done": bool(slot.get("partial_done", False)),
+                                "ladder_legs_done": int(slot.get("ladder_legs_done") or 0),
+                                "ladder_stop_pct": float(slot.get("ladder_stop_pct") or 0),
                                 "_entry_ts_mono": float(slot.get("_entry_ts_mono") or 0),
                             }},
                         )
@@ -2999,62 +2911,12 @@ class BotState:
                 # state still needs to be fetched (below) so we have
                 # cur_price_sol for the pattern check.
                 is_snipe = self._is_snipe(slot)
-                if is_snipe:
-                    # We still need cur_price_sol for the pattern check, so
-                    # fall through to the protocol-aware price polling below.
-                    # The standard SL/TP/trailing block past line ~2099 is
-                    # gated on `not is_snipe` so snipes skip it.
-                    pass
-                elif elapsed > max_hold:
-                    # Velocity-aware timeout: if the price is still trending up
-                    # over the last N seconds, defer the cutoff rather than
-                    # cutting a winner mid-pump. TP/SL/trailing keep guarding,
-                    # so this only stretches the *hard* timeout, never disables
-                    # protections.
-                    extend_ok = False
-                    # ride the winner: in profit and still inside the trail → TP/trailing govern, not the clock
-                    try:
-                        _ep = float(trade_doc.get("entry_price_sol") or 0)
-                        _cur = float(slot.get("_last_price_sol") or (slot.get("monitor_price_samples") or [(0, 0)])[-1][1] or 0)
-                        _pk = float(slot.get("peak_price_sol") or _ep)
-                        if (self.config.winner_ride_enabled and _ep > 0 and _cur > 0
-                                and (_cur / _ep - 1) * 100 >= self.config.winner_ride_min_pnl_pct
-                                and elapsed < max_hold * self.config.winner_ride_max_hold_mult
-                                and (_pk - _cur) / _pk * 100 < self._exit_param(slot, "trail_pct", self.config.trailing_stop_pct)):
-                            extend_ok = True
-                            if not slot.get("_riding"):
-                                slot["_riding"] = True
-                                slot["_ride_started_pnl_pct"] = round((_cur / _ep - 1) * 100, 2)
-                                logger.info(f"RIDING {mint} past hold cap at {slot['_ride_started_pnl_pct']:+.1f}% — trail/TP govern now")
-                    except Exception:
-                        pass
-                    if not extend_ok and self.config.hold_timeout_velocity_extend_enabled:
-                        win_s = max(3, int(self.config.hold_timeout_velocity_window_s))
-                        samples = slot.get("monitor_price_samples") or []
-                        v = velocity_pct_strict(samples, time.time(), win_s) if samples else None
-                        if v is not None and v >= self.config.hold_timeout_velocity_min_pct:
-                            extend_ok = True
-                            now_t = time.time()
-                            if now_t - last_extend_log > 5.0:
-                                logger.info(
-                                    f"timeout extended for {mint}: velocity {v:+.2f}% over {win_s}s "
-                                    f">= {self.config.hold_timeout_velocity_min_pct:.2f}% — riding pump"
-                                )
-                                last_extend_log = now_t
-                    if not extend_ok:
-                        slot["exit_in_progress"] = True
-                        try:
-                            await self._exit(mint, reason=f"timeout after {max_hold}s")
-                            return
-                        finally:
-                            slot["exit_in_progress"] = False
 
                 # No-momentum exit — one-shot at no_momentum_after_s: a position
                 # that never reached +min_mfe% is dead money on a micro-cap.
                 if (
-                    not is_snipe
-                    and self.config.no_momentum_exit_enabled
-                    and not slot.get("partial_done")
+                    self.config.no_momentum_exit_enabled
+                    and not slot.get("ladder_legs_done")
                     and not slot.get("_no_momentum_checked")
                     and elapsed >= self.config.no_momentum_after_s
                 ):
@@ -3163,10 +3025,7 @@ class BotState:
                         await asyncio.sleep(0.4)
                     continue
 
-                # Snipes: pattern-based exit ONLY. Skip the rest of the
-                # standard exit ladder entirely (no SL, no max-hold trail,
-                # no live classifier abort — see _check_snipe_pattern_exit
-                # for what we DO check).
+                # hunt rip-cord (creator pattern exits) fires BEFORE the book ladder
                 if is_snipe:
                     should_exit, reason = self._check_snipe_pattern_exit(slot, cur_price_sol)
                     if should_exit:
@@ -3176,158 +3035,16 @@ class BotState:
                             return
                         finally:
                             slot["exit_in_progress"] = False
-                    # Push-based wake / safety sleep, then back to top.
-                    if watch_account:
-                        await account_event_bus.wait_for_change(watch_account, timeout=0.8)
-                    else:
-                        await asyncio.sleep(0.8)
-                    continue
 
-                # Track price samples for the velocity-aware timeout (cap window ~ 2x velocity window)
                 _now = time.time()
                 samples = slot.get("monitor_price_samples")
                 if samples is not None:
                     samples.append((_now, cur_price_sol))
-                    cutoff = _now - max(30, int(self.config.hold_timeout_velocity_window_s) * 3)
-                    # Trim from the front
-                    while samples and samples[0][0] < cutoff:
+                    while samples and samples[0][0] < _now - 60:
                         samples.pop(0)
 
-                # Per-position thresholds — greylist overrides win when present.
-                m_tp_pct = self._exit_param(slot, "tp_pct", self.config.take_profit_pct)
-                m_sl_pct = self._exit_param(slot, "sl_pct", self.config.stop_loss_pct)
-
-                if pct_change >= m_tp_pct and not slot.get("partial_done") \
-                        and not self._buy_momentum_holds(mint, slot, "tp", pct_change):
-                    slot["exit_in_progress"] = True
-                    try:
-                        ptp = self.config.partial_tp_pct
-                        if 0 < ptp < 100:
-                            slot["partial_done"] = True
-                            did = await self._partial_exit(
-                                mint, ptp / 100.0,
-                                reason=f"partial-tp ({ptp:.0f}%) at +{pct_change:.1f}%",
-                            )
-                            if did:
-                                slot["peak_price_sol"] = cur_price_sol
-                                await asyncio.sleep(0.5)
-                                continue
-                            slot["partial_done"] = False
-                        await self._exit(mint, reason=f"take-profit hit (+{pct_change:.1f}%)")
-                        return
-                    finally:
-                        slot["exit_in_progress"] = False
-                if pct_change <= -m_sl_pct:
-                    # v2: persistence — only fire if breach has been sustained.
-                    # v2.1: severity override (see _check_exit_conditions_realtime).
-                    if self.config.intelligent_exit_v2:
-                        fire = self._check_breach_persistence(
-                            slot, kind="sl", breached=True,
-                            persistence_ms=self.config.sl_persistence_ms,
-                            min_samples=self.config.sl_persistence_min_samples,
-                            severity_pct=(-pct_change - m_sl_pct),
-                            severity_threshold_pct=5.0,
-                        )
-                    else:
-                        fire = True
-                    if fire and not self._buy_momentum_holds(mint, slot, "sl", pct_change):
-                        slot["exit_in_progress"] = True
-                        try:
-                            await self._exit(mint, reason=f"stop-loss hit ({pct_change:.1f}%)")
-                            return
-                        finally:
-                            slot["exit_in_progress"] = False
-                elif self.config.intelligent_exit_v2:
-                    # Recovered above SL → clear breach state
-                    self._check_breach_persistence(
-                        slot, kind="sl", breached=False,
-                        persistence_ms=self.config.sl_persistence_ms,
-                        min_samples=self.config.sl_persistence_min_samples,
-                    )
-
-                # Trailing stop — CRITICAL: was missing from this loop
-                # entirely, meaning quiet mints (no on_trade events during
-                # the drawdown) would ride the peak all the way down to SL
-                # or max-hold. Mirrors the fast-path logic in
-                # `_check_fast_exit` (lines ~1505-1544) 1:1. Snipes were
-                # already short-circuited above; standard TP/SL branches
-                # above return on fire so we only reach this block when
-                # the position is still open past those gates.
-                m_trail_pct_cfg = self._exit_param(slot, "trail_pct", self.config.trailing_stop_pct)
-                m_trail_arm_pct_cfg = self._exit_param(slot, "trail_arm_pct", self.config.trailing_arm_pct)
-                m_trail_pct = (
-                    self.config.partial_tp_trail_tighten_pct
-                    if slot.get("partial_done") and self.config.partial_tp_trail_tighten_pct > 0
-                    else m_trail_pct_cfg
-                )
-                m_peak_pct = (peak_mon - entry_p_mon) / entry_p_mon * 100 if entry_p_mon > 0 else 0.0
-                m_arm_pct = m_trail_arm_pct_cfg if not slot.get("partial_done") else 0.0
-                if m_trail_pct > 0 and peak_mon > entry_p_mon and m_peak_pct >= m_arm_pct:
-                    m_trail_drop = (peak_mon - cur_price_sol) / peak_mon * 100
-                    m_ts_breached = m_trail_drop >= m_trail_pct
-                    m_ts_should_fire = False
-                    if self.config.intelligent_exit_v2:
-                        m_ts_should_fire = self._check_breach_persistence(
-                            slot, kind="ts", breached=m_ts_breached,
-                            persistence_ms=self.config.ts_persistence_ms,
-                            min_samples=self.config.ts_persistence_min_samples,
-                        )
-                    else:
-                        m_ts_should_fire = m_ts_breached
-                    if m_ts_should_fire:
-                        slot["exit_in_progress"] = True
-                        try:
-                            await self._exit(
-                                mint,
-                                reason=f"trailing-stop hit (peak +{m_peak_pct:.1f}%, now +{pct_change:.1f}%)",
-                            )
-                            return
-                        finally:
-                            slot["exit_in_progress"] = False
-                else:
-                    # Trail not armed yet → clear any pending TS breach state
-                    # so a subsequent arming doesn't start with a stale count.
-                    if slot.get("ts_breached_since") is not None:
-                        slot["ts_breached_since"] = None
-                        slot["ts_breached_samples"] = 0
-
-                # Classifier monitoring applies only to NEW band entries (fresh
-                # mempool launches). Seasoned/PumpSwap trades skip it because
-                # `curve_fill_pct=100` would trigger spurious exit_early signals
-                # and we don't have meaningful mempool metrics for them.
-                if (
-                    time.time() - last_classify > 2.0
-                    and trade_doc.get("classifier_action") == "momentum_new"
-                    and protocol == "pumpfun"
-                ):
-                    last_classify = time.time()
-                    b = self.tracking.get(mint, {})
-                    metrics = {
-                        "elapsed_s": elapsed + ASSESS_DELAY_S,
-                        "curve_fill_pct": b.get("curve_fill_pct", 0.0),
-                        "unique_buyers": len(b.get("buyers", set())),
-                        "sol_inflow": b.get("sol_inflow_lamports", 0) / LAMPORTS_PER_SOL,
-                        "creator_rugs": b.get("creator_rugs", 0),
-                        "social_score": b.get("social_score", 0),
-                        "project_score": b.get("project_score", 0), "project_meta_seen": bool(b.get("meta_seen")),
-                "creator_prior_launches": int(b.get("creator_prior_launches") or 0), "creator_graduated_before": int(b.get("creator_tokens_graduated") or 0) >= 1,
-                    }
-                    verdict = classify(metrics, self._rules_for_classify())
-                    trade_doc["risk_score"] = verdict["risk"]
-                    if verdict["action"] == "abort_trade":
-                        slot["exit_in_progress"] = True
-                        try:
-                            await self._exit(mint, reason=f"classifier abort: {verdict['reasons']}")
-                            return
-                        finally:
-                            slot["exit_in_progress"] = False
-                    if verdict["action"] == "exit_early" and elapsed > 3:
-                        slot["exit_in_progress"] = True
-                        try:
-                            await self._exit(mint, reason=f"classifier exit_early: {verdict['reasons']}")
-                            return
-                        finally:
-                            slot["exit_in_progress"] = False
+                if await self._run_ladder(mint, slot, cur_price_sol, elapsed):
+                    return
 
                 # Push-based wake: returns instantly if Helius pushes a new
                 # account state for the bonding curve / pool (i.e. a trade
@@ -3416,12 +3133,12 @@ class BotState:
         # Intelligent Exit v2: partial-TP usually fires on positive news, so
         # auto-slip stays at base 3% unless pool depth is thin.
         if self.config.intelligent_exit_v2:
-            depth_sol = self._pool_depth_sol(state, protocol)
-            vol_pct = self._recent_vol_pct(
+            depth_sol = pool_depth_sol(state, protocol)
+            vol_pct = recent_vol_pct(
                 slot.get("monitor_price_samples") or [],
                 int(self.config.auto_exit_slip_vol_window_s),
             )
-            exit_slip = self._compute_auto_exit_slip_bps(
+            exit_slip = auto_exit_slip_bps(self.config, 
                 panic=is_panic_partial, pool_depth_sol=depth_sol, recent_vol_pct=vol_pct,
             )
             if is_panic_partial:
@@ -3740,12 +3457,12 @@ class BotState:
         # panic tier. Replaces flat panic_exit_slippage_bps=2500 (25%).
         # Same formula for pumpfun and pumpswap — depth comes from state.
         if self.config.intelligent_exit_v2:
-            depth_sol = self._pool_depth_sol(state, protocol)
-            vol_pct = self._recent_vol_pct(
+            depth_sol = pool_depth_sol(state, protocol)
+            vol_pct = recent_vol_pct(
                 slot.get("monitor_price_samples") or [],
                 int(self.config.auto_exit_slip_vol_window_s),
             )
-            exit_slip = self._compute_auto_exit_slip_bps(
+            exit_slip = auto_exit_slip_bps(self.config, 
                 panic=is_panic, pool_depth_sol=depth_sol, recent_vol_pct=vol_pct,
             )
             # Priority-fee bump for panic-tier exits — real front-run defense
@@ -4206,13 +3923,22 @@ class BotState:
                 "peak_price_sol": float(slot.get("peak_price_sol") or trade_doc.get("entry_price_sol") or 0),
                 "trough_price_sol": float(slot.get("trough_price_sol") or trade_doc.get("entry_price_sol") or 0),
                 "peak_ts": slot.get("peak_ts"), "trough_ts": slot.get("trough_ts"),
-                "rode_winner": bool(slot.get("_riding")), "ride_started_pnl_pct": slot.get("_ride_started_pnl_pct"),
+                "mfe_pct": ((float(slot.get("peak_price_sol") or 0) / float(trade_doc.get("entry_price_sol") or 1)) - 1) * 100
+                if trade_doc.get("entry_price_sol") else None,
                 "peak_hold_s": (slot["peak_ts"] - slot["_entry_ts_mono"]) if slot.get("peak_ts") and slot.get("_entry_ts_mono") else None,
             }
         )
         await self.db.trades.update_one(
             {"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
         )
+        try:
+            await self.scorecard.record(trade_doc)
+            if self.inventory.record_close(reason):
+                logger.warning(f"INVENTORY HALT: last {self.inventory.snapshot()['trigger_n']} Solana closes were stop-outs/rugs — "
+                               f"no new Solana entries until {datetime.fromtimestamp(self.inventory.halted_until, timezone.utc).isoformat()}")
+                await hub.broadcast("inventory_halt", self.inventory.snapshot())
+        except Exception as e:
+            logger.debug(f"scorecard/inventory post-close failed: {e}")
         # Phase 2.9 — grey-out the pinned launch card (but DON'T remove the
         # pin; user manually unpins when done watching). The card stays at
         # the top of its feed but renders dimmed so the user knows the bot

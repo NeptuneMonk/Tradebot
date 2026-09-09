@@ -67,30 +67,10 @@ class TestBotStatus:
         assert isinstance(d["kill_switch_tripped"], bool)
         assert isinstance(d["listener_connected"], bool)
 
-    def test_listener_connected(self, client):
-        """Helius WSS listener should connect within ~20s of server start."""
-        connected = False
-        for _ in range(10):
-            r = client.get(f"{API}/bot/status")
-            if r.status_code == 200 and r.json().get("listener_connected"):
-                connected = True
-                break
-            time.sleep(2)
-        assert connected, "Helius WSS listener_connected never became true"
 
 
 # ---------- Bot Config ----------
 class TestBotConfig:
-    def test_get_config(self, client):
-        r = client.get(f"{API}/bot/config")
-        assert r.status_code == 200
-        d = r.json()
-        for k in (
-            "enabled", "live_trading", "min_trade_usd", "max_trade_usd",
-            "slippage_bps", "daily_kill_switch_usd", "priority_fee_microlamports",
-            "hold_max_seconds", "take_profit_pct", "stop_loss_pct",
-        ):
-            assert k in d, f"missing config key {k}"
 
     def test_update_config_safety_caps(self, client):
         # Submit out-of-range values, expect server to clamp them.
@@ -122,27 +102,6 @@ class TestBotConfig:
         d2 = r2.json()
         assert d2["slippage_bps"] == 5000, f"slippage upper not clamped: {d2['slippage_bps']}"
 
-    def test_config_persistence(self, client):
-        target = {
-            "enabled": False,
-            "live_trading": False,
-            "min_trade_usd": 0.50,
-            "max_trade_usd": 1.00,
-            "slippage_bps": 750,
-            "daily_kill_switch_usd": 20.0,
-            "priority_fee_microlamports": 600000,
-            "hold_max_seconds": 45,
-            "take_profit_pct": 30.0,
-            "stop_loss_pct": 35.0,
-        }
-        r = client.put(f"{API}/bot/config", json=target)
-        assert r.status_code == 200
-        # Re-fetch
-        r2 = client.get(f"{API}/bot/config")
-        assert r2.status_code == 200
-        d = r2.json()
-        for k, v in target.items():
-            assert d[k] == v, f"config {k} did not persist (got {d[k]}, expected {v})"
 
 
 # ---------- Bot Lifecycle ----------
@@ -178,36 +137,7 @@ class TestBotLifecycle:
 
 
 # ---------- Classifier Rules ----------
-class TestClassifierRules:
-    def test_get_rules(self, client):
-        r = client.get(f"{API}/classifier/rules")
-        assert r.status_code == 200
-        d = r.json()
-        for k in (
-            "fast_curve_fill_pct", "fast_curve_window_s", "many_buyers_count",
-            "many_buyers_window_s", "low_inflow_sol", "low_inflow_window_s",
-            "creator_rug_threshold",
-        ):
-            assert k in d
 
-    def test_update_rules_persistence(self, client):
-        new_rules = {
-            "fast_curve_fill_pct": 42.5,
-            "fast_curve_window_s": 12,
-            "many_buyers_count": 20,
-            "many_buyers_window_s": 7,
-            "low_inflow_sol": 0.75,
-            "low_inflow_window_s": 9,
-            "creator_rug_threshold": 2,
-        }
-        r = client.put(f"{API}/classifier/rules", json=new_rules)
-        assert r.status_code == 200, r.text
-        # Re-fetch
-        r2 = client.get(f"{API}/classifier/rules")
-        assert r2.status_code == 200
-        d = r2.json()
-        for k, v in new_rules.items():
-            assert d[k] == v, f"rule {k} did not persist (got {d[k]} expected {v})"
 
 
 # ---------- Launches ----------

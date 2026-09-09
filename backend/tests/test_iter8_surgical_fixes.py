@@ -28,11 +28,6 @@ class TestBotConfigDefaults:
         assert self.cfg.paper_entry_latency_ms == 400
         assert self.cfg.paper_apply_priority_fee is True
 
-    def test_risk_ladder_defaults(self):
-        assert self.cfg.stop_loss_pct == 12.0
-        assert self.cfg.trailing_stop_pct == 6.0
-        assert self.cfg.trailing_arm_pct == 12.0
-        assert self.cfg.hold_max_seconds == 35
 
     def test_persistence_defaults(self):
         assert self.cfg.sl_persistence_ms == 500
@@ -135,14 +130,6 @@ class TestCodePresence:
         assert 'slot["_last_price_sol"] = cur_price_sol' in src
         assert 'peak_mon = float(slot.get("peak_price_sol")' in src
 
-    def test_monitor_position_trailing_stop_block(self):
-        with open(self.BOT_PY) as f:
-            src = f.read()
-        # Trailing stop in monitor uses _exit_param and NO [fast] suffix
-        assert 'self._exit_param(slot, "trail_pct"' in src
-        assert 'self._exit_param(slot, "trail_arm_pct"' in src
-        # Confirm the monitor-path reason string exists (no [fast])
-        assert 'reason=f"trailing-stop hit (peak +{m_peak_pct:.1f}%, now +{pct_change:.1f}%)"' in src
 
     def test_paper_latency_block_exists(self):
         with open(self.BOT_PY) as f:

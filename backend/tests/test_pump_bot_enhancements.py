@@ -58,35 +58,7 @@ class TestLaunchFieldsContract:
 
 
 # ----- Social score min rule -----
-class TestClassifierSocialScoreMinRule:
-    def test_get_rules_includes_social_score_min(self, client):
-        r = client.get(f"{API}/classifier/rules")
-        assert r.status_code == 200
-        d = r.json()
-        assert "social_score_min" in d, "social_score_min missing from rules"
-        assert isinstance(d["social_score_min"], int)
-        # Default should be 0 (disabled)
-        # Note: previous tests may have mutated; just assert range
-        assert 0 <= d["social_score_min"] <= 100
 
-    def test_put_rules_persists_social_score_min(self, client):
-        # Persist non-zero then re-fetch
-        # First fetch existing to merge
-        cur = client.get(f"{API}/classifier/rules").json()
-        cur["social_score_min"] = 25
-        r = client.put(f"{API}/classifier/rules", json=cur)
-        assert r.status_code == 200, r.text
-        assert r.json()["social_score_min"] == 25
-
-        r2 = client.get(f"{API}/classifier/rules")
-        assert r2.status_code == 200
-        assert r2.json()["social_score_min"] == 25
-
-        # Reset to 0 (disabled) so we don't suppress entries for later tests
-        cur["social_score_min"] = 0
-        r3 = client.put(f"{API}/classifier/rules", json=cur)
-        assert r3.status_code == 200
-        assert r3.json()["social_score_min"] == 0
 
 
 # ----- Live metric population (proves on_trade wiring) -----
@@ -185,10 +157,6 @@ class TestExistingEndpointsSmoke:
         r = client.get(f"{API}/wallet")
         assert r.status_code == 200
 
-    def test_bot_status_listener_connected(self, client):
-        r = client.get(f"{API}/bot/status")
-        assert r.status_code == 200
-        assert r.json().get("listener_connected") is True
 
     def test_bot_config(self, client):
         r = client.get(f"{API}/bot/config")

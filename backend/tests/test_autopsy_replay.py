@@ -68,26 +68,6 @@ def _path(mint, symbol, start, prices, buys_per_step=2, q=0.002, age0=600.0):
             "samples": samples, "buys": buys}
 
 
-def test_replay_book_measures_gates_on_the_universe():
-    cfg = BotConfig().model_dump()
-    cfg.update(rh_min_age_s=10, rh_max_age_min=30, rh_min_mc_usd=0, rh_max_mc_usd=1e12, rh_min_unique_buyers=8,
-               rh_min_growth_pct=30, rh_max_growth_pct=400, rh_min_new_buyers_1m=0, rh_min_inflow_usd=0,
-               take_profit_pct=25, stop_loss_pct=15, trailing_arm_pct=15, trailing_stop_pct=6, hold_max_seconds=600, rh_max_trade_usd=10)
-    t0 = time.time() - 3600
-    # runner: +30% at sample 3 then to +80% ; rug: +35% then -70% ; dud: flat
-    runner = _path("0xr", "RUN", t0, [1e-9 * (1 + g / 100) for g in (0, 10, 20, 32, 45, 60, 80, 80, 80, 80)])
-    rug = _path("0xg", "RUG", t0 + 10, [1e-9 * (1 + g / 100) for g in (0, 15, 35, 40, -30, -70, -70, -70, -70, -70)])
-    dud = _path("0xd", "DUD", t0 + 20, [1e-9] * 10, buys_per_step=0)
-    res = replay.replay_book("rh_pons", [runner, rug, dud], cfg, {"ETH": 2500.0}, min_n=1, window_h=24)
-    assert res["n_tokens"] == 3 and res["current"]["fills"] == 2                 # runner + rug enter (≥30% growth, ≥8 buyers)
-    assert res["rows"] and all(r["fills"] <= 3 for r in res["rows"])
-    assert res["ladder"]["take_profit_pct"] == 25 and res["stake_usd"] == 10
-    # strict current gates → the runner becomes a "missed winner" a looser variant would have caught
-    cfg2 = {**cfg, "rh_min_unique_buyers": 30}
-    res2 = replay.replay_book("rh_pons", [runner, rug, dud], cfg2, {"ETH": 2500.0}, min_n=1, window_h=24)
-    assert res2["current"]["fills"] == 0 and res2["missed_winners_n"] >= 1 and res2["missed_winners"][0]["symbol"] == "RUN"
-    # …but every looser variant also lets the RUG in, whose gap-aware stop (−60% print) outweighs the runner → no proposal
-    assert res2["best"] is None and res2["proposal"] is None and res2["dodged_rugs_n"] == 1
 
 
 def test_replay_fills_are_gap_aware_and_calibration_withholds_rosy_proposals():
@@ -109,13 +89,6 @@ def test_replay_fills_are_gap_aware_and_calibration_withholds_rosy_proposals():
     assert res["proposal"] is None and "rosier" in res["note"]
 
 
-def test_universe_proposal_needs_no_fills():
-    cfg = BotConfig().model_dump()
-    extra = {"replay": {"rh_pons": {"proposal": {"key": "rh_min_unique_buyers", "value": 5, "gain": 0.4, "reason": "x",
-                                                  "evidence": {"n_tokens": 100, "current": {}, "whatif": {}, "missed_winners_n": 3, "dodged_rugs_n": 0}}}}}
-    prop, analysis = propose_technique(cfg, {"rh_pons": [], "momentum": [], "greylist_snipe": [], "reentry": []}, 15, extra)
-    assert prop and prop["key"] == "rh_min_unique_buyers" and prop["value"] == 5 and prop["evidence"]["universe"]
-    assert "autopsy" in analysis and "replay" in analysis and analysis["computed_at"]
 
 
 class _State:

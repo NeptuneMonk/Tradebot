@@ -91,12 +91,12 @@ def test_feed_ticks_estimate_price_and_trigger_sl_early():
     paper.state = st
     paper.on_feed_tick = lambda *a, **k: rp.RHPaperTrader.on_feed_tick(paper, *a, **k)
     paper._decide_exit = lambda *a, **k: rp.RHPaperTrader._decide_exit(paper, *a, **k)
-    st.config.stop_loss_pct = 20.0
+    paper._flush_holds = lambda *a, **k: False
+    st.config.book_exits = {"rh_pons": {"stop_loss_pct": 20.0, "hold_max_seconds": 600}}
     st.config.rh_rug_sell_usd = 1e9
     st.config.rh_rug_sell_curve_pct = 100.0
     st.config.exit_momentum_gate_enabled = False
     st.config.no_momentum_exit_enabled = False
-    st.config.hold_max_seconds = 600
     pos = paper.positions[TOKEN]
     pos.update({"trade": {"entry_price_quote": 1e-9, "entry_usd": 5.0, "entry_tokens": 1.0}, "peak_price": 1e-9, "opened": time.time() - 5})
     feed = rh_feed.RHSequencerFeed(st)

@@ -92,15 +92,13 @@ class BotConfig(BaseModel):
     # When set to anything other than "manual", the resolved values overwrite
     # priority_fee_microlamports / slippage_bps / exit_slippage_bps at runtime.
     speed_mode: str = "manual"
-    hold_max_seconds: int = 35       # 2026-06-06: 45→35 — Pump.fun dumps
-                                     # accelerate past the old window
     # No-momentum exit (2026-06 review): 20/81 paper trades sat flat
     # (MFE <= 3%) then bled to the timeout for -$14 combined. One-shot check
     # at `no_momentum_after_s`: if the position never reached
     # `no_momentum_min_mfe_pct`, exit. Snipes and partial-TP'd positions skip.
     no_momentum_exit_enabled: bool = True
     no_momentum_after_s: int = 30
-    no_momentum_min_mfe_pct: float = 5.0
+    no_momentum_min_mfe_pct: float = 5.0   # flattens a dead runner on any book (never a clock)
     # Buy-momentum exit gate (2026-06): SL/TP only fire when buy pressure has
     # faded. If, in the last `exit_momentum_window_s`, >= min_buyers distinct
     # wallets bought AND >= min_inflow_sol flowed in, the exit is DEFERRED
@@ -125,21 +123,15 @@ class BotConfig(BaseModel):
     flush_extra_drop_pct: float = 5.0
     flush_window_s: int = 30
     flush_reentry_enabled: bool = True          # a flush-caused stop primes a re-entry watch (breakout path)
-    take_profit_pct: float = 20.0    # data: 12% was cutting winners; 20% balanced
-    stop_loss_pct: float = 12.0      # 2026-06-06: 15→12 — tighter live risk cap
-    trailing_stop_pct: float = 6.0   # 2026-06-06: 8→6 — lock gains sooner
-    trailing_arm_pct: float = 12.0   # 2026-06-06: 15→12 — arm at a lower peak
-    # Partial take-profit: sell partial_tp_pct of the position at TP, ride the
-    # remainder with a tightened trailing stop.
-    partial_tp_pct: float = 50.0          # sell 50% at TP
-    partial_tp_trail_tighten_pct: float = 5.0  # tighten trailing to 5% after partial
     exit_slippage_bps: int = 1000    # 10% normal exit slippage (TP/trailing/timeout)
     # Panic-exit slippage: applied on stop-loss, hard-stop, classifier abort,
     # and bonding-curve-complete exits where landing the sell matters more
     # than the fill price. 25% lets us escape sharp dumps without 6003 reverts.
     panic_exit_slippage_bps: int = 2500  # 25% emergency exit slippage
-    # Per-book exit overrides (Doctor-tuned): {book: {take_profit_pct, stop_loss_pct, trailing_stop_pct, trailing_arm_pct, hold_max_seconds}}
+    # THE ONLY exit parameters: {scalp|hunt|rh_pons: {stop_loss_pct, target_r, trailing_stop_pct, trailing_arm_pct,
+    # hold_max_seconds, ladder_1r_sell_pct, ladder_2r_sell_pct, take_profit_pct}} — see book_params.BOOK_DEFAULTS
     book_exits: dict = {}
+    scorecard_enabled: bool = True         # disabled situation cells skip new entries
     # Regime (quiet vs busy launch hours): entry-threshold multiplier per book per regime, Doctor-tuned
     regime_gate_mult: dict = {}          # {book: {"quiet": 1.0, "busy": 1.5}}
     regime_busy_threshold: dict = {}     # {book: launches/h} — set by the Doctor from the book's own fills
@@ -191,12 +183,11 @@ class BotConfig(BaseModel):
     # Entry filters (applied to scanner_momentum entries; reentry uses its own size logic)
     min_curve_liquidity_sol: float = 12.0  # skip thin/dead launches
     min_buyers_for_entry: int = 3          # require real interest
-    max_concurrent_positions: int = 8      # diversification cap
+    max_concurrent_positions: int = 3      # Solana slots (rail max 8); hunt may hold at most 2 of them
     # Per-band entry filter overrides for the "new" momentum band (age < scanner_min_age_minutes).
     # The base fields above apply to the "seasoned" band.
     min_curve_liquidity_sol_new: float = 20.0
     min_buyers_for_entry_new: int = 8
-    project_score_min: int = 0             # Pump.fun Project Score floor (0–5; 0 = off) — Doctor-tunable entry gate
     # Serial-creator gate (data: creators with ≥3 prior launches and NO graduation run 4–8× less often than first launches;
     # serial creators WITH a graduation launch near first-launch quality). Both knobs Doctor-tunable.
     serial_creator_gate_enabled: bool = True
@@ -261,24 +252,16 @@ class BotConfig(BaseModel):
     # Set scanner_entry_velocity_min_pct to a large negative (e.g., -999) to
     # effectively disable the gate.
     scanner_entry_velocity_window_s: int = 30
+    # New-band scalps enter on the SECOND impulse only: a ≥dip% pullback from the tracked peak that is recovering
+    scanner_second_impulse_enabled: bool = True
+    scanner_second_impulse_dip_pct: float = 8.0
     scanner_entry_velocity_min_pct: float = 0.0
-    # Velocity-aware timeout: instead of hard-exiting at `hold_max_seconds`,
-    # check the price velocity over the last `hold_timeout_velocity_window_s`
-    # seconds. If positive (>= hold_timeout_velocity_min_pct), let the trade
-    # keep running so we don't cut a winner mid-pump. TP/SL/trailing still fire
-    # normally, so this can't run forever — it just delays the hard cutoff
-    # while momentum is intact.
-    # Ride winners past the clock: a position up ≥ min_pnl that is still near its highs (inside the trail)
-    # or still drawing buyers is NOT cut at hold_max — the trailing stop / TP take over, up to a hard ceiling.
-    winner_ride_enabled: bool = True
-    winner_ride_min_pnl_pct: float = 10.0
     # Pyramid into a riding winner: on each confirmed higher-high (+step% above the last add level)
     # add pyramid_add_frac × the original stake, up to pyramid_max_adds times
     pyramid_enabled: bool = True
     pyramid_step_pct: float = 10.0
     pyramid_add_frac: float = 0.5
     pyramid_max_adds: int = 3
-    winner_ride_max_hold_mult: float = 6.0      # hard ceiling = hold_max × this
     # Hot tokens: a winner that reached ≥ this % gets a boosted re-entry watch (bigger size, more attempts, longer window)
     hot_token_pnl_pct: float = 25.0
     hot_reentry_size_mult: float = 1.5
@@ -294,9 +277,6 @@ class BotConfig(BaseModel):
     hot_stagnant_s: int = 180               # price range < range_pct and/or no buyers for this long
     hot_stagnant_range_pct: float = 4.0
     hot_breakdown_pct: float = 40.0         # price this far below the hot peak = broke down
-    hold_timeout_velocity_extend_enabled: bool = True
-    hold_timeout_velocity_window_s: int = 10
-    hold_timeout_velocity_min_pct: float = 0.0
     # Stop-loss cooldown: when a position exits via stop-loss, the mint enters
     # a cooldown window during which the scanner / re-entry watcher will refuse
     # to re-enter it. Prevents "buy the exit" anti-pattern — if SL just tripped,
@@ -385,8 +365,8 @@ class BotConfig(BaseModel):
     sweep_baseline_usd: float = 0.0        # starting bankroll; 0 = set to current bankroll on first enable
     sweep_started_ts: float = 0.0
     # Structure flags the Doctor may flip. 0 disables that book.
-    book_momentum_size_mult: float = 1.0
-    book_snipe_size_mult: float = 1.0
+    book_scalp_size_mult: float = 1.0
+    book_hunt_size_mult: float = 1.0
     book_rh_size_mult: float = 1.0            # desk-allocator weight for the RH curve book
     resume_on_restart: bool = True             # deployed app: keep trading through backend restarts (else auto-disable for safety)
     allocator_enabled: bool = True             # desk allocator: continuous per-book capital weights (floor ×0.25, cap ×2)
@@ -493,10 +473,9 @@ class BotConfig(BaseModel):
     # on the trade doc so a Strategy Doctor rule can later promote specific
     # unpredictable creators if their research-trade win-rate proves the
     # variance was actually predictable (just along a non-curve dimension).
-    # Size auto-reduced to `greylist_snipe_research_size_mult` of normal.
+    # Sized like any hunt entry (R sizing + cost gate); flagged is_research_snipe for the scorecard.
     greylist_snipe_research_mode: bool = False
     greylist_snipe_research_min_score: float = 35.0      # lower bar — these are blacklisted creators
-    greylist_snipe_research_size_mult: float = 0.5       # half-size research positions
     wallet_graph_enabled: bool = True          # 2-hop hunter on/off
     # Live PnL reset cutoff: when set, daily_pnl_usd(mode='live') only sums
     # trades closed at-or-after this ISO timestamp instead of today's 00:00 UTC.
@@ -513,10 +492,6 @@ class ClassifierRules(BaseModel):
     many_buyers_window_s: int = 5
     low_inflow_sol: float = 0.5
     low_inflow_window_s: int = 8
-    creator_rug_threshold: int = 1
-    # Social trending threshold: abort entry if name's social_score < this value
-    social_score_min: int = 0  # legacy (name-trending) — superseded by project_score_min
-    project_score_min: int = 0  # 0 = disabled; Project Score 0–5 (logo, website, X, creator graduated before, posts)
 
 
 class Launch(BaseModel):
@@ -609,7 +584,7 @@ class Trade(BaseModel):
     fees_usd: float = 0.0
     # Learning-loop attribution: "momentum" | "greylist_snipe" (set at entry);
     # paper decision-vs-fill prices for latency-tax measurement.
-    book: str = "momentum"
+    book: str = "scalp"                      # scalp | hunt | rh_pons
     decision_price_sol: Optional[float] = None
     fill_price_sol: Optional[float] = None
     # Classifier snapshot
@@ -639,6 +614,23 @@ class Trade(BaseModel):
     # Strategy Doctor uses this to bucket research vs primary snipes
     # separately for promotion analysis.
     is_research_snipe: bool = False
+    # R sizing + cost gate + entry policy (persisted at entry)
+    r_usd: Optional[float] = None            # ACTUAL cash at risk after the operator cap: size × (SL + exit slip)
+    r_usd_nominal: Optional[float] = None    # bankroll × risk_per_trade_pct (shows the cap's distortion)
+    size_usd: Optional[float] = None
+    size_clamped: bool = False
+    sl_pct: Optional[float] = None
+    sl_pct_with_slip: Optional[float] = None
+    target_r: Optional[float] = None
+    expected_cost_pct: Optional[float] = None
+    expected_cost_usd: Optional[float] = None
+    expected_target_pct: Optional[float] = None
+    cost_gate_pass: Optional[bool] = None
+    winner_likeness_pct: Optional[float] = None
+    exit_liquidity_likeness_pct: Optional[float] = None
+    doctor_decision: Optional[str] = None    # skip | half | full
+    scorecard_cell: Optional[str] = None
+    ladder_legs_done: int = 0
     # Snapshot of the snipe pattern context (expected peak MC, rug curve %,
     # std-dev, pattern label) at the moment of entry. Persisted so a
     # backend restart can restore the snipe ladder's frame of reference —

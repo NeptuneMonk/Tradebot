@@ -2,6 +2,7 @@ import { memo } from "react";
 import { History, CircleDot, Search } from "lucide-react";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { ChainBadge } from "./ChainBadge";
+import { TradeTicket } from "./TradeTicket";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const fmtTime = (iso) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—");
@@ -26,8 +27,10 @@ function summarizeExit(t) {
   if (/take-profit/i.test(r)) return { label: "Take Profit", tint: "text-emerald-300" };
   if (/stop-loss/i.test(r) || /\bSL hit/i.test(r)) return { label: "Stop Loss", tint: "text-rose-300" };
   if (/trail/i.test(r)) return { label: "Trail Stop", tint: "text-emerald-400" };
-  if (/max[- ]hold/i.test(r)) return { label: "Max Hold", tint: "text-cyan-300" };
-  if (/abort_trade|abort\b/i.test(r)) return { label: "Classifier Abort", tint: "text-purple-300" };
+  if (/max[- ]hold|scalp clock/i.test(r)) return { label: "Clock", tint: "text-cyan-300" };
+  if (/ladder \+1R|ladder \+2R/i.test(r)) return { label: "Ladder Leg", tint: "text-cyan-300" };
+  if (/ladder stop/i.test(r)) return { label: "Ladder Stop", tint: "text-amber-300" };
+  if (/target \+/i.test(r)) return { label: "Target R", tint: "text-emerald-300" };
   if (/manual/i.test(r)) return { label: "Manual Exit", tint: "text-neutral-300" };
   if (/kill[- ]switch/i.test(r)) return { label: "Kill Switch", tint: "text-rose-400" };
   if (/graceful/i.test(r)) return { label: "Graceful Stop", tint: "text-neutral-300" };
@@ -120,6 +123,7 @@ function TradeHistoryTable({ history }) {
                         {t.classifier_action && (
                           <div className="mt-1.5 pt-1.5 border-t border-neutral-800 text-[10px] text-neutral-500">
                             entered via <span className="text-neutral-300">{t.classifier_action}</span>
+                            <div className="mt-1"><TradeTicket t={t} /></div>
                           </div>
                         )}
                         {(t.exit_trigger_pnl_pct != null || t.exit_deferred_s != null || t.rug_alert) && (

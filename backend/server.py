@@ -26,7 +26,6 @@ from solana_client import get_sol_balance, get_sol_usd_price
 from ws_hub import hub
 from creator_history import get_creator
 from wallet_send import send_sol
-from suggestions import generate_suggestions
 from pl_sources import compute_pl_by_source
 from pattern_miner import generate_insights
 from auth import auth_router, AuthDB, get_current_user, validate_token_str
@@ -94,6 +93,7 @@ async def _run_job(job_id: str, coro_factory):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await bot_state.scorecard.load()
     await bot_state.load()
     listener.start()
     logger.info(f"Wallet address: {wallet.get_pubkey_str()}")
@@ -132,6 +132,7 @@ async def lifespan(app: FastAPI):
     from live_doctor import LiveDoctor
     live_doc = LiveDoctor(db=db, bot_state=bot_state, hub=hub)
     app.state.live_doctor = live_doc
+    bot_state.live_doctor = live_doc
     await live_doc.start()
     # Wallet-graph hunter — background 1-2 hop traversal of greylisted-but-
     # failing creators. Builds DB only; doesn't influence live trading.
@@ -388,10 +389,7 @@ async def update_config(body: dict = Body(...)):
     cfg.reentry_size_multiplier = max(0.0, min(1.0, cfg.reentry_size_multiplier))
     cfg.hot_token_pnl_pct = max(0.0, min(1000.0, float(cfg.hot_token_pnl_pct)))
     cfg.hot_reentry_size_mult = max(1.0, min(3.0, float(cfg.hot_reentry_size_mult)))
-    cfg.winner_ride_min_pnl_pct = max(0.0, min(999.0, float(cfg.winner_ride_min_pnl_pct)))
     # Partial TP clamps
-    cfg.partial_tp_pct = max(0.0, min(100.0, cfg.partial_tp_pct))
-    cfg.partial_tp_trail_tighten_pct = max(0.5, min(50.0, cfg.partial_tp_trail_tighten_pct))
     # Entry filter clamps
     cfg.min_curve_liquidity_sol = max(0.0, min(85.0, cfg.min_curve_liquidity_sol))
     cfg.min_buyers_for_entry = max(0, min(100, cfg.min_buyers_for_entry))
@@ -414,7 +412,7 @@ async def update_config(body: dict = Body(...)):
     cfg.scanner_min_mc_velocity_5m_pct_seasoned = max(-100.0, min(1000.0, cfg.scanner_min_mc_velocity_5m_pct_seasoned))
     cfg.scanner_discovery_max_idle_minutes = max(0, min(1440, cfg.scanner_discovery_max_idle_minutes))
     # Exit-behavior clamps
-    cfg.trailing_stop_pct = max(0.0, min(95.0, cfg.trailing_stop_pct))
+    cfg.max_concurrent_positions = max(1, min(8, int(cfg.max_concurrent_positions)))
     if cfg.exit_slippage_bps != 0:
         cfg.exit_slippage_bps = max(50, min(5000, cfg.exit_slippage_bps))
     # Greylist Sniper clamps
@@ -761,26 +759,15 @@ RECOMMENDED_CONFIG_OVERRIDES = {
     # Buyer gate — NOW applied to seasoned band too (uses `unique_buyer_count`
     # from the Pump.fun coin endpoint, polled by discovery refresh).
     "min_buyers_for_entry": 5,                 # seasoned floor (was silently ignored)
-    # Distribution-vacuum gate OFF: too aggressive on fresh high-momentum
-    # launches where every buyer is "recent" by definition (false-rejects).
-    "gate_distribution_vacuum": False,
+    "gate_distribution_vacuum": True,          # insider pre-distribution with no organic follow-on = skip
     # Wider token universe — 168h (7 days) instead of 24h. Combined with
     # the rolling growth-% gate, old tokens that re-pump can now be entered.
     "scanner_window_hours": 168,
     "scanner_growth_lookback_s": 3600,  # gate on last 1h price change
-    # Risk / exits — tuned from paper data EV analysis.
+    # Risk / exits — per book only (book_params.BOOK_DEFAULTS carries the rest)
     "max_concurrent_positions": 3,
-    "stop_loss_pct": 10.0,
-    "trailing_arm_pct": 8.0,
-    "trailing_stop_pct": 5.0,
-    "take_profit_pct": 10.0,                   # tightened from 12 (was 16) — locks wins faster
-    # FULL exit at TP (was 70% partial + 30% moon-bag). Data from 86 paper
-    # trades showed TP-triggered exits averaged -1.4% PnL because the 30%
-    # runner consistently dumped after partial — moon-bagging on tiny pump.fun
-    # launches doesn't work; just lock the win.
-    "partial_tp_pct": 100,
-    "partial_tp_trail_tighten_pct": 5.0,
-    "hold_max_seconds": 15,
+    "book_exits": {"scalp": {"stop_loss_pct": 12.0, "target_r": 1.5, "hold_max_seconds": 40},
+                   "hunt": {"stop_loss_pct": 20.0, "target_r": 2.0, "hold_max_seconds": 0}},
     # Sustained-breach gates (intelligent_exit_v2). Persistence kills false
     # exits from millisecond dips, but the severity-override (price ≥
     # stop_loss + 5% below entry) fires immediately to cap thin-pool dumps.
@@ -788,8 +775,7 @@ RECOMMENDED_CONFIG_OVERRIDES = {
     "ts_persistence_ms": 1500,
     "sl_persistence_min_samples": 3,
     "ts_persistence_min_samples": 3,
-    # Sizing — THE BIGGEST FINDING. $0.50 entries had 83% WR vs $1.75 at 14%.
-    # max_trade_usd × size_mult (0.6 for risk≤60) → ~$0.54 effective size.
+    # Operator caps (R sizing works inside them)
     "max_trade_usd": 0.90,
     "min_trade_usd": 0.40,
 }
@@ -845,8 +831,36 @@ async def config_apply_recommended():
 
 # ---------------------------------------------------------------- brain sync ----
 import brain as _brain
+import scorecard as _scorecard
+from inventory import HUNT_SLOT_CAP
 from fastapi import Request as _Request
 from fastapi.responses import StreamingResponse as _StreamingResponse
+
+
+@api.get("/scorecard")
+async def scorecard_snapshot():
+    return {"cells": await bot_state.scorecard.snapshot(), "min_n": _scorecard.MIN_N, "upweight_r": _scorecard.UPWEIGHT_R,
+            "reopen_after_h": _scorecard.REOPEN_AFTER_H, "reopen_min_paper": _scorecard.REOPEN_MIN_PAPER}
+
+
+class _CellToggle(BaseModel):
+    cell: str
+    disabled: bool
+
+
+@api.post("/scorecard/cell")
+async def scorecard_toggle(req: _CellToggle):
+    await bot_state.scorecard.set_disabled(req.cell, req.disabled)
+    await db.strategy_suggestions.insert_one({"category": "scorecard", "title": f"cell {req.cell} {'disabled' if req.disabled else 'enabled'}",
+                                              "actions": {}, "status": "applied", "applied_at": datetime.now(timezone.utc).isoformat(), "auto_applied": False})
+    return {"ok": True, "cell": req.cell, "disabled": req.disabled}
+
+
+@api.get("/inventory")
+async def inventory_snapshot():
+    ld = bot_state.live_doctor
+    return {**bot_state.inventory.snapshot(), "hunt_slot_cap": HUNT_SLOT_CAP,
+            "book_paused_until": dict(ld.book_paused_until) if ld else {}, "book_breakers": getattr(ld, "last_book_breakers", {}) if ld else {}}
 
 
 @api.get("/brain/summary")
@@ -2057,8 +2071,7 @@ async def autopilot_status():
                    "max_concurrent_positions": cfg.max_concurrent_positions, "daily_kill_switch_usd": cfg.daily_kill_switch_usd,
                    "rh_max_trade_usd": cfg.rh_max_trade_usd, "rh_max_positions": cfg.rh_max_positions,
                    "rh_daily_kill_switch_usd": cfg.rh_daily_kill_switch_usd},
-        "books": {"momentum": cfg.book_momentum_size_mult, "greylist_snipe": cfg.book_snipe_size_mult,
-                  "reentry": (cfg.reentry_size_multiplier if cfg.reentry_enabled else 0.0),
+        "books": {"scalp": cfg.book_scalp_size_mult, "hunt": cfg.book_hunt_size_mult,
                   "rh_pons": cfg.book_rh_size_mult if (cfg.rh_paper_enabled or cfg.rh_live_trading) else 0.0},
         "allocator": learning.get("allocator"),
         "canary": learning.get("canary"),
@@ -2255,11 +2268,6 @@ async def tracking_summary():
         "sample": sample,
     }
 
-
-# ---------- Suggested settings intelligence ----------
-@api.get("/suggestions")
-async def get_suggestions():
-    return await generate_suggestions(db, bot_state.config)
 
 
 @api.post("/suggestions/apply")

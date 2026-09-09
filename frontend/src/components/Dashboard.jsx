@@ -445,7 +445,7 @@ export default function Dashboard() {
           </MinimizableCard>
           <CollapsibleSection
             title="Classifier Rules"
-            description="entry/exit gates — abort & exit-early rules"
+            description="book router — scalp / hunt / skip"
             storageKey="ui.section.classifier"
             testId="section-classifier"
           >

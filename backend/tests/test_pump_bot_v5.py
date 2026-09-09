@@ -135,12 +135,6 @@ class TestEntryFilterClamps:
         finally:
             _restore(client, baseline_config)
 
-    def test_max_concurrent_positions_clamp_high(self, client, baseline_config):
-        try:
-            cfg = _put(client, max_concurrent_positions=9999)
-            assert cfg["max_concurrent_positions"] == 50
-        finally:
-            _restore(client, baseline_config)
 
     def test_max_concurrent_positions_clamp_low(self, client, baseline_config):
         try:

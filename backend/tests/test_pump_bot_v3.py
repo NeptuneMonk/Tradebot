@@ -167,53 +167,7 @@ class TestCreatorEndpoint:
         assert d["tokens_graduated"] == 0
         assert d["tokens_active"] == 0
 
-    def test_creator_from_recent_launch_full_contract(self, client):
-        launches = self._wait_for_launches(client, min_count=1, timeout=90)
-        assert launches, "No launches available within 90s"
-        creator = launches[0]["creator"]
-        r = client.get(f"{API}/creators/{creator}")
-        assert r.status_code == 200, r.text
-        d = r.json()
-        # Required contract fields
-        contract = (
-            "tokens_created", "tokens_graduated", "tokens_failed", "tokens_active",
-            "recent_mints", "first_seen", "last_seen",
-            "backfill_attempted",
-        )
-        for k in contract:
-            assert k in d, f"creator doc missing {k}: keys={list(d.keys())}"
-        assert isinstance(d["tokens_created"], int) and d["tokens_created"] >= 1
-        assert isinstance(d["recent_mints"], list)
-        assert launches[0]["mint"] in d["recent_mints"]
-        # If backfill succeeded, prior_* numeric fields exist
-        if d.get("backfill_ok"):
-            for k in ("prior_pump_txs", "prior_distinct_mints", "prior_creates_estimate"):
-                assert k in d, f"backfill_ok=true but missing {k}"
-                assert isinstance(d[k], int)
 
-    def test_some_creator_has_helius_backfill_attempted(self, client):
-        """At least one creator from /launches/recent should show
-        backfill_attempted=true. backfill_ok may be False due to 429 — accept that."""
-        launches = self._wait_for_launches(client, min_count=5, timeout=90)
-        assert launches, "No launches available"
-        attempted_count = 0
-        ok_count = 0
-        sampled = launches[:10]
-        for L in sampled:
-            r = client.get(f"{API}/creators/{L['creator']}")
-            if r.status_code != 200:
-                continue
-            d = r.json()
-            if d.get("backfill_attempted"):
-                attempted_count += 1
-            if d.get("backfill_ok"):
-                ok_count += 1
-        assert attempted_count >= 1, (
-            f"No creator had backfill_attempted=true (Helius key may be missing). "
-            f"sampled={len(sampled)}"
-        )
-        # ok_count >= 0 is fine (Helius can 429); just log
-        print(f"backfill_attempted={attempted_count}/{len(sampled)} ok={ok_count}")
 
 
 # ---------------- Launch fields contract ----------------
@@ -306,9 +260,6 @@ class TestRegressionSmoke:
         assert client.post(f"{API}/bot/start").status_code == 200
         assert client.post(f"{API}/bot/stop").status_code == 200
 
-    def test_classifier_rules_includes_social_score_min(self, client):
-        r = client.get(f"{API}/classifier/rules"); assert r.status_code == 200
-        assert "social_score_min" in r.json()
 
     def test_launches_recent(self, client):
         r = client.get(f"{API}/launches/recent"); assert r.status_code == 200

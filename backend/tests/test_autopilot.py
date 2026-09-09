@@ -137,15 +137,3 @@ def _g(n, exp, exp7=None, payoff=1.5):
             "winrate": 50.0, "total_usd": exp * n, "sl_share": 0, "tp_share": 0}
 
 
-def test_doctor_risk_dial_down_and_up():
-    stats = {"global": _g(20, -0.05, -0.02)}
-    assert dl.propose({"bankroll_sizing_enabled": True, "risk_per_trade_pct": 2.0}, stats, 15) is None  # last resort needs 3× sample
-    p = dl.propose({"bankroll_sizing_enabled": True, "risk_per_trade_pct": 2.0}, stats, 5)
-    assert p["key"] == "risk_per_trade_pct" and p["value"] == 1.5 and p["book"] == "global"
-    assert dl.propose({"bankroll_sizing_enabled": True, "risk_per_trade_pct": 0.5}, stats, 5) is None
-    assert dl.propose({"bankroll_sizing_enabled": False, "risk_per_trade_pct": 2.0}, stats, 5) is None
-    stats = {"global": _g(40, 0.08, 0.05)}
-    p = dl.propose({"bankroll_sizing_enabled": True, "risk_per_trade_pct": 2.0}, stats, 15)
-    assert p["key"] == "risk_per_trade_pct" and p["value"] == 2.5
-    assert dl.propose({"bankroll_sizing_enabled": True, "risk_per_trade_pct": 5.0}, stats, 15) is None
-    assert "risk_per_trade_pct" in dl.ALLOWED_KEYS and "max_trade_usd" in dl.FORBIDDEN_KEYS

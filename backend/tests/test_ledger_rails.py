@@ -44,14 +44,6 @@ def test_gate_ledger_scores_blocked_tokens_by_outcome():
     assert rows["buyers"]["cf_pnl_usd"] > 0 and rows["buyers"]["verdict"] == "costing" and rows["buyers"]["would_win"] == 1
 
 
-def test_rails_clamp_and_never_touch():
-    acts, notes = rails.clamp_actions({"book_momentum_size_mult": 0.0, "daily_kill_switch_usd": 999, "book_exits.rh_pons.stop_loss_pct": 2.0,
-                                       "rh_min_unique_buyers": 11})
-    assert acts["book_momentum_size_mult"] == 0.25 and "daily_kill_switch_usd" not in acts
-    assert acts["book_exits.rh_pons.stop_loss_pct"] == 5.0 and acts["rh_min_unique_buyers"] == 11
-    assert len(notes) == 3
-    d = rails.describe()
-    assert "book_rh_size_mult" in d["ranges"] and "live_trading" in d["never_touch"]
 
 
 def test_doctor_apply_refuses_pure_rail_violations():

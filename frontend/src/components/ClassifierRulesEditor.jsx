@@ -29,32 +29,24 @@ export default function ClassifierRulesEditor({ rules, onSave }) {
       <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-neutral-500 mb-1">
         <Sliders className="w-3 h-3" /> Classifier Rules
         <HelpHint label="Classifier Rules">
-          Real-time entry and mid-trade abort rules for <b>momentum_new</b> trades only. These do <b>NOT</b> affect Greylist Sniper buys, re-entries, or seasoned-momentum trades — the sniper has its own pattern-based exit ladder (Profit Ripcord, Curve-fill, Peak-MC, etc.).
-          <br /><br />
-          When a momentum_new candidate is being tracked, the bot re-classifies every 2s. If the live metrics breach any of these thresholds the verdict flips to <b>abort_trade</b> and the position exits immediately.
+          Book router for Pump.fun launches. The verdict is one of <b>scalp</b>, <b>hunt</b> or <b>skip</b>: creators with a tradeable greylist pattern route to the <b>hunt</b> book, creators with untradeable rug history are kept out of <b>scalp</b>, and a late chase (fast curve fill) or a dead launch (low inflow) is a <b>skip</b> — never an entry. Nothing here exits a live position; exits live in the per-book ladders.
         </HelpHint>
       </div>
       <div className="text-[10px] text-neutral-600 font-mono mb-3 tracking-wide">
-        affects: momentum_new only — sniper / reentry bypass these gates
+        routes scalp entries · hunt entries come from the Greylist Sniper / re-entry with their own gates
       </div>
       <div className="space-y-2 text-xs">
-        <Row label="Fast curve fill (%)" hint="ABORT EARLY if the bonding curve fills ≥ X% within the window. Left input = % threshold, right input = window seconds. Default: 25% in 30s → looks pumped, exit before the rug.">
+        <Row label="Fast curve fill (%)" hint="SKIP (late chase) if the bonding curve already filled ≥ X% within the window — a vertical first fill is exit liquidity, not an entry. Left = % threshold, right = window seconds.">
           <NumField testid="rule-fast-curve-pct" value={local.fast_curve_fill_pct} step="1" onChange={set("fast_curve_fill_pct")} />
           <NumField testid="rule-fast-curve-window" value={local.fast_curve_window_s} step="1" onChange={set("fast_curve_window_s")} suffix="s" />
         </Row>
-        <Row label="Many buyers" hint="HOLD BRIEFLY (give it room) if unique buyers ≥ X within the window. Signals organic interest. Left = buyer count, right = window seconds.">
+        <Row label="Many buyers" hint="Lower the risk score when unique buyers ≥ X within the window (real interest → smaller risk, eligible for scalp). Left = buyer count, right = window seconds.">
           <NumField testid="rule-many-buyers" value={local.many_buyers_count} step="1" onChange={set("many_buyers_count")} />
           <NumField testid="rule-many-buyers-window" value={local.many_buyers_window_s} step="1" onChange={set("many_buyers_window_s")} suffix="s" />
         </Row>
-        <Row label="Low SOL inflow" hint="ABORT if total SOL inflow into the curve is BELOW X SOL within the window. Means no real buying pressure. Left = SOL floor, right = window seconds.">
+        <Row label="Low SOL inflow" hint="SKIP if total SOL inflow into the curve is BELOW X SOL within the window. Means no real buying pressure. Left = SOL floor, right = window seconds.">
           <NumField testid="rule-low-inflow" value={local.low_inflow_sol} step="0.1" onChange={set("low_inflow_sol")} suffix="SOL" />
           <NumField testid="rule-low-inflow-window" value={local.low_inflow_window_s} step="1" onChange={set("low_inflow_window_s")} suffix="s" />
-        </Row>
-        <Row label="Max prior failed launches" hint="ABORT if the creator has ≥ X prior tokens that died without graduating (this was mislabelled 'rug threshold' — it counts failed launches, not rugs). Coarse pre-greylist filter; the Greylist Sniper scores creators with more nuance. Set 0 to disable. The serial-creator gate (Bot Control → Entry) is the data-backed version: ≥N prior launches and never graduated one → skip.">
-          <NumField testid="rule-rug-threshold" value={local.creator_rug_threshold} step="1" onChange={set("creator_rug_threshold")} />
-        </Row>
-        <Row label="Min project score" hint="ABORT entry if the token's Project Score (0–5: +1 logo, +1 website, +1 X account, +1 creator filled a curve before, +1 ≥3 Pump.fun posts) is below this floor. Uses data we already fetch — no Helius credits. The Doctor can also raise the floor (project_score_min in Bot Control) when high-score launches pay better. Set 0 to disable.">
-          <NumField testid="rule-project-min" value={local.project_score_min ?? 0} step="1" onChange={set("project_score_min")} />
         </Row>
       </div>
       <button

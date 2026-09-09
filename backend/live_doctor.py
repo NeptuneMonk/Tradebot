@@ -53,6 +53,22 @@ from typing import Any, Optional
 logger = logging.getLogger("live_doctor")
 
 LOOKBACK_HOURS = 24
+# ---- entry policy (the ONLY threshold set; total order, no undefined cases) ----
+SKIP_BELOW_WINNER = 40.0
+FULL_MIN_WINNER = 60.0
+HALF_IF_EXIT_LIQ_AT_LEAST = 50.0
+DECISION_MULT = {"skip": 0.0, "half": 0.5, "full": 1.0}
+BREAKER_MIN_N = 8
+BREAKER_PAUSE_S = 4 * 3600
+
+
+def decide(winner_likeness: float, exit_liquidity_likeness: float) -> str:
+    if winner_likeness < SKIP_BELOW_WINNER:
+        return "skip"
+    if winner_likeness >= FULL_MIN_WINNER and exit_liquidity_likeness < HALF_IF_EXIT_LIQ_AT_LEAST:
+        return "full"
+    return "half"   # strong winner that also looks like exit liquidity, or a 40–60 winner
+
 MIN_SAMPLES_PER_ARCHETYPE = 8   # below this, archetype is "not yet learned"
 DEFAULT_INTERVAL_MINUTES = 15
 
@@ -122,6 +138,57 @@ class LiveDoctor:
         self.hub = hub
         self._task: Optional[asyncio.Task] = None
         self.interval_minutes = DEFAULT_INTERVAL_MINUTES
+        self._winner_arch: dict | None = None
+        self._loser_arch: dict | None = None
+        self.book_paused_until: dict[str, float] = {}   # book → ts (payoff / MFE breaker)
+
+    async def score_launch(self, mint: str) -> dict:
+        """Entry policy for one tracked mint: winner/exit-liquidity likeness → skip / half / full."""
+        if not self._winner_arch or not self._loser_arch or not self.bot_state:
+            return {"winner_likeness_pct": None, "exit_liquidity_likeness_pct": None, "doctor_decision": "full",
+                    "doctor_size_mult": 1.0, "reason": "archetypes not learned yet"}
+        lj = await self.db.launches.find_one({"mint": mint}, {"_id": 0}) or {}
+        cj = await self.db.creators.find_one({"_id": lj.get("creator")}, {"tokens_created": 1, "tokens_graduated": 1}) if lj.get("creator") else None
+        j = {"trade": {"mint": mint, "entry_usd": 0}, "launch": lj, "creator": cj or {}}
+        w, _ = self._score_against_archetype(j, self._winner_arch)
+        x, _ = self._score_against_archetype(j, self._loser_arch)
+        decision = decide(w, x)
+        return {"winner_likeness_pct": round(w, 1), "exit_liquidity_likeness_pct": round(x, 1), "doctor_decision": decision,
+                "doctor_size_mult": DECISION_MULT[decision], "reason": f"winner {w:.0f}% / exit-liquidity {x:.0f}% → {decision}"}
+
+    def book_paused(self, book: str) -> bool:
+        return time.time() < float(self.book_paused_until.get(book) or 0)
+
+    async def _evaluate_book_breakers(self, joined: list[dict]) -> dict:
+        """Per book, last 4h: pause when payoff (avg win / |avg loss|, after fees) < 1.0 or the median MFE
+        can't even reach the book's first target — the TP is unreachable, stop feeding it."""
+        from book_params import FIRST_TARGET_R, BOOKS, r_of
+        since = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
+        out = {}
+        for book in BOOKS:
+            rows = [(j.get("trade") or {}) for j in joined
+                    if (j.get("trade") or {}).get("book") == book and ((j.get("trade") or {}).get("exit_time") or "") >= since]
+            if len(rows) < BREAKER_MIN_N:
+                continue
+            pnls = [float(t.get("pnl_usd") or 0) for t in rows]
+            wins, losses = [p for p in pnls if p > 0], [p for p in pnls if p <= 0]
+            payoff = (sum(wins) / len(wins)) / abs(sum(losses) / len(losses)) if wins and losses and sum(losses) else None
+            mfes = []
+            for t in rows:
+                r, e = r_of(t), float(t.get("entry_usd") or 0)
+                if t.get("mfe_pct") is not None and r and e:
+                    mfes.append(float(t["mfe_pct"]) / (r / e * 100.0))   # MFE in R
+            med_mfe_r = statistics.median(mfes) if mfes else None
+            reason = None
+            if payoff is not None and payoff < 1.0:
+                reason = f"payoff {payoff:.2f} < 1.0 after fees (4h, n={len(rows)})"
+            elif med_mfe_r is not None and med_mfe_r < FIRST_TARGET_R[book]:
+                reason = f"median MFE {med_mfe_r:.2f}R < first target {FIRST_TARGET_R[book]:g}R — target unreachable"
+            if reason:
+                self.book_paused_until[book] = time.time() + BREAKER_PAUSE_S
+                logger.warning(f"live-doctor breaker: pausing {book} — {reason}")
+            out[book] = {"n": len(rows), "payoff": payoff, "median_mfe_r": med_mfe_r, "paused": bool(reason), "reason": reason}
+        return out
 
     async def start(self, interval_minutes: int = DEFAULT_INTERVAL_MINUTES):
         self.interval_minutes = max(5, int(interval_minutes))
@@ -232,6 +299,8 @@ class LiveDoctor:
         winners, losers = self._split_by_outcome(joined)
         winner_arch = self._mine_archetype(winners)
         loser_arch = self._mine_archetype(losers)
+        self._winner_arch, self._loser_arch = winner_arch, loser_arch
+        self.last_book_breakers = await self._evaluate_book_breakers(joined)
 
         # Score currently-tracked passing mints
         candidates = await self._collect_passing_candidates()

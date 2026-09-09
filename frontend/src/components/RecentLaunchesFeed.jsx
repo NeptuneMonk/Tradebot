@@ -262,11 +262,7 @@ function ProjectBadge({ score, flags, mint }) {
 }
 
 function ActionBadge({ action, risk, entered, entryAction }) {
-  // When the bot ACTUALLY entered the trade via the Greylist Sniper path,
-  // the classifier verdict ("abort_trade" / "exit_early") is misleading —
-  // the sniper bypasses it on purpose. Show a "SNIPED" badge instead so
-  // the operator doesn't think the trade was aborted when it actually
-  // entered and ran through the pattern-based exit ladder.
+  // Verdict is the book router: scalp / hunt / skip. A sniper entry shows SNIPED (hunt book).
   if (entered && entryAction === "greylist_snipe") {
     return (
       <div className="flex items-center gap-1" data-testid="launch-snipe-badge">
@@ -287,9 +283,9 @@ function ActionBadge({ action, risk, entered, entryAction }) {
     );
   }
   let cls = "border-neutral-700 text-neutral-400";
-  if (action === "abort_trade") cls = "border-red-800 text-red-400 bg-red-950/40";
-  else if (action === "exit_early") cls = "border-amber-800 text-amber-400 bg-amber-950/40";
-  else if (action === "hold_briefly") cls = "border-emerald-800 text-emerald-400 bg-emerald-950/40";
+  if (action === "skip") cls = "border-red-800 text-red-400 bg-red-950/40";
+  else if (action === "hunt") cls = "border-rose-800 text-rose-300 bg-rose-950/40";
+  else if (action === "scalp") cls = "border-emerald-800 text-emerald-400 bg-emerald-950/40";
   else if (action === "tracking") cls = "border-lime-800 text-lime-400 bg-lime-950/30";
   return (
     <div className="flex items-center gap-1">

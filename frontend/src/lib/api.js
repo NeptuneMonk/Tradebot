@@ -47,7 +47,6 @@ export const api = {
   saveConfigAsDefault: () => client.post("/bot/config/save-as-default").then(r => r.data),
   restoreUserDefaults: () => client.post("/bot/config/restore-defaults").then(r => r.data),
   savedDefaultsExists: () => client.get("/bot/config/saved-defaults-exists").then(r => r.data),
-  suggestions: () => client.get("/suggestions").then(r => r.data),
   applySuggestion: (field, suggested) => client.post("/suggestions/apply", { field, suggested }).then(r => r.data),
   // Auth
   authMe: () => client.get("/auth/me").then(r => r.data),

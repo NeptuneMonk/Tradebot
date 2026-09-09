@@ -10,6 +10,7 @@ const NON_BOOK_KEYS = new Set(["ride", "autopsy", "replay", "tick_store", "compu
 
 const usd = (v, d = 2) => (v == null ? "—" : `${v < 0 ? "-" : ""}$${Math.abs(Number(v)).toFixed(d)}`);
 const signedUsd = (v) => (v == null ? "—" : `${v >= 0 ? "+" : "-"}$${Math.abs(Number(v)).toFixed(2)}`);
+const signedR = (v) => (v == null ? "—" : `${v >= 0 ? "+" : ""}${Number(v).toFixed(2)}R`);
 const fmtWhen = (ts) => (ts ? new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—");
 
 export function AutopilotSwitch({ enabled, onChange }) {
@@ -163,7 +164,7 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
         <div className="mt-2 border border-neutral-800/70 p-2 space-y-1" data-testid="desk-allocator">
           <div className="flex items-center justify-between text-[9px] uppercase tracking-[0.15em] text-neutral-600">
             <span className="inline-flex items-center gap-1">desk allocator · capital per book
-              <HelpHint label="help: desk allocator">Every Doctor cycle each book's size multiplier moves one step (±0.25) toward a target set by its rolling net expectancy: losing books shrink to an exploration floor of ×0.25 — never 0, so they keep producing fills and can earn their way back — and paying books scale up to ×2. Replaces the old &quot;disable the losing machine&quot; switch. Runs only while Autopilot drives.</HelpHint>
+              <HelpHint label="help: desk allocator">Every Doctor cycle each book's size multiplier moves one step (±0.25) toward a target set by its rolling expectancy in R per fill (full ×2 at ≥ +0.30R): losing books shrink to an exploration floor of ×0.25 — never 0, so they keep producing fills and can earn their way back — and paying books scale up to ×2. Replaces the old &quot;disable the losing machine&quot; switch. Runs only while Autopilot drives.</HelpHint>
             </span>
             <span className={s.allocator.driving && s.allocator.enabled ? "text-lime-400" : "text-neutral-500"} data-testid="allocator-state">
               {!s.allocator.enabled ? "off" : s.allocator.driving ? "driving" : "advisory (autopilot off)"} · floor ×{s.allocator.floor} · cap ×{s.allocator.cap}
@@ -203,37 +204,37 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
             const ex = t.current_exits || {};
             const wi = t.whatif || {};
             const best = wi.best;
-            const gain = wi.gain_usd_per_fill ?? 0;
+            const gain = wi.gain_r_per_fill ?? 0;
             const split = (t.splits || []).find((x) => x.actionable) || (t.splits || [])[0];
             const pair = (t.pairs || []).find((x) => x.actionable) || (t.pairs || [])[0];
             return (
               <div key={book} className="px-2 py-1.5 border-t border-neutral-800/50 grid grid-cols-1 sm:grid-cols-[110px_1fr_1fr] gap-x-3 gap-y-0.5 text-[10px] font-mono" data-testid={`technique-${book}`}>
                 <div>
                   <div className="text-neutral-200">{book}</div>
-                  <div className="text-neutral-600">n={t.n} · TP {ex.take_profit_pct}% · SL {ex.stop_loss_pct}% · trail {ex.trailing_stop_pct}% @ {ex.trailing_arm_pct}% · hold {ex.hold_max_seconds}s</div>
+                  <div className="text-neutral-600">n={t.n} · SL {ex.stop_loss_pct}% · target {ex.target_r ? `${ex.target_r}R` : `${ex.take_profit_pct}%`} · trail {ex.trailing_stop_pct}% @ {ex.trailing_arm_pct}% · {ex.hold_max_seconds > 0 ? `clock ${ex.hold_max_seconds}s` : "no clock"}</div>
                 </div>
                 <div className="text-neutral-400">
                   {wi.n >= 1 && best
-                    ? <>exits: now <span className="text-neutral-200">{signedUsd(wi.current?.expectancy_usd)}</span>/fill → best <span className={gain > 0.02 ? "text-lime-300" : "text-neutral-300"}>{best.param} {best.value}</span> = {signedUsd(best.expectancy_usd)}/fill ({gain >= 0 ? "+" : ""}{Number(gain).toFixed(3)}) · MFE {Number(wi.median_mfe).toFixed(0)}% / MAE {Number(wi.median_mae).toFixed(0)}%{wi.mae_recorded ? "" : " · trough not yet recorded — SL what-ifs pending"}{wi.peak_timing_recorded ? "" : " · peak timing pending — hold what-ifs pending"}</>
+                    ? <>exits: now <span className="text-neutral-200">{signedR(wi.current?.expectancy_r)}</span>/fill → best <span className={gain > 0.02 ? "text-lime-300" : "text-neutral-300"}>{best.param} {best.value}</span> = {signedR(best.expectancy_r)}/fill ({gain >= 0 ? "+" : ""}{Number(gain).toFixed(3)}) · MFE {Number(wi.median_mfe).toFixed(0)}% / MAE {Number(wi.median_mae).toFixed(0)}%{wi.mae_recorded ? "" : " · trough not yet recorded — SL what-ifs pending"}{wi.peak_timing_recorded ? "" : " · peak timing pending — hold what-ifs pending"}</>
                     : <span className="text-neutral-600">exits: need {Math.max(0, (config?.doctor_learning_min_trades_per_book ?? 15) - (t.n || 0))} more fills</span>}
                 </div>
                 <div className="text-neutral-400">
                   {split
-                    ? <>entry: {split.feature} &lt; {Number(split.split).toFixed(split.split > 100 ? 0 : 1)} → {signedUsd(split.low_expectancy_usd)}/fill, above → <span className={split.actionable ? "text-lime-300" : "text-neutral-300"}>{signedUsd(split.high_expectancy_usd)}</span>{split.actionable ? ` · raise ${split.key} ${split.current} → ${Number(split.split).toFixed(0)}` : " · no clean split"}</>
+                    ? <>entry: {split.feature} &lt; {Number(split.split).toFixed(split.split > 100 ? 0 : 1)} → {signedR(split.low_expectancy_r)}/fill, above → <span className={split.actionable ? "text-lime-300" : "text-neutral-300"}>{signedR(split.high_expectancy_r)}</span>{split.actionable ? ` · raise ${split.key} ${split.current} → ${Number(split.split).toFixed(0)}` : " · no clean split"}</>
                     : <span className="text-neutral-600">entry: no feature splits yet (entry context recorded from now on)</span>}
                   {t.regime_exits && Object.entries(t.regime_exits).map(([reg, rw]) => rw.best && (
                     <div key={reg} data-testid={`technique-regime-exits-${book}-${reg}`}>
-                      {reg}-hour exits (n={rw.n}): now {signedUsd(rw.current?.expectancy_usd)}/fill → best <span className={(rw.gain_usd_per_fill ?? 0) > 0.02 ? "text-lime-300" : "text-neutral-300"}>{rw.best.param} {rw.best.value}</span> = {signedUsd(rw.best.expectancy_usd)}/fill
+                      {reg}-hour exits (n={rw.n}): now {signedR(rw.current?.expectancy_r)}/fill → best <span className={(rw.gain_r_per_fill ?? 0) > 0.02 ? "text-lime-300" : "text-neutral-300"}>{rw.best.param} {rw.best.value}</span> = {signedR(rw.best.expectancy_r)}/fill
                     </div>
                   ))}
                   {t.regime && (
                     <div data-testid={`technique-regime-${book}`}>
-                      regime: quiet (&lt;{Number(t.regime.threshold_per_h).toFixed(0)}/h) {signedUsd(t.regime.quiet.expectancy_usd)}/fill (n={t.regime.quiet.n}) · busy {signedUsd(t.regime.busy.expectancy_usd)}/fill (n={t.regime.busy.n}){t.regime.actionable ? <span className="text-lime-300"> · tighten {t.regime.losing}-hour gates ×{(t.regime.current_mult + 0.5).toFixed(1)}</span> : t.regime.current_mult > 1 ? ` · ${t.regime.losing} gates ×${t.regime.current_mult}` : ""}
+                      regime: quiet (&lt;{Number(t.regime.threshold_per_h).toFixed(0)}/h) {signedR(t.regime.quiet.expectancy_r)}/fill (n={t.regime.quiet.n}) · busy {signedR(t.regime.busy.expectancy_r)}/fill (n={t.regime.busy.n}){t.regime.actionable ? <span className="text-lime-300"> · tighten {t.regime.losing}-hour gates ×{(t.regime.current_mult + 0.5).toFixed(1)}</span> : t.regime.current_mult > 1 ? ` · ${t.regime.losing} gates ×${t.regime.current_mult}` : ""}
                     </div>
                   )}
                   {pair && (
                     <div data-testid={`technique-pair-${book}`}>
-                      pair: {pair.features[0]} ≥ {Number(pair.splits[0]).toFixed(0)} AND {pair.features[1]} ≥ {Number(pair.splits[1]).toFixed(0)} → <span className={pair.actionable ? "text-lime-300" : "text-neutral-300"}>{signedUsd(pair.high_high_expectancy_usd)}</span>/fill (n={pair.high_high_n}), rest {signedUsd(pair.rest_expectancy_usd)}{pair.actionable ? " · raise both gates" : ""}
+                      pair: {pair.features[0]} ≥ {Number(pair.splits[0]).toFixed(0)} AND {pair.features[1]} ≥ {Number(pair.splits[1]).toFixed(0)} → <span className={pair.actionable ? "text-lime-300" : "text-neutral-300"}>{signedR(pair.high_high_expectancy_r)}</span>/fill (n={pair.high_high_n}), rest {signedR(pair.rest_expectancy_r)}{pair.actionable ? " · raise both gates" : ""}
                     </div>
                   )}
                 </div>
