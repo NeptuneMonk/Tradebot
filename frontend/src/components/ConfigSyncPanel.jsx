@@ -44,6 +44,10 @@ export default function ConfigSyncPanel({ onApplied }) {
     setBusy(true);
     try {
       const text = await file.text();
+      const firstLine = text.slice(0, text.indexOf("\n") > 0 ? text.indexOf("\n") : undefined);
+      if (text.charCodeAt(0) === 0x1f || /\.(brain|gz|ndjson)$/i.test(file.name) || /"schema_version"/.test(firstLine)) {
+        throw new Error("that is a Brain file — use “Import brain” below, not the config import");
+      }
       const parsed = JSON.parse(text);
       // Accept either { config: {...} } export shape or a raw config object
       const cfg = parsed.config && typeof parsed.config === "object" ? parsed.config : parsed;

@@ -1628,3 +1628,5 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - Endpoints: `GET /api/brain/summary`, `GET /api/brain/export?groups=`, `POST /api/brain/import/begin|commit/{id}`, `PUT /api/brain/import/chunk/{id}?index=`, `GET /api/brain/import/status/{id}`.
 - Also fixed: `/config/import` + `/config/apply-recommended` passed a model where `update_config` expects a dict.
 - Tested: scratch-DB merge semantics + live API round-trip + testing agent iteration_20 (all pass).
+
+- 2026-09-09 fix: "unexpected whitespace" on import = brain file dropped into the old Config **Import** (JSON.parse) or Safari auto-unzipping the .gz. Now: export is `.brain` (octet-stream, no auto-unzip), importer sniffs gzip vs plain NDJSON, config import rejects brain files with a pointer to "Import brain", brain import rejects non-brain files with a clear message.

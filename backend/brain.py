@@ -119,21 +119,25 @@ def append_chunk(uid: str, index: int, data: bytes) -> dict:
 
 
 def _iter_lines(path: str):
-    d = zlib.decompressobj(47)
     buf = b""
     with open(path, "rb") as f:
+        head = f.read(2)
+        f.seek(0)
+        # Browsers (Safari/iOS) may auto-unzip downloads — accept gzip or plain NDJSON.
+        d = zlib.decompressobj(47) if head == b"\x1f\x8b" else None
         while True:
             raw = f.read(1 << 20)
             if not raw:
                 break
-            buf += d.decompress(raw)
+            buf += d.decompress(raw) if d else raw
             while True:
                 nl = buf.find(b"\n")
                 if nl < 0:
                     break
                 yield buf[:nl]
                 buf = buf[nl + 1:]
-    buf += d.flush()
+    if d:
+        buf += d.flush()
     if buf.strip():
         yield buf
 
@@ -190,7 +194,11 @@ async def run_import(db, uid: str, groups: list[str], apply_config, apply_rules)
     stats = st["stats"]
     try:
         lines = _iter_lines(path)
-        header = json.loads(next(lines))
+        try:
+            header = json.loads(next(lines))
+            assert isinstance(header, dict) and "schema_version" in header
+        except Exception:
+            raise ValueError("not a Brain file — export one with “Export brain” (a config .json goes in Config import)")
         if header.get("schema_version") != SCHEMA_VERSION:
             raise ValueError(f"unsupported brain file (schema {header.get('schema_version')})")
         st["source_env"] = header.get("env")

@@ -864,8 +864,8 @@ async def brain_export(request: _Request, groups: str = ",".join(_brain.DEFAULT_
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M")
     return _StreamingResponse(
         _brain.export_stream(db, wanted, env),
-        media_type="application/gzip",
-        headers={"Content-Disposition": f'attachment; filename="bot-brain-{env}-{ts}.ndjson.gz"'},
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="bot-brain-{env}-{ts}.brain"'},
     )
 
 

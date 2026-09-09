@@ -33,7 +33,7 @@ export default function BrainSyncPanel({ onApplied }) {
     try {
       const res = await fetch(api.brainExportUrl(groups), { credentials: "include" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const name = (res.headers.get("content-disposition") || "").match(/filename="([^"]+)"/)?.[1] || "bot-brain.ndjson.gz";
+      const name = (res.headers.get("content-disposition") || "").match(/filename="([^"]+)"/)?.[1] || "bot-brain.brain";
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -110,7 +110,7 @@ export default function BrainSyncPanel({ onApplied }) {
         <button data-testid="brain-import-btn" onClick={() => fileInput.current?.click()} disabled={busy} className={btn}>
           <Upload className="w-3 h-3" /> Import brain
         </button>
-        <input ref={fileInput} type="file" accept=".gz,application/gzip" onChange={handleImport} className="hidden" data-testid="brain-import-file-input" />
+        <input ref={fileInput} type="file" accept=".brain,.gz,.ndjson,application/gzip,application/octet-stream" onChange={handleImport} className="hidden" data-testid="brain-import-file-input" />
       </div>
       {progress && <div className="text-[10px] font-mono text-amber-300" data-testid="brain-progress">{progress}</div>}
       {result && (
