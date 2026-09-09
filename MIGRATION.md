@@ -89,3 +89,8 @@ Allowed: enable/disable a scorecard cell (`POST /api/scorecard/cell`), one `book
 * **Hunt cap counts snipes and re-entries**: both `_enter` (snipes, scanner) and the re-entry gate refuse when `HUNT_SLOT_CAP` (2) hunt slots are open (`skip reason = hunt-cap`); every fill counts toward `max_concurrent_positions` (3).
 * `inventory.LOSS_MARKERS` no longer contains `classifier`.
 * Cockpit: `HaltBanner` (inventory halt + per-book breaker pause with countdown, from `GET /api/inventory`), `ScorecardPanel` (cells, n, E[R], wr, avg W/L, state, enable/disable via `POST /api/scorecard/cell`), Scorecard collapsible section on the dashboard.
+
+## Feed labelling patch
+
+* The Recent Launches feed may show **`pending`** (feed-only label, never part of the entry closed set `{scalp, hunt, skip}`) while the tape (< `low_inflow_window_s`), metadata (`meta_seen`) or the creator pattern is still arriving. Re-assessed at 3 s / 8 s / 15 s (`FEED_REASSESS_S`) and on events (metadata fetched, buyers hit `many_buyers_count`, inflow crosses `low_inflow_sol`); the 15 s pass is final. Late-chase and rug-history skips are final immediately. A later scalp / hunt / skip overwrites `pending`; events never re-open a final label.
+* Entry gates (`_enter_impl`) always call `classify()` on fresh metrics (pattern + tape + score at entry time); the feed label is never used as a veto.

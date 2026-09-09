@@ -287,10 +287,12 @@ function ActionBadge({ action, risk, entered, entryAction }) {
   else if (action === "hunt") cls = "border-rose-800 text-rose-300 bg-rose-950/40";
   else if (action === "scalp") cls = "border-emerald-800 text-emerald-400 bg-emerald-950/40";
   else if (action === "tracking") cls = "border-lime-800 text-lime-400 bg-lime-950/30";
+  else if (action === "pending") cls = "border-neutral-600 text-neutral-300 bg-neutral-900/60 border-dashed animate-pulse";
   return (
     <div className="flex items-center gap-1">
-      <span className={`px-1.5 py-0.5 border text-[10px] font-mono uppercase ${cls}`}>
-        {(action || "—").replace("_", " ")}
+      <span className={`px-1.5 py-0.5 border text-[10px] font-mono uppercase ${cls}`} data-testid={`launch-verdict-${action || "none"}`}
+        title={action === "pending" ? "Feed label only — waiting for tape / metadata / creator pattern; re-assessed at 3s, 8s, 15s. Entries always re-classify on fresh metrics." : undefined}>
+        {action === "pending" ? "pending…" : (action || "—").replace("_", " ")}
       </span>
       {risk != null && <span className="text-[10px] font-mono text-neutral-500">{risk}</span>}
     </div>

@@ -344,3 +344,42 @@ def test_classifier_empty_tape_is_skip():
     inflow = classify({"elapsed_s": 4, "curve_fill_pct": 3, "unique_buyers": 2, "sol_inflow": 1.5, "creator_rugs": 0}, rules)
     assert inflow["action"] == "scalp"
     assert BotConfig().model_dump().get("greylist_snipe_profit_ripcord_pct") is None
+
+
+# ---------------- feed labelling: pending vs final ----------------
+def _feed_stub():
+    st = _bot_stub()
+    from models import ClassifierRules
+    st.rules = ClassifierRules()
+    st.recent_launches = []
+    class _L:
+        async def update_one(self, q, u): st.calls.append(("launch", u["$set"]["classifier_action"]))
+    class _C:
+        def __init__(self): self.doc = None
+        async def find_one(self, q, *a): return self.doc
+    st.db = type("DB", (), {})(); st.db.launches = _L(); st.db.creators = _C()
+    return st
+
+
+def test_feed_quiet_tape_is_pending_until_final_pass():
+    st = _feed_stub()
+    st.recent_launches = [{"id": "l1", "mint": "M" * 44, "creator": "C" * 44, "classifier_action": "pending", "creator_tokens_failed": 0}]
+    st.tracking = {"M" * 44: {"start": time.time() - 3, "buyers": set(), "sol_inflow_lamports": 0, "curve_fill_pct": 1.0, "meta_seen": False}}
+    assert asyncio.run(st._reclassify("M" * 44, source="schedule")) == "pending"
+    assert "waiting for" in st.recent_launches[0]["classifier_reasons"][0]
+    # 15s pass → final: still nothing on the tape → skip
+    st.tracking["M" * 44]["start"] = time.time() - 15; st.tracking["M" * 44]["meta_seen"] = True
+    assert asyncio.run(st._reclassify("M" * 44, final=True, source="schedule")) == "skip"
+
+
+def test_feed_late_chase_skip_is_final_at_3s_and_scalp_overwrites_pending():
+    st = _feed_stub()
+    st.recent_launches = [{"id": "l1", "mint": "M" * 44, "creator": "C" * 44, "classifier_action": "pending", "creator_tokens_failed": 0}]
+    st.tracking = {"M" * 44: {"start": time.time() - 3, "buyers": set(), "sol_inflow_lamports": 0, "curve_fill_pct": 45.0, "meta_seen": False}}
+    assert asyncio.run(st._reclassify("M" * 44, source="schedule")) == "skip"          # late chase: final even at 3s
+    assert asyncio.run(st._reclassify("M" * 44, source="tape")) == "skip"              # events never re-open a final label
+    st.recent_launches[0]["classifier_action"] = "pending"
+    st.tracking["M" * 44].update(curve_fill_pct=5.0, buyers={f"b{i}" for i in range(20)}, sol_inflow_lamports=2 * 10**9)
+    assert asyncio.run(st._reclassify("M" * 44, source="tape")) == "scalp"
+    assert st.calls[-1] == ("launch", "scalp")
+    assert "pending" not in ACTIONS   # feed-only label, never an entry verdict

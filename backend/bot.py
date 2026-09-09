@@ -43,7 +43,9 @@ from pnl_reconciler import PnLReconciler
 
 logger = logging.getLogger("bot")
 
-ASSESS_DELAY_S = 3.0          # wait this long after launch before deciding entry
+ASSESS_DELAY_S = 3.0          # first feed assessment; re-assessed at FEED_REASSESS_S while pending
+FEED_REASSESS_S = (3.0, 8.0, 15.0)   # feed verdict schedule — after the last one the verdict is final
+FEED_FINAL_SKIP_MARKERS = ("late chase", "prior failed launches", "serial creator")   # these skips may stay final at 3s
 TRACK_DURATION_S = 60.0       # short-window heavy tracking (for fresh-launch classifier)
 SCANNER_TRACK_HOURS = 4       # how long we keep light tracking for the scanner
 PERSIST_INTERVAL_S = 2.0      # how often to flush tracker metrics to DB
@@ -1084,6 +1086,8 @@ class BotState:
              "creator_pattern": (creator_doc or {}).get("greylist_pattern"), "project_score": 0},
             self._rules_for_classify(),
         )
+        if verdict["action"] == "skip" and not any(m in " ".join(verdict["reasons"]) for m in FEED_FINAL_SKIP_MARKERS):
+            verdict = {"action": "pending", "risk": verdict["risk"], "reasons": ["waiting for tape / metadata / creator pattern"]}
         launch.classifier_action = verdict["action"]
         launch.classifier_risk = verdict["risk"]
         launch.classifier_reasons = verdict["reasons"]
@@ -1194,6 +1198,18 @@ class BotState:
             bucket["sol_inflow_lamports"] += int(trade_data.get("sol_amount", 0))
             bucket["buy_count"] += 1
             bucket["buy_events"].append((now, int(trade_data.get("sol_amount", 0)), trade_data["user"]))
+            rules = self.rules
+            n_buyers, inflow_sol = len(bucket["buyers"]), bucket["sol_inflow_lamports"] / LAMPORTS_PER_SOL
+            if (n_buyers == rules.many_buyers_count or (inflow_sol >= rules.low_inflow_sol > inflow_sol - trade_data.get("sol_amount", 0) / LAMPORTS_PER_SOL)) \
+                    and not bucket.get("_reclass_pending"):
+                bucket["_reclass_pending"] = True
+
+                async def _kick(m=mint, bk=bucket):
+                    try:
+                        await self._reclassify(m, source="tape")
+                    finally:
+                        bk["_reclass_pending"] = False
+                asyncio.create_task(_kick())
         if cur_price:
             if bucket["first_seen_price_sol"] <= 0:
                 bucket["first_seen_price_sol"] = cur_price
@@ -1774,6 +1790,7 @@ class BotState:
                     b["image_uri"] = (c.get("image_uri") or "").strip()
                     b["meta_seen"] = True
                     await self._compute_social(mint)
+                    asyncio.create_task(self._reclassify(mint, source="meta"))
                     # We got a real response — exit early. Any later updates
                     # will be picked up by the discovery refresh loop once the
                     # mint becomes discoverable.
@@ -1874,38 +1891,67 @@ class BotState:
         asyncio.create_task(_final_drop())
 
     # ---------- Entry decision (assess only — entry handled by MomentumScanner) ----------
+    async def _feed_metrics(self, mint: str, creator: str | None, creator_rugs: int) -> tuple[dict, dict]:
+        b = self.tracking.get(mint, {})
+        cdoc = (await self.db.creators.find_one({"_id": creator}, {"greylist_pattern": 1}) if creator else None) or {}
+        return b, {
+            "elapsed_s": time.time() - b.get("start", time.time()),
+            "curve_fill_pct": b.get("curve_fill_pct", 0.0),
+            "unique_buyers": len(b.get("buyers", set())),
+            "sol_inflow": b.get("sol_inflow_lamports", 0) / LAMPORTS_PER_SOL,
+            "creator_rugs": creator_rugs,
+            "creator_pattern": cdoc.get("greylist_pattern"),
+            "creator_known": bool(cdoc),
+            "project_score": b.get("project_score", 0),
+            "creator_prior_launches": int(b.get("creator_prior_launches") or 0),
+            "creator_graduated_before": int(b.get("creator_tokens_graduated") or 0) >= 1,
+        }
+
+    def _feed_verdict(self, verdict: dict, metrics: dict, meta_seen: bool, final: bool) -> dict:
+        """Feed label only. A 'no strong signal' skip becomes `pending` while the tape/metadata/pattern are
+        still arriving; late-chase / rug-history skips and any scalp / hunt are final immediately."""
+        if final or verdict["action"] != "skip":
+            return verdict
+        if any(m in " ".join(verdict["reasons"]) for m in FEED_FINAL_SKIP_MARKERS):
+            return verdict
+        rules = self._rules_for_classify()
+        waiting = []
+        if metrics["elapsed_s"] < rules["low_inflow_window_s"]:
+            waiting.append(f"tape ({metrics['elapsed_s']:.0f}s < {rules['low_inflow_window_s']}s)")
+        if not meta_seen:
+            waiting.append("metadata")
+        if metrics.get("creator_known") and not metrics.get("creator_pattern"):
+            waiting.append("creator pattern")
+        if not waiting:
+            return verdict
+        return {"action": "pending", "risk": verdict["risk"], "reasons": ["waiting for " + " / ".join(waiting)]}
+
+    async def _reclassify(self, mint: str, final: bool = False, source: str = "event") -> str | None:
+        """Re-run the feed classifier on fresh metrics and publish the label. Returns the action."""
+        row = next((r for r in self.recent_launches if r.get("mint") == mint), None)
+        if not row or row.get("classifier_action") in ("manual",):
+            return None
+        if row.get("classifier_action") not in (None, "pending") and source != "schedule":
+            return row.get("classifier_action")   # a final label is never re-opened by events
+        b, metrics = await self._feed_metrics(mint, row.get("creator"), int(row.get("creator_tokens_failed") or 0))
+        verdict = self._feed_verdict(classify(metrics, self._rules_for_classify()), metrics, bool(b.get("meta_seen")), final)
+        if row.get("classifier_action") not in (None, "pending") and verdict["action"] == "pending":
+            return row.get("classifier_action")
+        row["classifier_action"], row["classifier_risk"], row["classifier_reasons"] = verdict["action"], verdict["risk"], verdict["reasons"]
+        await self.db.launches.update_one({"_id": row.get("id")}, {"$set": {
+            "classifier_action": verdict["action"], "classifier_risk": verdict["risk"], "classifier_reasons": verdict["reasons"]}})
+        return verdict["action"]
+
     async def _assess_and_enter(self, launch: Launch, creator_rugs: int = 0):
-        """Runs the classifier on the early-window metrics so the Recent Launches
-        feed shows a verdict, but does NOT auto-enter. All entries now flow
-        through the momentum scanner (both new and seasoned bands)."""
+        """Feed labelling only (entries flow through the scanner / sniper / re-entry). Re-assesses at
+        FEED_REASSESS_S while the verdict is `pending`; the last pass is final."""
         try:
-            await asyncio.sleep(ASSESS_DELAY_S)
-            b = self.tracking.get(launch.mint, {})
-            metrics = {
-                "elapsed_s": time.time() - b.get("start", time.time()),
-                "curve_fill_pct": b.get("curve_fill_pct", 0.0),
-                "unique_buyers": len(b.get("buyers", set())),
-                "sol_inflow": b.get("sol_inflow_lamports", 0) / LAMPORTS_PER_SOL,
-                "creator_rugs": creator_rugs,
-                "creator_pattern": (await self.db.creators.find_one({"_id": launch.creator}, {"greylist_pattern": 1}) or {}).get("greylist_pattern"),
-                "project_score": b.get("project_score", 0),
-                "creator_prior_launches": int(b.get("creator_prior_launches") or 0), "creator_graduated_before": int(b.get("creator_tokens_graduated") or 0) >= 1,
-            }
-            verdict = classify(metrics, self._rules_for_classify())
-            await self.db.launches.update_one(
-                {"_id": launch.id},
-                {"$set": {
-                    "classifier_action": verdict["action"],
-                    "classifier_risk": verdict["risk"],
-                    "classifier_reasons": verdict["reasons"],
-                }},
-            )
-            for r in self.recent_launches:
-                if r.get("id") == launch.id:
-                    r["classifier_action"] = verdict["action"]
-                    r["classifier_risk"] = verdict["risk"]
-                    r["classifier_reasons"] = verdict["reasons"]
-                    break
+            t0 = time.time()
+            for i, at in enumerate(FEED_REASSESS_S):
+                await asyncio.sleep(max(0.0, t0 + at - time.time()))
+                action = await self._reclassify(launch.mint, final=(i == len(FEED_REASSESS_S) - 1), source="schedule")
+                if action != "pending":
+                    return
         except Exception as e:
             logger.exception(f"assess failed for {launch.mint}: {e}")
 

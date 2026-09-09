@@ -1643,3 +1643,5 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 
 ## 2026-09-09 — Pre-test patch (see MIGRATION.md "Pre-test patch")
 - book_exits reset to BOOK_DEFAULTS once at startup + restore endpoint/button; profit rip-cord / pattern TP / strategy_overrides deleted (rip-cord risk-only → R ladder); classifier default skip; hunt cap counts snipes + re-entries; HaltBanner + ScorecardPanel. Tests: 508+ pass, 4 new.
+
+## 2026-09-09 — Feed labelling: `pending` verdict (feed only), re-assess 3/8/15 s + events; entry gate always classifies fresh. Tests 501+ pass (2 new). NOTE: `tests/test_rh_integration_api_v9.py` is a LIVE integration suite that toggles feeds on the running server and depends on the RH feed being up — environment-dependent failures, not code regressions.
