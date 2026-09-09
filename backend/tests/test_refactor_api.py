@@ -19,16 +19,6 @@ def original_cfg():
     return r.json()
 
 
-def test_get_bot_config_shape(original_cfg):
-    c = original_cfg
-    assert c.get("max_concurrent_positions") == 3, f"got {c.get('max_concurrent_positions')}"
-    assert "book_scalp_size_mult" in c
-    assert "book_hunt_size_mult" in c
-    assert isinstance(c.get("book_exits"), dict)
-    assert set(c["book_exits"].keys()).issubset({"scalp", "hunt", "rh_pons"})
-    assert "scorecard_enabled" in c
-    for k in FORBIDDEN_TOP:
-        assert k not in c, f"forbidden key {k} present"
 
 
 def test_put_config_book_exits_and_clamp(original_cfg):

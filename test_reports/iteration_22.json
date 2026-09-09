@@ -1,0 +1,30 @@
+{
+  "summary": "Pre-test patch validation (iter22): backend endpoints for BOOK_DEFAULTS / restore_defaults / /inventory / /scorecard / /bot/config all match spec exactly. FRONTEND: halt-banner correctly hidden; book-exits-editor renders with correct default values (scalp SL 12, target_r 1.5; hunt hold_max_seconds 0, ladder1r 35; rh_pons TP 20); drifted badge appears on edit and disappears/appears correctly. Save works. Scorecard section renders, toggle flips state (open <-> disabled) with toast, restore works. Trade History ticket-book-* badges render on hovering history-exit-reason-<id> tooltip. Console has a benign React duplicate-key warning and one 401 from ws probe. FOUND ONE CRITICAL FRONTEND BUG in the Restore Book Defaults flow: backend is correctly reset to defaults (verified via GET /api/bot/config → 12), toast 'Book exits restored to defaults' fires, but the form state does NOT reset — scalp.stop_loss_pct input stays at the previous drifted value (e.g., 9) and the 'DRIFTED FROM DEFAULTS' badge remains visible.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "BookExitsEditor + BotControlCard", "issue": "Clicking [data-testid=book-exits-restore-btn] resets backend to defaults and shows the success toast, but the local form state is not repopulated — inputs continue to show the previous drifted values and [data-testid=book-exits-drifted] remains visible. Reproduced deterministically: edit scalp SL to 9 → Save → click Restore Book Defaults → toast appears, backend GET /api/bot/config returns scalp.stop_loss_pct=12, but input book-exit-scalp-stop_loss_pct still reads 9.", "selector": "[data-testid='book-exit-scalp-stop_loss_pct']", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Fix Restore Book Defaults so the editor reflects the returned defaults. Root cause: BotControlCard.jsx useEffect on [config, baseline] fires when onRestored sets baseline optimistically; because local==baseline (userIsDirty=false), the effect overwrites local with the still-stale `config` prop (which was last set from the previous save with scalp.sl=9). Suggested fix: (a) trigger a parent config refetch inside onRestored (e.g., call an onRefresh prop or invalidate the config query) so the config prop catches up before the effect fires, or (b) inside onRestored, don't update baseline optimistically — instead only update local and rely on the next config poll which will match. Option (a) is safer.",
+    "Investigate React duplicate-key warning ('Encountered two children with the same key, null') — appears on dashboard load; look at lists rendered with a possibly-null id (candidates: universe/graduated feed, active trades, or scorecard cells rendered with null cell keys).",
+    "Investigate a spurious bot enable observed during test — after clicking save-config-btn the header flipped from STOPPED to RUNNING even though we did not touch the header/live/rh toggles. It may just be an autopilot/schedule tick, but worth confirming that a plain PUT /api/bot/config never turns on `enabled`."
+  ],
+  "critical_code_review_comments": [
+    "BotControlCard.jsx: the [config, baseline] useEffect has a subtle race — a background config poll that arrives before the optimistic restore result can quietly overwrite freshly-set local state because userIsDirty is computed against baseline (which was also just updated). Any 'reset from server' action should either (i) refetch and gate on the refetched value, or (ii) avoid updating baseline optimistically.",
+    "BookExitsEditor.jsx line 8-10: BOOK_DEFAULTS is duplicated on the frontend and can drift from backend/book_params.BOOK_DEFAULTS. The 'drifted from defaults' badge relies on this frontend copy. Prefer sourcing defaults from GET /api/book_exits/defaults (or the restore response) so a backend change never silently disagrees with the UI badge.",
+    "Multiple 'Encountered two children with the same key, null' warnings on the dashboard — indicates at least one list is keyed by a nullable field."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "~85%"},
+  "test_credentials": "Session token from /app/memory/.tok. Cookie session_token on domain micro-stake-trader.preview.emergentagent.com (httpOnly, secure, sameSite=None).",
+  "seed_data_creation": "None. During testing scalp.stop_loss_pct was toggled to 9 and then restored to 12 via POST /api/book_exits/restore_defaults. Final backend state verified scalp.sl=12 (defaults). Scorecard cell toggled disabled then re-enabled (final state == initial open).",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The book_exits/restore_defaults endpoint itself works correctly (returns full defaults; backend GET confirms). The bug is purely in the frontend form-sync after restore. When re-testing the fix, the fastest repro is: expand-all → set scalp SL to 9 → Save → click Restore Book Defaults → assert input value == 12 AND [data-testid=book-exits-drifted] is not visible AND GET /api/bot/config scalp.sl == 12.",
+  "rca of the issue": "BotControlCard.jsx sets local & baseline optimistically inside the BookExitsEditor onRestored callback. The useEffect deps [config, baseline] then re-fires; because local === baseline (userIsDirty=false), it accepts the stale `config` prop (still containing scalp.sl=9 from the previous save) and clobbers local back to 9. Mitigation: refetch config from the parent right after api.restoreBookExits() (before or instead of setting baseline), or drop the optimistic baseline update and let the polled config drive both."
+}

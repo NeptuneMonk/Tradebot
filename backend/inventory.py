@@ -6,7 +6,7 @@ import time
 
 HALT_N = 5
 HALT_WINDOW_S = 90 * 60
-LOSS_MARKERS = ("stop-loss", "ladder stop", "rip-cord", "ripcord", "rug", "null curve", "classifier")
+LOSS_MARKERS = ("stop-loss", "ladder stop", "rip-cord", "ripcord", "rug", "null curve")
 HUNT_SLOT_CAP = 2   # hunt (greylist/reentry) may occupy at most this many of the live Solana slots
 
 

@@ -271,3 +271,76 @@ def test_plan_entry_respects_disabled_scorecard_cell():
     st2 = _planner("full", disabled_cells=(cell,))
     assert asyncio.run(st2._plan_entry("M" * 44, "scalp", "pumpfun", 1000, 200_000, 150.0, depth_sol=40.0, band="new")) is None
     assert st2.skips[-1]["reason"] == "scorecard cell disabled"
+
+
+# ---------------- pre-test patch: one hunt brain, hunt cap counts snipes, default skip ----------------
+def _bot_stub():
+    import os
+    os.environ.setdefault("HELIUS_RPC_URL", "http://x"); os.environ.setdefault("HELIUS_API_KEY", "x")
+    from bot import BotState
+    from inventory import InventoryHalt
+    st = BotState.__new__(BotState)
+    st.config = BotConfig(max_trade_usd=1.0, min_trade_usd=0.4, intelligent_exit_v2=False)
+    st.inventory = InventoryHalt(); st.live_doctor = None; st.stopping_gracefully = False
+    st.active_trades = {}; st._pending_entry_mints = set(); st.sl_cooldown_until = {}
+    st._entry_gate_lock = asyncio.Lock(); st.calls = []; st.recent_exit_until = {}; st.entered_mints = set(); st.tracking = {}
+    st.reentry_watch = {}
+    async def _skip(ev): st.calls.append(("skip", ev["reason"]))
+    st._skip_event = _skip
+    return st
+
+
+def test_hunt_ladder_runs_when_ripcord_quiet_and_persists_legs():
+    st = _bot_stub()
+    one_r = 21.0
+    slot = {"trade": {"id": "t1", "mint": "M" * 44, "book": "hunt", "entry_price_sol": 1.0, "sl_pct_with_slip": one_r, "expected_cost_pct": 4.0,
+                      "classifier_action": "greylist_snipe"},
+            "snipe_pattern_ctx": {"pattern": "slow_rug_tradeable"}, "peak_price_sol": 1.22, "ladder_legs_done": 0}
+    class _Trades:
+        async def update_one(self, q, u): st.calls.append(("db", u["$set"]))
+    st.db = type("DB", (), {"trades": _Trades()})()
+    async def _partial(mint, frac, reason=""): st.calls.append(("partial", round(frac, 2), reason)); return True
+    async def _exit(mint, reason=""): st.calls.append(("exit", reason))
+    st._partial_exit, st._exit = _partial, _exit
+    st._buy_momentum_holds = lambda *a, **k: False
+    assert st._check_snipe_pattern_exit(slot, 1.5)[0] is False        # +50% is NOT a rip-cord exit any more (no profit TP)
+    closed = asyncio.run(st._run_ladder("M" * 44, slot, 1.215, 30))
+    assert closed is False
+    assert ("partial", 0.35, "ladder +1R: sell 35% (+21.5%)") in st.calls
+    assert slot["ladder_legs_done"] == 1 and slot["ladder_stop_pct"] == 2.0   # BE + remaining expected exit cost (4%/2)
+    assert any(c[0] == "db" and c[1].get("ladder_legs_done") == 1 for c in st.calls)
+
+
+def test_ripcord_fire_is_a_full_exit_without_ladder():
+    st = _bot_stub()
+    slot = {"trade": {"id": "t2", "mint": "M" * 44, "book": "hunt", "entry_price_sol": 1.0, "sl_pct_with_slip": 21.0, "classifier_action": "greylist_snipe"},
+            "snipe_pattern_ctx": {"pattern": "slow_rug_tradeable"}, "peak_price_sol": 1.6, "ladder_legs_done": 0, "_entry_ts_mono": time.time() - 30, "peak_ts": time.time() - 20,
+            "_snipe_ripcord_start": time.time() - 10}
+    st.config.greylist_snipe_ripcord_drawdown_pct = 40.0
+    st.config.greylist_snipe_stale_seconds = 0
+    st.config.greylist_snipe_ripcord_grace_seconds = 4
+    fired, reason = st._check_snipe_pattern_exit(slot, 0.9)   # -44% from the 1.6 peak, sustained 10s > 4s grace
+    assert fired is True and "rip-cord" in reason.lower()
+
+
+def test_third_hunt_snipe_refused_by_hunt_cap():
+    from models import Launch
+    st = _bot_stub()
+    st.active_trades = {"a": {"trade": {"book": "hunt"}}, "b": {"trade": {"book": "hunt"}}}
+    async def _impl(*a, **k): st.calls.append(("enter_impl",))
+    st._enter_impl = _impl
+    launch = Launch(mint="X" * 44, creator="C" * 44, name="x", symbol="x", bonding_curve="B" * 44)
+    asyncio.run(st._enter(launch, 0, "greylist_snipe"))
+    assert ("skip", "hunt-cap") in st.calls and ("enter_impl",) not in st.calls
+    st.calls.clear()
+    asyncio.run(st._enter(launch, 30, "momentum_new"))                # a scalp still has the 3rd slot
+    assert ("skip", "hunt-cap") not in st.calls
+
+
+def test_classifier_empty_tape_is_skip():
+    rules = default_rules()
+    quiet = classify({"elapsed_s": 4, "curve_fill_pct": 3, "unique_buyers": 2, "sol_inflow": 0.4, "creator_rugs": 0}, rules)
+    assert quiet["action"] == "skip"
+    inflow = classify({"elapsed_s": 4, "curve_fill_pct": 3, "unique_buyers": 2, "sol_inflow": 1.5, "creator_rugs": 0}, rules)
+    assert inflow["action"] == "scalp"
+    assert BotConfig().model_dump().get("greylist_snipe_profit_ripcord_pct") is None

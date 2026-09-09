@@ -14,9 +14,9 @@ GATE_GRID = {
     "rh_pons": {"rh_min_growth_pct": [10, 20, 30, 45, 60, 80], "rh_max_growth_pct": [60, 80, 100, 150, 200, 400],
                 "rh_min_unique_buyers": [3, 5, 8, 12, 16, 20], "rh_min_inflow_usd": [200, 500, 1000, 1500, 2000, 3000],
                 "rh_min_mc_usd": [2000, 5000, 8000, 12000, 20000, 30000]},
-    "momentum": {"min_buyers_for_entry": [3, 5, 8, 12, 16, 20]},
+    "scalp": {"min_buyers_for_entry": [3, 5, 8, 12, 16, 20]},
 }
-CHAIN_OF = {"rh_pons": "rh", "momentum": "sol"}
+CHAIN_OF = {"rh_pons": "rh", "scalp": "sol"}   # hunt entries are creator-pattern driven — no gate grid to replay
 FEE_IN = {"rh": 0.01, "sol": 0.01}
 FEE_OUT = {"rh": 0.01, "sol": 0.01}
 IMPACT = {"rh": 0.01, "sol": 0.01}          # own price impact / slippage per side on a thin micro-cap curve

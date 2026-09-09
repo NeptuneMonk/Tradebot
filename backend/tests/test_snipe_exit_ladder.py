@@ -189,15 +189,6 @@ def test_curve_fill_zero_doesnt_crash():
 
 # ===== Pattern-suggested TP ==============================================
 
-def test_pattern_tp_locks_profit():
-    stub = _Stub()
-    slot = _slot(entry_price=0.0001, snipe_ctx={})
-    slot["trade"]["greylist_pattern_suggested_tp_pct"] = 18.0
-    stub.tracking["MintX"] = {"curve_fill_pct": 0, "usd_market_cap": 0}
-    # 0.0001 + 20% → 0.00012
-    should, reason = _bind(stub, "_check_snipe_pattern_exit")(slot, 0.00012)
-    assert should is True
-    assert "pattern-TP hit" in reason
 
 
 def test_pattern_tp_no_trigger_below_threshold():

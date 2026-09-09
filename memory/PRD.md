@@ -1640,3 +1640,6 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - UI: BookExitsEditor (per-book), TradeTicket (R / size / cost / doctor / cell / ladder legs) on trade rows; legacy global TP/SL/hold/partial/ride inputs and rule inputs removed; copy updated to R.
 - Startup migration `_migrate_books` ran on preview (books_migrated_v2). Operator note: migrated `book_exits` carry the OLD Doctor-tuned globals (scalp SL 8 / trail 2, RH SL 35 / TP 100 / trail 2) — shown amber in the editor; reset to defaults if unwanted.
 - Tests: 497 pass (obsolete tests deleted, 17 new in test_profitability_refactor.py).
+
+## 2026-09-09 — Pre-test patch (see MIGRATION.md "Pre-test patch")
+- book_exits reset to BOOK_DEFAULTS once at startup + restore endpoint/button; profit rip-cord / pattern TP / strategy_overrides deleted (rip-cord risk-only → R ladder); classifier default skip; hunt cap counts snipes + re-entries; HaltBanner + ScorecardPanel. Tests: 508+ pass, 4 new.

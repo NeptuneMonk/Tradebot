@@ -272,13 +272,6 @@ def test_velocity_decay_disabled_by_flag():
 
 # ===== Profit ripcord (+100%) ============================================
 
-def test_profit_ripcord_fires_at_double():
-    stub = _make_stub(greylist_snipe_profit_ripcord_pct=100.0)
-    slot = _make_slot(entry_price=1e-7)
-    # +101% → triggers
-    should, reason = stub._check_snipe_pattern_exit(slot, 2.01e-7)
-    assert should is True
-    assert "profit-ripcord" in reason
 
 
 def test_profit_ripcord_does_not_fire_below_threshold():
@@ -298,16 +291,6 @@ def test_profit_ripcord_disabled_when_zero():
     assert should is False
 
 
-def test_profit_ripcord_priority_over_pattern_tp():
-    """Ripcord (100%) ALWAYS wins, even when pattern TP is also satisfied
-    (and would have fired at a lower %)."""
-    stub = _make_stub(greylist_snipe_profit_ripcord_pct=100.0)
-    slot = _make_slot(entry_price=1e-7)
-    slot["trade"]["greylist_pattern_suggested_tp_pct"] = 25.0
-    # +120% — both fire but ripcord runs first in the ladder.
-    should, reason = stub._check_snipe_pattern_exit(slot, 2.2e-7)
-    assert should is True
-    assert "profit-ripcord" in reason
 
 
 # ===== Stale-snipe time fail-safe =========================================

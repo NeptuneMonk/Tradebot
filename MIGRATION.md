@@ -80,3 +80,12 @@ Allowed: enable/disable a scorecard cell (`POST /api/scorecard/cell`), one `book
 ## New endpoints
 
 `GET /api/scorecard`, `POST /api/scorecard/cell {cell, disabled}`, `GET /api/inventory`.
+
+## Pre-test patch
+
+* **Defaults restored**: startup resets `book_exits` to `BOOK_DEFAULTS` once (`book_exits_defaults_v1`); `_migrate_books` no longer copies global SL/trail/TP into books. `POST /api/book_exits/restore_defaults` + "Restore book defaults" button; the editor shows "drifted from defaults" (amber) when any field differs.
+* **One hunt brain**: `_check_snipe_pattern_exit` returns risk exits only (stale, velocity decay, curve/peak-MC rug window, drawdown rip-cord). The profit rip-cord (`greylist_snipe_profit_ripcord_pct`), pattern TP (`greylist_pattern_suggested_tp_pct`) and `strategy_overrides` (`greylist_overrides_at_entry`) are deleted. Order for `book == hunt`: rip-cord → `exits.decide_hunt` via `_run_ladder`; ladder legs persist on every hunt fill.
+* **Default skip**: `classifier.classify` returns `skip` on an empty tape; `scalp` needs a buyer surge (many_buyers) or inflow > 1 SOL. Project score only lowers risk on an already-scalp verdict.
+* **Hunt cap counts snipes and re-entries**: both `_enter` (snipes, scanner) and the re-entry gate refuse when `HUNT_SLOT_CAP` (2) hunt slots are open (`skip reason = hunt-cap`); every fill counts toward `max_concurrent_positions` (3).
+* `inventory.LOSS_MARKERS` no longer contains `classifier`.
+* Cockpit: `HaltBanner` (inventory halt + per-book breaker pause with countdown, from `GET /api/inventory`), `ScorecardPanel` (cells, n, E[R], wr, avg W/L, state, enable/disable via `POST /api/scorecard/cell`), Scorecard collapsible section on the dashboard.

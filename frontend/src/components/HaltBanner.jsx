@@ -1,0 +1,46 @@
+import { useEffect, useState } from "react";
+import { OctagonAlert, PauseCircle } from "lucide-react";
+import { api } from "@/lib/api";
+
+const fmtLeft = (untilTs) => {
+  const s = Math.max(0, Math.round(untilTs - Date.now() / 1000));
+  return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+};
+
+// Header banner: why is the bot quiet? Inventory halt (last 5 Solana closes were stop-outs/rugs) and
+// per-book live-doctor breaker pauses (payoff < 1 or MFE can't reach the first target), with countdowns.
+export default function HaltBanner() {
+  const [inv, setInv] = useState(null);
+  const [, tick] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const load = () => api.inventory().then((d) => alive && setInv(d)).catch(() => {});
+    load();
+    const poll = setInterval(load, 15000);
+    const clock = setInterval(() => tick((n) => n + 1), 1000);
+    return () => { alive = false; clearInterval(poll); clearInterval(clock); };
+  }, []);
+  if (!inv) return null;
+  const now = Date.now() / 1000;
+  const paused = Object.entries(inv.book_paused_until || {}).filter(([, ts]) => ts > now);
+  if (!inv.halted && paused.length === 0) return null;
+  return (
+    <div className="border-b border-amber-900/70 bg-amber-950/40 px-6 py-2 flex flex-wrap items-center gap-x-6 gap-y-1 text-[11px] font-mono" data-testid="halt-banner">
+      {inv.halted && (
+        <span className="inline-flex items-center gap-1.5 text-amber-200" data-testid="inventory-halt">
+          <OctagonAlert className="w-3.5 h-3.5" />
+          INVENTORY HALT — last {inv.trigger_n} Solana closes were stop-outs/rugs · no new Solana entries for {fmtLeft(inv.halted_until)}
+        </span>
+      )}
+      {paused.map(([book, ts]) => {
+        const br = (inv.book_breakers || {})[book] || {};
+        return (
+          <span key={book} className="inline-flex items-center gap-1.5 text-amber-300" data-testid={`book-paused-${book}`}>
+            <PauseCircle className="w-3.5 h-3.5" />
+            {book.toUpperCase()} paused by live-doctor breaker{br.reason ? ` — ${br.reason}` : ""} · resumes in {fmtLeft(ts)}
+          </span>
+        );
+      })}
+    </div>
+  );
+}

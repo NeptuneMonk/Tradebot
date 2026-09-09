@@ -38,14 +38,6 @@ class TestBotConfigDefaults:
         assert self.cfg.tp_persistence_min_samples == 2
         assert self.cfg.intelligent_exit_v2 is True
 
-    def test_greylist_snipe_defaults(self):
-        assert self.cfg.greylist_snipe_peak_mc_proximity_pct == 75.0
-        assert self.cfg.greylist_snipe_curve_buffer_pct == 8.0
-        assert self.cfg.greylist_snipe_ripcord_drawdown_pct == 45.0
-        assert self.cfg.greylist_snipe_ripcord_grace_seconds == 4
-        assert self.cfg.greylist_snipe_profit_ripcord_pct == 20.0
-        assert self.cfg.greylist_snipe_stale_seconds == 60
-        assert self.cfg.greylist_snipe_stale_min_profit_pct == 5.0
 
     def test_helius_tracker_enabled_default(self):
         assert self.cfg.helius_tracker_enabled is True

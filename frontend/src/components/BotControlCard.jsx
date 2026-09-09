@@ -8,7 +8,7 @@ import BrainSyncPanel from "./BrainSyncPanel";
 import BookExitsEditor from "./BookExitsEditor";
 import HelpHint from "./HelpHint";
 
-export default function BotControlCard({ status, config, onUpdate, onStart, onStop }) {
+export default function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoaded }) {
   const [local, setLocal] = useState(null);
   // Baseline = last clean snapshot of config we've seen. The form is "dirty"
   // ONLY when `local !== baseline`. This lets backend-side changes (Doctor
@@ -428,7 +428,11 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
         )}
       </div>
 
-      <BookExitsEditor local={local} setLocal={setLocal} />
+      <BookExitsEditor local={local} setLocal={setLocal} onRestored={(bx) => {
+        // reset form + baseline + the parent's config together so the sync effect can't re-apply a stale prop
+        const next = { ...local, book_exits: bx };
+        setLocal(next); setBaseline(next); onConfigLoaded?.({ ...config, book_exits: bx });
+      }} />
 
       {/* Portfolio / global entry settings (per-band liquidity & buyer thresholds live in the gates table below) */}
       <div className="border-t border-neutral-800 pt-3 mt-1">
@@ -652,11 +656,7 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
               </HelpHint>
             </div>
             <div className="grid grid-cols-3 gap-2 text-xs">
-              <Field label="Profit Ripcord %" testid="greylist-snipe-profit-ripcord-input"
-                     hint="Hard TP — exits the snipe when up X% from entry, regardless of pattern. 100 = +100% (2x). Set 0 to disable."
-                     value={local.greylist_snipe_profit_ripcord_pct}
-                     onChange={(v) => setLocal({ ...local, greylist_snipe_profit_ripcord_pct: parseFloat(v) || 0 })} step="10" />
-              <Field label="SOL Vel Drop %" testid="greylist-snipe-sol-vel-drop-input"
+                            <Field label="SOL Vel Drop %" testid="greylist-snipe-sol-vel-drop-input"
                      hint="Exit when recent SOL inflow rate is below (100% − this) of the baseline rate. 70 = exit when SOL/s falls to 30% or less of baseline."
                      value={local.greylist_snipe_sol_vel_drop_pct}
                      onChange={(v) => setLocal({ ...local, greylist_snipe_sol_vel_drop_pct: parseFloat(v) || 0 })} step="5" />

@@ -56,16 +56,16 @@ def classify(metrics: dict, rules: dict) -> dict:
         reasons.append(f"curve filled {curve_pct:.1f}% in {elapsed:.0f}s — late chase, not an entry")
         return out("skip", 70)
 
-    risk = 50
+    # scalp needs a positive signal; an empty tape is a skip, not a 50-risk entry
     if elapsed <= rules["many_buyers_window_s"] and buyers >= rules["many_buyers_count"]:
         reasons.append(f"{buyers} unique buyers in {elapsed:.0f}s")
         risk = 35
+    elif inflow > 1.0:
+        reasons.append(f"strong inflow {inflow:.2f} SOL")
+        risk = 45
     else:
-        reasons.append("baseline — no strong signal")
-        if inflow > 1.0:
-            risk = max(20, risk - 15)
-        elif inflow < 0.2:
-            risk = min(85, risk + 15)
+        reasons.append("no strong signal — no buyers surge, no inflow")
+        return out("skip", 60)
     if int(metrics.get("project_score", 0) or 0) >= 4:
-        risk = max(15, risk - 10)   # weak tie-break only
+        risk = max(15, risk - 10)   # weak tie-break only, on an already-scalp verdict
     return out("scalp", risk)

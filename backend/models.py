@@ -436,15 +436,6 @@ class BotConfig(BaseModel):
     greylist_snipe_ripcord_drawdown_pct: float = 45.0   # 2026-06-06: 40→45 —
                                                         # bail earlier after peak dump (grace also tightened)
     greylist_snipe_ripcord_grace_seconds: int = 4       # 2026-06-06: 3→4 (kept short for fast dumps)
-    # Profit ripcord — a SEPARATE TP from pattern_suggested_tp. Always fires
-    # when the position is up X% from entry, regardless of pattern. Rationale:
-    # paper data showed snipes hitting +29-33% TP then giving the gain back
-    # to a partial-trail runner that got rugged. Set to 0 to disable.
-    greylist_snipe_profit_ripcord_pct: float = 20.0     # 2026-06-06: 30→20 —
-                                                        # lock full exit earlier
-    # Stale-snipe time fail-safe — if a snipe has been held > stale_seconds
-    # AND has not climbed at least stale_min_profit_pct above entry, exit.
-    # Paper data: 10-30 min holds drifted to -20-45%. Set seconds=0 to disable.
     greylist_snipe_stale_seconds: int = 60              # 2026-06-06: 90→60 —
                                                         # snipes must show life fast
     greylist_snipe_stale_min_profit_pct: float = 5.0    # 2026-06-06: 25→5 —
@@ -595,20 +586,12 @@ class Trade(BaseModel):
     # Creator greylist (Phase 2) — strategy tier & score AT THE TIME OF ENTRY.
     # Stored per-trade so analytics can correlate live overrides to outcomes.
     # `greylist_strategy_at_entry`: "aggressive" | "hybrid" | "standard" | None.
-    # `greylist_overrides_at_entry`: the actual TP/SL/trail values used (empty
-    # dict when standard or telemetry-mode).
-    greylist_strategy_at_entry: Optional[str] = None
-    greylist_score_at_entry: Optional[float] = None
-    greylist_overrides_at_entry: dict = {}
     # Creator pattern AT ENTRY (one of: slow_rug_tradeable, predictable_dump_tradeable,
     # fake_hype_tradeable, unknown). Persisted so the analytics endpoint can
     # group closed trades by pattern. Filled by _enter_impl when greylist
     # context resolves a non-unknown pattern.
     greylist_pattern_at_entry: Optional[str] = None
-    # The actual TP/SL the pattern recommended at entry, before being
-    # layered onto the tier overrides. Diagnostic only — the EFFECTIVE
-    # values live in `greylist_overrides_at_entry`.
-    greylist_pattern_suggested_tp_pct: Optional[float] = None
+
     # Research-mode flag — true when this snipe fired on an
     # `unpredictable_rug` creator under research-mode escape hatch.
     # Strategy Doctor uses this to bucket research vs primary snipes

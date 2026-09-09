@@ -208,6 +208,8 @@ class BotState:
                 )
         if cfg:
             await self._migrate_books(cfg)
+            if not cfg.get("book_exits_defaults_v1"):
+                await self.reset_book_exits("startup: migrated Doctor drift discarded")
         rules = await self.db.classifier_rules.find_one({"_id": "current"}, {"_id": 0})
         if rules:
             self.rules = ClassifierRules(**rules)
@@ -258,11 +260,6 @@ class BotState:
                     "trade": t,
                     "protocol": t.get("protocol", "pumpfun"),
                     "pumpswap_pool": t.get("pumpswap_pool") or "",
-                    # Restore per-trade greylist overrides for resumed positions.
-                    # Without this, a backend restart mid-trade would silently
-                    # revert that position to BotConfig defaults — breaking the
-                    # "the position keeps the params it opened with" contract.
-                    "greylist_overrides": t.get("greylist_overrides_at_entry") or {},
                     "greylist_strategy": t.get("greylist_strategy_at_entry"),
                     # Restore the snipe pattern context for `classifier_action ==
                     # "greylist_snipe"` trades that survived restart. Without
@@ -348,12 +345,6 @@ class BotState:
         for old_book, new_book in (("momentum", "scalp"), ("greylist_snipe", "hunt"), ("reentry", "hunt")):
             if old_book in bx:
                 bx[new_book] = {**(bx.get(new_book) or {}), **{k: v for k, v in bx.pop(old_book).items() if k != "take_profit_pct"}}
-        for book in ("scalp", "rh_pons"):
-            for k in ("stop_loss_pct", "trailing_stop_pct", "trailing_arm_pct"):
-                if cfg.get(k) is not None and (bx.get(book) or {}).get(k) is None:
-                    bx.setdefault(book, {})[k] = cfg[k]
-        if cfg.get("take_profit_pct") is not None and (bx.get("rh_pons") or {}).get("take_profit_pct") is None:
-            bx.setdefault("rh_pons", {})["take_profit_pct"] = cfg["take_profit_pct"]
         self.config.book_exits = bx
         self.config.book_scalp_size_mult = float(cfg.get("book_momentum_size_mult") or 1.0)
         self.config.book_hunt_size_mult = float(cfg.get("book_snipe_size_mult") or 1.0)
@@ -373,6 +364,15 @@ class BotState:
         await self.db.trades.update_many({"book": None, "classifier_action": {"$in": ["greylist_snipe", "reentry"]}}, {"$set": {"book": "hunt"}})
         await self.db.trades.update_many({"book": None}, {"$set": {"book": "scalp"}})
         logger.warning("books migrated → scalp/hunt/rh_pons; global exit keys removed from bot_config")
+
+    async def reset_book_exits(self, who: str = "startup") -> dict:
+        """Book exits = book_params.BOOK_DEFAULTS (the spec). Regime overrides are dropped too."""
+        from book_params import BOOK_DEFAULTS
+        self.config.book_exits = {b: dict(v) for b, v in BOOK_DEFAULTS.items()}
+        await self.save_config()
+        await self.db.bot_config.update_one({"_id": "current"}, {"$set": {"book_exits_defaults_v1": True}})
+        logger.warning(f"book_exits restored to BOOK_DEFAULTS ({who})")
+        return self.config.book_exits
 
     def _resolve_fees(self) -> tuple[int, int, int]:
         """Return (priority_fee_microlamports, slippage_bps, exit_slippage_bps)
@@ -900,6 +900,8 @@ class BotState:
             in_flight = len(self.active_trades) + len(self._pending_entry_mints)
             if in_flight >= cap:
                 return
+            if self._hunt_open() >= min(HUNT_SLOT_CAP, cap):
+                return   # re-entries are hunt fills — same 2-of-3 cap as snipes
             # SL cooldown applies to re-entry watcher too — if the previous
             # exit was SL, give the price action time to settle.
             cd_until = self.sl_cooldown_until.get(mint, 0.0)
@@ -1223,6 +1225,9 @@ class BotState:
             bucket["last_persist"] = now
             await self._persist_metrics(mint)
 
+    def _hunt_open(self) -> int:
+        return sum(1 for sl in self.active_trades.values() if (sl.get("trade") or {}).get("book") == "hunt")
+
     async def _run_ladder(self, mint: str, slot: dict, cur_price_sol: float, elapsed: float, tag: str = "") -> bool:
         """Evaluate the position's BOOK ladder (exits.py) once. Returns True when the slot was closed."""
         trade_doc = slot["trade"]
@@ -1495,20 +1500,11 @@ class BotState:
             return False, ""
         cfg = self.config
 
-        # 0a. PROFIT RIPCORD — the highest-priority exit. Fires the moment the
-        # position is up >= `greylist_snipe_profit_ripcord_pct` from entry,
-        # regardless of pattern. Paper data: snipes that hit +29-33% TP
-        # then gave it all back to a partial-trail runner. A FULL-EXIT
-        # ripcord at +30% (default) realizes those wins. Set to 0 to disable.
+        # Rip-cord = RISK exits only (stale, velocity decay, drawdown past the creator's rug window).
         trade = slot["trade"]
         entry_p = trade.get("entry_price_sol") or 0
-        pct_change = 0.0
-        if entry_p > 0:
-            pct_change = (cur_price_sol - entry_p) / entry_p * 100
-            profit_ripcord = float(cfg.greylist_snipe_profit_ripcord_pct or 0)
-            if profit_ripcord > 0 and pct_change >= profit_ripcord:
-                return True, (f"snipe profit-ripcord (+{pct_change:.1f}% ≥ "
-                              f"{profit_ripcord:.0f}% — locking profit before rug)")
+        pct_change = ((cur_price_sol - entry_p) / entry_p * 100) if entry_p > 0 else 0.0
+        # profit-taking is the hunt R ladder's job (exits.decide_hunt) — the rip-cord only ever returns risk exits
 
         # 0b. STALE-SNIPE TIME FAIL-SAFE — paper data showed 10-30 min holds
         # drifting to -20-45%. A snipe that hasn't popped within ~90s is
@@ -1528,15 +1524,6 @@ class BotState:
             if age >= stale_s and pct_change < stale_min:
                 return True, (f"snipe stale-exit (held {age:.0f}s ≥ {stale_s}s "
                               f"@ {pct_change:+.1f}% < required +{stale_min:.0f}%)")
-
-        # 1. Pattern-suggested TP. If the creator has a known pattern with a
-        # suggested exit %, lock in profit there. Falls through to other
-        # gates if not hit.
-        if entry_p > 0:
-            pct_change = (cur_price_sol - entry_p) / entry_p * 100
-            pattern_tp = trade.get("greylist_pattern_suggested_tp_pct")
-            if pattern_tp is not None and pct_change >= float(pattern_tp):
-                return True, f"snipe pattern-TP hit (+{pct_change:.1f}% ≥ {pattern_tp:.1f}%)"
 
         # 1b. Velocity-decay exits. The rug is preceded by SOL inflow rate
         # collapsing and/or new-holder rate collapsing. Compare the LAST
@@ -2130,10 +2117,11 @@ class BotState:
             in_flight = len(self.active_trades) + len(self._pending_entry_mints)
             if in_flight >= cap:
                 return
-            if book == "hunt":
-                hunt_open = sum(1 for sl in self.active_trades.values() if (sl.get("trade") or {}).get("book") == "hunt")
-                if hunt_open >= min(HUNT_SLOT_CAP, cap):
-                    return   # greylist spray may not consume every slot
+            if book == "hunt" and self._hunt_open() >= min(HUNT_SLOT_CAP, cap):
+                logger.info(f"hunt-cap: {launch.mint[:8]}… refused — {HUNT_SLOT_CAP} hunt slots already open")
+                await self._skip_event({"mint": launch.mint, "band": "hunt", "reason": "hunt-cap",
+                                        "details": [f"{HUNT_SLOT_CAP} of {cap} slots already hold hunt fills"]})
+                return
             # SL cooldown — if this mint just exited via stop-loss, refuse to
             # re-enter for the configured window. Buying back into a freshly
             # SL-tripped mint is the textbook "buy the exit" anti-pattern.
@@ -2171,8 +2159,7 @@ class BotState:
         # so the exit logic (TP/SL/trail) can read overrides per-trade.
         # Mode "live" → applies overrides to size/TP/SL/trail.
         # Mode "telemetry" → logs only; standard config values used.
-        greylist_ctx: dict = {"strategy": None, "score": None, "overrides": {},
-                              "pattern": None, "pattern_tp_pct": None,
+        greylist_ctx: dict = {"strategy": None, "score": None, "pattern": None,
                               "expected_peak_mc_usd": None,
                               "expected_peak_mc_stddev": None,
                               "expected_rug_curve_pct": None}
@@ -2190,49 +2177,17 @@ class BotState:
                      "greylist_blacklisted": 1},
                 )
                 if gc and gc.get("greylist_score") and not gc.get("greylist_blacklisted"):
-                    from creator_greylist import (
-                        apply_decay, recommended_strategy, strategy_overrides,
-                    )
+                    from creator_greylist import apply_decay, recommended_strategy
                     eff = apply_decay(gc.get("greylist_score"),
                                       gc.get("greylist_score_updated_at"))
                     strat = recommended_strategy(eff)
                     mode = (self.config.creator_greylist_mode or "telemetry").lower()
                     applied = (mode == "live") and (strat != "standard")
-                    overrides = strategy_overrides(strat) if applied else {}
-                    # === Pattern-aware TP override (Phase 2.7) ===
-                    # For the two tightly-bounded tradeable patterns
-                    # (slow_rug / predictable_dump), the classifier exports
-                    # a `suggested_exit_pct=(lo, hi)` derived from the
-                    # creator's own rug-window median. Use the LOWER bound
-                    # as the TP — exits just BEFORE the typical rug window
-                    # opens, which is the whole point of pattern-aware
-                    # micro-sniping. Only applied when greylist mode is live
-                    # AND the pattern is one of the precision tradeable
-                    # buckets. `fake_hype_tradeable` deliberately keeps the
-                    # tier override because rug timing there is governed by
-                    # mempool, not curve %.
                     pattern = gc.get("greylist_pattern")
-                    sug_exit = gc.get("greylist_pattern_suggested_exit")
-                    pattern_tp = None
-                    if (applied and pattern in {"slow_rug_tradeable",
-                                                 "predictable_dump_tradeable"}
-                            and isinstance(sug_exit, (list, tuple))
-                            and len(sug_exit) == 2):
-                        try:
-                            pattern_tp = float(sug_exit[0])  # lower bound
-                            # Sanity: refuse insane values (< 5 or > 60)
-                            if 5.0 <= pattern_tp <= 60.0:
-                                overrides = {**overrides, "tp_pct": pattern_tp}
-                            else:
-                                pattern_tp = None
-                        except (TypeError, ValueError):
-                            pattern_tp = None
                     if strat != "standard":
                         rw = gc.get("expected_rug_window_pct") or {}
                         pmc = gc.get("expected_peak_mc_usd") or {}
-                        pat_info = (f" pattern={pattern} pat_tp={pattern_tp:.1f}%"
-                                    if pattern_tp is not None else
-                                    f" pattern={pattern or 'n/a'}")
+                        pat_info = f" pattern={pattern or 'n/a'}"
                         logger.info(
                             f"GREYLIST {'APPLY' if applied else 'telemetry'}: "
                             f"strategy='{strat}' for {launch.mint[:8]}… "
@@ -2243,14 +2198,12 @@ class BotState:
                             f"n_failed={gc.get('greylist_n_failed', 0)}), "
                             f"expected_rug=~{rw.get('median_rug_pct', '?')}%). "
                             f"Mode={mode}; "
-                            f"{'applying overrides=' + str(overrides) if applied else 'executing standard logic.'}"
+                            f"{'score-live' if applied else 'telemetry'} — exits: hunt R ladder."
                         )
                     greylist_ctx = {
                         "strategy": strat,
                         "score": round(float(eff), 1),
-                        "overrides": overrides,
                         "pattern": pattern,
-                        "pattern_tp_pct": pattern_tp,
                         # Snipe-exit data — `_check_snipe_pattern_exit()` reads
                         # these to know when to bail based on the creator's
                         # OBSERVED rug pattern instead of our entry loss.
@@ -2572,7 +2525,6 @@ class BotState:
             pumpswap_pool=bucket.get("pumpswap_pool") or None,
             greylist_strategy_at_entry=greylist_ctx.get("strategy"),
             greylist_score_at_entry=greylist_ctx.get("score"),
-            greylist_overrides_at_entry=greylist_ctx.get("overrides") or {},
             greylist_pattern_at_entry=greylist_ctx.get("pattern"),
             entry_ctx={"curve_liquidity_sol": float(real_sol),
                        "unique_buyers": int(getattr(launch, "unique_buyers", 0) or 0),
@@ -2585,7 +2537,6 @@ class BotState:
                        "project_score": int((self.tracking.get(launch.mint) or {}).get("project_score") or getattr(launch, "project_score", 0) or 0),
                        "project_flags": (self.tracking.get(launch.mint) or {}).get("project_flags") or {},
                        "band": "new" if action == "momentum_new" else "seasoned"},
-            greylist_pattern_suggested_tp_pct=greylist_ctx.get("pattern_tp_pct"),
             is_research_snipe=is_research_snipe,
             **plan["trade_fields"],
             # Persist the snipe ctx on the trade doc itself so a restart
@@ -2606,10 +2557,7 @@ class BotState:
         trade_extras = {
             "protocol": protocol,
             "pumpswap_pool": bucket.get("pumpswap_pool", ""),
-            # Per-trade greylist override slot — exit logic reads `greylist_overrides`
-            # (exit ladder reads book_exits via exits.levels; greylist overrides are telemetry only)
             # tier (a hot greylist + a standard mint can be open concurrently).
-            "greylist_overrides": greylist_ctx.get("overrides") or {},
             "greylist_strategy": greylist_ctx.get("strategy"),
             # Snipe pattern context — read by `_check_snipe_pattern_exit()`
             # to drive curve-fill / peak-MC / rip-cord exits instead of the

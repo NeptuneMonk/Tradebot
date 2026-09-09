@@ -216,7 +216,7 @@ def _book(rows: list[dict]) -> str | None:
         t = r["trade"]
         if t.get("chain") == "rh" or (t.get("classifier_action") or "").startswith("rh_pons"):
             return "rh_pons"
-        return t.get("book") or "momentum"
+        return t.get("book") or "scalp"
     return None
 
 

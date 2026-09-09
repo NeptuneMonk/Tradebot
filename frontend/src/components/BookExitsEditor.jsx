@@ -1,4 +1,6 @@
-import { Layers } from "lucide-react";
+import { Layers, RotateCcw } from "lucide-react";
+import { toast } from "sonner";
+import { api } from "@/lib/api";
 import HelpHint from "./HelpHint";
 
 // Defaults mirror backend/book_params.BOOK_DEFAULTS — the ONLY exit parameters; there are no global TP/SL keys.
@@ -23,14 +25,30 @@ const FIELDS = [
   ["ladder_2r_sell_pct", "+2R sell %", "Hunt ladder leg 2 size."],
 ];
 
-export default function BookExitsEditor({ local, setLocal }) {
+export default function BookExitsEditor({ local, setLocal, onRestored }) {
   const bx = local.book_exits || {};
   const set = (book, key, v) => setLocal({ ...local, book_exits: { ...bx, [book]: { ...(bx[book] || {}), [key]: v } } });
+  const drifted = Object.keys(BOOK_DEFAULTS).some((b) => Object.entries(bx[b] || {}).some(([k, v]) => BOOK_DEFAULTS[b][k] !== undefined && v !== BOOK_DEFAULTS[b][k]));
+  const restore = async () => {
+    if (!window.confirm("Restore every book's exits to the spec defaults? Unsaved edits to exits are discarded.")) return;
+    try {
+      const r = await api.restoreBookExits();
+      onRestored?.(r.book_exits);
+      toast.success("Book exits restored to defaults");
+    } catch (e) {
+      toast.error("Restore failed");
+    }
+  };
   return (
     <div className="border-t border-neutral-800 pt-3 mt-1" data-testid="book-exits-editor">
       <div className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 mb-2 flex items-center gap-1.5">
         <Layers className="w-3 h-3" /> Exits · per book
         <HelpHint label="help: per-book exits">Every exit parameter lives on its book. Nothing is shared: a hunt bag is never clipped by the scalp clock, and a scalp never inherits the hunt ladder. Sizes come from R (bankroll × risk % ÷ SL) inside the operator cap.</HelpHint>
+        {drifted && <span className="ml-1 px-1.5 py-0.5 border border-amber-800 text-amber-300 text-[9px] tracking-[0.1em]" data-testid="book-exits-drifted">drifted from defaults</span>}
+        <button type="button" onClick={restore} data-testid="book-exits-restore-btn"
+          className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 border border-neutral-700 text-neutral-300 hover:bg-neutral-900 text-[9px] uppercase tracking-[0.15em]">
+          <RotateCcw className="w-3 h-3" /> Restore book defaults
+        </button>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-[10px] font-mono">

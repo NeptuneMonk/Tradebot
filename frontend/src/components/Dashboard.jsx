@@ -4,6 +4,8 @@ import { useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import { useWebSocket } from "@/lib/useWebSocket";
 import StatusBanner from "@/components/StatusBanner";
+import HaltBanner from "@/components/HaltBanner";
+import ScorecardPanel from "@/components/ScorecardPanel";
 import WalletCard from "@/components/WalletCard";
 import BotControlCard from "@/components/BotControlCard";
 import PLSummaryCard from "@/components/PLSummaryCard";
@@ -371,6 +373,7 @@ export default function Dashboard() {
       </header>
 
       <StatusBanner status={status} onResetKill={async () => { await api.resetKillSwitch(); refreshAll(); }} />
+      <HaltBanner />
 
       <main className="max-w-[1600px] mx-auto p-4 md:p-6 space-y-4 md:space-y-6">
         {/* TOP KPI STRIP — always visible. Wallet + PnL + DailyLoss.
@@ -444,6 +447,14 @@ export default function Dashboard() {
             <TradeHistoryTable history={history} />
           </MinimizableCard>
           <CollapsibleSection
+            title="Scorecard"
+            description="situation cells — book × pattern × band × hour × cost · disabled cells skip"
+            storageKey="ui.section.scorecard"
+            testId="section-scorecard"
+          >
+            <ScorecardPanel />
+          </CollapsibleSection>
+          <CollapsibleSection
             title="Classifier Rules"
             description="book router — scalp / hunt / skip"
             storageKey="ui.section.classifier"
@@ -474,6 +485,7 @@ export default function Dashboard() {
               setConfig(saved);
               api.status().then((st) => st && setStatus(st)).catch(() => {});
             }}
+            onConfigLoaded={(cfg) => setConfig(cfg)}
             onStart={async () => { await api.start(); refreshAll(); }}
             onStop={async () => { await api.stop(); refreshAll(); }}
           />

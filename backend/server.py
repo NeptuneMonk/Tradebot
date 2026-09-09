@@ -856,6 +856,14 @@ async def scorecard_toggle(req: _CellToggle):
     return {"ok": True, "cell": req.cell, "disabled": req.disabled}
 
 
+@api.post("/book_exits/restore_defaults")
+async def book_exits_restore_defaults():
+    bx = await bot_state.reset_book_exits("operator")
+    await db.strategy_suggestions.insert_one({"category": "book_exits", "title": "book_exits restored to defaults", "actions": {"book_exits": bx},
+                                              "status": "applied", "applied_at": datetime.now(timezone.utc).isoformat(), "auto_applied": False})
+    return {"ok": True, "book_exits": bx}
+
+
 @api.get("/inventory")
 async def inventory_snapshot():
     ld = bot_state.live_doctor

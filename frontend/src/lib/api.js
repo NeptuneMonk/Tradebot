@@ -88,6 +88,10 @@ export const api = {
   configExport: () => client.get("/config/export").then(r => r.data),
   configImport: (config) => client.post("/config/import", { config }).then(r => r.data),
   brainSummary: () => client.get("/brain/summary").then(r => r.data),
+  restoreBookExits: () => client.post("/book_exits/restore_defaults").then(r => r.data),
+  scorecard: () => client.get("/scorecard").then(r => r.data),
+  scorecardCell: (cell, disabled) => client.post("/scorecard/cell", { cell, disabled }).then(r => r.data),
+  inventory: () => client.get("/inventory").then(r => r.data),
   brainExportUrl: (groups) => `${API}/brain/export?groups=${encodeURIComponent(groups.join(","))}`,
   brainImportBegin: (filename, size) => client.post("/brain/import/begin", { filename, size }).then(r => r.data),
   brainImportChunk: (uploadId, index, bytes) =>
