@@ -177,7 +177,7 @@ class LiveDoctor:
             for t in rows:
                 r, e = r_of(t), float(t.get("entry_usd") or 0)
                 if t.get("mfe_pct") is not None and r and e:
-                    mfes.append(float(t["mfe_pct"]) / (r / e * 100.0))   # MFE in R
+                    mfes.append(max(0.0, float(t["mfe_pct"])) / (r / e * 100.0))   # MFE in R (never below 0)
             med_mfe_r = statistics.median(mfes) if mfes else None
             reason = None
             if payoff is not None and payoff < 1.0:

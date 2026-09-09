@@ -280,6 +280,13 @@ class RHDiscovery:
                 self.stats["errors"] += 1
                 self.stats["last_error"] = str(e)[:200]
                 logger.warning(f"rh_discovery poll error: {e}")
+                if "exceeds limit" in str(e) or "query returned more than" in str(e):
+                    # The cursor is too far behind head (stale after a restart / outage): a stale window is
+                    # worthless for a live scanner — resync from a fresh head instead of failing forever.
+                    logger.warning("RH RPC: log window too large — resyncing cursor to head")
+                    self._next_from = 0
+                    self.stats["resyncs"] = self.stats.get("resyncs", 0) + 1
+                    backoff = 1.0
             await asyncio.sleep(backoff)
 
     async def _rpc(self, calls: list[tuple[str, list]]) -> list:
@@ -330,8 +337,17 @@ class RHDiscovery:
         # because stats["head"] is stale after a run of failures — the old
         # check used the stale head and never engaged, so the range grew
         # every retry and 429s became self-perpetuating.
+        if not self.stats["head"]:
+            # fresh process with a persisted cursor: learn the real head before sizing the window
+            (head_hex,) = await self._rpc([("eth_blockNumber", [])])
+            self.stats["head"] = int(head_hex, 16)
+            self.stats["last_poll_ts"] = time.time()
+            if self.stats["head"] - fr > 10 * MAX_BLOCK_SPAN:
+                logger.warning(f"RH cursor {self.stats['head'] - fr} blocks behind head — resyncing to head")
+                fr = max(1, self.stats["head"] - BACKFILL_BLOCKS)
+                self._next_from = fr
         est_head = self.stats["head"] + int(max(0.0, time.time() - (self.stats["last_poll_ts"] or time.time())) / BLOCK_TIME_S)
-        to_hex = hex(fr + MAX_BLOCK_SPAN) if self.stats["head"] and est_head - fr > MAX_BLOCK_SPAN else "latest"
+        to_hex = hex(fr + MAX_BLOCK_SPAN) if est_head - fr > MAX_BLOCK_SPAN else "latest"
         # Trade logs only for curves we track (≤300 addresses) — far lighter
         # than every CurveBuy/CurveSell on the chain.
         curves = list(self._curve_to_token.keys())[-300:]

@@ -1645,3 +1645,5 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - book_exits reset to BOOK_DEFAULTS once at startup + restore endpoint/button; profit rip-cord / pattern TP / strategy_overrides deleted (rip-cord risk-only → R ladder); classifier default skip; hunt cap counts snipes + re-entries; HaltBanner + ScorecardPanel. Tests: 508+ pass, 4 new.
 
 ## 2026-09-09 — Feed labelling: `pending` verdict (feed only), re-assess 3/8/15 s + events; entry gate always classifies fresh. Tests 501+ pass (2 new). NOTE: `tests/test_rh_integration_api_v9.py` is a LIVE integration suite that toggles feeds on the running server and depends on the RH feed being up — environment-dependent failures, not code regressions.
+
+## 2026-09-09 — RH discovery stall fix: after a restart the persisted eth_getLogs cursor was far behind head → "logs matched by query exceeds limit of 10000" forever (head 0, tracked 0). Now: learn head before sizing the window, resync to head when >6000 blocks behind, and resync on the "exceeds limit" error. RH paper entry now honours the live-doctor book breaker pause (rh_pons currently paused ~3.5h: payoff 0.69). Breaker MFE clamped ≥ 0.

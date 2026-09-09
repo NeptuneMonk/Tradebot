@@ -402,6 +402,10 @@ class RHPaperTrader:
         try:
             await asyncio.sleep(max(0, cfg.paper_entry_latency_ms) / 1000.0)
             b = self.state.rh_discovery.tracking.get(token)
+            ld = getattr(self.state, "live_doctor", None)
+            if not manual and ld is not None and ld.book_paused("rh_pons"):
+                logger.info(f"rh_paper skip {token[:10]}: rh_pons paused by live-doctor breaker")
+                return
             if not b or b.get("graduated") or token in self.entered:
                 return
             price = b["last_price_quote"]
