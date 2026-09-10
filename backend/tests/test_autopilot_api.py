@@ -42,7 +42,7 @@ def test_autopilot_on_applies_bankroll_and_flags():
     assert cfg["bankroll_sizing_enabled"] is True
     assert cfg["max_trade_usd"] == pytest.approx(d["max_trade_usd"], abs=0.5)
     assert cfg["min_trade_usd"] == pytest.approx(d["min_trade_usd"], abs=0.2)
-    assert cfg["max_concurrent_positions"] == d["max_concurrent_positions"]
+    assert cfg["max_concurrent_positions"] <= 8   # slots are operator-owned (rail 8), never derived from bankroll
     assert cfg["daily_kill_switch_usd"] == pytest.approx(d["daily_kill_switch_usd"], abs=2.0)
 
     # status.driving true

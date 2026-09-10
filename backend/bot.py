@@ -1296,13 +1296,13 @@ class BotState:
         cfg = self.config
 
         async def skip(reason: str, details: dict | None = None):
-            logger.info(f"skip {mint[:8]}… [{book}] {reason}")
+            logger.info(f"skip {mint[:8]}… [{book}] {reason} — {details if isinstance(details, str) else (details or {}).get('reason', details)}")
             await self._skip_event({"mint": mint, "band": band or book, "reason": reason, "details": [str(details or "")]})
 
         doctor = {"winner_likeness_pct": None, "exit_liquidity_likeness_pct": None, "doctor_decision": "full", "doctor_size_mult": 1.0}
         if use_doctor and self.live_doctor is not None:
             try:
-                doctor = await self.live_doctor.score_launch(mint)
+                doctor = await self.live_doctor.score_launch(mint, book)
             except Exception as e:
                 logger.debug(f"live doctor score failed: {e}")
             if doctor["doctor_decision"] == "skip":
@@ -1332,7 +1332,8 @@ class BotState:
         cu = CU_PUMPSWAP if protocol == "pumpswap" else CU_PUMPFUN
         fee_usd = estimate_tx_fee_sol(priority_fee, cu) * 2 * sol_price
         q = cost_gate.quote(size_usd=sz["size_usd"], r_usd=sz["r_usd"], first_target_r=FIRST_TARGET_R[book], protocol=protocol,
-                            entry_slip_bps=entry_slip, exit_slip_bps=exit_slip, fee_usd_round_trip=fee_usd, ladder=(book == "hunt"), depth_usd=depth_usd)
+                            entry_slip_bps=entry_slip, exit_slip_bps=exit_slip, fee_usd_round_trip=fee_usd, ladder=(book == "hunt"), depth_usd=depth_usd,
+                            first_leg_frac=max(0.05, exit_param(cfg, "hunt", "ladder_1r_sell_pct") / 100.0))
         if not q["cost_gate_pass"]:
             await skip("cost-gate", q["cost_gate_reason"])
             return None

@@ -189,6 +189,7 @@ def _exit_class(t: dict) -> str:
 
 def book_stats(trades: list[dict], cfg: dict | None = None) -> dict:
     """FILL-based book metrics in USD (pnl_usd is after fees on both chains)."""
+    trades = [t for t in trades if t.get("r_usd")]   # post-migration fills only — legacy exits never judge the new books
     rows = [(t, _pnl(t)) for t in trades]
     rows = [(t, p) for t, p in rows if p is not None]
     n = len(rows)

@@ -59,6 +59,7 @@ FULL_MIN_WINNER = 60.0
 HALF_IF_EXIT_LIQ_AT_LEAST = 50.0
 DECISION_MULT = {"skip": 0.0, "half": 0.5, "full": 1.0}
 BREAKER_MIN_N = 8
+HUNT_COLD_START_FILLS = 10   # below this many hunt fills (7d) the doctor has no hunt archetype → "half", never "skip"
 BREAKER_PAUSE_S = 4 * 3600
 
 
@@ -140,19 +141,33 @@ class LiveDoctor:
         self.interval_minutes = DEFAULT_INTERVAL_MINUTES
         self._winner_arch: dict | None = None
         self._loser_arch: dict | None = None
+        self._hunt_winner_arch: dict | None = None   # learned from hunt fills only
+        self._hunt_loser_arch: dict | None = None
         self.book_paused_until: dict[str, float] = {}   # book → ts (payoff / MFE breaker)
 
-    async def score_launch(self, mint: str) -> dict:
-        """Entry policy for one tracked mint: winner/exit-liquidity likeness → skip / half / full."""
-        if not self._winner_arch or not self._loser_arch or not self.bot_state:
+    async def score_launch(self, mint: str, book: str = "scalp") -> dict:
+        """Entry policy for one tracked mint: winner/exit-liquidity likeness → skip / half / full.
+        Hunt is judged ONLY against archetypes built from hunt fills; cold start (< HUNT_COLD_START_FILLS) = half."""
+        if book == "hunt":
+            since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+            n_hunt = await self.db.trades.count_documents({"book": "hunt", "status": "closed", "exit_time": {"$gte": since}})
+            if n_hunt < HUNT_COLD_START_FILLS or not self._hunt_winner_arch or not self._hunt_loser_arch:
+                return {"winner_likeness_pct": None, "exit_liquidity_likeness_pct": None, "doctor_decision": "half",
+                        "doctor_size_mult": 0.5, "reason": f"hunt cold start ({n_hunt}/{HUNT_COLD_START_FILLS} fills) — half size"}
+            warch, larch = self._hunt_winner_arch, self._hunt_loser_arch
+        else:
+            warch, larch = self._winner_arch, self._loser_arch
+        if not warch or not larch or not self.bot_state:
             return {"winner_likeness_pct": None, "exit_liquidity_likeness_pct": None, "doctor_decision": "full",
                     "doctor_size_mult": 1.0, "reason": "archetypes not learned yet"}
         lj = await self.db.launches.find_one({"mint": mint}, {"_id": 0}) or {}
         cj = await self.db.creators.find_one({"_id": lj.get("creator")}, {"tokens_created": 1, "tokens_graduated": 1}) if lj.get("creator") else None
         j = {"trade": {"mint": mint, "entry_usd": 0}, "launch": lj, "creator": cj or {}}
-        w, _ = self._score_against_archetype(j, self._winner_arch)
-        x, _ = self._score_against_archetype(j, self._loser_arch)
+        w, _ = self._score_against_archetype(j, warch)
+        x, _ = self._score_against_archetype(j, larch)
         decision = decide(w, x)
+        if book == "hunt" and decision == "skip":
+            decision = "half"   # the classifier already vetoes untradeable creators; the doctor only sizes hunt
         return {"winner_likeness_pct": round(w, 1), "exit_liquidity_likeness_pct": round(x, 1), "doctor_decision": decision,
                 "doctor_size_mult": DECISION_MULT[decision], "reason": f"winner {w:.0f}% / exit-liquidity {x:.0f}% → {decision}"}
 
@@ -300,6 +315,10 @@ class LiveDoctor:
         winner_arch = self._mine_archetype(winners)
         loser_arch = self._mine_archetype(losers)
         self._winner_arch, self._loser_arch = winner_arch, loser_arch
+        hunt_joined = [j for j in joined if (j.get("trade") or {}).get("book") == "hunt"]
+        if len(hunt_joined) >= HUNT_COLD_START_FILLS:
+            hw, hl = self._split_by_outcome(hunt_joined)
+            self._hunt_winner_arch, self._hunt_loser_arch = self._mine_archetype(hw), self._mine_archetype(hl)
         self.last_book_breakers = await self._evaluate_book_breakers(joined)
 
         # Score currently-tracked passing mints

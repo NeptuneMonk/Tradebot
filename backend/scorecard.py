@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from book_params import pnl_r
 
 MIN_N = 30
+DISABLE_BELOW_R = -0.15      # a cell must be clearly negative, not breakeven noise
 UPWEIGHT_R = 0.30
 REOPEN_AFTER_H = 72
 REOPEN_MIN_PAPER = 10
@@ -46,6 +47,7 @@ def cell_for_trade(t: dict) -> str:
 
 
 def stats(trades: list[dict]) -> dict:
+    trades = [t for t in trades if t.get("r_usd")]   # post-migration fills only — legacy exits don't judge the new system
     rs = [r for r in (pnl_r(t) for t in trades) if r is not None]
     if not rs:
         return {"n": 0}
@@ -84,7 +86,7 @@ class Scorecard:
         doc = {**st, "updated_at": time.time(), "disabled": bool(prev.get("disabled")),
                "disabled_at": prev.get("disabled_at"), "paper_since_disable": prev.get("paper_since_disable", 0),
                "upweight_eligible": st.get("n", 0) >= MIN_N and (st.get("expectancy_r") or 0) >= UPWEIGHT_R}
-        if not doc["disabled"] and st.get("n", 0) >= MIN_N and st["expectancy_r"] < 0:
+        if not doc["disabled"] and st.get("n", 0) >= MIN_N and st["expectancy_r"] <= DISABLE_BELOW_R:
             doc.update(disabled=True, disabled_at=time.time(), paper_since_disable=0)
         elif doc["disabled"]:
             if t.get("mode") == "paper":

@@ -35,11 +35,20 @@ def test_cost_gate_skips_when_target_cannot_clear_2x_cost():
 
 
 def test_cost_gate_hunt_first_scale_out_must_clear_friction():
-    # hunt: first cash-out is +1R (20%+slip), ladder shave 5% — a thin, expensive curve fails even at 20% SL
+    # thin pool ($25 depth): impact alone blows the 8% ceiling
     q = cost_gate.quote(size_usd=1.0, r_usd=0.21, first_target_r=FIRST_TARGET_R["hunt"], protocol="pumpfun",
                         entry_slip_bps=2500, exit_slip_bps=2500, fee_usd_round_trip=0.03, ladder=True, depth_usd=25.0)
     assert q["cost_gate_pass"] is False
     assert q["expected_cost_pct"] > cost_gate.MAX_ROUND_TRIP_PCT
+
+
+def test_hunt_cost_gate_passes_on_typical_pumpfun_depth():
+    # typical curve: 30 SOL ≈ $4,500 depth, $12 hunt entry, 20% SL + slip → r ≈ $2.55, first cash-out = +1R on the 35% leg
+    q = cost_gate.quote(size_usd=12.0, r_usd=2.55, first_target_r=FIRST_TARGET_R["hunt"], protocol="pumpfun",
+                        entry_slip_bps=1000, exit_slip_bps=800, fee_usd_round_trip=0.04, ladder=True, depth_usd=4500.0, first_leg_frac=0.35)
+    assert q["expected_cost_pct"] < cost_gate.MAX_ROUND_TRIP_PCT and q["cost_gate_pass"] is True
+    assert q["cost_breakdown"]["shave_pct"] < 1.0        # 1.5% dust on the 35% leg, not 5% of the full bag
+    assert cost_gate.LADDER_SHAVE_PCT == 1.5 and cost_gate.MAX_ROUND_TRIP_PCT == 8.0 and cost_gate.COST_MULT == 2.0
 
 
 # ---------------- R sizing ----------------
@@ -168,6 +177,11 @@ def test_scorecard_disables_cell_at_n30_negative_expectancy():
     sc2 = scorecard.Scorecard(_DB(rows29))
     k2 = asyncio.run(sc2.record(rows29[-1]))
     assert sc2.is_disabled(k2) is False        # n < 30 never disables
+    noise = [{**r, "pnl_usd": -0.005} for r in rows]   # −0.04R: breakeven noise never disables
+    sc3 = scorecard.Scorecard(_DB(noise))
+    assert sc3.is_disabled(asyncio.run(sc3.record(noise[-1]))) is False
+    legacy = [{**r, "r_usd": None} for r in rows]      # pre-migration fills are ignored entirely
+    assert scorecard.stats(legacy)["n"] == 0
 
 
 # ---------------- doctor rails ----------------
@@ -224,7 +238,7 @@ def test_config_has_no_global_exit_keys():
 # ---------------- entry planner end-to-end (BotState._plan_entry) ----------------
 class _FakeDoctor:
     def __init__(self, decision): self.decision = decision
-    async def score_launch(self, mint):
+    async def score_launch(self, mint, book="scalp"):
         return {"winner_likeness_pct": 70.0, "exit_liquidity_likeness_pct": 20.0, "doctor_decision": self.decision,
                 "doctor_size_mult": {"skip": 0.0, "half": 0.5, "full": 1.0}[self.decision], "reason": "test"}
 

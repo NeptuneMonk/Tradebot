@@ -51,9 +51,9 @@ class _State:
 
 def test_derive_from_bankroll():
     d = BankrollEngine.derive(1000.0, BotConfig())
-    assert d == {"max_trade_usd": 20.0, "min_trade_usd": 5.0, "max_concurrent_positions": 12, "daily_kill_switch_usd": 100.0}
+    assert d == {"max_trade_usd": 20.0, "min_trade_usd": 5.0, "daily_kill_switch_usd": 100.0}   # slots are never derived
     d = BankrollEngine.derive(20000.0, BotConfig(risk_per_trade_pct=5.0, max_exposure_pct=25.0, daily_loss_limit_pct=10.0))
-    assert d["max_trade_usd"] == 100.0 and d["max_concurrent_positions"] == 5 and d["daily_kill_switch_usd"] == 1000.0
+    assert d["max_trade_usd"] == 100.0 and "max_concurrent_positions" not in d and d["daily_kill_switch_usd"] == 1000.0
     assert BankrollEngine.derive(30.0, BotConfig())["max_trade_usd"] == 1.0
 
 
@@ -66,7 +66,7 @@ def test_refresh_applies_sizing_and_compounds_paper_pnl():
     sol, rh = snap["chains"]["sol"], snap["chains"]["rh"]
     assert sol["bankroll_usd"] == 1250.0 and sol["bankroll_source"] == "paper"
     assert rh["bankroll_usd"] == 1000.0  # RH paper pool is its own — SOL paper wins don't leak in
-    assert st.config.max_trade_usd == 25.0 and st.config.max_concurrent_positions == 12 and st.saved == 1
+    assert st.config.max_trade_usd == 25.0 and st.config.max_concurrent_positions == 3 and st.saved == 1
     assert st.config.rh_max_trade_usd == 20.0 and st.config.rh_daily_kill_switch_usd == 100.0
     assert not snap["governor_active"] and eng.size_mult("sol") == 1.0 and eng.size_mult("rh") == 1.0
 

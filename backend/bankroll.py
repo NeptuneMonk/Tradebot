@@ -5,7 +5,7 @@ drawdown governor come from ITS OWN bankroll (its wallet USD when that chain
 trades live, otherwise its own $paper_bankroll_usd + realised paper P/L).
 Percentages the Doctor may steer (shared across chains):
   risk_per_trade_pct   → sol: max_trade_usd            rh: rh_max_trade_usd
-  max_exposure_pct     → sol: max_concurrent_positions  (rh_max_positions stays user-set)
+  slots (max_concurrent_positions / rh_max_positions) are NOT derived — the operator + rails own them (default 3, rail 8)
   daily_loss_limit_pct → sol: daily_kill_switch_usd     rh: rh_daily_kill_switch_usd
 Robinhood stakes also respect a FEE FLOOR: round-trip gas (measured from our
 own live fills) may eat at most rh_fee_drag_max_pct of the stake.
@@ -120,12 +120,10 @@ class BankrollEngine:
         """Solana sizing."""
         risk = max(0.1, float(cfg.risk_per_trade_pct))
         stake = max(1.0, min(STAKE_CEILING_USD, bankroll * risk / 100.0))
-        positions = max(1, min(20, int(math.floor(float(cfg.max_exposure_pct) / risk))))
         kill = max(1.0, min(KILL_CEILING_USD, bankroll * float(cfg.daily_loss_limit_pct) / 100.0))
         return {
             "max_trade_usd": round(stake, 2),
             "min_trade_usd": round(max(0.5, stake * 0.25), 2),
-            "max_concurrent_positions": positions,
             "daily_kill_switch_usd": round(kill, 2),
         }
 
