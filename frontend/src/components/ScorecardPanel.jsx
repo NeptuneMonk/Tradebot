@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, memo } from "react";
 import { Grid3x3, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -6,7 +6,7 @@ import { api } from "@/lib/api";
 const fmtR = (v) => (v == null ? "—" : `${v >= 0 ? "+" : ""}${Number(v).toFixed(2)}R`);
 
 // Scorecard = the learning memory: book × pattern × band × 4h UTC bucket × cost bucket.
-export default function ScorecardPanel() {
+function ScorecardPanel() {
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(null);
   const load = () => api.scorecard().then(setData).catch(() => {});
@@ -67,3 +67,5 @@ export default function ScorecardPanel() {
     </div>
   );
 }
+
+export default memo(ScorecardPanel);

@@ -1661,3 +1661,11 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - ✅ UI: RUNNER badge (stage · pk% · gb% · pool) on Active Trades, "RUNNER SLOT FULL" halt banner, runner row in the book-exits editor. `GET /api/inventory` → `runner_open/runner_cap/hunt_cap_now/runners`.
 - Tests: `tests/test_runner_book.py` (18) — full suite green (stale `/app/memory/.tok` refreshed for API tests).
 - Backlog (unchanged, locked out of this pass): Helius Diet, Ladder Replay, Skip-Reasons tally, execution learning, regime input, shadow book, Opportunity Score, ERC-20 approvals.
+
+## 2026-06 — Ops fixes: feeds, governor, Helius auto-pause, responsiveness, P/L bars
+- ✅ **Feeds switching off** — root cause: Bot Control toggles/Save sent the whole (stale) form to `PUT /bot/config`. Now `flipKey` sends `{key: value}` and Save sends the diff vs baseline only (verified: PUT body `{"helius_tracker_enabled":false}`).
+- ✅ **Governor release ignored** — root cause: release cleared `until` then the next refresh re-armed on the same drawdown. `bankroll.release_governor` records `released_at/released_dd_pct`; re-engagement is suppressed for `governor_hours` unless the drawdown deepens by another `governor_drawdown_pct` step. UI toast confirms. Test: `tests/test_ops_fixes.py`.
+- ✅ **Doctor pause → Helius idle** — `helius_gate` gained an auto flag (`set_auto_paused`); `BotState._helius_autopause_loop` (10 s) pauses the gate when live-doctor has paused BOTH scalp and hunt (or inventory halt) and no Solana position is open; operator switch always wins. RH poller idles when RH_PONS is paused and flat. Exposed in `GET /api/inventory.helius_gate` and `GET /api/diagnostics/loop`.
+- ✅ **Responsiveness** — Dashboard hands Bot Control a 4-field status slice + stable callbacks; 15 panels wrapped in `memo`; inline lambdas replaced with `useCallback`; `/api/trades/history` drops analytics blobs (entry_ctx, dip_forensics, snipe_pattern_ctx, …) → ~1/3 the bytes, capped at 200 rows; event-loop lag meter (`/api/diagnostics/loop`, currently avg ~2 ms).
+- ✅ **P/L chart toggle** — LINE ↔ BARS button on the existing P/L Today card: daily red/green bars (`pl/summary.daily`, live/paper split in the tooltip). No new card.
+- Note: pytest API suites read the session token from `/app/memory/.tok` (refresh with the mongosh snippet in test_credentials.md when it expires).

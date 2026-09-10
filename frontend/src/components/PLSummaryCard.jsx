@@ -1,12 +1,15 @@
-import { useState } from "react";
-import { LineChart, Line, ResponsiveContainer, Tooltip } from "recharts";
-import { TrendingUp, TrendingDown, RotateCcw } from "lucide-react";
+import { useState, memo } from "react";
+import { LineChart, Line, BarChart, Bar, Cell, YAxis, ResponsiveContainer, Tooltip } from "recharts";
+import { TrendingUp, TrendingDown, RotateCcw, BarChart3, Activity } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 
-export default function PLSummaryCard({ pl, status, onReset }) {
+function PLSummaryCard({ pl, status, onReset }) {
   const [confirming, setConfirming] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [chart, setChart] = useState(() => localStorage.getItem("ui.pl.chart") || "line");
+  const flipChart = () => setChart((c) => { const n = c === "line" ? "bars" : "line"; localStorage.setItem("ui.pl.chart", n); return n; });
+  const daily14 = (pl?.daily || []).slice(-14);
 
   const daily = pl?.daily_pnl_usd ?? 0;
   const cum = pl?.cumulative_usd ?? 0;
@@ -39,6 +42,14 @@ export default function PLSummaryCard({ pl, status, onReset }) {
         <div className="flex items-center gap-2">
           {positive ? <TrendingUp className="w-3 h-3 text-emerald-500" /> : <TrendingDown className="w-3 h-3 text-red-500" />}
           <button
+            onClick={flipChart}
+            title={chart === "line" ? "Switch to daily red/green bars" : "Switch to cumulative line"}
+            data-testid="pl-chart-toggle"
+            className="text-[10px] font-mono uppercase tracking-[0.15em] text-neutral-500 hover:text-blue-300 inline-flex items-center gap-1"
+          >
+            {chart === "line" ? <BarChart3 className="w-3 h-3" /> : <Activity className="w-3 h-3" />} {chart === "line" ? "bars" : "line"}
+          </button>
+          <button
             onClick={() => setConfirming(true)}
             title="Clear paper trades + reset 1d/7d view (live trades preserved on-chain)"
             data-testid="reset-paper-btn"
@@ -57,7 +68,24 @@ export default function PLSummaryCard({ pl, status, onReset }) {
         </span>
       </div>
       <div className="h-16 -mx-1" data-testid="pl-sparkline">
-        {series.length > 1 ? (
+        {chart === "bars" && daily14.length > 0 ? (
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={daily14} barCategoryGap={2} data-testid="pl-daily-bars">
+              <YAxis hide domain={[(min) => Math.min(0, min), (max) => Math.max(0, max)]} />
+              <Bar dataKey="pnl_usd" isAnimationActive={false} radius={0}>
+                {daily14.map((d) => <Cell key={d.day} fill={d.pnl_usd >= 0 ? "#10b981" : "#ef4444"} />)}
+              </Bar>
+              <Tooltip
+                cursor={{ fill: "#262626", opacity: 0.4 }}
+                contentStyle={{ background: "#0a0a0a", border: "1px solid #262626", fontSize: 11, fontFamily: "IBM Plex Mono" }}
+                labelFormatter={(_, p) => p?.[0]?.payload?.day || ""}
+                formatter={(v, _n, p) => [`${v >= 0 ? "+" : ""}$${Number(v).toFixed(2)} · ${p?.payload?.trades ?? 0} fills (live ${Number(p?.payload?.live_usd ?? 0).toFixed(2)} / paper ${Number(p?.payload?.paper_usd ?? 0).toFixed(2)})`, "Day"]}
+              />
+            </BarChart>
+          </ResponsiveContainer>
+        ) : chart === "bars" ? (
+          <div className="h-full flex items-center justify-center text-[10px] uppercase tracking-[0.2em] text-neutral-600">no closed trades yet</div>
+        ) : series.length > 1 ? (
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={series}>
               <Line
@@ -125,3 +153,5 @@ export default function PLSummaryCard({ pl, status, onReset }) {
     </div>
   );
 }
+
+export default memo(PLSummaryCard);

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, memo } from "react";
 import { Power, Zap, Settings2, ChevronDown, ChevronRight, Radio, Pause, Eye } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
@@ -8,7 +8,7 @@ import BrainSyncPanel from "./BrainSyncPanel";
 import BookExitsEditor from "./BookExitsEditor";
 import HelpHint from "./HelpHint";
 
-export default function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoaded }) {
+function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoaded }) {
   const [local, setLocal] = useState(null);
   // Baseline = last clean snapshot of config we've seen. The form is "dirty"
   // ONLY when `local !== baseline`. This lets backend-side changes (Doctor
@@ -48,9 +48,14 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
   const dirty = JSON.stringify(local) !== JSON.stringify(baseline);
   const running = status?.enabled;
 
+  // Only the keys the user actually changed go over the wire. Sending the whole form snapshot re-wrote
+  // stale values (a feed toggle flipped by another click / the Doctor) — that's why feeds "switched themselves off".
+  const diff = (a, b) => Object.fromEntries(Object.entries(a || {}).filter(([k, v]) => JSON.stringify(v) !== JSON.stringify((b || {})[k])));
   const save = async () => {
     try {
-      await onUpdate(local);
+      const patch = diff(local, baseline);
+      if (Object.keys(patch).length === 0) { toast.message("Nothing to save"); return; }
+      await onUpdate(patch);
       setBaseline(local);  // promote current edit to baseline
       toast.success("Config saved");
     } catch (e) {
@@ -64,7 +69,7 @@ export default function BotControlCard({ status, config, onUpdate, onStart, onSt
     setLocal((cur) => ({ ...cur, [key]: next }));
     setBaseline((b) => (b ? { ...b, [key]: next } : b));
     try {
-      await onUpdate({ ...local, [key]: next });
+      await onUpdate({ [key]: next });
       onOk?.();
     } catch (e) {
       setLocal((cur) => ({ ...cur, [key]: !next }));
@@ -1114,3 +1119,5 @@ function GateRow({ label, hint, newTestid, newValue, onNewChange, seasonedTestid
     </div>
   );
 }
+
+export default memo(BotControlCard);

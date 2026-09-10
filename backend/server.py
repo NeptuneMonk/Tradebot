@@ -864,6 +864,13 @@ async def book_exits_restore_defaults():
     return {"ok": True, "book_exits": bx}
 
 
+@api.get("/diagnostics/loop")
+async def diagnostics_loop():
+    from helius_gate import snapshot as gate_snapshot
+    return {"event_loop_lag_ms": bot_state.loop_lag_ms, "helius_gate": gate_snapshot(),
+            "active_positions": len(bot_state.active_trades), "tracked_mints": len(bot_state.tracking)}
+
+
 @api.get("/inventory")
 async def inventory_snapshot():
     ld = bot_state.live_doctor
@@ -871,7 +878,8 @@ async def inventory_snapshot():
     runners = [{"mint": m, "symbol": (sl.get("trade") or {}).get("symbol"), "stage": (sl.get("trade") or {}).get("runner_stage"),
                 "promoted_from": (sl.get("trade") or {}).get("promoted_from")}
                for m, sl in bot_state.active_trades.items() if (sl.get("trade") or {}).get("book") == "runner"]
-    return {**bot_state.inventory.snapshot(), "hunt_slot_cap": HUNT_SLOT_CAP, "hunt_cap_now": bot_state._hunt_cap(),
+    from helius_gate import snapshot as gate_snapshot
+    return {**bot_state.inventory.snapshot(), "hunt_slot_cap": HUNT_SLOT_CAP, "hunt_cap_now": bot_state._hunt_cap(), "helius_gate": gate_snapshot(),
             "runner_cap": _runner.RUNNER_CAP, "runner_open": len(runners), "runners": runners,
             "book_paused_until": dict(ld.book_paused_until) if ld else {}, "book_breakers": getattr(ld, "last_book_breakers", {}) if ld else {}}
 
@@ -1756,9 +1764,13 @@ async def trades_active():
     return docs
 
 
+HISTORY_OMIT = {"_id": 0, "entry_ctx": 0, "dip_forensics": 0, "snipe_pattern_ctx": 0, "greylist_overrides_at_entry": 0,
+                "cost_breakdown": 0, "exit_deferrals": 0}   # analytics-only blobs — ~2/3 of every history row
+
+
 @api.get("/trades/history")
 async def trades_history(limit: int = 100):
-    return await db.trades.find({"status": {"$ne": "active"}}, {"_id": 0}).sort("entry_time", -1).to_list(limit)
+    return await db.trades.find({"status": {"$ne": "active"}}, HISTORY_OMIT).sort("entry_time", -1).to_list(min(limit, 200))
 
 
 @api.post("/trades/{trade_id}/exit")
@@ -1913,7 +1925,16 @@ async def pl_summary(days: int = 7, mode: str | None = None):
         )
     today_live = await bot_state.daily_pnl_usd(mode="live")
     today_paper = await bot_state.daily_pnl_usd(mode="paper")
+    daily: dict[str, dict] = {}
+    for r in rows:
+        day = str(r["exit_time"])[:10]
+        b = daily.setdefault(day, {"day": day, "pnl_usd": 0.0, "live_usd": 0.0, "paper_usd": 0.0, "trades": 0})
+        b["pnl_usd"] += r["pnl_usd"]
+        b["live_usd" if r["mode"] == "live" else "paper_usd"] += r["pnl_usd"]
+        b["trades"] += 1
     return {
+        "daily": [{**b, "pnl_usd": round(b["pnl_usd"], 4), "live_usd": round(b["live_usd"], 4), "paper_usd": round(b["paper_usd"], 4)}
+                  for _, b in sorted(daily.items())],
         "series": rows,
         "daily_pnl_usd": today_live + today_paper,
         "daily_pnl_live_usd": today_live,

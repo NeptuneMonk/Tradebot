@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, memo } from "react";
 import { PiggyBank, ArrowUpRight } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -8,7 +8,7 @@ const usd = (v) => (v == null ? "—" : `$${Number(v).toFixed(2)}`);
 const when = (ts) => (ts ? new Date(ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—");
 const short = (a) => (a ? `${a.slice(0, 4)}…${a.slice(-4)}` : "—");
 
-export default function ProfitSweepPanel({ config, onConfigUpdate }) {
+function ProfitSweepPanel({ config, onConfigUpdate }) {
   const [s, setS] = useState(null);
   const [wallet, setWallet] = useState(config?.sweep_cold_wallet || "");
   const [busy, setBusy] = useState(false);
@@ -129,3 +129,5 @@ export default function ProfitSweepPanel({ config, onConfigUpdate }) {
     </div>
   );
 }
+
+export default memo(ProfitSweepPanel);

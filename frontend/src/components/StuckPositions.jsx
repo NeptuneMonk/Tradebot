@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, memo } from "react";
 import { AlertTriangle, RefreshCw, Loader2, Search } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -7,7 +7,7 @@ function shortMint(m) {
   return m ? `${m.slice(0, 4)}…${m.slice(-4)}` : "—";
 }
 
-export default function StuckPositions() {
+function StuckPositions() {
   const [stuck, setStuck] = useState([]);
   const [walletTokens, setWalletTokens] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -412,3 +412,4 @@ export default function StuckPositions() {
   );
 }
 
+export default memo(StuckPositions);

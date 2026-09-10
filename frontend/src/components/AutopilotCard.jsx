@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, memo } from "react";
 import { Bot, ShieldAlert, FlaskConical, Wallet, TrendingUp, Clock } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -56,7 +56,7 @@ function Stat({ label, value, tone = "text-neutral-200", testid }) {
   );
 }
 
-export default function AutopilotCard({ config, onConfigUpdate }) {
+function AutopilotCard({ config, onConfigUpdate }) {
   const [s, setS] = useState(null);
   const load = useCallback(async () => {
     try { setS(await api.autopilotStatus()); } catch { /* best effort */ }
@@ -109,7 +109,15 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
       {gov && (
         <div className="mt-2 flex items-center justify-between gap-2 text-[10px] font-mono text-rose-300 border border-rose-900/60 bg-rose-950/20 px-2 py-1" data-testid="autopilot-governor">
           <span className="inline-flex items-center gap-1.5"><ShieldAlert className="w-3 h-3" /> governor: {b.governor_reason} — that chain trades at {Math.round((b.governor_size_mult || 0.5) * 100)}% size until {fmtWhen(b.governor_until)}</span>
-          <button type="button" onClick={() => api.autopilotReleaseGovernor().then(load)} className="px-1.5 border border-rose-800 hover:bg-rose-900/40 uppercase" data-testid="autopilot-governor-release">release</button>
+          <button type="button" onClick={async () => {
+            try {
+              const snap = await api.autopilotReleaseGovernor();
+              const still = Object.entries(snap?.chains || {}).filter(([, c]) => c.governor_active).map(([k]) => k.toUpperCase());
+              still.length ? toast.error(`Governor re-armed on ${still.join(", ")} — drawdown deepened past another step`)
+                : toast.success("Governor released — sizing back to 100%, held for the governor window unless the drawdown deepens by another step");
+            } catch (e) { toast.error(`Release failed: ${e?.response?.data?.detail || e.message}`); }
+            load();
+          }} className="px-1.5 border border-rose-800 hover:bg-rose-900/40 uppercase" data-testid="autopilot-governor-release">release</button>
         </div>
       )}
 
@@ -272,3 +280,5 @@ export default function AutopilotCard({ config, onConfigUpdate }) {
     </div>
   );
 }
+
+export default memo(AutopilotCard);

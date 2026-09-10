@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, memo } from "react";
 import { Copy, Wallet as WalletIcon, Check, Send } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { toast } from "sonner";
@@ -7,7 +7,7 @@ import StuckPositions from "@/components/StuckPositions";
 import RevealPrivateKey from "@/components/RevealPrivateKey";
 import { copyToClipboard } from "@/lib/clipboard";
 
-export default function WalletCard({ wallet }) {
+function WalletCard({ wallet }) {
   const [copied, setCopied] = useState(false);
   const [showQR, setShowQR] = useState(false);
   const [showWithdraw, setShowWithdraw] = useState(false);
@@ -105,3 +105,5 @@ export default function WalletCard({ wallet }) {
     </div>
   );
 }
+
+export default memo(WalletCard);

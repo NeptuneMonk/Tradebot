@@ -44,7 +44,7 @@ class BankrollEngine:
     def __init__(self, state, db):
         self.state = state
         self.db = db
-        self.governor = {c: {"until": 0.0, "reason": ""} for c in CHAINS}
+        self.governor = {c: {"until": 0.0, "reason": "", "released_at": 0.0, "released_dd_pct": 0.0} for c in CHAINS}
         self.snapshot: dict = {}
         self.rh_fee_floor: dict = {}
         self._task: asyncio.Task | None = None
@@ -163,7 +163,11 @@ class BankrollEngine:
             if changed:
                 logger.info(f"bankroll[{chain}] sizing: ${bankroll:,.2f} ({source}) → {changed}")
             g = self.governor[chain]
-            if not self.governor_active(chain) and dd_pct <= -abs(float(cfg.governor_drawdown_pct)):
+            thr = abs(float(cfg.governor_drawdown_pct))
+            # a manual release holds for governor_hours unless the drawdown worsens by another full step
+            released = time.time() - float(g.get("released_at") or 0.0) < float(cfg.governor_hours) * 3600.0 \
+                and dd_pct > float(g.get("released_dd_pct") or 0.0) - thr
+            if not self.governor_active(chain) and dd_pct <= -thr and not released:
                 g["until"] = time.time() + float(cfg.governor_hours) * 3600.0
                 g["reason"] = f"{chain.upper()} 24h P/L {pnl_24h:+.2f} $ = {dd_pct:+.1f}% of its {source} bankroll"
                 await self.db.autopilot_state.update_one(
@@ -177,6 +181,7 @@ class BankrollEngine:
             "governor_until": self.governor[chain]["until"] if self.governor_active(chain) else None,
             "governor_reason": self.governor[chain]["reason"] if self.governor_active(chain) else None,
             "governor_size_mult": self.size_mult(chain),
+            "governor_released_at": self.governor[chain].get("released_at") or None,
         }
         if chain == "rh":
             snap["fee_floor"] = dict(self.rh_fee_floor)
@@ -220,7 +225,8 @@ class BankrollEngine:
         for c in CHAINS:
             g = (doc.get("governor") or {}).get(c)
             if g:
-                self.governor[c] = {"until": float(g.get("until") or 0.0), "reason": g.get("reason") or ""}
+                self.governor[c] = {"until": float(g.get("until") or 0.0), "reason": g.get("reason") or "",
+                                    "released_at": float(g.get("released_at") or 0.0), "released_dd_pct": float(g.get("released_dd_pct") or 0.0)}
 
     async def loop(self):
         await self.hydrate()
@@ -239,7 +245,11 @@ class BankrollEngine:
             self._task = asyncio.create_task(self.loop())
 
     async def release_governor(self, chain: str | None = None):
+        """Operator release: clears the governor AND suppresses re-engagement for governor_hours unless the
+        drawdown deepens by another governor_drawdown_pct (otherwise the next refresh re-armed it instantly)."""
         for c in ([chain] if chain else CHAINS):
-            self.governor[c] = {"until": 0.0, "reason": ""}
+            dd = float(((self.snapshot.get("chains") or {}).get(c) or {}).get("drawdown_24h_pct") or 0.0)
+            self.governor[c] = {"until": 0.0, "reason": "", "released_at": time.time(), "released_dd_pct": dd}
+            logger.warning(f"bankroll GOVERNOR[{c}] released by operator at {dd:+.1f}% 24h drawdown")
         await self.db.autopilot_state.update_one(
             {"_id": STATE_ID}, {"$set": {"governor": {c: dict(g) for c, g in self.governor.items()}}}, upsert=True)

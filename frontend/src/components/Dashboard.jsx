@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
@@ -295,6 +295,37 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [wsConnected, refreshAll]);
 
+  // Bot Control only cares about 4 status fields — hand it a slice so the 3 s status tick doesn't re-render
+  // the 1100-line card (and its inputs) every time. Callbacks are stable for the same reason.
+  const controlStatus = useMemo(() => status && ({
+    enabled: status.enabled, stopping_gracefully: status.stopping_gracefully,
+    kill_switch_tripped: status.kill_switch_tripped, active_trade_count: status.active_trade_count,
+  }), [status?.enabled, status?.stopping_gracefully, status?.kill_switch_tripped, status?.active_trade_count]);
+  const onConfigPatch = useCallback(async (patch) => {
+    const saved = await api.updateConfig(patch);
+    setConfig(saved);
+    api.status().then((st) => st && setStatus(st)).catch(() => {});
+  }, []);
+  const onStart = useCallback(async () => { await api.start(); refreshAll(); }, [refreshAll]);
+  const onExitTrade = useCallback(async (id) => {
+    try {
+      await api.exitTrade(id);
+      toast.success("Manual exit submitted");
+    } catch (e) {
+      const detail = e?.response?.data?.detail || e?.message || "exit failed";
+      if (e?.response?.status === 400 && /not active/i.test(detail)) toast.info("Trade already closed");
+      else toast.error(`Exit failed: ${detail}`);
+    } finally {
+      refreshAll();
+    }
+  }, [refreshAll]);
+  const onUnpin = useCallback((launchId) =>
+    setLaunches((prev) => prev.map((l) => (l.id === launchId ? { ...l, pinned: false, pin_exited: undefined } : l))), []);
+  const onRulesSave = useCallback(async (r) => { setRules(await api.updateRules(r)); }, []);
+  const onDoctorApplied = useCallback(() => api.config().then(setConfig).catch(() => {}), []);
+  const onReentryRefresh = useCallback(() => api.reentryWatchlist().then(setReentry).catch(() => {}), []);
+  const onStop = useCallback(async () => { await api.stop(); refreshAll(); }, [refreshAll]);
+
   return (
     <TooltipProvider delayDuration={150} skipDelayDuration={50}>
     <div className="min-h-screen bg-neutral-950 text-neutral-50" data-testid="dashboard">
@@ -407,35 +438,10 @@ export default function Dashboard() {
         {/* PRIMARY — Active Trades + Recent Launches always visible. */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 items-start">
           <MinimizableCard id="active-trades" title="Active trades" stat={`${activeTrades.length} open`}>
-          <ActiveTradesTable trades={activeTrades} onExit={async (id) => {
-            try {
-              await api.exitTrade(id);
-              toast.success("Manual exit submitted");
-            } catch (e) {
-              const detail = e?.response?.data?.detail || e?.message || "exit failed";
-              if (e?.response?.status === 400 && /not active/i.test(detail)) {
-                toast.info("Trade already closed");
-              } else {
-                toast.error(`Exit failed: ${detail}`);
-              }
-            } finally {
-              refreshAll();
-            }
-          }} />
+          <ActiveTradesTable trades={activeTrades} onExit={onExitTrade} />
           </MinimizableCard>
           <MinimizableCard id="launch-feed" title="Live launch feed" stat={`${launches.length} tracked`}>
-          <RecentLaunchesFeed
-            launches={launches}
-            onUnpin={(launchId) =>
-              setLaunches((prev) =>
-                prev.map((l) =>
-                  l.id === launchId
-                    ? { ...l, pinned: false, pin_exited: undefined }
-                    : l
-                )
-              )
-            }
-          />
+          <RecentLaunchesFeed launches={launches} onUnpin={onUnpin} />
           </MinimizableCard>
         </div>
 
@@ -460,7 +466,7 @@ export default function Dashboard() {
             storageKey="ui.section.classifier"
             testId="section-classifier"
           >
-            <ClassifierRulesEditor rules={rules} onSave={async (r) => { setRules(await api.updateRules(r)); }} />
+            <ClassifierRulesEditor rules={rules} onSave={onRulesSave} />
           </CollapsibleSection>
         </div>
 
@@ -476,18 +482,12 @@ export default function Dashboard() {
           badge={status?.enabled ? "RUNNING" : "STOPPED"}
         >
           <BotControlCard
-            status={status}
+            status={controlStatus}
             config={config}
-            onUpdate={async (cfg) => {
-              // Config saves only need the fresh config + status back — not the 10-call refreshAll
-              // (that full refetch + re-render is what made toggles feel laggy on phones).
-              const saved = await api.updateConfig(cfg);
-              setConfig(saved);
-              api.status().then((st) => st && setStatus(st)).catch(() => {});
-            }}
-            onConfigLoaded={(cfg) => setConfig(cfg)}
-            onStart={async () => { await api.start(); refreshAll(); }}
-            onStop={async () => { await api.stop(); refreshAll(); }}
+            onUpdate={onConfigPatch}
+            onConfigLoaded={setConfig}
+            onStart={onStart}
+            onStop={onStop}
           />
         </CollapsibleSection>
 
@@ -501,7 +501,7 @@ export default function Dashboard() {
           <StrategyDoctorPanel
             config={config}
             onConfigUpdate={setConfig}
-            onApplied={() => api.config().then(setConfig).catch(() => {})}
+            onApplied={onDoctorApplied}
           />
         </CollapsibleSection>
 
@@ -513,7 +513,7 @@ export default function Dashboard() {
         >
           <CreatorGreylistPanel
             config={config}
-            onConfigUpdate={(cfg) => setConfig(cfg)}
+            onConfigUpdate={setConfig}
           />
         </CollapsibleSection>
 
@@ -524,7 +524,7 @@ export default function Dashboard() {
           testId="section-reentry"
           badge={reentry?.length ? String(reentry.length) : null}
         >
-          <ReentryWatchCard watchlist={reentry} onRefresh={() => api.reentryWatchlist().then(setReentry).catch(() => {})} />
+          <ReentryWatchCard watchlist={reentry} onRefresh={onReentryRefresh} />
         </CollapsibleSection>
 
         <CollapsibleSection

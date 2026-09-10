@@ -1,3 +1,4 @@
+import { memo } from "react";
 import React, { useEffect, useState, useCallback } from "react";
 import { Loader2, Sparkles, X, CheckCircle2, RefreshCw, Stethoscope, Zap } from "lucide-react";
 import { toast } from "sonner";
@@ -40,7 +41,7 @@ const CATEGORY_TINT = {
 
 const CONFIDENCE_DOT = { high: "bg-emerald-400", med: "bg-amber-400", low: "bg-neutral-500" };
 
-export default function StrategyDoctorPanel({ onApplied, config, onConfigUpdate }) {
+function StrategyDoctorPanel({ onApplied, config, onConfigUpdate }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
@@ -302,3 +303,5 @@ function SuggestionCard({ s, busy, onApply, onDismiss }) {
     </div>
   );
 }
+
+export default memo(StrategyDoctorPanel);

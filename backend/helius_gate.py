@@ -17,7 +17,9 @@ touch the toggle).
 """
 from __future__ import annotations
 
-_paused: bool = False
+_paused: bool = False            # operator switch (helius_tracker_enabled = False)
+_auto_paused: bool = False       # doctor pause: both Solana books paused / inventory halt, no open Solana position
+_auto_reason: str = ""
 
 
 def set_paused(paused: bool) -> None:
@@ -25,5 +27,17 @@ def set_paused(paused: bool) -> None:
     _paused = bool(paused)
 
 
+def set_auto_paused(paused: bool, reason: str = "") -> bool:
+    """Returns True when the auto state flipped."""
+    global _auto_paused, _auto_reason
+    changed = bool(paused) != _auto_paused
+    _auto_paused, _auto_reason = bool(paused), (reason if paused else "")
+    return changed
+
+
 def is_helius_paused() -> bool:
-    return _paused
+    return _paused or _auto_paused
+
+
+def snapshot() -> dict:
+    return {"paused": is_helius_paused(), "manual": _paused, "auto": _auto_paused, "auto_reason": _auto_reason}

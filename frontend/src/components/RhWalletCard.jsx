@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, memo } from "react";
 import { ChevronDown, ChevronRight, Copy, ExternalLink, Send, KeyRound, Wallet } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -6,7 +6,7 @@ import HelpHint from "./HelpHint";
 
 const fmt = (v, d = 5) => (v == null ? "—" : Number(v).toFixed(d));
 
-export default function RhWalletCard({ config }) {
+function RhWalletCard({ config }) {
   const [open, setOpen] = useState(false);
   const [w, setW] = useState(null);
   const [feed, setFeed] = useState(null);
@@ -158,3 +158,5 @@ export default function RhWalletCard({ config }) {
     </div>
   );
 }
+
+export default memo(RhWalletCard);

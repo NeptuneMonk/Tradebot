@@ -1,10 +1,10 @@
 import { ShieldAlert, RotateCcw } from "lucide-react";
-import { useState } from "react";
+import { useState, memo } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import HelpHint from "./HelpHint";
 
-export default function DailyLossMeter({ status, onReset }) {
+function DailyLossMeter({ status, onReset }) {
   const loss = status?.daily_loss_usd ?? 0;
   const limit = status?.daily_kill_switch_usd ?? 20;
   const pct = Math.min(100, (loss / Math.max(0.0001, limit)) * 100);
@@ -97,3 +97,5 @@ export default function DailyLossMeter({ status, onReset }) {
     </div>
   );
 }
+
+export default memo(DailyLossMeter);

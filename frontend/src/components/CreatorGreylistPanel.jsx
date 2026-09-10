@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, memo } from "react";
 import { Ghost, RefreshCw, ChevronDown, ChevronRight, Zap, FlaskConical, Shield, Play, Ban, TrendingDown, Zap as Bolt, Sparkles, BarChart3 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -454,7 +454,7 @@ function GreylistRow({ row, expanded, onToggle }) {
 // ---------------------------------------------------------------------------
 // Main panel
 // ---------------------------------------------------------------------------
-export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
+function CreatorGreylistPanel({ config, onConfigUpdate }) {
   const [items, setItems] = useState([]);
   const [blacklist, setBlacklist] = useState([]);
   const [analytics, setAnalytics] = useState(null);
@@ -1004,3 +1004,5 @@ export default function CreatorGreylistPanel({ config, onConfigUpdate }) {
     </div>
   );
 }
+
+export default memo(CreatorGreylistPanel);

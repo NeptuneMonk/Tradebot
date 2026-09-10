@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, memo } from "react";
 import { Lightbulb, RefreshCw, Sparkles, Wrench, Sliders, Clock } from "lucide-react";
 import { api } from "@/lib/api";
 
@@ -66,7 +66,7 @@ function InsightCard({ ins }) {
   );
 }
 
-export default function InsightsCard() {
+function InsightsCard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
 
@@ -142,3 +142,5 @@ export default function InsightsCard() {
     </div>
   );
 }
+
+export default memo(InsightsCard);

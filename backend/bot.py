@@ -329,6 +329,8 @@ class BotState:
         # monitor instead of sitting orphaned in DB.
         if first_load:
             asyncio.create_task(self._active_trades_reconciler_loop())
+            asyncio.create_task(self._helius_autopause_loop())
+            asyncio.create_task(self._loop_lag_meter())
         # Surface the auto-disable to any WS clients listening — front-end
         # will show "Bot auto-disabled on restart" toast if connected.
         if was_running_before_restart and resumed:
@@ -598,6 +600,44 @@ class BotState:
             {"$set": {**self.rules.model_dump(), "_id": "current"}},
             upsert=True,
         )
+
+    def helius_autopause_state(self) -> tuple[bool, str]:
+        """Doctor pause → Helius idle: both Solana books paused by the live-doctor breaker (or inventory halt),
+        and no open Solana position that still needs monitoring. The operator switch always wins (gate ORs them)."""
+        ld = self.live_doctor
+        both = ld is not None and ld.book_paused("scalp") and ld.book_paused("hunt")
+        halt = self.inventory.active()
+        sol_open = any((sl.get("trade") or {}).get("chain") != "rh" for sl in self.active_trades.values())
+        if sol_open or not (both or halt):
+            return False, ""
+        return True, ("inventory halt" if halt else "live-doctor paused scalp + hunt") + " · no open Solana position"
+
+    async def _helius_autopause_loop(self):
+        from helius_gate import set_auto_paused, snapshot as gate_snapshot
+        await asyncio.sleep(8.0)
+        while True:
+            try:
+                on, why = self.helius_autopause_state()
+                if set_auto_paused(on, why):
+                    logger.warning(f"HELIUS AUTO-PAUSE {'ON — ' + why if on else 'OFF — feed resumes'}")
+                    await hub.broadcast("helius_autopause", gate_snapshot())
+            except Exception as e:
+                logger.debug(f"helius autopause check failed: {e}")
+            await asyncio.sleep(10.0)
+
+    loop_lag_ms: dict = {"last": 0.0, "max_1m": 0.0, "samples": 0}
+
+    async def _loop_lag_meter(self):
+        """Event-loop lag: how late a 1 s sleep wakes up. >200 ms means something is blocking the loop."""
+        hist: list[tuple[float, float]] = []
+        while True:
+            t0 = time.monotonic()
+            await asyncio.sleep(1.0)
+            lag = max(0.0, (time.monotonic() - t0 - 1.0) * 1000.0)
+            now = time.time()
+            hist = [(ts, v) for ts, v in hist if now - ts <= 60.0] + [(now, lag)]
+            self.loop_lag_ms = {"last": round(lag, 1), "max_1m": round(max(v for _, v in hist), 1),
+                                "avg_1m": round(sum(v for _, v in hist) / len(hist), 1), "samples": len(hist)}
 
     async def _active_trades_reconciler_loop(self):
         """Every 15s, find DB rows with status=active whose mint is NOT in

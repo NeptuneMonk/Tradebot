@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Repeat, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
@@ -10,7 +11,7 @@ const fmtCountdown = (s) => {
   return `${Math.floor(s / 60)}m ${Math.floor(s % 60)}s`;
 };
 
-export default function ReentryWatchCard({ watchlist, onRefresh }) {
+function ReentryWatchCard({ watchlist, onRefresh }) {
   const remove = async (mint) => {
     try {
       await api.removeReentry(mint);
@@ -80,3 +81,5 @@ export default function ReentryWatchCard({ watchlist, onRefresh }) {
     </div>
   );
 }
+
+export default memo(ReentryWatchCard);

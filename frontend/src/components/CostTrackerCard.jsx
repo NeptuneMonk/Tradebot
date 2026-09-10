@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, memo } from "react";
 import { Receipt, Activity } from "lucide-react";
 import HelpHint from "./HelpHint";
 
@@ -9,7 +9,7 @@ const fmtSol = (v, d = 6) => `${Number(v || 0).toFixed(d)} SOL`;
  * Cost Tracker — shows accumulated trading fees and current network
  * conditions. Auto-refreshes every 8s.
  */
-export default function CostTrackerCard({ apiBase }) {
+function CostTrackerCard({ apiBase }) {
   const [data, setData] = useState(null);
   const [net, setNet] = useState(null);
   const [days, setDays] = useState(7);
@@ -161,3 +161,5 @@ function Pair({ label, value, accent = "text-neutral-200", hint }) {
     </div>
   );
 }
+
+export default memo(CostTrackerCard);

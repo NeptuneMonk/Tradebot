@@ -1,9 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, memo } from "react";
 import { Sliders, Save } from "lucide-react";
 import { toast } from "sonner";
 import HelpHint from "./HelpHint";
 
-export default function ClassifierRulesEditor({ rules, onSave }) {
+function ClassifierRulesEditor({ rules, onSave }) {
   const [local, setLocal] = useState(null);
   useEffect(() => { if (rules) setLocal(rules); }, [rules]);
   if (!local) return <div className="control-card text-neutral-500 text-sm">Loading…</div>;
@@ -88,3 +88,5 @@ function NumField({ value, onChange, step, suffix, testid }) {
     </div>
   );
 }
+
+export default memo(ClassifierRulesEditor);

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, memo } from "react";
 import { Telescope, TrendingUp, Sparkles, Hourglass, Eye, Zap } from "lucide-react";
 import { toast } from "sonner";
 import HelpHint from "./HelpHint";
@@ -61,7 +61,7 @@ function Band({ title, Icon, accentClass, items, emptyText, testId }) {
   );
 }
 
-export default function ScannerCandidatesCard({ candidates, config }) {
+function ScannerCandidatesCard({ candidates, config }) {
   // Protocol-aware bands: NEW = pumpfun [band_new_min_age_min, band_new_max_age_min] min
   //                        SEASONED = pumpswap [band_seasoned_min_age_min, band_seasoned_max_age_min] min
   const newMin = config?.band_new_min_age_min ?? 0;
@@ -285,3 +285,5 @@ function CandidateRow({ c, passing }) {
     </li>
   );
 }
+
+export default memo(ScannerCandidatesCard);

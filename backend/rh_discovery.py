@@ -243,7 +243,13 @@ class RHDiscovery:
             self._task = asyncio.create_task(self._loop())
 
     def _enabled(self) -> bool:
-        return bool(getattr(self.state.config, "rh_feed_enabled", True))
+        if not bool(getattr(self.state.config, "rh_feed_enabled", True)):
+            return False
+        ld = getattr(self.state, "live_doctor", None)
+        rh = getattr(self.state, "rh_paper", None)
+        if ld is not None and ld.book_paused("rh_pons") and not (rh and rh.positions):
+            return False   # doctor paused RH_PONS and nothing is open → don't burn RPC on a feed nobody can trade
+        return True
 
     async def _loop(self):
         await asyncio.sleep(3.0)
