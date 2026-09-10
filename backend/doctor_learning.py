@@ -142,12 +142,15 @@ def book_of(t: dict) -> str | None:
     if a in ("manual", "rh_pons_manual"):
         return None
     b = t.get("book")
+    if b == "runner":
+        return "runner"
     return b if b in BOOKS else book_for_action(a, t.get("chain"))
 
 
 def _pnl(t: dict) -> float | None:
-    """USD after-fee realised PnL — the one unit SOL and RH books share."""
-    v = t.get("pnl_usd")
+    """USD after-fee realised PnL — the one unit SOL and RH books share. Promoted runners count only the
+    post-promotion leg (runner_pnl_usd); the chips banked before promotion belong to the book they came from."""
+    v = t.get("runner_pnl_usd") if t.get("book") == "runner" and t.get("runner_pnl_usd") is not None else t.get("pnl_usd")
     if v is None:
         return None
     try:
@@ -405,7 +408,8 @@ class LearningEngine:
             return []
         min_n = int(cfg.get("doctor_learning_min_trades_per_book", 15))
         books: dict[str, dict] = {}
-        for b in BOOKS + ("global",):
+        from book_params import ALL_BOOKS
+        for b in ALL_BOOKS + ("global",):
             sel = (lambda t: book_of(t) is not None) if b == "global" else (lambda t, _b=b: book_of(t) == _b)
             s24 = book_stats([t for t in trades_24h if sel(t)], cfg)
             s7 = book_stats([t for t in trades_7d if sel(t)], cfg)
@@ -566,10 +570,11 @@ class LearningEngine:
     async def _allocate(self, cfg: dict, books: dict, trades_7d: list[dict], min_n: int):
         """Desk allocator: continuous per-book weights (floor ×0.25, cap ×2, one step per cycle)."""
         import allocator
-        books7 = {b: book_stats([t for t in trades_7d if book_of(t) == b], cfg) for b in BOOKS}
+        from book_params import ALL_BOOKS
+        books7 = {b: book_stats([t for t in trades_7d if book_of(t) == b], cfg) for b in ALL_BOOKS}
         enabled = {"scalp": bool(cfg.get("helius_tracker_enabled", True)), "hunt": bool(cfg.get("creator_greylist_enabled", True)),
-                   "rh_pons": bool(cfg.get("rh_paper_enabled", True))}
-        rows = allocator.plan(cfg, {b: books.get(b) or {} for b in BOOKS}, books7, min_n, enabled)
+                   "rh_pons": bool(cfg.get("rh_paper_enabled", True)), "runner": True}
+        rows = allocator.plan(cfg, {b: books.get(b) or {} for b in ALL_BOOKS}, books7, min_n, enabled)
         self.last["allocator"] = {"enabled": bool(cfg.get("allocator_enabled", True)), "driving": bool(cfg.get("autopilot_enabled")),
                                   "rows": rows, "floor": allocator.FLOOR, "cap": allocator.CAP, "step": allocator.STEP}
         if not (cfg.get("allocator_enabled", True) and cfg.get("autopilot_enabled") and cfg.get("doctor_auto_apply_enabled", True)):

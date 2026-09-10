@@ -867,7 +867,12 @@ async def book_exits_restore_defaults():
 @api.get("/inventory")
 async def inventory_snapshot():
     ld = bot_state.live_doctor
-    return {**bot_state.inventory.snapshot(), "hunt_slot_cap": HUNT_SLOT_CAP,
+    import runner as _runner
+    runners = [{"mint": m, "symbol": (sl.get("trade") or {}).get("symbol"), "stage": (sl.get("trade") or {}).get("runner_stage"),
+                "promoted_from": (sl.get("trade") or {}).get("promoted_from")}
+               for m, sl in bot_state.active_trades.items() if (sl.get("trade") or {}).get("book") == "runner"]
+    return {**bot_state.inventory.snapshot(), "hunt_slot_cap": HUNT_SLOT_CAP, "hunt_cap_now": bot_state._hunt_cap(),
+            "runner_cap": _runner.RUNNER_CAP, "runner_open": len(runners), "runners": runners,
             "book_paused_until": dict(ld.book_paused_until) if ld else {}, "book_breakers": getattr(ld, "last_book_breakers", {}) if ld else {}}
 
 
@@ -1731,6 +1736,14 @@ async def trades_active():
                 d["drawdown_from_peak_pct"] = round(
                     (d["peak_price_sol"] - cur) / d["peak_price_sol"] * 100.0, 1
                 )
+        if d.get("book") == "runner":
+            d["runner_pool"] = bool(slot.get("protocol") == "pumpswap" and slot.get("pumpswap_pool"))
+            pp = float(d.get("promotion_price_sol") or 0)
+            rp = float(slot["trade"].get("runner_peak_price_sol") or pp)
+            d["runner_peak_pct"] = round((rp - pp) / pp * 100.0, 1) if pp > 0 else None
+            d["runner_giveback_pct"] = round((rp - cur) / rp * 100.0, 1) if rp > 0 and cur > 0 else None
+            d["runner_stage"] = slot["trade"].get("runner_stage")
+            d["runner_retail_reason"] = slot["trade"].get("runner_retail_reason")
         # Snipe pattern context — handy for the UI to show "you're 14pp
         # from predicted rug" etc.
         snipe_ctx = slot.get("snipe_pattern_ctx") or {}
@@ -2133,14 +2146,15 @@ async def scanner_candidates():
 
 
 @api.post("/scanner/manual-buy/{mint}")
-async def scanner_manual_buy(mint: str):
+async def scanner_manual_buy(mint: str, runner: bool = False):
     """Operator override: buy a scanner candidate now, bypassing the momentum
     gates (max positions + kill switches still apply). RH tokens route to the
-    paper engine; SOL tokens follow the normal live/paper mode."""
+    paper engine; SOL tokens follow the normal live/paper mode. `runner=true`
+    (explicit operator flag) opens a graduated PumpSwap mint straight into the runner book."""
     if mint in bot_state.rh_discovery.tracking:
         res = await bot_state.rh_paper.manual_enter(mint)
     else:
-        res = await bot_state.manual_enter(mint)
+        res = await bot_state.manual_enter(mint, as_runner=runner)
     if not res.get("ok"):
         raise HTTPException(status_code=409, detail=res.get("reason") or "entry refused")
     return res

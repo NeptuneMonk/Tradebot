@@ -73,7 +73,7 @@ class PnLReconciler:
             },
             {
                 "_id": 0,
-                "id": 1, "entry_sig": 1, "exit_sig": 1, "partial_sig": 1,
+                "id": 1, "entry_sig": 1, "exit_sig": 1, "partial_sig": 1, "partial_sigs": 1, "add_on_sig": 1,
                 "entry_sol": 1, "exit_sol": 1, "partial_sell_sol": 1,
                 "partial_realized_sol": 1, "pnl_sol": 1, "pnl_usd": 1,
             },
@@ -125,11 +125,14 @@ class PnLReconciler:
             exit_delta = ex
 
         partial_delta = 0
-        if partial_sig:
-            pd = await get_tx_wallet_delta_lamports(partial_sig, wallet)
+        legs = list(t.get("partial_sigs") or ([partial_sig] if partial_sig else []))
+        if t.get("add_on_sig"):
+            legs.append(t["add_on_sig"])
+        for sig in legs:
+            pd = await get_tx_wallet_delta_lamports(sig, wallet)
             if pd is None:
                 return
-            partial_delta = pd
+            partial_delta += pd
 
         # entry_delta is negative (lamports left wallet). exit/partial positive.
         net_lamports = entry_delta + partial_delta + exit_delta

@@ -8,11 +8,13 @@ export const BOOK_DEFAULTS = {
   scalp: { stop_loss_pct: 12, target_r: 1.5, trailing_stop_pct: 6, trailing_arm_pct: 12, hold_max_seconds: 40, ladder_1r_sell_pct: 0, ladder_2r_sell_pct: 0 },
   hunt: { stop_loss_pct: 20, target_r: 2.0, trailing_stop_pct: 8, trailing_arm_pct: 0, hold_max_seconds: 0, ladder_1r_sell_pct: 35, ladder_2r_sell_pct: 30 },
   rh_pons: { stop_loss_pct: 12, target_r: 0, take_profit_pct: 20, trailing_stop_pct: 6, trailing_arm_pct: 12, hold_max_seconds: 35 },
+  runner: { stop_loss_pct: 25, target_r: 0, trailing_stop_pct: 15, trailing_arm_pct: 0, hold_max_seconds: 0, ladder_1r_sell_pct: 0, ladder_2r_sell_pct: 0 },
 };
 const BOOK_META = {
   scalp: { label: "Scalp", hint: "momentum + manual · single exit at +target·R or −1R · trail once armed · clock allowed" },
   hunt: { label: "Hunt", hint: "greylist snipe + re-entry · pattern rip-cord first · +1R sell leg 1 & stop → breakeven+cost · +2R sell leg 2 · trail the runner · NO clock (0 = disabled)" },
   rh_pons: { label: "RH · PONS", hint: "Robinhood Chain curves · own exits, never shares Solana values · cost gate + R sizing apply" },
+  runner: { label: "Runner", hint: "winners only — promoted from a live scalp/hunt at +1R with expanding flow, never opened cold · SL from the promotion price · trail 15% armed after +1R from promotion · +3R chip 25% · one add-on 0.5R when graduated + retail · exhausted after 90s of dead flow · NO clock · cap 1 (hunt cap → 1 while open)" },
 };
 const FIELDS = [
   ["stop_loss_pct", "SL %", "1R in price terms (plus expected exit slip). R sizing derives size from this."],

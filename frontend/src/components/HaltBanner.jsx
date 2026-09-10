@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { OctagonAlert, PauseCircle } from "lucide-react";
+import { OctagonAlert, PauseCircle, Rocket } from "lucide-react";
 import { api } from "@/lib/api";
 
 const fmtLeft = (untilTs) => {
@@ -23,13 +23,20 @@ export default function HaltBanner() {
   if (!inv) return null;
   const now = Date.now() / 1000;
   const paused = Object.entries(inv.book_paused_until || {}).filter(([, ts]) => ts > now);
-  if (!inv.halted && paused.length === 0) return null;
+  const runnerFull = (inv.runner_open || 0) >= (inv.runner_cap || 1);
+  if (!inv.halted && paused.length === 0 && !runnerFull) return null;
   return (
     <div className="border-b border-amber-900/70 bg-amber-950/40 px-6 py-2 flex flex-wrap items-center gap-x-6 gap-y-1 text-[11px] font-mono" data-testid="halt-banner">
       {inv.halted && (
         <span className="inline-flex items-center gap-1.5 text-amber-200" data-testid="inventory-halt">
           <OctagonAlert className="w-3.5 h-3.5" />
           INVENTORY HALT — last {inv.trigger_n} Solana closes were stop-outs/rugs · no new Solana entries for {fmtLeft(inv.halted_until)}
+        </span>
+      )}
+      {runnerFull && (
+        <span className="inline-flex items-center gap-1.5 text-fuchsia-300" data-testid="runner-slot-full">
+          <Rocket className="w-3.5 h-3.5" />
+          RUNNER SLOT FULL — {(inv.runners || []).map((r) => `${r.symbol || r.mint.slice(0, 6)} · ${r.stage}`).join(", ")} · hunt cap {inv.hunt_cap_now}/{inv.hunt_slot_cap} · no second promotion
         </span>
       )}
       {paused.map(([book, ts]) => {

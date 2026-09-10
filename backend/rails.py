@@ -11,6 +11,7 @@ logger = logging.getLogger("rails")
 RAILS: dict[str, tuple[float, float]] = {
     "book_scalp_size_mult": (0.25, 2.0),
     "book_hunt_size_mult": (0.25, 2.0),
+    "book_runner_size_mult": (0.25, 2.0),
     "book_rh_size_mult": (0.25, 2.0),
     "stop_loss_pct": (5.0, 40.0),
     "target_r": (1.0, 5.0),

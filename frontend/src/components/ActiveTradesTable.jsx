@@ -43,6 +43,7 @@ function ActiveTradesTable({ trades, onExit }) {
                       title={`Graduated while held (${t.graduated_at_pnl_pct != null ? (t.graduated_at_pnl_pct >= 0 ? "+" : "") + t.graduated_at_pnl_pct.toFixed(1) + "%" : "?"}) — riding on the Uniswap v4 pool; exits route through the Universal Router.`}
                     >POOL</span>
                   )}
+                  {t.book === "runner" && <RunnerBadge t={t} />}
                   <span className="mr-1.5 align-middle inline-flex"><ChainBadge chain={t.chain} mint={t.mint} /></span>
                   {t.symbol ? <span className="text-neutral-200">{t.symbol}</span> : <span className="text-neutral-500">—</span>}
                   <span className="text-neutral-600 ml-2 text-[10px]">{short(t.mint)}</span>
@@ -77,6 +78,33 @@ function ActiveTradesTable({ trades, onExit }) {
         </table>
       </div>
     </div>
+  );
+}
+
+const STAGE_CLS = {
+  launch: "border-sky-700 text-sky-300 bg-sky-950/40",
+  graduating: "border-amber-700 text-amber-300 bg-amber-950/40",
+  graduated: "border-fuchsia-700 text-fuchsia-300 bg-fuchsia-950/40",
+  retail: "border-emerald-700 text-emerald-300 bg-emerald-950/40",
+  exhausted: "border-rose-700 text-rose-300 bg-rose-950/40",
+};
+
+// RUNNER · stage · peak % since promotion · giveback % · pool yes/no
+function RunnerBadge({ t }) {
+  const stage = t.runner_stage || "launch";
+  const fmt = (v, sign) => (v == null ? "—" : `${sign && v >= 0 ? "+" : ""}${Number(v).toFixed(0)}%`);
+  return (
+    <span
+      data-testid={`runner-badge-${t.mint}`}
+      title={`Promoted from ${t.promoted_from || "?"} · stage ${stage}${t.runner_retail_reason ? ` · ${t.runner_retail_reason}` : ""} · peak ${fmt(t.runner_peak_pct, true)} since promotion · giveback ${fmt(t.runner_giveback_pct)} · pool ${t.runner_pool ? "yes" : "no"}`}
+      className={`mr-1.5 inline-flex items-center gap-1 px-1 py-0 border text-[9px] font-mono align-middle ${STAGE_CLS[stage] || STAGE_CLS.launch}`}
+    >
+      <span className="font-semibold tracking-wider">RUNNER</span>
+      <span data-testid={`runner-stage-${t.mint}`}>{stage}</span>
+      <span className="text-neutral-400">pk {fmt(t.runner_peak_pct, true)}</span>
+      <span className="text-neutral-400">gb {fmt(t.runner_giveback_pct)}</span>
+      <span className={t.runner_pool ? "text-emerald-300" : "text-neutral-500"}>pool {t.runner_pool ? "yes" : "no"}</span>
+    </span>
   );
 }
 

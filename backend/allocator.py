@@ -13,6 +13,7 @@ logger = logging.getLogger("allocator")
 
 BOOK_KEYS = dict(SIZE_KEYS)
 FLOOR, CAP, STEP = 0.25, 2.0, 0.25
+RUNNER_MIN_N = 20               # runner is judged only on its own fills, never before 20 of them
 TARGET_EXPECTANCY_R = 0.30      # R/fill that earns the full ×2 scale-up (stake-relative, never $)
 
 
@@ -44,7 +45,7 @@ def plan(cfg: dict, books24: dict, books7: dict, min_n: int, enabled_books: dict
             continue
         cur = float(cfg.get(key) if cfg.get(key) is not None else 1.0)
         e, n = _blend(books24.get(book) or {}, books7.get(book) or {})
-        tgt, why = target_weight(e, n, cur, min_n)
+        tgt, why = target_weight(e, n, cur, max(min_n, RUNNER_MIN_N) if book == "runner" else min_n)
         nxt = round(max(FLOOR, min(CAP, cur + max(-STEP, min(STEP, tgt - cur)))), 2)
         out.append({"book": book, "key": key, "current": round(cur, 2), "target": round(tgt, 2), "next": nxt,
                     "expectancy_r": None if e is None else round(e, 3), "n": n, "reason": why, "change": abs(nxt - cur) >= 0.01})

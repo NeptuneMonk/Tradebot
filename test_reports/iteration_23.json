@@ -1,0 +1,32 @@
+{
+  "summary": "Iteration 23: Solana 4th book 'runner' (promoted winners only) — structural coverage complete. All backend endpoints report the expected runner shape; the BookExitsEditor UI shows a Runner row with SL 25 / Trail 15 / Arm 0 / Clock 0 next to Scalp/Hunt/RH · PONS; the doctor allocator emits a runner row with reason 'n=2 < 20: not enough fills to judge — keep exploring' and change=false. HaltBanner does not render runner-slot-full (runner_open=0). No config or wallet/live changes were made. Bot left STOPPED (paper).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard", "issues": ["React warning: 'Encountered two children with the same key' fires ~25× on dashboard load — non-blocking but pollutes console (unrelated to runner work)"]},
+      {"screen": "Dashboard", "issues": ["/api/auth/me returns 401 once during initial hydration despite valid session_token cookie — cookie is subsequently used successfully; may be a pre-flight ordering issue, non-blocking"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration23_review.py",
+    "/app/test_reports/pytest/iter23.xml"
+  ],
+  "action_items": [
+    "Optional: investigate the duplicate React key warning on dashboard load (likely in a list rendered by scorecard or allocator/technique tables)",
+    "Optional: silence the initial /api/auth/me 401 that fires before the session cookie is applied to the fetch"
+  ],
+  "critical_code_review_comments": [
+    "Runner cap is enforced only via _hunt_cap adjustment + RUNNER_CAP=1; ensure _try_promote + manual_enter share the same guard so a manual promote can't race a live promote past cap 1 (covered by test_runner_book.py)",
+    "book_exits editor does not fetch/persist a 'runner' key from GET /api/bot/config.book_exits (defaults used from BOOK_DEFAULTS). Confirm _save handler will PUT the runner row too when user edits; otherwise runner exits stay defaults and cannot be tuned via UI"
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration23_review.py"],
+  "success_rate": {"backend": "100% (49/49: 7 iter23 + test_runner_book + test_profitability_refactor)", "frontend": "100% (all runner-related testids and values verified)"},
+  "test_credentials": "Emergent Google OAuth (single-user whitelist). Seeded session cookie from /app/memory/.tok (test_session_1789010714536, email nbobby79@gmail.com).",
+  "seed_data_creation": "None. Existing 2 closed runner paper rows (Dango, Sim) were already present in /api/trades/history and matched all expected fields (promoted_from='scalp', promotion_banked_usd, runner_pnl_usd, partial_legs=1).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Runner-book pytest suite: /app/backend/tests/test_iteration23_review.py + test_runner_book.py + test_profitability_refactor.py all pass. The doctor learning 'allocator' field is only populated after /api/doctor/run-now — tests call it before reading. BookExitsEditor testids: book-exits-row-runner, book-exit-runner-{stop_loss_pct,target_r,trailing_stop_pct,trailing_arm_pct,hold_max_seconds}.",
+  "rca of the issue": "N/A — no functional bugs found. Two cosmetic console issues noted (dup React key, one-shot 401 on /api/auth/me at load) but do not affect runner functionality."
+}

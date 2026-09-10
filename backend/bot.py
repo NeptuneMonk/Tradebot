@@ -32,6 +32,7 @@ from slippage import pool_depth_sol, auto_exit_slip_bps, recent_vol_pct, entry_s
 import cost_gate
 import r_sizer
 import exits
+import runner
 from scorecard import Scorecard
 from inventory import InventoryHalt, HUNT_SLOT_CAP
 from reentry_logic import decide_reentry, recent_buyers_and_inflow, trigger_context
@@ -637,6 +638,8 @@ class BotState:
                 continue
             seen_mints.add(mint)
             slot = self.active_trades.get(mint)
+            if slot is None and mint in self._pending_entry_mints:
+                continue   # exit in flight (popped by _exit, mint reserved) — not an orphan
             if slot is None:
                 # Orphan — in DB but not in memory. Rebuild slot + monitor.
                 # 2026-02-08: persist + restore the in-flight monitor state
@@ -902,8 +905,8 @@ class BotState:
             in_flight = len(self.active_trades) + len(self._pending_entry_mints)
             if in_flight >= cap:
                 return
-            if self._hunt_open() >= min(HUNT_SLOT_CAP, cap):
-                return   # re-entries are hunt fills — same 2-of-3 cap as snipes
+            if self._hunt_open() >= min(self._hunt_cap(), cap):
+                return   # re-entries are hunt fills — same cap as snipes (2, or 1 while a runner is open)
             # SL cooldown applies to re-entry watcher too — if the previous
             # exit was SL, give the price action time to settle.
             cd_until = self.sl_cooldown_until.get(mint, 0.0)
@@ -1244,6 +1247,157 @@ class BotState:
     def _hunt_open(self) -> int:
         return sum(1 for sl in self.active_trades.values() if (sl.get("trade") or {}).get("book") == "hunt")
 
+    def _runner_open(self) -> int:
+        return runner.open_count(self.active_trades)
+
+    def _hunt_cap(self) -> int:
+        """Hunt may hold 2 slots — 1 while a runner is open (a runner is a promoted hunt/scalp, never a third name)."""
+        return runner.HUNT_CAP_WITH_RUNNER if self._runner_open() else HUNT_SLOT_CAP
+
+    async def _try_promote(self, mint: str, slot: dict, cur_price_sol: float, pct: float) -> bool:
+        """Promote a live scalp/hunt to the runner book when every promotion rule holds. Returns True iff promoted
+        (the caller must then let the position ride — the scalp/hunt exit is void)."""
+        trade_doc = slot["trade"]
+        book = trade_doc.get("book") or "scalp"
+        r_usd = float(trade_doc.get("r_usd") or 0.0)
+        if r_usd <= 0 or self.active_trades.get(mint) is not slot:
+            return False
+        if self._runner_open() >= runner.RUNNER_CAP:
+            if not slot.get("_runner_cap_skipped"):
+                slot["_runner_cap_skipped"] = True
+                logger.info(f"runner-cap: {mint[:8]}… [{book}] qualifies but the runner slot is full — {book} exits stand")
+                await self._skip_event({"mint": mint, "band": book, "reason": "runner-cap",
+                                        "details": [f"{runner.RUNNER_CAP} runner already open"]})
+            return False
+        now = time.time()
+        bucket = self.tracking.get(mint) or {}
+        ctx = trade_doc.get("entry_ctx") or {}
+        entry_p = float(trade_doc.get("entry_price_sol") or 0)
+        peak_pct = (float(slot.get("peak_price_sol") or entry_p) - entry_p) / entry_p * 100.0 if entry_p > 0 else 0.0
+        one_r_pct = exits.r_pct(slot)
+        remaining_usd = float(trade_doc.get("entry_usd") or 0.0) * (1.0 + pct / 100.0)
+        pnl_usd = float(trade_doc.get("entry_usd") or 0.0) * pct / 100.0 + float(trade_doc.get("partial_realized_usd") or 0.0)
+        protocol = slot.get("protocol", "pumpfun")
+        sol_price = await get_sol_usd_price()
+        depth_usd = float(slot.get("_depth_sol") or 0.0) * sol_price
+        _, _, exit_slip = self._resolve_fees()
+        exit_liq = trade_doc.get("exit_liquidity_likeness_pct")
+        if self.live_doctor is not None:
+            try:
+                exit_liq = (await self.live_doctor.score_launch(mint, book)).get("exit_liquidity_likeness_pct", exit_liq)
+            except Exception:
+                pass
+        flow = runner.flow_snapshot(slot, bucket, now, cur_price_sol)
+        ok, why = runner.promotion_ok(
+            book=book, pnl_r=pnl_usd / r_usd, mfe_r=peak_pct / one_r_pct if one_r_pct > 0 else 0.0,
+            buyers_now=len(bucket.get("buyers") or ()), buyers_entry=int(ctx.get("unique_buyers") or 0),
+            inflow_now=float(bucket.get("sol_inflow_lamports") or 0) / LAMPORTS_PER_SOL, inflow_entry=float(ctx.get("sol_inflow") or 0.0),
+            has_tape=bool(bucket.get("buy_events")), mc_velocity_5m_pct=float(flow["mc_velocity_5m_pct"]),
+            exit_liq_pct=None if exit_liq is None else float(exit_liq),
+            exit_cost_pct=runner.exit_cost_pct(remaining_usd, depth_usd, exit_slip, protocol),
+            ladder_legs_done=int(slot.get("ladder_legs_done") or 0))
+        if not ok:
+            if now - float(slot.get("_promo_log_ts") or 0) > 10:
+                slot["_promo_log_ts"] = now
+                logger.info(f"[{book}] {mint[:8]}… not promoted: {why}")
+            return False
+        if book == "scalp":
+            if not await self._partial_exit(mint, runner.SCALP_BANK_FRAC, reason=f"promotion → runner: bank {runner.SCALP_BANK_FRAC * 100:.0f}% (+{pct:.1f}%)"):
+                return False
+        if self.active_trades.get(mint) is not slot or self._runner_open() >= runner.RUNNER_CAP:
+            return False   # the slot was closed / another runner won the slot while we were selling
+        runner.promote(trade_doc, slot, cur_price_sol, protocol, now)
+        await self.db.trades.update_one({"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True)
+        await hub.broadcast("trade_update", trade_doc)
+        logger.info(f"PROMOTED {mint[:8]}… {trade_doc['promoted_from']} → runner at {pct:+.1f}% "
+                    f"(pnl {pnl_usd / r_usd:+.2f}R, stage {trade_doc['runner_stage']}); hunt cap now {self._hunt_cap()}")
+        return True
+
+    async def _run_runner(self, mint: str, slot: dict, cur_price_sol: float, sl_fire, ts_fire) -> bool:
+        """One runner tick: flow → stage → decide_runner → (+3R chip | exit) → one add-on when graduated + retail."""
+        trade_doc = slot["trade"]
+        cfg, now = self.config, time.time()
+        bucket = self.tracking.get(mint) or {}
+        flow = runner.flow_snapshot(slot, bucket, now, cur_price_sol)
+        prev_stage = trade_doc.get("runner_stage")
+        pool_missing_since = slot.get("_runner_pool_missing_since")
+        stage = runner.update_stage(cfg, trade_doc, slot, flow, now, curve_complete=bool(slot.get("_curve_complete") or pool_missing_since),
+                                    pool_ready=slot.get("protocol") == "pumpswap" and bool(slot.get("pumpswap_pool")))
+        flow["reason"] = slot.get("_runner_retail_reason")
+        if stage != prev_stage:
+            logger.info(f"runner {mint[:8]}… stage {prev_stage} → {stage} ({flow['reason']})")
+            await self.db.trades.update_one({"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True)
+            await hub.broadcast("trade_update", trade_doc)
+        d = exits.decide_runner(cfg, slot, cur_price_sol, sl_fire, ts_fire, flow=flow, stage=stage,
+                                pool_missing_s=(now - pool_missing_since) if pool_missing_since else 0.0)
+        if d.kind == "partial":
+            slot["exit_in_progress"] = True
+            try:
+                if await self._partial_exit(mint, d.fraction, reason=d.reason):
+                    trade_doc["runner_3r_done"] = True
+                    trade_doc["runner_trail_pct"] = min(runner.PLUS_3R_TRAIL_PCT, runner.param(cfg, "trailing_stop_pct"))
+                    await self.db.trades.update_one({"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True)
+            finally:
+                slot["exit_in_progress"] = False
+            return False
+        if d.kind == "exit":
+            slot["exit_in_progress"] = True
+            try:
+                await self._exit(mint, reason=d.reason)
+                return True
+            finally:
+                slot["exit_in_progress"] = False
+        if stage in ("graduated", "retail") and not trade_doc.get("runner_add_on_done") and slot.get("_runner_retail_fail_since") is None:
+            await self._runner_add_on(mint, slot, cur_price_sol)
+        return False
+
+    async def _runner_add_on(self, mint: str, slot: dict, cur_price_sol: float) -> bool:
+        """The ONE add-on: add_on_r × original R (cost-gated, ≤ max_trade_usd) bought on the PumpSwap pool."""
+        trade_doc = slot["trade"]
+        cfg = self.config
+        trade_doc["runner_add_on_done"] = True     # one attempt, pass or fail — never a second
+        pool = slot.get("pumpswap_pool") or ""
+        pool_state = await pumpswap.fetch_pool_state(pool) if pool else None
+        if not pool_state:
+            return False
+        sol_price = await get_sol_usd_price()
+        eff_priority, eff_slip, eff_exit_slip = self._resolve_fees()
+        depth_usd = float(pool_state["quote_reserves"]) / LAMPORTS_PER_SOL * sol_price
+        plan = runner.add_on_plan(cfg, trade_doc, depth_usd=depth_usd, exit_slip_bps=eff_exit_slip, entry_slip_bps=eff_slip,
+                                  fee_usd_round_trip=estimate_tx_fee_sol(eff_priority, CU_PUMPSWAP) * 2 * sol_price, max_trade_usd=cfg.max_trade_usd)
+        if not plan or not plan["cost_gate_pass"]:
+            logger.info(f"runner add-on skipped {mint[:8]}…: {(plan or {}).get('cost_gate_reason', 'no plan')}")
+            return False
+        sol_in_lamports = int(plan["size_usd"] / sol_price * LAMPORTS_PER_SOL)
+        tokens_out, max_sol = pumpswap.quote_buy_tokens(pool_state, sol_in_lamports, eff_slip)
+        sig = None
+        if trade_doc["mode"] == "live":
+            try:
+                kp, user, mint_pk = get_keypair(), get_pubkey(), Pubkey.from_string(mint)
+                base_tp = await pumpfun.get_mint_token_program(mint)
+                user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
+                wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, max_sol)
+                ixs = [pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp), *wsol_ixs,
+                       pumpswap.build_buy_ix(user, pool_state, user_token_ata, wsol_acc, base_amount_out=tokens_out,
+                                             max_quote_amount_in=max_sol, base_token_program=base_tp),
+                       pumpswap.build_close_wsol_ix(user, wsol_acc)]
+                sig = await pumpfun.send_versioned_tx(kp, ixs, eff_priority, compute_unit_limit=400_000)
+            except Exception as e:
+                logger.warning(f"runner add-on buy failed for {mint[:8]}…: {e}")
+                return False
+        cost_sol = sol_in_lamports / LAMPORTS_PER_SOL
+        trade_doc["entry_tokens"] = int(trade_doc["entry_tokens"]) + int(tokens_out)
+        trade_doc["entry_sol"] = float(trade_doc["entry_sol"]) + cost_sol
+        trade_doc["entry_usd"] = trade_doc["entry_sol"] * sol_price
+        trade_doc["entry_fee_sol"] = float(trade_doc.get("entry_fee_sol") or 0.0) + estimate_tx_fee_sol(eff_priority, CU_PUMPSWAP)
+        trade_doc.update({"add_on_sig": sig, "add_on_usd": plan["size_usd"], "add_on_price_sol": cur_price_sol, "add_on_at": time.time(),
+                          "add_on_cost_pct": plan["expected_cost_pct"]})
+        slot["exit_blocked_until"] = time.time() + 3.0
+        await self.db.trades.update_one({"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True)
+        await hub.broadcast("trade_update", trade_doc)
+        logger.info(f"runner ADD-ON {mint[:8]}…: ${plan['size_usd']:.2f} at {cur_price_sol:.3e} SOL (cost {plan['expected_cost_pct']:.1f}%)")
+        return True
+
     async def _run_ladder(self, mint: str, slot: dict, cur_price_sol: float, elapsed: float, tag: str = "") -> bool:
         """Evaluate the position's BOOK ladder (exits.py) once. Returns True when the slot was closed."""
         trade_doc = slot["trade"]
@@ -1266,8 +1420,25 @@ class BotState:
                                                   min_samples=cfg.ts_persistence_min_samples)
 
         book = trade_doc.get("book") or "scalp"
+        if book == "runner":
+            return await self._run_runner(mint, slot, cur_price_sol, sl_fire, ts_fire)
         d = exits.decide_hunt(cfg, slot, pct, cur_price_sol, elapsed, sl_fire, ts_fire) if book == "hunt" \
             else exits.decide_scalp(cfg, slot, pct, cur_price_sol, elapsed, sl_fire, ts_fire)
+        # promotion → runner: scalp at its +target·R exit, hunt once the +1R leg is banked (never on a stop)
+        promo_window = (book == "scalp" and d.kind == "exit" and "target" in d.reason) or \
+                       (book == "hunt" and int(slot.get("ladder_legs_done") or 0) >= 1 and d.kind != "exit"
+                        and time.time() - float(slot.get("_promo_check_ts") or 0) >= 2.0)
+        if promo_window:
+            if slot.get("exit_in_progress"):
+                return False   # another exit / promotion owns this slot right now
+            slot["exit_in_progress"] = True
+            slot["_promo_check_ts"] = time.time()
+            try:
+                promoted = await self._try_promote(mint, slot, cur_price_sol, pct)
+            finally:
+                slot["exit_in_progress"] = False
+            if promoted or self.active_trades.get(mint) is not slot:
+                return False
         if d.kind is None:
             return False
         kind = "sl" if ("stop-loss" in d.reason or "ladder stop" in d.reason) else "tp" if "target" in d.reason else None
@@ -1493,7 +1664,16 @@ class BotState:
             "baseline_buys": baseline_buys,
         }
 
+    RUNNER_PATTERN_EXITS = ("rip-cord", "curve-fill", "peak-MC")   # rug/flush signals; stale + velocity decay → runner.exhausted instead
+
     def _check_snipe_pattern_exit(self, slot: dict, cur_price_sol: float) -> tuple[bool, str]:
+        impl = getattr(self, "_check_snipe_pattern_exit_impl", None)
+        fired, reason = impl(slot, cur_price_sol) if impl else BotState._check_snipe_pattern_exit_impl(self, slot, cur_price_sol)
+        if fired and (slot.get("trade") or {}).get("book") == "runner" and not any(m in reason for m in self.RUNNER_PATTERN_EXITS):
+            return False, ""   # a runner has no clock: dead flow is judged by its own retail rules (dead_s)
+        return fired, reason
+
+    def _check_snipe_pattern_exit_impl(self, slot: dict, cur_price_sol: float) -> tuple[bool, str]:
         """Pattern-based exit decision for greylist snipes. Returns
         `(should_exit, reason)`.
 
@@ -2087,13 +2267,29 @@ class BotState:
             logger.exception(f"greylist_snipe failed for {launch.mint}: {e}")
 
     # ---------- Entry / exit (live + paper) ----------
-    async def manual_enter(self, mint: str) -> dict:
+    async def manual_enter(self, mint: str, as_runner: bool = False) -> dict:
         """Operator override from the scanner card. Bypasses momentum gates;
         honours Helius pause, daily kill switch and max positions. Once open
-        the position is monitored like any other (SL/TP/trail)."""
+        the position is monitored like any other (SL/TP/trail).
+        A graduated PumpSwap mint the scanner no longer tracks is seeded into a temp bucket from its pool.
+        `as_runner` (operator flag, default off) converts the fill straight into the runner book."""
         b = self.tracking.get(mint)
         if not b:
-            return {"ok": False, "reason": "mint not tracked (scanner no longer sees it)"}
+            try:
+                Pubkey.from_string(mint)
+                pool = await asyncio.wait_for(pumpswap.find_pool_for_mint(mint), timeout=8.0)
+            except Exception:
+                pool = None
+            if not pool:
+                return {"ok": False, "reason": "mint not tracked (scanner no longer sees it) and no PumpSwap pool found"}
+            b = self.tracking[mint] = {
+                "launch_id": None, "creator": "", "start": time.time(), "protocol": "pumpswap", "pumpswap_pool": pool,
+                "graduated_at": time.time(), "buyers": set(), "buy_events": deque(maxlen=500), "sol_inflow_lamports": 0,
+                "buy_count": 0, "curve_fill_pct": 100.0, "social_score": 0, "project_score": 0, "project_flags": {},
+                "last_persist": 0.0, "name": None, "symbol": None, "creator_rugs": 0, "first_seen_price_sol": 0.0,
+                "last_price_sol": 0.0, "price_samples": deque(maxlen=120), "last_price_sample_ts": 0.0,
+                "scanner_eligible": False, "scanner_last_attempt": 0.0, "manual_seed": True,
+            }
         if mint in self.active_trades:
             return {"ok": False, "reason": "already in an active position"}
         if self.kill_switch_tripped:
@@ -2101,14 +2297,22 @@ class BotState:
         cap = max(1, self.config.max_concurrent_positions)
         if len(self.active_trades) + len(self._pending_entry_mints) >= cap:
             return {"ok": False, "reason": f"max positions reached ({cap})"}
+        if as_runner and self._runner_open() >= runner.RUNNER_CAP:
+            return {"ok": False, "reason": "runner-cap: the runner slot is already taken"}
         launch = Launch(mint=mint, creator=b.get("creator") or "", bonding_curve="",
                         name=b.get("name"), symbol=b.get("symbol"))
         launch.id = b.get("launch_id") or launch.id
         launch.classifier_action = "manual"
         await self._enter(launch, 50, "manual")
         if mint in self.active_trades:
-            t = self.active_trades[mint].get("trade") or {}
-            return {"ok": True, "mint": mint, "symbol": b.get("symbol"),
+            slot = self.active_trades[mint]
+            t = slot.get("trade") or {}
+            if as_runner and t.get("book") != "runner":
+                runner.promote(t, slot, float(t.get("entry_price_sol") or 0), slot.get("protocol", "pumpfun"))
+                t["promoted_from"] = "manual"
+                await self.db.trades.update_one({"_id": t["id"]}, {"$set": t}, upsert=True)
+                logger.info(f"manual runner {mint[:8]}… opened (operator flag)")
+            return {"ok": True, "mint": mint, "symbol": b.get("symbol"), "book": t.get("book"),
                     "mode": (t.get("mode") if isinstance(t, dict) else getattr(t, "mode", None))}
         return {"ok": False, "reason": "entry did not open — check backend log (pool/curve state, quote, helius pause)"}
 
@@ -2164,10 +2368,12 @@ class BotState:
             in_flight = len(self.active_trades) + len(self._pending_entry_mints)
             if in_flight >= cap:
                 return
-            if book == "hunt" and self._hunt_open() >= min(HUNT_SLOT_CAP, cap):
-                logger.info(f"hunt-cap: {launch.mint[:8]}… refused — {HUNT_SLOT_CAP} hunt slots already open")
+            hunt_cap = self._hunt_cap()
+            if book == "hunt" and self._hunt_open() >= min(hunt_cap, cap):
+                logger.info(f"hunt-cap: {launch.mint[:8]}… refused — {hunt_cap} hunt slot(s) already open"
+                            + (" (runner open)" if hunt_cap < HUNT_SLOT_CAP else ""))
                 await self._skip_event({"mint": launch.mint, "band": "hunt", "reason": "hunt-cap",
-                                        "details": [f"{HUNT_SLOT_CAP} of {cap} slots already hold hunt fills"]})
+                                        "details": [f"{hunt_cap} of {cap} slots already hold hunt fills" + (" — runner open" if hunt_cap < HUNT_SLOT_CAP else "")]})
                 return
             # SL cooldown — if this mint just exited via stop-loss, refuse to
             # re-enter for the configured window. Buying back into a freshly
@@ -2575,6 +2781,7 @@ class BotState:
             greylist_pattern_at_entry=greylist_ctx.get("pattern"),
             entry_ctx={"curve_liquidity_sol": float(real_sol),
                        "unique_buyers": int(getattr(launch, "unique_buyers", 0) or 0),
+                       "sol_inflow": float((self.tracking.get(launch.mint) or {}).get("sol_inflow_lamports") or 0) / LAMPORTS_PER_SOL,
                        "buy_count": int(getattr(launch, "buy_count", 0) or 0),
                        "usd_market_cap": float(getattr(launch, "usd_market_cap", 0) or 0),
                        "creator_score": greylist_ctx.get("score"),
@@ -2894,6 +3101,8 @@ class BotState:
                                 "ladder_legs_done": int(slot.get("ladder_legs_done") or 0),
                                 "ladder_stop_pct": float(slot.get("ladder_stop_pct") or 0),
                                 "_entry_ts_mono": float(slot.get("_entry_ts_mono") or 0),
+                                **({k: slot["trade"].get(k) for k in ("runner_stage", "runner_peak_price_sol", "runner_giveback_pct", "runner_retail_reason")}
+                                   if slot["trade"].get("book") == "runner" else {}),
                             }},
                         )
                 except Exception:
@@ -2909,8 +3118,10 @@ class BotState:
 
                 # No-momentum exit — one-shot at no_momentum_after_s: a position
                 # that never reached +min_mfe% is dead money on a micro-cap.
+                is_runner = (slot.get("trade") or {}).get("book") == "runner"
                 if (
                     self.config.no_momentum_exit_enabled
+                    and not is_runner
                     and not slot.get("ladder_legs_done")
                     and not slot.get("_no_momentum_checked")
                     and elapsed >= self.config.no_momentum_after_s
@@ -2936,8 +3147,24 @@ class BotState:
                         await asyncio.sleep(1.0)
                         continue
                     cur_price_sol = pumpswap.price_sol_per_raw_token(pool_state)
+                    slot["_depth_sol"] = float(pool_state.get("quote_reserves") or 0) / LAMPORTS_PER_SOL
+                    slot.pop("_runner_pool_missing_since", None)
                 else:
                     state = await pumpfun.fetch_bonding_curve_state(mint)
+                    if not state and is_runner:
+                        # runner: a closed curve account is graduation in progress — wait grad_grace_s for the pool
+                        if await self._detect_and_migrate_graduation(mint, slot):
+                            continue
+                        slot.setdefault("_runner_pool_missing_since", time.time())
+                        if time.time() - slot["_runner_pool_missing_since"] >= runner.param(self.config, "grad_grace_s"):
+                            slot["exit_in_progress"] = True
+                            try:
+                                await self._exit(mint, reason=f"runner-no-pool: curve gone, no PumpSwap pool after {runner.param(self.config, 'grad_grace_s'):g}s")
+                                return
+                            finally:
+                                slot["exit_in_progress"] = False
+                        await asyncio.sleep(1.0)
+                        continue
                     if not state:
                         # Null curve state usually means one of:
                         #   1. token graduated (bonding curve account closed)
@@ -2981,13 +3208,18 @@ class BotState:
                         if await self._detect_and_migrate_graduation(mint, slot):
                             await asyncio.sleep(0.4)
                             continue
-                        slot["exit_in_progress"] = True
-                        try:
-                            await self._exit(mint, reason="bonding curve completed (LP about to deploy)")
-                            return
-                        finally:
-                            slot["exit_in_progress"] = False
+                        if not is_runner:
+                            slot["exit_in_progress"] = True
+                            try:
+                                await self._exit(mint, reason="bonding curve completed (LP about to deploy)")
+                                return
+                            finally:
+                                slot["exit_in_progress"] = False
+                        # runner: stage = graduating; decide_runner flattens after grad_grace_s without a pool
+                        slot["_curve_complete"] = True
+                        slot.setdefault("_runner_pool_missing_since", time.time())
                     cur_price_sol = state["virtual_sol_reserves"] / state["virtual_token_reserves"] / LAMPORTS_PER_SOL
+                    slot["_depth_sol"] = float(state.get("real_sol_reserves") or 0) / LAMPORTS_PER_SOL
 
                 pct_change = (cur_price_sol - trade_doc["entry_price_sol"]) / max(trade_doc["entry_price_sol"], 1e-18) * 100
 
@@ -3047,8 +3279,10 @@ class BotState:
                 # cadence as the previous unconditional sleep. SL/TP/trailing
                 # checks above are unchanged; we just react sooner when the
                 # market moves and stay quiet when it doesn't.
+                if is_runner:
+                    runner.note_tick(slot, time.time(), cur_price_sol, bool(slot.pop("_pushed", False)))
                 if watch_account:
-                    await account_event_bus.wait_for_change(watch_account, timeout=0.8)
+                    slot["_pushed"] = await account_event_bus.wait_for_change(watch_account, timeout=0.8)
                 else:
                     await asyncio.sleep(0.8)
             except asyncio.CancelledError:
@@ -3075,10 +3309,17 @@ class BotState:
         slot = self.active_trades.get(mint)
         if not slot:
             return False
-        if slot.get("partial_persisted"):
-            return False  # already partialled — don't re-partial
+        if slot.get("_partial_in_flight"):
+            return False  # one partial at a time (hunt legs, promotion bank, +3R chip may each sell once)
         if not (0.0 < fraction < 1.0):
             return False
+        slot["_partial_in_flight"] = True
+        try:
+            return await self._partial_exit_impl(mint, slot, fraction, reason)
+        finally:
+            slot["_partial_in_flight"] = False
+
+    async def _partial_exit_impl(self, mint: str, slot: dict, fraction: float, reason: str) -> bool:
         trade_doc = slot["trade"]
         protocol = slot.get("protocol", "pumpfun")
         sol_price = await get_sol_usd_price()
@@ -3239,20 +3480,22 @@ class BotState:
         # Update trade doc — reduce remaining position, bank realized PnL
         cu = CU_PUMPSWAP if protocol == "pumpswap" else CU_PUMPFUN
         partial_fee_sol = estimate_tx_fee_sol(eff_priority, cu)
+        # cumulative across legs (hunt +1R/+2R, promotion bank, runner +3R chip)
         trade_doc["partial_done"] = True
-        trade_doc["partial_sell_tokens"] = sell_tokens
-        trade_doc["partial_sell_sol"] = partial_sol
-        trade_doc["partial_sell_usd"] = partial_sol * sol_price
-        trade_doc["partial_realized_sol"] = realized_sol
-        trade_doc["partial_realized_usd"] = realized_usd
+        trade_doc["partial_sell_tokens"] = int(trade_doc.get("partial_sell_tokens") or 0) + sell_tokens
+        trade_doc["partial_sell_sol"] = float(trade_doc.get("partial_sell_sol") or 0.0) + partial_sol
+        trade_doc["partial_sell_usd"] = float(trade_doc.get("partial_sell_usd") or 0.0) + partial_sol * sol_price
+        trade_doc["partial_realized_sol"] = float(trade_doc.get("partial_realized_sol") or 0.0) + realized_sol
+        trade_doc["partial_realized_usd"] = float(trade_doc.get("partial_realized_usd") or 0.0) + realized_usd
         trade_doc["partial_sig"] = partial_sig
+        trade_doc["partial_sigs"] = [*(trade_doc.get("partial_sigs") or []), *([partial_sig] if partial_sig else [])]
         trade_doc["partial_reason"] = reason
-        trade_doc["partial_fee_sol"] = partial_fee_sol
+        trade_doc["partial_legs"] = int(trade_doc.get("partial_legs") or 0) + 1
+        trade_doc["partial_fee_sol"] = float(trade_doc.get("partial_fee_sol") or 0.0) + partial_fee_sol
         trade_doc["entry_tokens"] = held - sell_tokens
         trade_doc["entry_sol"] = trade_doc["entry_sol"] - partial_cost_sol
         trade_doc["entry_usd"] = trade_doc["entry_sol"] * sol_price
         slot["partial_done"] = True
-        slot["partial_persisted"] = True
         # Block re-exit for 3s — gives Helius RPC time to propagate the
         # post-partial wallet balance. Without this, a fast trailing-stop
         # tick reads the stale pre-partial balance and oversells (6023).
@@ -3921,6 +4164,7 @@ class BotState:
                 "mfe_pct": ((float(slot.get("peak_price_sol") or 0) / float(trade_doc.get("entry_price_sol") or 1)) - 1) * 100
                 if trade_doc.get("entry_price_sol") else None,
                 "peak_hold_s": (slot["peak_ts"] - slot["_entry_ts_mono"]) if slot.get("peak_ts") and slot.get("_entry_ts_mono") else None,
+                **({"runner_pnl_usd": total_pnl_usd - float(trade_doc.get("promotion_banked_usd") or 0.0)} if trade_doc.get("promoted_from") else {}),
             }
         )
         await self.db.trades.update_one(

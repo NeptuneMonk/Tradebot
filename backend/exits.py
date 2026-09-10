@@ -80,6 +80,33 @@ def decide_hunt(cfg, slot: dict, pct: float, cur: float, elapsed: float, sl_fire
     return ExitDecision()   # hunt has no clock — no_momentum_exit / rip-cord flatten dead runners
 
 
+def decide_runner(cfg, slot: dict, cur: float, sl_fire, ts_fire, *, flow: dict, stage: str, pool_missing_s: float = 0.0) -> ExitDecision:
+    """Runner (promoted winner): no-pool after grace → giveback from the peak-since-promotion (armed after +1R from the
+    promotion price) → stop from the promotion price → +3R chip → exhausted. NEVER a clock."""
+    t = slot.get("trade") or {}
+    promo_p = float(t.get("promotion_price_sol") or t.get("entry_price_sol") or 0)
+    if promo_p <= 0:
+        return ExitDecision()
+    pct = (cur - promo_p) / promo_p * 100.0
+    one_r = r_pct(slot)
+    if pool_missing_s >= exit_param(cfg, "runner", "grad_grace_s"):
+        return ExitDecision("exit", f"runner-no-pool: curve complete, no PumpSwap pool after {pool_missing_s:.0f}s ({pct:+.1f}% from promotion)")
+    peak = float(flow.get("peak_price_sol") or promo_p)
+    peak_pct = (peak - promo_p) / promo_p * 100.0
+    drop = float(flow.get("giveback_pct") or 0.0)
+    trail = float(t.get("runner_trail_pct") or exit_param(cfg, "runner", "trailing_stop_pct"))
+    if trail > 0 and peak_pct >= one_r and ts_fire(drop >= trail):
+        return ExitDecision("exit", f"runner giveback {drop:.1f}% ≥ {trail:g}% (peak +{peak_pct:.1f}% from promotion, now {pct:+.1f}%)")
+    sl = exit_param(cfg, "runner", "stop_loss_pct")
+    if sl > 0 and sl_fire(pct <= -sl, -pct - sl):
+        return ExitDecision("exit", f"runner stop-loss {pct:+.1f}% from promotion")
+    if not t.get("runner_3r_done") and pct >= 3 * one_r:
+        return ExitDecision("partial", f"runner +3R: bank 25% ({pct:+.1f}% from promotion), trail → {trail if trail < 10 else 10:g}%", 0.25)
+    if stage == "exhausted":
+        return ExitDecision("exit", f"runner-exhausted: {flow.get('reason') or 'flow died'} ({pct:+.1f}% from promotion)")
+    return ExitDecision()
+
+
 def after_partial(slot: dict, expected_exit_cost_pct: float) -> None:
     """Book a ladder leg: stop moves to breakeven + what it will still cost to get out."""
     slot["ladder_legs_done"] = int(slot.get("ladder_legs_done") or 0) + 1

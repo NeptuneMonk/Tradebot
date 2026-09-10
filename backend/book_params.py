@@ -9,12 +9,18 @@ from __future__ import annotations
 
 import statistics
 
-BOOKS = ("scalp", "hunt", "rh_pons")
-SIZE_KEYS = {"scalp": "book_scalp_size_mult", "hunt": "book_hunt_size_mult", "rh_pons": "book_rh_size_mult"}
+BOOKS = ("scalp", "hunt", "rh_pons")           # entry books (Doctor tunes these)
+ALL_BOOKS = BOOKS + ("runner",)                # + runner: promotion-only, never opened cold, never Doctor-tuned
+SIZE_KEYS = {"scalp": "book_scalp_size_mult", "hunt": "book_hunt_size_mult", "rh_pons": "book_rh_size_mult",
+             "runner": "book_runner_size_mult"}
 HUNT_ACTIONS = {"greylist_snipe", "reentry"}
 EXIT_PARAMS = ("stop_loss_pct", "target_r", "trailing_stop_pct", "trailing_arm_pct", "hold_max_seconds",
                "ladder_1r_sell_pct", "ladder_2r_sell_pct", "take_profit_pct")
+RUNNER_PARAMS = ("add_on_r", "giveback_pct", "dead_s", "grad_grace_s")
 BOOK_DEFAULTS = {
+    "runner": {"stop_loss_pct": 25.0, "target_r": 0.0, "trailing_stop_pct": 15.0, "trailing_arm_pct": 0.0,
+               "hold_max_seconds": 0, "ladder_1r_sell_pct": 0.0, "ladder_2r_sell_pct": 0.0, "take_profit_pct": 0.0,
+               "add_on_r": 0.5, "giveback_pct": 25.0, "dead_s": 90, "grad_grace_s": 45},
     "scalp": {"stop_loss_pct": 12.0, "target_r": 1.5, "trailing_stop_pct": 6.0, "trailing_arm_pct": 12.0,
               "hold_max_seconds": 40, "ladder_1r_sell_pct": 0.0, "ladder_2r_sell_pct": 0.0, "take_profit_pct": 0.0},
     "hunt": {"stop_loss_pct": 20.0, "target_r": 2.0, "trailing_stop_pct": 8.0, "trailing_arm_pct": 0.0,
@@ -22,7 +28,7 @@ BOOK_DEFAULTS = {
     "rh_pons": {"stop_loss_pct": 12.0, "target_r": 0.0, "trailing_stop_pct": 6.0, "trailing_arm_pct": 12.0,
                 "hold_max_seconds": 35, "ladder_1r_sell_pct": 0.0, "ladder_2r_sell_pct": 0.0, "take_profit_pct": 20.0},
 }
-FIRST_TARGET_R = {"scalp": 1.5, "hunt": 1.0, "rh_pons": 1.0}   # first cash-out in R (cost gate + breaker)
+FIRST_TARGET_R = {"scalp": 1.5, "hunt": 1.0, "rh_pons": 1.0, "runner": 1.0}   # first cash-out in R (cost gate + breaker)
 EXIT_GRID = {
     "target_r": [1.0, 1.25, 1.5, 2.0, 2.5, 3.0],
     "stop_loss_pct": [8, 10, 12, 15, 20, 25, 30],
@@ -79,7 +85,7 @@ def exit_param(cfg, book: str, param: str, regime: str | None = None) -> float:
 
 
 def book_exit_view(cfg, book: str, regime: str | None = None) -> dict:
-    return {p: exit_param(cfg, book, p, regime) for p in EXIT_PARAMS}
+    return {p: exit_param(cfg, book, p, regime) for p in EXIT_PARAMS + (RUNNER_PARAMS if book == "runner" else ())}
 
 
 def r_of(t: dict) -> float | None:
@@ -89,7 +95,7 @@ def r_of(t: dict) -> float | None:
         if r > 0:
             return r
         e = float(t.get("entry_usd") or 0)
-        book = t.get("book") if t.get("book") in BOOKS else book_for_action(t.get("classifier_action"), t.get("chain"))
+        book = t.get("book") if t.get("book") in ALL_BOOKS else book_for_action(t.get("classifier_action"), t.get("chain"))
         return e * BOOK_DEFAULTS[book]["stop_loss_pct"] / 100.0 if e > 0 else None
     except (TypeError, ValueError):
         return None

@@ -46,8 +46,15 @@ def cell_for_trade(t: dict) -> str:
                     band=(t.get("entry_ctx") or {}).get("band"), entry_time=t.get("entry_time"), cost_pct=t.get("expected_cost_pct"))
 
 
+def _book_view(t: dict) -> dict:
+    """Promoted runners: the runner cell sees only the post-promotion leg — chips banked before promotion never mix in."""
+    if t.get("book") == "runner" and t.get("runner_pnl_usd") is not None:
+        return {**t, "pnl_usd": t["runner_pnl_usd"]}
+    return t
+
+
 def stats(trades: list[dict]) -> dict:
-    trades = [t for t in trades if t.get("r_usd")]   # post-migration fills only — legacy exits don't judge the new system
+    trades = [_book_view(t) for t in trades if t.get("r_usd")]   # post-migration fills only — legacy exits don't judge the new system
     rs = [r for r in (pnl_r(t) for t in trades) if r is not None]
     if not rs:
         return {"n": 0}

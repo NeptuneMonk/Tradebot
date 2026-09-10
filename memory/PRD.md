@@ -1649,3 +1649,15 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 ## 2026-09-09 — RH discovery stall fix: after a restart the persisted eth_getLogs cursor was far behind head → "logs matched by query exceeds limit of 10000" forever (head 0, tracked 0). Now: learn head before sizing the window, resync to head when >6000 blocks behind, and resync on the "exceeds limit" error. RH paper entry now honours the live-doctor book breaker pause (rh_pons currently paused ~3.5h: payoff 0.69). Breaker MFE clamped ≥ 0.
 
 ## 2026-09-10 — Trade-count review: hunt was mathematically gated out (5 % ladder shave) → first-cash-out costing + 1.5 % shave; scorecard post-migration-only + −0.15R threshold (2 cells re-opened); live doctor hunt cold start = half; book mults ×1; bankroll governor no longer writes max_concurrent_positions (was forcing 8). Scanner gates untouched by decision. Tests pass.
+
+
+## 2026-06 — Runner book (winners only)
+- ✅ New `backend/runner.py` + `exits.decide_runner` + `BOOK_DEFAULTS["runner"]` (SL 25 from promotion price · trail 15 armed after +1R from promotion · +3R chip 25% · one add-on 0.5R · giveback 25 · dead_s 90 · grad_grace_s 45 · NO clock).
+- ✅ Promotion only from a live fill (`bot._try_promote` in `_run_ladder`): scalp at its +target·R exit sells 45% and converts; hunt converts after the +1R leg. Rules: pnl ≥ +1R, MFE ≥ 1.5R, buyers+inflow expanding vs entry_ctx, exit-liq likeness < 70, exit cost < 8%, runner slot free (cap 1; hunt cap → 1 while open). Skip reason `runner-cap`.
+- ✅ Stages launch → graduating → graduated ↔ retail → exhausted; monitor no longer panic-exits a runner on curve `complete` (waits grad_grace_s for the pool). Runner ignores snipe stale/velocity exits (keeps rip-cord/rug-window).
+- ✅ Scorecard/doctor stats use `runner_pnl_usd` (post-promotion leg only); allocator judges runner at n ≥ 20; Doctor never tunes runner exits.
+- ✅ `_partial_exit` is cumulative (multi-leg), reconciler sums `partial_sigs` + `add_on_sig`. Fixed a promotion/exit race (exit_in_progress held during promotion; slot identity re-checked; reconciler skips mints mid-exit).
+- ✅ Manual: `POST /api/scanner/manual-buy/{mint}?runner=true` (default off) seeds a temp bucket for an untracked graduated mint.
+- ✅ UI: RUNNER badge (stage · pk% · gb% · pool) on Active Trades, "RUNNER SLOT FULL" halt banner, runner row in the book-exits editor. `GET /api/inventory` → `runner_open/runner_cap/hunt_cap_now/runners`.
+- Tests: `tests/test_runner_book.py` (18) — full suite green (stale `/app/memory/.tok` refreshed for API tests).
+- Backlog (unchanged, locked out of this pass): Helius Diet, Ladder Replay, Skip-Reasons tally, execution learning, regime input, shadow book, Opportunity Score, ERC-20 approvals.
