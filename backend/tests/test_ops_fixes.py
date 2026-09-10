@@ -100,20 +100,25 @@ def test_rh_feed_idles_when_rh_pons_paused_and_flat():
     assert d._enabled() is False
 
 
-def test_pl_buckets_fixed_timeframes_via_api():
+def test_pl_candles_ohlc_via_api():
     import os, requests
     tok = open("/app/memory/.tok").read().strip()
     base = os.environ.get("REACT_APP_BACKEND_URL") or [l.split("=", 1)[1].strip() for l in open("/app/frontend/.env") if l.startswith("REACT_APP_BACKEND_URL")][0]
     h = {"Authorization": f"Bearer {tok}"}
     for bs in (300, 900, 1800, 3600, 14400, 43200, 86400):
-        d = requests.get(f"{base}/api/pl/buckets", params={"bucket_s": bs, "days": 7}, headers=h, timeout=40).json()
-        n = -(-7 * 86400 // bs)                                                  # the WINDOW is fixed (7 d); only the bar width changes
-        assert d["n"] == n and len(d["buckets"]) == n and d["bucket_s"] == bs and d["window_h"] == 168.0
-        ts = [b["t"] for b in d["buckets"]]
-        assert all(b - a == bs for a, b in zip(ts, ts[1:])) and d["end"] - d["start"] == n * bs
-        assert all(b["t"] % bs == 0 for b in d["buckets"])                       # aligned to the wall clock like a market chart
-        cum = 0.0
-        for b in d["buckets"]:
-            cum += b["pnl_usd"]
-            assert abs(b["cumulative_usd"] - cum) < 1e-3
+        d = requests.get(f"{base}/api/pl/buckets", params={"bucket_s": bs, "candles": 60, "days": 7}, headers=h, timeout=40).json()
+        n = min(60, -(-7 * 86400 // bs))                                          # fixed candle width → fewer candles on big timeframes
+        assert d["n"] == n and len(d["buckets"]) == n and d["bucket_s"] == bs
+        ts = [c["t"] for c in d["buckets"]]
+        assert all(b - a == bs for a, b in zip(ts, ts[1:])) and all(t % bs == 0 for t in ts)
+        prev_close = None
+        for c in d["buckets"]:
+            assert c["low"] <= min(c["open"], c["close"]) <= max(c["open"], c["close"]) <= c["high"]
+            assert abs(c["close"] - c["open"] - c["pnl_usd"]) < 1e-3              # body = P/L closed in the period
+            if prev_close is not None:
+                assert abs(c["open"] - prev_close) < 1e-6                          # candles chain like a price series
+            if c["trades"] == 0:
+                assert c["open"] == c["close"] == c["high"] == c["low"]            # doji when nothing closed
+            prev_close = c["close"]
+            assert c["range"] == [c["low"], c["high"]]
     assert requests.get(f"{base}/api/pl/buckets", params={"bucket_s": 123}, headers=h, timeout=20).status_code == 400

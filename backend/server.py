@@ -1879,41 +1879,51 @@ PL_BUCKETS_S = (300, 900, 1800, 3600, 4 * 3600, 12 * 3600, 86400)
 
 
 @api.get("/pl/buckets")
-async def pl_buckets(bucket_s: int = 3600, days: int = 7, mode: str | None = None):
-    """Market-chart view of OUR trading: the whole `days` window (default 7 d) sliced into fixed-length buckets
-    (5m … 1d) aligned to the wall clock. Each bucket = realised P/L of fills that CLOSED inside it (empty = 0,
-    cumulative carries). 5m over 7 d = 2016 bars, 1d = 7 bars — the window never changes, only the resolution."""
+async def pl_buckets(bucket_s: int = 3600, candles: int = 60, days: int = 7, mode: str | None = None):
+    """Candlestick view of OUR trading: the cumulative realised P/L of the last `days` (the card's 7-day figure) is the
+    'price'; each candle is one `bucket_s` period (5m … 1d) with open/high/low/close of that running total and the
+    fills that closed inside it. Fixed candle width → the last `candles` periods are shown (a 1d chart holds ≤ 7)."""
     if bucket_s not in PL_BUCKETS_S:
         raise HTTPException(400, f"bucket_s must be one of {list(PL_BUCKETS_S)}")
     days = max(1, min(days, 30))
-    n = -(-days * 86400 // bucket_s)
+    n = max(1, min(candles, 240, -(-days * 86400 // bucket_s)))
     now = datetime.now(timezone.utc)
-    end_ts = (int(now.timestamp()) // bucket_s + 1) * bucket_s            # end of the current bucket
+    end_ts = (int(now.timestamp()) // bucket_s + 1) * bucket_s            # end of the current candle
     start_ts = end_ts - n * bucket_s
-    q: dict = {"status": "closed", "exit_time": {"$gte": datetime.fromtimestamp(start_ts, timezone.utc).isoformat()}}
+    window_start = now - timedelta(days=days)
+    q: dict = {"status": "closed", "exit_time": {"$gte": window_start.isoformat()}}
     if mode in ("live", "paper"):
         q["mode"] = mode
-    bins = [{"t": start_ts + i * bucket_s, "pnl_usd": 0.0, "live_usd": 0.0, "paper_usd": 0.0, "trades": 0} for i in range(n)]
+    fills: list[tuple[float, float, str]] = []
     async for d in db.trades.find(q, {"_id": 0, "pnl_usd": 1, "exit_time": 1, "mode": 1}):
         try:
             t = datetime.fromisoformat(str(d["exit_time"]).replace("Z", "+00:00"))
             t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
-            i = int((t.timestamp() - start_ts) // bucket_s)
+            fills.append((t.timestamp(), float(d.get("pnl_usd") or 0.0), d.get("mode") or "paper"))
         except Exception:
             continue
-        if 0 <= i < n:
-            v = float(d.get("pnl_usd") or 0.0)
-            bins[i]["pnl_usd"] += v
-            bins[i]["live_usd" if d.get("mode") == "live" else "paper_usd"] += v
-            bins[i]["trades"] += 1
-    cum = 0.0
-    for b in bins:
-        cum += b["pnl_usd"]
-        b["cumulative_usd"] = round(cum, 4)
-        for k in ("pnl_usd", "live_usd", "paper_usd"):
-            b[k] = round(b[k], 4)
-    return {"bucket_s": bucket_s, "n": n, "days": days, "start": start_ts, "end": end_ts, "buckets": bins, "cumulative_usd": round(cum, 4),
-            "window_h": round(n * bucket_s / 3600, 2)}
+    fills.sort()
+    cum = sum(v for ts, v, _ in fills if ts < start_ts)                    # equity carried in from before the first candle
+    j = sum(1 for ts, _, _ in fills if ts < start_ts)
+    out = []
+    for i in range(n):
+        t0, t1 = start_ts + i * bucket_s, start_ts + (i + 1) * bucket_s
+        c = {"t": t0, "open": round(cum, 4), "high": cum, "low": cum, "pnl_usd": 0.0, "live_usd": 0.0, "paper_usd": 0.0, "trades": 0}
+        while j < len(fills) and fills[j][0] < t1:
+            _, v, m = fills[j]
+            cum += v
+            c["high"], c["low"] = max(c["high"], cum), min(c["low"], cum)
+            c["pnl_usd"] += v
+            c["live_usd" if m == "live" else "paper_usd"] += v
+            c["trades"] += 1
+            j += 1
+        c.update({"close": round(cum, 4), "high": round(c["high"], 4), "low": round(c["low"], 4),
+                  "pnl_usd": round(c["pnl_usd"], 4), "live_usd": round(c["live_usd"], 4), "paper_usd": round(c["paper_usd"], 4),
+                  "cumulative_usd": round(cum, 4)})
+        c["range"] = [c["low"], c["high"]]
+        out.append(c)
+    return {"bucket_s": bucket_s, "n": n, "days": days, "start": start_ts, "end": end_ts, "buckets": out,
+            "cumulative_usd": round(cum, 4), "window_h": round(n * bucket_s / 3600, 2)}
 
 
 @api.get("/pl/summary")

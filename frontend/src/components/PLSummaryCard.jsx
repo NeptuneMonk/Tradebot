@@ -1,24 +1,45 @@
 import { useState, useEffect, memo } from "react";
-import { LineChart, Line, BarChart, Bar, Cell, XAxis, YAxis, ReferenceLine, ResponsiveContainer, Tooltip } from "recharts";
-import { TrendingUp, TrendingDown, RotateCcw, BarChart3, Activity } from "lucide-react";
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, ReferenceLine, ResponsiveContainer, Tooltip } from "recharts";
+import { TrendingUp, TrendingDown, RotateCcw, CandlestickChart, Activity } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 
 const TIMEFRAMES = [300, 900, 1800, 3600, 14400, 43200, 86400];
+const CANDLES = 60;
+
+// One candle of the cumulative-P/L "price": body open→close, wicks to high/low. Recharts gives us the pixel box of the
+// [low, high] range, so we scale the body inside it. Flat (no fills) candles draw as a thin doji line.
+function Candle({ x, y, width, height, payload }) {
+  const { open, close, high, low } = payload;
+  const up = close >= open;
+  const color = payload.trades === 0 ? "#3f3f46" : up ? "#10b981" : "#ef4444";
+  const span = high - low;
+  const px = (v) => (span > 0 ? y + (high - v) * (height / span) : y);
+  const top = px(Math.max(open, close));
+  const bodyH = Math.max(1, Math.abs(px(Math.min(open, close)) - top));
+  const cx = x + width / 2;
+  const bw = Math.max(1, width * 0.7);
+  return (
+    <g>
+      <line x1={cx} x2={cx} y1={y} y2={y + height} stroke={color} strokeWidth={1} />
+      <rect x={cx - bw / 2} y={top} width={bw} height={bodyH} fill={up ? color : color} stroke={color} />
+    </g>
+  );
+}
 
 function PLSummaryCard({ pl, status, onReset }) {
   const [confirming, setConfirming] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [chart, setChart] = useState(() => localStorage.getItem("ui.pl.chart") || "line");
   const flipChart = () => setChart((c) => { const n = c === "line" ? "bars" : "line"; localStorage.setItem("ui.pl.chart", n); return n; });
-  // Market-chart view of our trading: the window is ALWAYS the 7 days of the card; the timeframe only sets the
-  // bar width (5m → 2016 bars … 1d → 7 bars). Each bar = realised P/L closed in that period; line = cumulative.
+  // Market-style candles of OUR trading: the 7-day cumulative P/L is the price. Candle width is fixed, so the
+  // timeframe decides how much history fits (60 × 5m = 5 h … 7 × 1d). Wicks = intra-period high/low of the running total.
   const [tf, setTf] = useState(() => Number(localStorage.getItem("ui.pl.tf")) || 3600);
   const [buckets, setBuckets] = useState([]);
   const pickTf = (v) => { setTf(v); localStorage.setItem("ui.pl.tf", String(v)); };
   useEffect(() => {
     let alive = true;
-    const load = () => api.plBuckets(tf, 7).then((d) => alive && setBuckets(d?.buckets || [])).catch(() => {});
+    const load = () => api.plBuckets(tf, CANDLES).then((d) => alive && setBuckets(d?.buckets || [])).catch(() => {});
     load();
     const id = setInterval(load, 30000);
     return () => { alive = false; clearInterval(id); };
@@ -61,11 +82,11 @@ function PLSummaryCard({ pl, status, onReset }) {
           {positive ? <TrendingUp className="w-3 h-3 text-emerald-500" /> : <TrendingDown className="w-3 h-3 text-red-500" />}
           <button
             onClick={flipChart}
-            title={chart === "line" ? "Switch to daily red/green bars" : "Switch to cumulative line"}
+            title={chart === "line" ? "Switch to candlesticks (open/high/low/close of the running P/L)" : "Switch to cumulative line"}
             data-testid="pl-chart-toggle"
             className="text-[10px] font-mono uppercase tracking-[0.15em] text-neutral-500 hover:text-blue-300 inline-flex items-center gap-1"
           >
-            {chart === "line" ? <BarChart3 className="w-3 h-3" /> : <Activity className="w-3 h-3" />} {chart === "line" ? "bars" : "line"}
+            {chart === "line" ? <CandlestickChart className="w-3 h-3" /> : <Activity className="w-3 h-3" />} {chart === "line" ? "candles" : "line"}
           </button>
           <button
             onClick={() => setConfirming(true)}
@@ -97,7 +118,7 @@ function PLSummaryCard({ pl, status, onReset }) {
             {tfLabel(s)}
           </button>
         ))}
-        <span className="ml-auto text-neutral-600">7d · {buckets.length} × {tfLabel(tf)}</span>
+        <span className="ml-auto text-neutral-600">{buckets.length} × {tfLabel(tf)} · 7d cum</span>
       </div>
       <div className="h-24 -mx-1" data-testid="pl-sparkline">
         {!hasFills ? (
@@ -106,18 +127,20 @@ function PLSummaryCard({ pl, status, onReset }) {
           </div>
         ) : chart === "bars" ? (
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={buckets} barCategoryGap={tf >= 14400 ? 2 : 0} data-testid="pl-daily-bars">
-              <YAxis hide domain={[(min) => Math.min(0, min), (max) => Math.max(0, max)]} />
+            <BarChart data={buckets} barCategoryGap={tf >= 14400 ? "20%" : "15%"} data-testid="pl-daily-bars">
+              <YAxis hide domain={["dataMin", "dataMax"]} />
               <XAxis dataKey="t" ticks={dayTicks} tickFormatter={(t) => new Date(t * 1000).toLocaleDateString(undefined, { weekday: "short" })} tick={{ fontSize: 9, fill: "#525252", fontFamily: "IBM Plex Mono" }} axisLine={{ stroke: "#262626" }} tickLine={false} interval={0} height={14} />
               <ReferenceLine y={0} stroke="#404040" strokeDasharray="2 2" />
-              <Bar dataKey="pnl_usd" isAnimationActive={false} radius={0}>
-                {buckets.map((b) => <Cell key={b.t} fill={b.pnl_usd > 0 ? "#10b981" : b.pnl_usd < 0 ? "#ef4444" : "#262626"} />)}
-              </Bar>
+              <Bar dataKey="range" isAnimationActive={false} shape={<Candle />} />
               <Tooltip
                 cursor={{ fill: "#262626", opacity: 0.4 }}
                 contentStyle={tip}
                 labelFormatter={(_, p) => (p?.[0]?.payload ? fmtT(p[0].payload.t) : "")}
-                formatter={(v, _n, p) => [`${v >= 0 ? "+" : ""}$${Number(v).toFixed(2)} · ${p?.payload?.trades ?? 0} fills (live ${Number(p?.payload?.live_usd ?? 0).toFixed(2)} / paper ${Number(p?.payload?.paper_usd ?? 0).toFixed(2)}) · cum ${Number(p?.payload?.cumulative_usd ?? 0).toFixed(2)}`, tfLabel(tf)]}
+                formatter={(_v, _n, p) => {
+                  const c = p?.payload || {};
+                  const f = (v) => `${v >= 0 ? "+" : ""}${Number(v).toFixed(2)}`;
+                  return [`O ${f(c.open)} H ${f(c.high)} L ${f(c.low)} C ${f(c.close)} · ${f(c.pnl_usd)} in ${c.trades ?? 0} fills (live ${f(c.live_usd)} / paper ${f(c.paper_usd)})`, tfLabel(tf)];
+                }}
               />
             </BarChart>
           </ResponsiveContainer>
