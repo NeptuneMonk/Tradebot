@@ -35,6 +35,7 @@ export const api = {
   rhWalletSend: (to, eth) => client.post("/rh/wallet/send", { to, eth }).then(r => r.data),
   rhWalletImport: (private_key) => client.post("/rh/wallet/import", { private_key }).then(r => r.data),
   plSummary: (days = 7) => client.get(`/pl/summary?days=${days}`).then(r => r.data),
+  plBuckets: (bucketS = 3600, n = 60) => client.get(`/pl/buckets?bucket_s=${bucketS}&n=${n}`).then(r => r.data),
   plBySource: (days = 7) => client.get(`/pl/by-source?days=${days}`).then(r => r.data),
   insights: () => client.get(`/bot/insights`).then(r => r.data),
   sendSol: (to, amount_sol) => client.post("/wallet/send", { to, amount_sol }).then(r => r.data),

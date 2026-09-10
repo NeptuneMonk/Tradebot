@@ -1875,6 +1875,45 @@ async def costs_network():
 
 
 # ---------- P/L summary ----------
+PL_BUCKETS_S = (300, 900, 1800, 3600, 4 * 3600, 12 * 3600, 86400)
+
+
+@api.get("/pl/buckets")
+async def pl_buckets(bucket_s: int = 3600, n: int = 60, mode: str | None = None):
+    """Fixed-length time buckets (5m … 1d), like a market chart: the last `n` whole buckets ending at the current one.
+    Each bucket = realised P/L of fills that CLOSED inside it (empty buckets are 0, cumulative carries)."""
+    if bucket_s not in PL_BUCKETS_S:
+        raise HTTPException(400, f"bucket_s must be one of {list(PL_BUCKETS_S)}")
+    n = max(5, min(n, 240))
+    now = datetime.now(timezone.utc)
+    end_ts = (int(now.timestamp()) // bucket_s + 1) * bucket_s            # end of the current bucket
+    start_ts = end_ts - n * bucket_s
+    q: dict = {"status": "closed", "exit_time": {"$gte": datetime.fromtimestamp(start_ts, timezone.utc).isoformat()}}
+    if mode in ("live", "paper"):
+        q["mode"] = mode
+    bins = [{"t": start_ts + i * bucket_s, "pnl_usd": 0.0, "live_usd": 0.0, "paper_usd": 0.0, "trades": 0} for i in range(n)]
+    async for d in db.trades.find(q, {"_id": 0, "pnl_usd": 1, "exit_time": 1, "mode": 1}):
+        try:
+            t = datetime.fromisoformat(str(d["exit_time"]).replace("Z", "+00:00"))
+            t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+            i = int((t.timestamp() - start_ts) // bucket_s)
+        except Exception:
+            continue
+        if 0 <= i < n:
+            v = float(d.get("pnl_usd") or 0.0)
+            bins[i]["pnl_usd"] += v
+            bins[i]["live_usd" if d.get("mode") == "live" else "paper_usd"] += v
+            bins[i]["trades"] += 1
+    cum = 0.0
+    for b in bins:
+        cum += b["pnl_usd"]
+        b["cumulative_usd"] = round(cum, 4)
+        for k in ("pnl_usd", "live_usd", "paper_usd"):
+            b[k] = round(b[k], 4)
+    return {"bucket_s": bucket_s, "n": n, "start": start_ts, "end": end_ts, "buckets": bins, "cumulative_usd": round(cum, 4),
+            "window_h": round(n * bucket_s / 3600, 2)}
+
+
 @api.get("/pl/summary")
 async def pl_summary(days: int = 7, mode: str | None = None):
     """Cumulative PnL series. Pass `mode=live` or `mode=paper` to filter,

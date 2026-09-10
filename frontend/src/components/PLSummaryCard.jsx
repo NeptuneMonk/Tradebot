@@ -1,23 +1,38 @@
-import { useState, memo } from "react";
+import { useState, useEffect, memo } from "react";
 import { LineChart, Line, BarChart, Bar, Cell, YAxis, ResponsiveContainer, Tooltip } from "recharts";
 import { TrendingUp, TrendingDown, RotateCcw, BarChart3, Activity } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+
+const TIMEFRAMES = [300, 900, 1800, 3600, 14400, 43200, 86400];
 
 function PLSummaryCard({ pl, status, onReset }) {
   const [confirming, setConfirming] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [chart, setChart] = useState(() => localStorage.getItem("ui.pl.chart") || "line");
   const flipChart = () => setChart((c) => { const n = c === "line" ? "bars" : "line"; localStorage.setItem("ui.pl.chart", n); return n; });
-  const daily14 = (pl?.daily || []).slice(-14);
+  // Fixed-length time buckets, like a market chart: 5m … 1d, last 60 buckets, refetched every 30 s and on each new fill.
+  const [tf, setTf] = useState(() => Number(localStorage.getItem("ui.pl.tf")) || 3600);
+  const [buckets, setBuckets] = useState([]);
+  const pickTf = (v) => { setTf(v); localStorage.setItem("ui.pl.tf", String(v)); };
+  useEffect(() => {
+    let alive = true;
+    const load = () => api.plBuckets(tf, 60).then((d) => alive && setBuckets(d?.buckets || [])).catch(() => {});
+    load();
+    const id = setInterval(load, 30000);
+    return () => { alive = false; clearInterval(id); };
+  }, [tf, pl?.cumulative_usd, pl?.daily_pnl_usd]);
+  const hasFills = buckets.some((b) => b.trades > 0);
+  const tfLabel = (s) => (s >= 86400 ? `${s / 86400}d` : s >= 3600 ? `${s / 3600}h` : `${s / 60}m`);
+  const fmtT = (t) => {
+    const d = new Date(t * 1000);
+    return tf >= 86400 ? d.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+      : `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+  };
+  const tip = { background: "#0a0a0a", border: "1px solid #262626", fontSize: 11, fontFamily: "IBM Plex Mono" };
 
   const daily = pl?.daily_pnl_usd ?? 0;
   const cum = pl?.cumulative_usd ?? 0;
-  const series = (pl?.series || []).map((d, i) => ({
-    x: i,
-    v: d.cumulative_usd,
-    pnl: d.pnl_usd,
-  }));
   const positive = daily >= 0;
 
   const doReset = async () => {
@@ -67,46 +82,51 @@ function PLSummaryCard({ pl, status, onReset }) {
           {cum >= 0 ? "+" : ""}${cum.toFixed(2)}
         </span>
       </div>
+      <div className="flex items-center gap-1 text-[9px] font-mono" data-testid="pl-timeframes">
+        {TIMEFRAMES.map((s) => (
+          <button
+            key={s}
+            type="button"
+            onClick={() => pickTf(s)}
+            data-testid={`pl-tf-${tfLabel(s)}`}
+            className={`px-1.5 py-0.5 border uppercase transition-colors ${tf === s ? "border-blue-500 text-blue-300 bg-blue-950/40" : "border-neutral-800 text-neutral-500 hover:text-neutral-300"}`}
+          >
+            {tfLabel(s)}
+          </button>
+        ))}
+        <span className="ml-auto text-neutral-600">{buckets.length} × {tfLabel(tf)}</span>
+      </div>
       <div className="h-16 -mx-1" data-testid="pl-sparkline">
-        {chart === "bars" && daily14.length > 0 ? (
+        {!hasFills ? (
+          <div className="h-full flex items-center justify-center text-[10px] uppercase tracking-[0.2em] text-neutral-600">
+            no closed trades in the last {buckets.length} × {tfLabel(tf)}
+          </div>
+        ) : chart === "bars" ? (
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={daily14} barCategoryGap={2} data-testid="pl-daily-bars">
+            <BarChart data={buckets} barCategoryGap={1} data-testid="pl-daily-bars">
               <YAxis hide domain={[(min) => Math.min(0, min), (max) => Math.max(0, max)]} />
               <Bar dataKey="pnl_usd" isAnimationActive={false} radius={0}>
-                {daily14.map((d) => <Cell key={d.day} fill={d.pnl_usd >= 0 ? "#10b981" : "#ef4444"} />)}
+                {buckets.map((b) => <Cell key={b.t} fill={b.pnl_usd > 0 ? "#10b981" : b.pnl_usd < 0 ? "#ef4444" : "#262626"} />)}
               </Bar>
               <Tooltip
                 cursor={{ fill: "#262626", opacity: 0.4 }}
-                contentStyle={{ background: "#0a0a0a", border: "1px solid #262626", fontSize: 11, fontFamily: "IBM Plex Mono" }}
-                labelFormatter={(_, p) => p?.[0]?.payload?.day || ""}
-                formatter={(v, _n, p) => [`${v >= 0 ? "+" : ""}$${Number(v).toFixed(2)} · ${p?.payload?.trades ?? 0} fills (live ${Number(p?.payload?.live_usd ?? 0).toFixed(2)} / paper ${Number(p?.payload?.paper_usd ?? 0).toFixed(2)})`, "Day"]}
+                contentStyle={tip}
+                labelFormatter={(_, p) => (p?.[0]?.payload ? fmtT(p[0].payload.t) : "")}
+                formatter={(v, _n, p) => [`${v >= 0 ? "+" : ""}$${Number(v).toFixed(2)} · ${p?.payload?.trades ?? 0} fills (live ${Number(p?.payload?.live_usd ?? 0).toFixed(2)} / paper ${Number(p?.payload?.paper_usd ?? 0).toFixed(2)}) · cum ${Number(p?.payload?.cumulative_usd ?? 0).toFixed(2)}`, tfLabel(tf)]}
               />
             </BarChart>
           </ResponsiveContainer>
-        ) : chart === "bars" ? (
-          <div className="h-full flex items-center justify-center text-[10px] uppercase tracking-[0.2em] text-neutral-600">no closed trades yet</div>
-        ) : series.length > 1 ? (
+        ) : (
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={series}>
-              <Line
-                type="monotone"
-                dataKey="v"
-                stroke={cum >= 0 ? "#10b981" : "#ef4444"}
-                strokeWidth={1.5}
-                dot={false}
-                isAnimationActive={false}
-              />
+            <LineChart data={buckets}>
+              <Line type="stepAfter" dataKey="cumulative_usd" stroke={(buckets[buckets.length - 1]?.cumulative_usd ?? 0) >= 0 ? "#10b981" : "#ef4444"} strokeWidth={1.5} dot={false} isAnimationActive={false} />
               <Tooltip
-                contentStyle={{ background: "#0a0a0a", border: "1px solid #262626", fontSize: 11, fontFamily: "IBM Plex Mono" }}
-                labelStyle={{ display: "none" }}
-                formatter={(v) => [`$${Number(v).toFixed(2)}`, "Cum"]}
+                contentStyle={tip}
+                labelFormatter={(_, p) => (p?.[0]?.payload ? fmtT(p[0].payload.t) : "")}
+                formatter={(v, _n, p) => [`$${Number(v).toFixed(2)} (bucket ${Number(p?.payload?.pnl_usd ?? 0) >= 0 ? "+" : ""}${Number(p?.payload?.pnl_usd ?? 0).toFixed(2)}, ${p?.payload?.trades ?? 0} fills)`, "Cum"]}
               />
             </LineChart>
           </ResponsiveContainer>
-        ) : (
-          <div className="h-full flex items-center justify-center text-[10px] uppercase tracking-[0.2em] text-neutral-600">
-            no closed trades yet
-          </div>
         )}
       </div>
 
