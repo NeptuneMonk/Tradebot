@@ -1,5 +1,5 @@
 import { useState, useEffect, memo } from "react";
-import { LineChart, Line, BarChart, Bar, Cell, YAxis, ResponsiveContainer, Tooltip } from "recharts";
+import { LineChart, Line, BarChart, Bar, Cell, XAxis, YAxis, ReferenceLine, ResponsiveContainer, Tooltip } from "recharts";
 import { TrendingUp, TrendingDown, RotateCcw, BarChart3, Activity } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -11,13 +11,14 @@ function PLSummaryCard({ pl, status, onReset }) {
   const [resetting, setResetting] = useState(false);
   const [chart, setChart] = useState(() => localStorage.getItem("ui.pl.chart") || "line");
   const flipChart = () => setChart((c) => { const n = c === "line" ? "bars" : "line"; localStorage.setItem("ui.pl.chart", n); return n; });
-  // Fixed-length time buckets, like a market chart: 5m … 1d, last 60 buckets, refetched every 30 s and on each new fill.
+  // Market-chart view of our trading: the window is ALWAYS the 7 days of the card; the timeframe only sets the
+  // bar width (5m → 2016 bars … 1d → 7 bars). Each bar = realised P/L closed in that period; line = cumulative.
   const [tf, setTf] = useState(() => Number(localStorage.getItem("ui.pl.tf")) || 3600);
   const [buckets, setBuckets] = useState([]);
   const pickTf = (v) => { setTf(v); localStorage.setItem("ui.pl.tf", String(v)); };
   useEffect(() => {
     let alive = true;
-    const load = () => api.plBuckets(tf, 60).then((d) => alive && setBuckets(d?.buckets || [])).catch(() => {});
+    const load = () => api.plBuckets(tf, 7).then((d) => alive && setBuckets(d?.buckets || [])).catch(() => {});
     load();
     const id = setInterval(load, 30000);
     return () => { alive = false; clearInterval(id); };
@@ -29,6 +30,8 @@ function PLSummaryCard({ pl, status, onReset }) {
     return tf >= 86400 ? d.toLocaleDateString(undefined, { month: "short", day: "numeric" })
       : `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
   };
+  // one tick per day boundary (local midnight) — the window is 7 days, so ~7 ticks at every resolution
+  const dayTicks = buckets.filter((b, i) => i > 0 && new Date(b.t * 1000).getDate() !== new Date(buckets[i - 1].t * 1000).getDate()).map((b) => b.t);
   const tip = { background: "#0a0a0a", border: "1px solid #262626", fontSize: 11, fontFamily: "IBM Plex Mono" };
 
   const daily = pl?.daily_pnl_usd ?? 0;
@@ -94,17 +97,19 @@ function PLSummaryCard({ pl, status, onReset }) {
             {tfLabel(s)}
           </button>
         ))}
-        <span className="ml-auto text-neutral-600">{buckets.length} × {tfLabel(tf)}</span>
+        <span className="ml-auto text-neutral-600">7d · {buckets.length} × {tfLabel(tf)}</span>
       </div>
-      <div className="h-16 -mx-1" data-testid="pl-sparkline">
+      <div className="h-24 -mx-1" data-testid="pl-sparkline">
         {!hasFills ? (
           <div className="h-full flex items-center justify-center text-[10px] uppercase tracking-[0.2em] text-neutral-600">
-            no closed trades in the last {buckets.length} × {tfLabel(tf)}
+            no closed trades in the last 7 days
           </div>
         ) : chart === "bars" ? (
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={buckets} barCategoryGap={1} data-testid="pl-daily-bars">
+            <BarChart data={buckets} barCategoryGap={tf >= 14400 ? 2 : 0} data-testid="pl-daily-bars">
               <YAxis hide domain={[(min) => Math.min(0, min), (max) => Math.max(0, max)]} />
+              <XAxis dataKey="t" ticks={dayTicks} tickFormatter={(t) => new Date(t * 1000).toLocaleDateString(undefined, { weekday: "short" })} tick={{ fontSize: 9, fill: "#525252", fontFamily: "IBM Plex Mono" }} axisLine={{ stroke: "#262626" }} tickLine={false} interval={0} height={14} />
+              <ReferenceLine y={0} stroke="#404040" strokeDasharray="2 2" />
               <Bar dataKey="pnl_usd" isAnimationActive={false} radius={0}>
                 {buckets.map((b) => <Cell key={b.t} fill={b.pnl_usd > 0 ? "#10b981" : b.pnl_usd < 0 ? "#ef4444" : "#262626"} />)}
               </Bar>
@@ -119,6 +124,9 @@ function PLSummaryCard({ pl, status, onReset }) {
         ) : (
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={buckets}>
+              <YAxis hide domain={[(min) => Math.min(0, min), (max) => Math.max(0, max)]} />
+              <XAxis dataKey="t" ticks={dayTicks} tickFormatter={(t) => new Date(t * 1000).toLocaleDateString(undefined, { weekday: "short" })} tick={{ fontSize: 9, fill: "#525252", fontFamily: "IBM Plex Mono" }} axisLine={{ stroke: "#262626" }} tickLine={false} interval={0} height={14} />
+              <ReferenceLine y={0} stroke="#404040" strokeDasharray="2 2" />
               <Line type="stepAfter" dataKey="cumulative_usd" stroke={(buckets[buckets.length - 1]?.cumulative_usd ?? 0) >= 0 ? "#10b981" : "#ef4444"} strokeWidth={1.5} dot={false} isAnimationActive={false} />
               <Tooltip
                 contentStyle={tip}

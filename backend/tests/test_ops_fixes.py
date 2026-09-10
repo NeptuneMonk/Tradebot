@@ -106,10 +106,11 @@ def test_pl_buckets_fixed_timeframes_via_api():
     base = os.environ.get("REACT_APP_BACKEND_URL") or [l.split("=", 1)[1].strip() for l in open("/app/frontend/.env") if l.startswith("REACT_APP_BACKEND_URL")][0]
     h = {"Authorization": f"Bearer {tok}"}
     for bs in (300, 900, 1800, 3600, 14400, 43200, 86400):
-        d = requests.get(f"{base}/api/pl/buckets", params={"bucket_s": bs, "n": 20}, headers=h, timeout=20).json()
-        assert d["n"] == 20 and len(d["buckets"]) == 20 and d["bucket_s"] == bs
+        d = requests.get(f"{base}/api/pl/buckets", params={"bucket_s": bs, "days": 7}, headers=h, timeout=40).json()
+        n = -(-7 * 86400 // bs)                                                  # the WINDOW is fixed (7 d); only the bar width changes
+        assert d["n"] == n and len(d["buckets"]) == n and d["bucket_s"] == bs and d["window_h"] == 168.0
         ts = [b["t"] for b in d["buckets"]]
-        assert all(b - a == bs for a, b in zip(ts, ts[1:])) and d["end"] - d["start"] == 20 * bs
+        assert all(b - a == bs for a, b in zip(ts, ts[1:])) and d["end"] - d["start"] == n * bs
         assert all(b["t"] % bs == 0 for b in d["buckets"])                       # aligned to the wall clock like a market chart
         cum = 0.0
         for b in d["buckets"]:

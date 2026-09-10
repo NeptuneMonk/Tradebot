@@ -1879,12 +1879,14 @@ PL_BUCKETS_S = (300, 900, 1800, 3600, 4 * 3600, 12 * 3600, 86400)
 
 
 @api.get("/pl/buckets")
-async def pl_buckets(bucket_s: int = 3600, n: int = 60, mode: str | None = None):
-    """Fixed-length time buckets (5m … 1d), like a market chart: the last `n` whole buckets ending at the current one.
-    Each bucket = realised P/L of fills that CLOSED inside it (empty buckets are 0, cumulative carries)."""
+async def pl_buckets(bucket_s: int = 3600, days: int = 7, mode: str | None = None):
+    """Market-chart view of OUR trading: the whole `days` window (default 7 d) sliced into fixed-length buckets
+    (5m … 1d) aligned to the wall clock. Each bucket = realised P/L of fills that CLOSED inside it (empty = 0,
+    cumulative carries). 5m over 7 d = 2016 bars, 1d = 7 bars — the window never changes, only the resolution."""
     if bucket_s not in PL_BUCKETS_S:
         raise HTTPException(400, f"bucket_s must be one of {list(PL_BUCKETS_S)}")
-    n = max(5, min(n, 240))
+    days = max(1, min(days, 30))
+    n = -(-days * 86400 // bucket_s)
     now = datetime.now(timezone.utc)
     end_ts = (int(now.timestamp()) // bucket_s + 1) * bucket_s            # end of the current bucket
     start_ts = end_ts - n * bucket_s
@@ -1910,7 +1912,7 @@ async def pl_buckets(bucket_s: int = 3600, n: int = 60, mode: str | None = None)
         b["cumulative_usd"] = round(cum, 4)
         for k in ("pnl_usd", "live_usd", "paper_usd"):
             b[k] = round(b[k], 4)
-    return {"bucket_s": bucket_s, "n": n, "start": start_ts, "end": end_ts, "buckets": bins, "cumulative_usd": round(cum, 4),
+    return {"bucket_s": bucket_s, "n": n, "days": days, "start": start_ts, "end": end_ts, "buckets": bins, "cumulative_usd": round(cum, 4),
             "window_h": round(n * bucket_s / 3600, 2)}
 
 
