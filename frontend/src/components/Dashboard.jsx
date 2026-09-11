@@ -297,7 +297,10 @@ export default function Dashboard() {
     enabled: status.enabled, stopping_gracefully: status.stopping_gracefully,
     kill_switch_tripped: status.kill_switch_tripped, active_trade_count: status.active_trade_count,
     listener_connected: status.listener_connected, rh_feed_alive: status.rh_feed_alive,
-  }), [status?.enabled, status?.stopping_gracefully, status?.kill_switch_tripped, status?.active_trade_count, status?.listener_connected, status?.rh_feed_alive]);
+    helius_paused: status.helius_paused, listener_last_error: status.listener_last_error,
+    listener_last_ok_ts: status.listener_last_ok_ts, listener_last_attempt_ts: status.listener_last_attempt_ts,
+  }), [status?.enabled, status?.stopping_gracefully, status?.kill_switch_tripped, status?.active_trade_count, status?.listener_connected, status?.rh_feed_alive,
+       status?.helius_paused?.paused, status?.helius_paused?.auto, status?.listener_last_error, status?.listener_last_ok_ts, status?.listener_last_attempt_ts]);
   const onConfigPatch = useCallback(async (patch) => {
     const saved = await api.updateConfig(patch);
     setConfig(saved);
