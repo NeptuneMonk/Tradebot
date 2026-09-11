@@ -19,7 +19,7 @@ const timeAgo = (iso) => {
 
 const CHAIN_FILTER_KEY = "ui.launches.chain";
 
-function RecentLaunchesFeed({ launches: allLaunches }) {
+function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh: false } }) {
   const [chainFilter, setChainFilter] = useState(() => localStorage.getItem(CHAIN_FILTER_KEY) || "all");
   const setFilter = (k) => { localStorage.setItem(CHAIN_FILTER_KEY, k); setChainFilter(k); };
   const counts = { all: allLaunches.length, sol: 0, rh: 0 };
@@ -35,9 +35,14 @@ function RecentLaunchesFeed({ launches: allLaunches }) {
         </div>
         <div className="flex items-center gap-2">
           <ChainFilterChips value={chainFilter} onChange={setFilter} counts={counts} />
-          <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.2em] text-emerald-500">
-            <span className="pulse-dot"></span> LIVE
-          </div>
+          {(() => {
+            const live = chainFilter === "sol" ? feedLive.sol : chainFilter === "rh" ? feedLive.rh : (feedLive.sol || feedLive.rh);
+            return (
+              <div className={`flex items-center gap-1.5 text-[10px] uppercase tracking-[0.2em] ${live ? "text-emerald-500" : "text-neutral-500"}`} data-testid="launches-live-chip" title="follows the active tab: Sol → Pump.fun WS, RH → RH poll loop, All → either">
+                {live ? <span className="pulse-dot"></span> : <span className="w-2 h-2 rounded-full bg-neutral-600 inline-block"></span>} {live ? "LIVE" : "OFFLINE"}
+              </div>
+            );
+          })()}
         </div>
       </div>
       <div className="overflow-y-auto max-h-[280px] md:max-h-[480px] [contain:layout] [overscroll-behavior:contain]" data-testid="launches-list">

@@ -633,11 +633,22 @@ class WalletInfo(BaseModel):
     sol_price_usd: float
 
 
+# Desired-state feed keys: owned by the operator's toggles ONLY. Start/stop, config import, doctor and brain sync
+# never write them; PUT /bot/config applies exactly the keys the client sent.
+FEED_KEYS = {"helius_tracker_enabled", "rh_feed_enabled", "rh_paper_enabled", "rh_live_trading", "scanner_enabled"}
+
+
 class BotStatus(BaseModel):
-    enabled: bool
+    enabled: bool                       # master run — entries allowed
     live_trading: bool
     kill_switch_tripped: bool
-    listener_connected: bool
+    listener_connected: bool            # ACTUAL Pump.fun WS
+    helius_tracker_enabled: bool = True # DESIRED Pump.fun WS
+    rh_feed_enabled: bool = True        # DESIRED RH poll
+    rh_feed_alive: bool = False         # ACTUAL RH loop (head moved in the last 15 s)
+    rh_paper_enabled: bool = True       # arming flags — still need `enabled` to fire
+    rh_live_trading: bool = False
+    scanner_enabled: bool = True
     daily_pnl_usd: float          # combined live + paper; see daily_pnl_live_usd / daily_pnl_paper_usd for the split
     daily_pnl_live_usd: float = 0.0   # real-money PnL (drives kill switch)
     daily_pnl_paper_usd: float = 0.0  # paper-mode simulated PnL

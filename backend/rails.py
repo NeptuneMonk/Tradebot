@@ -29,7 +29,8 @@ RAILS: dict[str, tuple[float, float]] = {
     "risk_per_trade_pct": (0.25, 5.0),
 }
 NEVER_TOUCH = {"daily_kill_switch_usd", "rh_daily_kill_switch_usd", "live_trading", "rh_live_trading", "enabled",
-               "max_trade_usd", "rh_max_trade_usd", "rh_gas_reserve_eth"}
+               "max_trade_usd", "rh_max_trade_usd", "rh_gas_reserve_eth",
+               "helius_tracker_enabled", "rh_feed_enabled", "rh_paper_enabled", "scanner_enabled"}
 MAX_CHANGES_PER_DAY = 6
 
 

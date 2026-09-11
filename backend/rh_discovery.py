@@ -383,6 +383,8 @@ class RHDiscovery:
         head = int(res[0], 16)
         factory_logs, trade_logs = res[1] or [], res[2] or []
         pool_logs = (res[3] or []) if pool_tokens else []
+        if head > int(self.stats.get("head") or 0):
+            self.stats["head_advanced_ts"] = time.time()
         self.stats["head"] = head
         now = time.time()
         max_block = head if to_hex == "latest" else int(to_hex, 16)
@@ -783,9 +785,14 @@ class RHDiscovery:
         out.sort(key=lambda x: (x["passes"], x["growth_pct"], x["recent_inflow_quote"]), reverse=True)
         return out[:40]
 
+    def alive(self, window_s: float = 15.0) -> bool:
+        """The poll loop is really moving: the chain head advanced within `window_s`."""
+        return time.time() - float(self.stats.get("head_advanced_ts") or 0.0) < window_s
+
     def status(self) -> dict:
         return {
             **self.stats,
+            "alive": self.alive(),
             "tracked": len(self.tracking),
             "next_from_block": self._next_from,
             "eth_usd": _eth_usd_cache["price"],

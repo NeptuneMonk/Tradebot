@@ -98,6 +98,7 @@ class PumpFunListener:
         self.on_launch = on_launch  # async callable(launch_dict)
         self.on_trade = on_trade  # async callable(trade_dict) — optional
         self._task: asyncio.Task | None = None
+        self._ws = None
         self._stop = False
         self.connected = False
 
@@ -106,6 +107,16 @@ class PumpFunListener:
             return
         self._stop = False
         self._task = asyncio.create_task(self._run())
+
+    async def disconnect(self):
+        """Close the live socket now (gate OFF) — `connected` flips false immediately, the loop idles on the gate."""
+        self.connected = False
+        ws, self._ws = self._ws, None
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:
+                pass
 
     def stop(self):
         self._stop = True
@@ -118,7 +129,7 @@ class PumpFunListener:
         # Poll interval for the helius_gate when paused — we don't want to
         # busy-wait, but we also want toggling the switch ON to take effect
         # within a few seconds (not minutes).
-        gate_check_interval_s = 5
+        gate_check_interval_s = 1
         while not self._stop:
             # Helius kill switch — when the user toggles tracker OFF, we
             # disconnect (or never connect) and idle here. Polling every
@@ -140,6 +151,7 @@ class PumpFunListener:
                 async with websockets.connect(
                     WSS_URL, ping_interval=20, ping_timeout=20, max_size=4 * 1024 * 1024
                 ) as ws:
+                    self._ws = ws
                     self.connected = True
                     backoff = 1
                     sub_req = {

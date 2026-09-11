@@ -296,7 +296,8 @@ export default function Dashboard() {
   const controlStatus = useMemo(() => status && ({
     enabled: status.enabled, stopping_gracefully: status.stopping_gracefully,
     kill_switch_tripped: status.kill_switch_tripped, active_trade_count: status.active_trade_count,
-  }), [status?.enabled, status?.stopping_gracefully, status?.kill_switch_tripped, status?.active_trade_count]);
+    listener_connected: status.listener_connected, rh_feed_alive: status.rh_feed_alive,
+  }), [status?.enabled, status?.stopping_gracefully, status?.kill_switch_tripped, status?.active_trade_count, status?.listener_connected, status?.rh_feed_alive]);
   const onConfigPatch = useCallback(async (patch) => {
     const saved = await api.updateConfig(patch);
     setConfig(saved);
@@ -343,10 +344,13 @@ export default function Dashboard() {
             <span className="text-neutral-400">{wsConnected ? "WS LIVE" : "WS OFFLINE"}</span>
           </span>
           <span className="flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full ${status?.listener_connected ? "bg-emerald-500" : (config && config.helius_tracker_enabled === false) ? "bg-amber-500" : "bg-red-500"}`}></span>
-            <span className="text-neutral-400" data-testid="listener-status">
-              {status?.listener_connected ? "PUMP.FUN FEED LIVE" : (config && config.helius_tracker_enabled === false) ? "PUMP.FUN FEED OFF · RH ONLY" : "PUMP.FUN FEED OFFLINE"}
-            </span>
+            {(() => {
+              const desired = status?.helius_tracker_enabled ?? config?.helius_tracker_enabled ?? true;
+              const live = !!status?.listener_connected;
+              const dot = !desired ? "bg-amber-500" : live ? "bg-emerald-500" : "bg-red-500";
+              const text = !desired ? "PUMP.FUN FEED OFF" : live ? "PUMP.FUN FEED ON · LIVE" : "PUMP.FUN FEED ON · OFFLINE";
+              return (<><span className={`w-2 h-2 rounded-full ${dot}`}></span><span className="text-neutral-400" data-testid="listener-status">{text}</span></>);
+            })()}
           </span>
           {me && (
             <span className="hidden md:flex items-center gap-2 text-neutral-500" data-testid="auth-user">
@@ -435,7 +439,7 @@ export default function Dashboard() {
           <ActiveTradesTable trades={activeTrades} onExit={onExitTrade} />
           </MinimizableCard>
           <MinimizableCard id="launch-feed" title="Live launch feed" stat={`${launches.length} tracked`}>
-          <RecentLaunchesFeed launches={launches} />
+          <RecentLaunchesFeed launches={launches} feedLive={{ sol: !!status?.listener_connected, rh: !!status?.rh_feed_alive }} />
           </MinimizableCard>
         </div>
 

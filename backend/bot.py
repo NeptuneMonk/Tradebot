@@ -569,7 +569,7 @@ class BotState:
             return
         self.config.enabled = False
         self.stopping_gracefully = False
-        await self.save_config()
+        await self.save_enabled()
         await hub.broadcast("bot_stopped", {"reason": "graceful_complete"})
 
     async def hard_stop(self):
@@ -578,7 +578,7 @@ class BotState:
         for natural exits."""
         self.stopping_gracefully = False
         self.config.enabled = False
-        await self.save_config()
+        await self.save_enabled()
         mints = list(self.active_trades.keys())
         await hub.broadcast("bot_hard_stop", {"closing": len(mints)})
         for mint in mints:
@@ -586,6 +586,10 @@ class BotState:
                 await self._exit(mint, reason="hard-stop (user requested)")
             except Exception as e:
                 logger.exception(f"hard-stop exit failed for {mint}: {e}")
+
+    async def save_enabled(self):
+        """Start/stop persist ONLY {enabled}. Feed toggles are never rewritten by the master switch."""
+        await self.db.bot_config.update_one({"_id": "current"}, {"$set": {"enabled": bool(self.config.enabled)}}, upsert=True)
 
     async def save_config(self):
         await self.db.bot_config.update_one(
@@ -843,7 +847,7 @@ class BotState:
         if pnl <= -abs(self.config.daily_kill_switch_usd):
             self.kill_switch_tripped = True
             self.config.enabled = False
-            await self.save_config()
+            await self.save_enabled()
             return True
         return False
 

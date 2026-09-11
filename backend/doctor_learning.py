@@ -38,7 +38,8 @@ ALLOWED_KEYS = {
     "flush_hold_s", "serial_creator_min_launches", "serial_creator_requires_graduation",
     "min_curve_liquidity_sol", "min_buyers_for_entry", "min_curve_liquidity_sol_new", "min_buyers_for_entry_new",
 }
-FORBIDDEN_KEYS = {"live_trading", "rh_live_trading", "enabled", "daily_kill_switch_usd", "rh_daily_kill_switch_usd", "max_trade_usd", "rh_max_trade_usd"}
+FORBIDDEN_KEYS = {"live_trading", "rh_live_trading", "enabled", "daily_kill_switch_usd", "rh_daily_kill_switch_usd", "max_trade_usd", "rh_max_trade_usd",
+                  "helius_tracker_enabled", "rh_feed_enabled", "rh_paper_enabled", "scanner_enabled"}
 TECHNIQUE_MIN_GAIN_R = 0.05          # R/fill a technique change must add to be worth a canary
 TECHNIQUE_MIN_GAIN_REL = 0.15        # …and ≥15% of |current expectancy_r|
 LAST_RESORT_MULT = 3

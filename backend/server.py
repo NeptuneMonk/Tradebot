@@ -470,18 +470,27 @@ async def update_config(body: dict = Body(...)):
     # Advisory→Enforced reset: when the user flips Advisory OFF, reset the
     # Doctor trail-stop's peak so it doesn't immediately slam a pause based
     # on historical regime drift. Fresh baseline = fresh decisions.
+    prev_helius = bot_state.config.helius_tracker_enabled
     bot_state.config = cfg
     await bot_state.save_config()
-    # Sync the Helius gate with the new config value. Without this, the
-    # listener / scanner / discovery wouldn't know the user just toggled
-    # the switch until the next `bot_state.load()` (which only fires on
-    # startup or after a doctor write).
-    try:
-        from helius_gate import set_paused as _set_helius_paused
-        _set_helius_paused(not cfg.helius_tracker_enabled)
-    except Exception as e:
-        logger.warning(f"helius gate sync after PUT /bot/config failed: {e}")
+    if "helius_tracker_enabled" in body:
+        await sync_helius_feed(cfg.helius_tracker_enabled, prev_helius)
     return cfg
+
+
+async def sync_helius_feed(desired: bool, prev: bool | None = None) -> None:
+    """Desired → actual for the Pump.fun WS: ON unpauses the gate and makes sure the listener task is running
+    (reconnects a dead task); OFF pauses the gate and drops the socket now so `listener_connected` is false within 2 s."""
+    from helius_gate import set_paused as _set_helius_paused
+    _set_helius_paused(not desired)
+    if desired:
+        listener.start()
+        if prev is False:
+            logger.info("Pump.fun feed ON — listener (re)connecting")
+    else:
+        await listener.disconnect()
+        if prev is True:
+            logger.info("Pump.fun feed OFF — WSS closed, gate paused")
 
 
 @api.post("/bot/start")
@@ -492,7 +501,7 @@ async def bot_start():
     if bot_state.stopping_gracefully:
         await bot_state.cancel_graceful_stop()
     bot_state.config.enabled = True
-    await bot_state.save_config()
+    await bot_state.save_enabled()          # ONLY {enabled} — feed toggles are never touched by start/stop
     return {"ok": True, "enabled": True}
 
 
@@ -666,6 +675,12 @@ async def bot_status():
         live_trading=bot_state.config.live_trading,
         kill_switch_tripped=bot_state.kill_switch_tripped,
         listener_connected=listener.connected,
+        helius_tracker_enabled=bot_state.config.helius_tracker_enabled,
+        rh_feed_enabled=bot_state.config.rh_feed_enabled,
+        rh_feed_alive=bot_state.rh_discovery.alive() if getattr(bot_state, "rh_discovery", None) else False,
+        rh_paper_enabled=bot_state.config.rh_paper_enabled,
+        rh_live_trading=bot_state.config.rh_live_trading,
+        scanner_enabled=bot_state.config.scanner_enabled,
         daily_pnl_usd=pnl,
         daily_pnl_live_usd=pnl_live,
         daily_pnl_paper_usd=pnl_paper,
@@ -807,9 +822,11 @@ async def config_import(req: _ConfigImportReq):
     bot_state.config.enabled = False
     await bot_state.save_config()
     try:
-        merged = BotConfig(**{**bot_state.config.model_dump(), **req.config})
+        from models import FEED_KEYS
+        foreign = {k: v for k, v in req.config.items() if k not in FEED_KEYS | {"enabled", "live_trading"}}   # feeds/arming stay local
+        merged = BotConfig(**{**bot_state.config.model_dump(), **foreign})
         merged.enabled = False  # never auto-enable on import; user re-starts
-        return await update_config(merged.model_dump())
+        return await update_config({k: v for k, v in merged.model_dump().items() if k not in FEED_KEYS})
     except Exception as e:
         # Roll back the pause if import fails so the user isn't stuck
         bot_state.config.enabled = was_enabled
@@ -826,7 +843,8 @@ async def config_apply_recommended():
     merged_dict = {**bot_state.config.model_dump(), **RECOMMENDED_CONFIG_OVERRIDES}
     merged_dict["enabled"] = False
     merged = BotConfig(**merged_dict)
-    return await update_config(merged.model_dump())
+    from models import FEED_KEYS
+    return await update_config({k: v for k, v in merged.model_dump().items() if k not in FEED_KEYS})
 
 
 # ---------------------------------------------------------------- brain sync ----

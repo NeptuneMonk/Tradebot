@@ -8,6 +8,14 @@ import BrainSyncPanel from "./BrainSyncPanel";
 import BookExitsEditor from "./BookExitsEditor";
 import HelpHint from "./HelpHint";
 
+// desired (operator toggle) vs actual (transport health). Three states, never "RUNNING":
+//   OFF (amber) · ON · CONNECTING/OFFLINE (red) · ON · LIVE (green)
+function feedHealth(desired, actual) {
+  if (!desired) return { text: "OFF", dot: "bg-amber-500", cls: "text-amber-300" };
+  if (!actual) return { text: "ON · OFFLINE", dot: "bg-red-500", cls: "text-red-300" };
+  return { text: "ON · LIVE", dot: "bg-emerald-500", cls: "text-emerald-300" };
+}
+
 function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoaded }) {
   const [local, setLocal] = useState(null);
   // Baseline = last clean snapshot of config we've seen. The form is "dirty"
@@ -186,8 +194,13 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
           Pump.fun Feed · Solana Trading
         </span>
         <span className="flex items-center gap-1.5">
-          <span className={`text-[10px] ${(local.helius_tracker_enabled ?? true) ? "text-emerald-300" : "text-amber-300"}`} data-testid="helius-tracker-state">
-            {(local.helius_tracker_enabled ?? true) ? "ON" : "OFF"}
+          {(() => { const h = feedHealth(local.helius_tracker_enabled ?? true, status?.listener_connected); return (
+            <span className={`flex items-center gap-1 text-[9px] ${h.cls}`} data-testid="feed-pump-health" title="desired vs actual Pump.fun WebSocket">
+              <span className={`w-1.5 h-1.5 rounded-full ${h.dot}`} /> {h.text}
+            </span>
+          ); })()}
+          <span className={`text-[10px] ${(local.helius_tracker_enabled ?? true) ? "text-emerald-300" : "text-amber-300"}`} data-testid="feed-pump-desired">
+            <span data-testid="helius-tracker-state">{(local.helius_tracker_enabled ?? true) ? "ON" : "OFF"}</span>
           </span>
           <HelpHint label="Pump.fun Feed · Solana Trading">
             <div className="space-y-1.5">
@@ -220,8 +233,13 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
           Robinhood Chain Feed
         </span>
         <span className="flex items-center gap-1.5">
-          <span className={`text-[10px] ${(local.rh_feed_enabled ?? true) ? "text-lime-300" : "text-neutral-400"}`}>
-            {(local.rh_feed_enabled ?? true) ? "LIVE" : "OFF"}
+          {(() => { const h = feedHealth(local.rh_feed_enabled ?? true, status?.rh_feed_alive); return (
+            <span className={`flex items-center gap-1 text-[9px] ${h.cls}`} data-testid="feed-rh-health" title="desired vs actual RH poll loop (head moved in the last 15 s)">
+              <span className={`w-1.5 h-1.5 rounded-full ${h.dot}`} /> {h.text}
+            </span>
+          ); })()}
+          <span className={`text-[10px] ${(local.rh_feed_enabled ?? true) ? "text-lime-300" : "text-neutral-400"}`} data-testid="feed-rh-desired">
+            {(local.rh_feed_enabled ?? true) ? "ON" : "OFF"}
           </span>
           <HelpHint label="Robinhood Chain Feed">
             <div className="space-y-1.5">
@@ -255,7 +273,7 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
         </span>
         <span className="flex items-center gap-1.5">
           <span className={`text-[10px] ${(local.rh_paper_enabled ?? false) ? "text-lime-200" : "text-neutral-400"}`}>
-            {(local.rh_paper_enabled ?? false) ? (local.enabled ? "ARMED" : "ON · BOT STOPPED") : "OFF"}
+            {(local.rh_paper_enabled ?? false) ? (status?.enabled ? "ARMED" : "ARMED · BOT STOPPED") : "OFF"}
           </span>
           <HelpHint label="RH Paper Trading">
             <div className="space-y-1.5">
@@ -290,7 +308,7 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
         </span>
         <span className="flex items-center gap-1.5">
           <span className={`text-[10px] ${(local.rh_live_trading ?? false) ? "text-rose-200" : "text-neutral-400"}`}>
-            {(local.rh_live_trading ?? false) ? (local.enabled ? "LIVE" : "ON · BOT STOPPED") : "OFF"}
+            {(local.rh_live_trading ?? false) ? (status?.enabled ? "LIVE" : "ARMED · BOT STOPPED") : "OFF"}
           </span>
           <HelpHint label="RH Live Trading">
             <div className="space-y-1.5">

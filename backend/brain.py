@@ -33,7 +33,7 @@ DEFAULT_GROUPS = ["config", "doctor", "creators", "trades"]
 
 # Environment-specific choices that must never be carried across.
 LOCAL_CONFIG_KEYS = {"enabled", "live_trading", "rh_live_trading", "helius_tracker_enabled",
-                     "rh_feed_enabled", "sweep_enabled", "sweep_cold_wallet"}
+                     "rh_feed_enabled", "rh_paper_enabled", "scanner_enabled", "sweep_enabled", "sweep_cold_wallet"}
 ALT_KEY = {"strategy_suggestions": "id", "doctor_blacklist": "fingerprint"}
 TS_KEYS = ("updated_at", "greylist_score_updated_at", "last_seen", "pnl_reconciled_at", "exit_time",
            "entry_time", "applied_at", "created_at", "saved_at", "last_evaluated_at", "started_at",
