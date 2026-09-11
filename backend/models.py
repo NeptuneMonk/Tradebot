@@ -369,6 +369,8 @@ class BotConfig(BaseModel):
     book_scalp_size_mult: float = 1.0
     book_hunt_size_mult: float = 1.0
     book_runner_size_mult: float = 1.0
+    discovery_clip_usd: float = 10.0        # hard USD ceiling on Solana entry-book notional (scalp/hunt) — search stays cheap
+    rh_discovery_clip_usd: float = 10.0     # same ceiling for rh_pons (RH never shares Solana values)
     book_rh_size_mult: float = 1.0            # desk-allocator weight for the RH curve book
     resume_on_restart: bool = True             # deployed app: keep trading through backend restarts (else auto-disable for safety)
     allocator_enabled: bool = True             # desk allocator: continuous per-book capital weights (floor ×0.25, cap ×2)

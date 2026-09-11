@@ -435,7 +435,8 @@ class RHPaperTrader:
             sz = _rs.size_trade(bankroll_usd=bank_usd, risk_per_trade_pct=float(cfg.risk_per_trade_pct), sl_pct=bx0["stop_loss_pct"],
                                 exit_slip_pct=exit_slip_pct, book_mult=max(0.0, float(getattr(cfg, "book_rh_size_mult", 1.0) or 1.0)) * max(0.1, float(size_mult)),
                                 doctor_mult=1.0, governor_mult=(_gov.size_mult("rh") if _gov else 1.0),
-                                min_trade_usd=min(base_stake, float(getattr(cfg, "min_trade_usd", 0.5))), max_trade_usd=base_stake)
+                                min_trade_usd=min(base_stake, float(getattr(cfg, "min_trade_usd", 0.5))),
+                                max_trade_usd=min(base_stake, float(getattr(cfg, "rh_discovery_clip_usd", base_stake) or base_stake)))
             if sz["skip"]:
                 logger.info(f"rh_paper skip {b['symbol']}: r-size — {sz['reason']}")
                 return

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import statistics
 
-BOOKS = ("scalp", "hunt", "rh_pons")           # entry books (Doctor tunes these)
+BOOKS = ("scalp", "hunt", "rh_pons")           # entry books (Doctor tunes these) — SEARCH: cheap, capped, never scaled up
+ENTRY_MULT_CAP = 1.0                           # allocator may shrink an entry book (0.25×) but never raise it past 1×
+RUNNER_MULT_CAP = 2.0                          # the runner (HARVEST) is the only book allowed to scale 1×–2× (after 20 fills)
 ALL_BOOKS = BOOKS + ("runner",)                # + runner: promotion-only, never opened cold, never Doctor-tuned
 SIZE_KEYS = {"scalp": "book_scalp_size_mult", "hunt": "book_hunt_size_mult", "rh_pons": "book_rh_size_mult",
              "runner": "book_runner_size_mult"}
@@ -64,11 +66,9 @@ def book_for_action(action: str | None, chain: str | None = None) -> str:
 
 
 def book_size_mult(cfg, book: str) -> float:
-    v = _get(cfg, SIZE_KEYS.get(book, "book_scalp_size_mult"), 1.0)
-    try:
-        return max(0.0, float(v if v is not None else 1.0))
-    except (TypeError, ValueError):
-        return 1.0
+    """Allocator lever per book. Entry books are clipped at ENTRY_MULT_CAP even if a larger value was persisted."""
+    v = float(getattr(cfg, SIZE_KEYS.get(book, "book_scalp_size_mult"), 1.0) or 0.0)
+    return max(0.0, min(v, RUNNER_MULT_CAP if book == "runner" else ENTRY_MULT_CAP))
 
 
 def exit_param(cfg, book: str, param: str, regime: str | None = None) -> float:

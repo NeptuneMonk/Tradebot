@@ -262,3 +262,38 @@ def test_ws_hub_forwards_candidates_only():
     assert h._gate_launch("launch", {"id": "b", "classifier_action": "scalp"})[0] == "candidate"
     assert h._gate_launch("launch", {"id": "c", "entered": True})[0] == "candidate"
     assert h._gate_launch("launch", {"id": "d", "classifier_action": "skip", "unique_buyers": 50}) == (None, None)
+
+
+def test_search_books_capped_runner_is_the_only_lever():
+    import allocator
+    from book_params import book_size_mult, ENTRY_MULT_CAP, RUNNER_MULT_CAP
+    cfg = BotConfig(book_scalp_size_mult=1.75, book_hunt_size_mult=2.0, book_rh_size_mult=1.5, book_runner_size_mult=2.0)
+    assert book_size_mult(cfg, "scalp") == 1.0 and book_size_mult(cfg, "hunt") == 1.0 and book_size_mult(cfg, "rh_pons") == 1.0
+    assert book_size_mult(cfg, "runner") == 2.0 and ENTRY_MULT_CAP == 1.0 and RUNNER_MULT_CAP == 2.0
+    hot = {"n": 40, "expectancy_r": 0.9, "wr": 0.7}
+    rows = allocator.plan({"book_scalp_size_mult": 1.0, "book_hunt_size_mult": 1.0, "book_rh_size_mult": 1.0, "book_runner_size_mult": 1.0},
+                          {"scalp": hot, "hunt": hot, "rh_pons": hot, "runner": hot}, {"scalp": hot, "hunt": hot, "rh_pons": hot, "runner": hot},
+                          15, {"scalp": True, "hunt": True, "rh_pons": True, "runner": True})
+    by = {r["book"]: r for r in rows}
+    for b in ("scalp", "hunt", "rh_pons"):
+        assert by[b]["next"] <= 1.0 and by[b]["change"] is False and "capped" in by[b]["reason"], by[b]   # a hot hour never scales search
+    assert by["runner"]["next"] == 1.25 and by["runner"]["change"] is True                             # harvest may step up
+    cold = {"n": 6, "expectancy_r": 0.9, "wr": 0.7}
+    rows = allocator.plan({"book_runner_size_mult": 1.0}, {"runner": cold}, {"runner": cold}, 15, {"runner": True})
+    rr = next(r for r in rows if r["book"] == "runner")
+    assert rr["change"] is False and "< 20" in rr["reason"]                                              # 12 blended fills → not before 20
+    # red search book: allocator may shrink it, never "add size to beat fees"
+    red = {"n": 40, "expectancy_r": -0.4, "wr": 0.3}
+    rows = allocator.plan({"book_scalp_size_mult": 1.0}, {"scalp": red}, {"scalp": red}, 15, {"scalp": True})
+    assert next(r for r in rows if r["book"] == "scalp")["next"] < 1.0
+
+
+def test_discovery_clip_caps_entry_notional_but_not_runner_add_on():
+    import r_sizer, runner
+    cfg = BotConfig(max_trade_usd=25.0, discovery_clip_usd=10.0, book_runner_size_mult=2.0)
+    sz = r_sizer.size_trade(bankroll_usd=1000.0, risk_per_trade_pct=2.0, sl_pct=12.0, exit_slip_pct=3.0, book_mult=1.0, doctor_mult=1.0, governor_mult=1.0,
+                            min_trade_usd=0.5, max_trade_usd=min(cfg.max_trade_usd, cfg.discovery_clip_usd))
+    assert sz["size_usd"] == 10.0                                          # R-size would be ~$133 → clipped to the discovery ceiling
+    plan = runner.add_on_plan(cfg, {"r_usd": 4.0}, depth_usd=5000.0, exit_slip_bps=800, entry_slip_bps=500, fee_usd_round_trip=0.05, max_trade_usd=25.0)
+    assert plan["size_usd"] == 4.0                                         # 0.5R × 4 × runner mult 2.0 — the only lever that scales
+    assert "discovery_clip_usd" in __import__("rails").NEVER_TOUCH        # operator-owned, the Doctor cannot lift it

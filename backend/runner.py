@@ -7,7 +7,7 @@ import time
 from collections import deque
 
 import cost_gate
-from book_params import exit_param
+from book_params import exit_param, book_size_mult
 
 RUNNER_CAP = 1                 # at most one runner on the Solana book
 HUNT_CAP_WITH_RUNNER = 1       # while a runner is open the hunt cap drops from 2 → 1
@@ -154,7 +154,7 @@ def add_on_plan(cfg, trade_doc: dict, *, depth_usd: float, exit_slip_bps: int, e
     r_usd = float(trade_doc.get("r_usd") or 0.0)
     if r_usd <= 0 or trade_doc.get("runner_add_on_done"):
         return None
-    size = min(max_trade_usd, param(cfg, "add_on_r") * r_usd)
+    size = min(max_trade_usd, param(cfg, "add_on_r") * r_usd * max(0.0, book_size_mult(cfg, "runner")))   # the ONE lever that may scale
     if size <= 0:
         return None
     q = cost_gate.quote(size_usd=size, r_usd=r_usd, first_target_r=1.0, protocol=protocol, entry_slip_bps=entry_slip_bps,

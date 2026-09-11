@@ -9,10 +9,10 @@ import logging
 logger = logging.getLogger("rails")
 
 RAILS: dict[str, tuple[float, float]] = {
-    "book_scalp_size_mult": (0.25, 2.0),
-    "book_hunt_size_mult": (0.25, 2.0),
+    "book_scalp_size_mult": (0.25, 1.0),
+    "book_hunt_size_mult": (0.25, 1.0),
     "book_runner_size_mult": (0.25, 2.0),
-    "book_rh_size_mult": (0.25, 2.0),
+    "book_rh_size_mult": (0.25, 1.0),
     "stop_loss_pct": (5.0, 40.0),
     "target_r": (1.0, 5.0),
     "take_profit_pct": (8.0, 200.0),
@@ -30,7 +30,8 @@ RAILS: dict[str, tuple[float, float]] = {
 }
 NEVER_TOUCH = {"daily_kill_switch_usd", "rh_daily_kill_switch_usd", "live_trading", "rh_live_trading", "enabled",
                "max_trade_usd", "rh_max_trade_usd", "rh_gas_reserve_eth",
-               "helius_tracker_enabled", "rh_feed_enabled", "rh_paper_enabled", "scanner_enabled"}
+               "helius_tracker_enabled", "rh_feed_enabled", "rh_paper_enabled", "scanner_enabled",
+               "discovery_clip_usd", "rh_discovery_clip_usd"}
 MAX_CHANGES_PER_DAY = 6
 
 

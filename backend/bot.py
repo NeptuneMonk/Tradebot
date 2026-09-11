@@ -1531,7 +1531,8 @@ class BotState:
         sz = r_sizer.size_trade(bankroll_usd=bankroll_usd, risk_per_trade_pct=cfg.risk_per_trade_pct, sl_pct=sl_pct, exit_slip_pct=exit_slip_pct,
                                 book_mult=book_mult_override if book_mult_override is not None else book_size_mult(cfg, book),
                                 doctor_mult=doctor["doctor_size_mult"], governor_mult=gov,
-                                min_trade_usd=cfg.min_trade_usd, max_trade_usd=cfg.max_trade_usd)
+                                min_trade_usd=cfg.min_trade_usd,
+                                max_trade_usd=min(cfg.max_trade_usd, float(getattr(cfg, "discovery_clip_usd", cfg.max_trade_usd) or cfg.max_trade_usd)))
         if sz["skip"]:
             await skip("r-size", sz["reason"])
             return None

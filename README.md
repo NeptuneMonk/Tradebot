@@ -128,7 +128,7 @@ Scalp promotion banks 45 % first; hunt promotion converts the remainder with not
 * **Live Doctor** (`live_doctor.py`) scores every candidate at entry time (winner likeness, exit-liquidity likeness), owns per-book **breakers** that pause a book after a losing streak, and issues entry policies. It cannot repeatedly tune global parameters — that is what the scorecard is for.
 * **Scorecard** (`scorecard.py`) keeps per-cell statistics (`book | pattern | band | time-of-day | cost band`): n, win rate, E[R], expectancy in USD. Cells that prove negative are disabled automatically; the operator can re-enable them.
 * **Strategy Doctor** (`strategy_doctor.py`, `doctor_learning.py`, `replay.py`, `autopsy.py`) replays closed trades counterfactually, proposes exit/entry changes **inside rails** (`rails.py`), applies them with a revert history and writes a post-mortem for every loss.
-* **Allocator** (`allocator.py`) moves per-book size multipliers (0.25×–2×) from 24 h / 7 d expectancy — the runner is only judged after 20 of its own fills, and the Doctor never tunes runner exits from scalp data.
+* **Allocator** (`allocator.py`) — *search vs harvest*. The three entry books (scalp, hunt, rh_pons) are **search**: their multiplier can only shrink (0.25×–1×, never above 1×) and their notional is hard-clipped by `discovery_clip_usd` / `rh_discovery_clip_usd` (operator-owned, default $10) so discovery stays cheap even after a hot hour. The **runner** is **harvest**: `book_runner_size_mult` is the only lever allowed to scale 1×–2×, and only after 20 runner fills judged on the post-promotion leg. RH expectancy never feeds Solana sizing.
 
 ### Bankroll governor and kill switches
 
