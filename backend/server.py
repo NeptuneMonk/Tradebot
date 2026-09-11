@@ -1878,6 +1878,105 @@ async def costs_network():
 PL_BUCKETS_S = (300, 900, 1800, 3600, 4 * 3600, 12 * 3600, 86400)
 
 
+EQUITY_TF_S = {"5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400}
+
+
+def _open_marks(mode: str, book: str) -> list[dict]:
+    """Unrealised P/L of open positions (USD), so the equity line ends at the mark, not at the last close."""
+    out = []
+    for slot in bot_state.active_trades.values():
+        t = slot.get("trade") or {}
+        if mode != "all" and t.get("mode") != mode or book != "all" and (t.get("book") or "scalp") != book:
+            continue
+        entry, cur = float(t.get("entry_price_sol") or 0), float(slot.get("_last_price_sol") or slot.get("peak_price_sol") or 0)
+        if entry > 0 and cur > 0:
+            out.append({"mint": t.get("mint"), "book": t.get("book"), "mode": t.get("mode"),
+                        "unrealized_usd": float(t.get("entry_usd") or 0) * (cur - entry) / entry + float(t.get("partial_realized_usd") or 0)})
+    if book in ("all", "rh_pons") and mode in ("all", "paper"):
+        for pos in getattr(bot_state.rh_paper, "positions", {}).values():
+            t = pos.get("trade") or {}
+            entry, cur = float(t.get("entry_price_quote") or 0), float(pos.get("_last_price") or 0)
+            if entry > 0 and cur > 0 and t.get("entry_usd"):
+                out.append({"mint": t.get("mint"), "book": "rh_pons", "mode": "paper",
+                            "unrealized_usd": float(t["entry_usd"]) * (cur - entry) / entry})
+    return out
+
+
+def build_equity(trades: list[dict], bucket_s: int, now_ts: float, open_mark_usd: float = 0.0) -> dict:
+    """Equity curve from closed fills: start at 0, walk exits in time. Per bucket: open = equity at bucket start,
+    close = equity at bucket end, high/low = running extremes inside the bucket — widened by intra-trade MFE
+    (running + mfe_usd when mfe_pct and r_usd exist) and MAE (mae_pct) when the trade recorded them.
+    Buckets without fills produce NO candle. Returns candles + line points (+ a live point at `now` with open marks)."""
+    fills = []
+    for t in trades:
+        et = t.get("exit_time")
+        if not et:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(et).replace("Z", "+00:00"))
+            ts = (ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)).timestamp()
+        except Exception:
+            continue
+        pnl = float(t.get("pnl_usd") or 0.0)
+        size = float(t.get("entry_usd") or t.get("size_usd") or 0.0)
+        mfe = size * float(t["mfe_pct"]) / 100.0 if t.get("mfe_pct") is not None and t.get("r_usd") and size > 0 else None
+        mae = -abs(size * float(t["mae_pct"]) / 100.0) if t.get("mae_pct") is not None and size > 0 else None
+        fills.append((ts, pnl, t.get("mode") or "paper", mfe, mae))
+    fills.sort(key=lambda f: f[0])
+    equity, candles, points, cur = 0.0, [], [], None
+    for ts, pnl, mode, mfe, mae in fills:
+        b0 = int(ts // bucket_s) * bucket_s
+        if cur is None or cur["t"] != b0:
+            if cur is not None:
+                candles.append(cur)
+            cur = {"t": b0, "open": equity, "high": equity, "low": equity, "close": equity, "pnl_usd": 0.0, "live_usd": 0.0, "paper_usd": 0.0, "n": 0}
+        before = equity
+        if mfe is not None:
+            cur["high"] = max(cur["high"], before + max(mfe, pnl))
+        if mae is not None:
+            cur["low"] = min(cur["low"], before + min(mae, pnl))
+        equity += pnl
+        cur["high"], cur["low"], cur["close"] = max(cur["high"], equity), min(cur["low"], equity), equity
+        cur["pnl_usd"] += pnl
+        cur["live_usd" if mode == "live" else "paper_usd"] += pnl
+        cur["n"] += 1
+        points.append({"t": int(ts), "equity": round(equity, 4)})
+    if cur is not None:
+        candles.append(cur)
+    for c in candles:
+        for k in ("open", "high", "low", "close", "pnl_usd", "live_usd", "paper_usd"):
+            c[k] = round(c[k], 4)
+    realized = equity
+    if open_mark_usd:
+        equity += open_mark_usd
+        points.append({"t": int(now_ts), "equity": round(equity, 4), "mark": True})
+    return {"candles": candles, "points": points, "realized_usd": round(realized, 4), "equity_usd": round(equity, 4),
+            "open_mark_usd": round(open_mark_usd, 4), "n_fills": len(fills)}
+
+
+@api.get("/pl/equity")
+async def pl_equity(tf: str = "15m", mode: str = "all", book: str = "all", days: int = 30):
+    """Equity chart of OUR trading: closed fills walked in time + the unrealised mark of open slots (refresh ~5 s)."""
+    if tf not in EQUITY_TF_S:
+        raise HTTPException(400, f"tf must be one of {list(EQUITY_TF_S)}")
+    if mode not in ("paper", "live", "all") or book not in ("all", "scalp", "hunt", "runner", "rh_pons"):
+        raise HTTPException(400, "bad mode/book")
+    q: dict = {"status": "closed", "exit_time": {"$gte": (datetime.now(timezone.utc) - timedelta(days=max(1, min(days, 90)))).isoformat()}}
+    if mode != "all":
+        q["mode"] = mode
+    if book != "all":
+        q["book"] = book
+    rows = await db.trades.find(q, {"_id": 0, "exit_time": 1, "pnl_usd": 1, "mode": 1, "book": 1, "entry_usd": 1, "size_usd": 1,
+                                    "mfe_pct": 1, "mae_pct": 1, "r_usd": 1}).to_list(20000)
+    marks = _open_marks(mode, book)
+    now_ts = datetime.now(timezone.utc).timestamp()
+    out = build_equity(rows, EQUITY_TF_S[tf], now_ts, sum(m["unrealized_usd"] for m in marks))
+    chains = (getattr(bot_state.bankroll, "snapshot", {}) or {}).get("chains") or {}
+    base = float((chains.get("sol") or {}).get("bankroll_usd") or 0) if mode == "live" else float(bot_state.config.paper_bankroll_usd or 0)
+    return {"tf": tf, "bucket_s": EQUITY_TF_S[tf], "mode": mode, "book": book, "now": int(now_ts), "open_marks": marks,
+            "base_usd": base or None, **out}
+
+
 @api.get("/pl/buckets")
 async def pl_buckets(bucket_s: int = 3600, candles: int = 60, days: int = 7, mode: str | None = None):
     """Candlestick view of OUR trading: the cumulative realised P/L of the last `days` (the card's 7-day figure) is the

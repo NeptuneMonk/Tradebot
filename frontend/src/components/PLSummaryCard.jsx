@@ -1,63 +1,47 @@
 import { useState, useEffect, memo } from "react";
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, ReferenceLine, ResponsiveContainer, Tooltip } from "recharts";
 import { TrendingUp, TrendingDown, RotateCcw, CandlestickChart, Activity } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import EquityChart from "./EquityChart";
 
-const TIMEFRAMES = [300, 900, 1800, 3600, 14400, 43200, 86400];
-const CANDLES = 60;
+const TIMEFRAMES = ["5m", "15m", "30m", "1h", "4h", "1d"];
+const MODES = ["paper", "live", "all"];
+const BOOKS = [["all", "all"], ["scalp", "scalp"], ["hunt", "hunt"], ["runner", "runner"], ["rh_pons", "rh"]];
+const ls = (k, d) => localStorage.getItem(k) || d;
 
-// One candle of the cumulative-P/L "price": body open→close, wicks to high/low. Recharts gives us the pixel box of the
-// [low, high] range, so we scale the body inside it. Flat (no fills) candles draw as a thin doji line.
-function Candle({ x, y, width, height, payload }) {
-  const { open, close, high, low } = payload;
-  const up = close >= open;
-  const color = payload.trades === 0 ? "#3f3f46" : up ? "#10b981" : "#ef4444";
-  const span = high - low;
-  const px = (v) => (span > 0 ? y + (high - v) * (height / span) : y);
-  const top = px(Math.max(open, close));
-  const bodyH = Math.max(1, Math.abs(px(Math.min(open, close)) - top));
-  const cx = x + width / 2;
-  const bw = Math.max(1, width * 0.7);
+function Chip({ active, onClick, children, testid }) {
   return (
-    <g>
-      <line x1={cx} x2={cx} y1={y} y2={y + height} stroke={color} strokeWidth={1} />
-      <rect x={cx - bw / 2} y={top} width={bw} height={bodyH} fill={up ? color : color} stroke={color} />
-    </g>
+    <button type="button" onClick={onClick} data-testid={testid}
+      className={`px-1.5 py-0.5 border uppercase text-[9px] font-mono transition-colors ${active ? "border-blue-500 text-blue-300 bg-blue-950/40" : "border-neutral-800 text-neutral-500 hover:text-neutral-300"}`}>
+      {children}
+    </button>
   );
 }
 
 function PLSummaryCard({ pl, status, onReset }) {
   const [confirming, setConfirming] = useState(false);
   const [resetting, setResetting] = useState(false);
-  const [chart, setChart] = useState(() => localStorage.getItem("ui.pl.chart") || "line");
-  const flipChart = () => setChart((c) => { const n = c === "line" ? "bars" : "line"; localStorage.setItem("ui.pl.chart", n); return n; });
-  // Market-style candles of OUR trading: the 7-day cumulative P/L is the price. Candle width is fixed, so the
-  // timeframe decides how much history fits (60 × 5m = 5 h … 7 × 1d). Wicks = intra-period high/low of the running total.
-  const [tf, setTf] = useState(() => Number(localStorage.getItem("ui.pl.tf")) || 3600);
-  const [buckets, setBuckets] = useState([]);
-  const pickTf = (v) => { setTf(v); localStorage.setItem("ui.pl.tf", String(v)); };
+  // Equity chart of OUR trading (closed fills walked in time + unrealised mark of open slots, refreshed ~5 s).
+  const [view, setView] = useState(() => ls("ui.pl.view", "line"));          // line | wicks
+  const [tf, setTf] = useState(() => ls("ui.pl.tf2", "15m"));
+  const [mode, setMode] = useState(() => ls("ui.pl.mode", "all"));
+  const [book, setBook] = useState(() => ls("ui.pl.book", "all"));
+  const [eq, setEq] = useState(null);
+  const pick = (k, set) => (v) => { set(v); localStorage.setItem(k, v); };
   useEffect(() => {
     let alive = true;
-    const load = () => api.plBuckets(tf, CANDLES).then((d) => alive && setBuckets(d?.buckets || [])).catch(() => {});
+    const load = () => api.plEquity(tf, mode, book).then((d) => alive && setEq(d)).catch(() => {});
     load();
-    const id = setInterval(load, 30000);
+    const id = setInterval(load, 5000);
     return () => { alive = false; clearInterval(id); };
-  }, [tf, pl?.cumulative_usd, pl?.daily_pnl_usd]);
-  const hasFills = buckets.some((b) => b.trades > 0);
-  const tfLabel = (s) => (s >= 86400 ? `${s / 86400}d` : s >= 3600 ? `${s / 3600}h` : `${s / 60}m`);
-  const fmtT = (t) => {
-    const d = new Date(t * 1000);
-    return tf >= 86400 ? d.toLocaleDateString(undefined, { month: "short", day: "numeric" })
-      : `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
-  };
-  // one tick per day boundary (local midnight) — the window is 7 days, so ~7 ticks at every resolution
-  const dayTicks = buckets.filter((b, i) => i > 0 && new Date(b.t * 1000).getDate() !== new Date(buckets[i - 1].t * 1000).getDate()).map((b) => b.t);
-  const tip = { background: "#0a0a0a", border: "1px solid #262626", fontSize: 11, fontFamily: "IBM Plex Mono" };
+  }, [tf, mode, book, pl?.cumulative_usd]);
 
   const daily = pl?.daily_pnl_usd ?? 0;
   const cum = pl?.cumulative_usd ?? 0;
   const positive = daily >= 0;
+  const last = eq?.equity_usd ?? 0;
+  const lastPct = eq?.base_usd ? (last / eq.base_usd) * 100 : null;
+  const hasData = (eq?.points?.length || 0) > 0;
 
   const doReset = async () => {
     setResetting(true);
@@ -81,14 +65,6 @@ function PLSummaryCard({ pl, status, onReset }) {
         <div className="flex items-center gap-2">
           {positive ? <TrendingUp className="w-3 h-3 text-emerald-500" /> : <TrendingDown className="w-3 h-3 text-red-500" />}
           <button
-            onClick={flipChart}
-            title={chart === "line" ? "Switch to candlesticks (open/high/low/close of the running P/L)" : "Switch to cumulative line"}
-            data-testid="pl-chart-toggle"
-            className="text-[10px] font-mono uppercase tracking-[0.15em] text-neutral-500 hover:text-blue-300 inline-flex items-center gap-1"
-          >
-            {chart === "line" ? <CandlestickChart className="w-3 h-3" /> : <Activity className="w-3 h-3" />} {chart === "line" ? "candles" : "line"}
-          </button>
-          <button
             onClick={() => setConfirming(true)}
             title="Clear paper trades + reset 1d/7d view (live trades preserved on-chain)"
             data-testid="reset-paper-btn"
@@ -106,58 +82,29 @@ function PLSummaryCard({ pl, status, onReset }) {
           {cum >= 0 ? "+" : ""}${cum.toFixed(2)}
         </span>
       </div>
-      <div className="flex items-center gap-1 text-[9px] font-mono" data-testid="pl-timeframes">
-        {TIMEFRAMES.map((s) => (
-          <button
-            key={s}
-            type="button"
-            onClick={() => pickTf(s)}
-            data-testid={`pl-tf-${tfLabel(s)}`}
-            className={`px-1.5 py-0.5 border uppercase transition-colors ${tf === s ? "border-blue-500 text-blue-300 bg-blue-950/40" : "border-neutral-800 text-neutral-500 hover:text-neutral-300"}`}
-          >
-            {tfLabel(s)}
-          </button>
-        ))}
-        <span className="ml-auto text-neutral-600">{buckets.length} × {tfLabel(tf)} · 7d cum</span>
+
+      {/* equity chart controls */}
+      <div className="flex flex-wrap items-center gap-1" data-testid="pl-timeframes">
+        <Chip active={view === "line"} onClick={pick("ui.pl.view", setView).bind(null, "line")} testid="pl-view-line"><Activity className="w-3 h-3 inline -mt-0.5" /> line</Chip>
+        <Chip active={view === "wicks"} onClick={pick("ui.pl.view", setView).bind(null, "wicks")} testid="pl-view-wicks"><CandlestickChart className="w-3 h-3 inline -mt-0.5" /> wicks</Chip>
+        <span className="w-px h-3 bg-neutral-800 mx-1" />
+        {TIMEFRAMES.map((t) => <Chip key={t} active={tf === t} onClick={() => pick("ui.pl.tf2", setTf)(t)} testid={`pl-tf-${t}`}>{t}</Chip>)}
+        <span className="w-px h-3 bg-neutral-800 mx-1" />
+        {MODES.map((m) => <Chip key={m} active={mode === m} onClick={() => pick("ui.pl.mode", setMode)(m)} testid={`pl-mode-${m}`}>{m}</Chip>)}
+        <span className="w-px h-3 bg-neutral-800 mx-1" />
+        {BOOKS.map(([b, label]) => <Chip key={b} active={book === b} onClick={() => pick("ui.pl.book", setBook)(b)} testid={`pl-book-${b}`}>{label}</Chip>)}
+        <span className={`ml-auto font-mono text-xs ${last >= 0 ? "text-emerald-400" : "text-red-400"}`} data-testid="equity-last" title="equity now = realised + unrealised mark of open slots">
+          {last >= 0 ? "+" : "-"}${Math.abs(last).toFixed(2)}{lastPct != null && <span className="text-neutral-500"> · {lastPct >= 0 ? "+" : ""}{lastPct.toFixed(2)}%</span>}
+          {eq?.open_mark_usd ? <span className="text-neutral-600" data-testid="equity-open-mark"> (open {eq.open_mark_usd >= 0 ? "+" : "-"}${Math.abs(eq.open_mark_usd).toFixed(2)})</span> : null}
+        </span>
       </div>
-      <div className="h-24 -mx-1" data-testid="pl-sparkline">
-        {!hasFills ? (
-          <div className="h-full flex items-center justify-center text-[10px] uppercase tracking-[0.2em] text-neutral-600">
-            no closed trades in the last 7 days
-          </div>
-        ) : chart === "bars" ? (
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={buckets} barCategoryGap={tf >= 14400 ? "20%" : "15%"} data-testid="pl-daily-bars">
-              <YAxis hide domain={["dataMin", "dataMax"]} />
-              <XAxis dataKey="t" ticks={dayTicks} tickFormatter={(t) => new Date(t * 1000).toLocaleDateString(undefined, { weekday: "short" })} tick={{ fontSize: 9, fill: "#525252", fontFamily: "IBM Plex Mono" }} axisLine={{ stroke: "#262626" }} tickLine={false} interval={0} height={14} />
-              <ReferenceLine y={0} stroke="#404040" strokeDasharray="2 2" />
-              <Bar dataKey="range" isAnimationActive={false} shape={<Candle />} />
-              <Tooltip
-                cursor={{ fill: "#262626", opacity: 0.4 }}
-                contentStyle={tip}
-                labelFormatter={(_, p) => (p?.[0]?.payload ? fmtT(p[0].payload.t) : "")}
-                formatter={(_v, _n, p) => {
-                  const c = p?.payload || {};
-                  const f = (v) => `${v >= 0 ? "+" : ""}${Number(v).toFixed(2)}`;
-                  return [`O ${f(c.open)} H ${f(c.high)} L ${f(c.low)} C ${f(c.close)} · ${f(c.pnl_usd)} in ${c.trades ?? 0} fills (live ${f(c.live_usd)} / paper ${f(c.paper_usd)})`, tfLabel(tf)];
-                }}
-              />
-            </BarChart>
-          </ResponsiveContainer>
+      <div className="-mx-1" data-testid="pl-sparkline">
+        {hasData ? (
+          <EquityChart data={eq} view={view} tf={tf} height={280} />
         ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={buckets}>
-              <YAxis hide domain={[(min) => Math.min(0, min), (max) => Math.max(0, max)]} />
-              <XAxis dataKey="t" ticks={dayTicks} tickFormatter={(t) => new Date(t * 1000).toLocaleDateString(undefined, { weekday: "short" })} tick={{ fontSize: 9, fill: "#525252", fontFamily: "IBM Plex Mono" }} axisLine={{ stroke: "#262626" }} tickLine={false} interval={0} height={14} />
-              <ReferenceLine y={0} stroke="#404040" strokeDasharray="2 2" />
-              <Line type="stepAfter" dataKey="cumulative_usd" stroke={(buckets[buckets.length - 1]?.cumulative_usd ?? 0) >= 0 ? "#10b981" : "#ef4444"} strokeWidth={1.5} dot={false} isAnimationActive={false} />
-              <Tooltip
-                contentStyle={tip}
-                labelFormatter={(_, p) => (p?.[0]?.payload ? fmtT(p[0].payload.t) : "")}
-                formatter={(v, _n, p) => [`$${Number(v).toFixed(2)} (bucket ${Number(p?.payload?.pnl_usd ?? 0) >= 0 ? "+" : ""}${Number(p?.payload?.pnl_usd ?? 0).toFixed(2)}, ${p?.payload?.trades ?? 0} fills)`, "Cum"]}
-              />
-            </LineChart>
-          </ResponsiveContainer>
+          <div className="h-[280px] flex items-center justify-center text-[10px] uppercase tracking-[0.2em] text-neutral-600">
+            no closed {mode === "all" ? "" : mode + " "}trades{book !== "all" ? ` in ${book}` : ""} yet
+          </div>
         )}
       </div>
 

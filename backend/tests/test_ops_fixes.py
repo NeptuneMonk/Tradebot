@@ -122,3 +122,28 @@ def test_pl_candles_ohlc_via_api():
             prev_close = c["close"]
             assert c["range"] == [c["low"], c["high"]]
     assert requests.get(f"{base}/api/pl/buckets", params={"bucket_s": 123}, headers=h, timeout=20).status_code == 400
+
+
+def test_equity_three_trades_one_15m_bucket_ohlc():
+    from server import build_equity
+    base = "2026-06-01T10:0"
+    trades = [
+        {"exit_time": f"{base}1:00+00:00", "pnl_usd": 4.0, "mode": "paper", "entry_usd": 20.0, "r_usd": 2.0, "mfe_pct": 40.0},   # ran to +8 before closing +4
+        {"exit_time": f"{base}5:00+00:00", "pnl_usd": -6.0, "mode": "paper", "entry_usd": 20.0, "mae_pct": -50.0},              # dipped to -10 before -6
+        {"exit_time": f"{base}9:00+00:00", "pnl_usd": 1.5, "mode": "live"},
+        {"exit_time": None, "pnl_usd": 99.0, "mode": "paper"},                                                                   # ignored: no exit_time
+    ]
+    out = build_equity(trades, 900, now_ts=1_800_000_000, open_mark_usd=0.75)
+    assert out["n_fills"] == 3 and len(out["candles"]) == 1
+    c = out["candles"][0]
+    assert c["open"] == 0.0 and c["close"] == -0.5 and c["n"] == 3
+    assert c["high"] >= max(c["open"], c["close"]) and c["low"] <= min(c["open"], c["close"])
+    assert c["high"] == 8.0            # 0 + MFE of trade 1
+    assert c["low"] == -6.0            # 4 + MAE(-10) → -6, equal to the closed path low (4-6 = -2 is higher)
+    assert c["paper_usd"] == -2.0 and c["live_usd"] == 1.5 and c["pnl_usd"] == -0.5
+    assert [p["equity"] for p in out["points"][:3]] == [4.0, -2.0, -0.5]
+    assert out["points"][-1]["mark"] is True and out["equity_usd"] == 0.25 and out["realized_usd"] == -0.5
+    # trades that fall in two different buckets → two candles chained open = previous close, empty gaps → no candle
+    trades2 = [{"exit_time": "2026-06-01T10:01:00+00:00", "pnl_usd": 2.0}, {"exit_time": "2026-06-01T11:31:00+00:00", "pnl_usd": -1.0}]
+    out2 = build_equity(trades2, 900, now_ts=1_800_000_000)
+    assert len(out2["candles"]) == 2 and out2["candles"][1]["open"] == out2["candles"][0]["close"] == 2.0

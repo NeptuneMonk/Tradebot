@@ -150,7 +150,7 @@ Scalp promotion banks 45 % first; hunt promotion converts the remainder with not
 * **Bot Control** — start/stop/abort, feeds (Pump.fun / RH / RH paper), live toggles, slots, per-book exits editor, config sync, brain sync. Toggles send **patches**, not the whole form.
 * **Active trades** — book badge (`RUNNER · stage · pk % · gb % · pool yes/no` for runners), unrealised P/L, drawdown from peak, manual exit.
 * **Live launch feed** — pending / scalp / hunt / skip labels with reasons, pins for entered mints.
-* **P/L Today** — the 7-day cumulative realised P/L drawn as **candlesticks** (5m · 15m · 30m · 1h · 4h · 12h · 1d) or a step line; live/paper split in the tooltip.
+* **P/L Today** — a real equity chart (TradingView lightweight-charts): Line (baseline 0) or Wicks (OHLC equity candles), 5m…1d timeframes, paper / live / all and per-book chips, unrealised mark of open slots, crosshair tooltip, zoom + pan.
 * **Halt banner** — inventory halt, doctor book pauses, runner slot full.
 * **Autopilot** — bankroll snapshot, governor state + release, profit sweep.
 * **Doctor panels** — live doctor breakers, learning proposals, applied history, rails, autopsies, scorecard matrix.
@@ -266,7 +266,7 @@ All routes are prefixed with `/api` and require the session cookie / bearer toke
 |---|---|
 | Bot | `GET /bot/status` · `GET/PUT /bot/config` · `POST /bot/start` · `/bot/stop?mode=graceful\|hard` · `/bot/abort` · `/bot/reset-kill-switch` · `/bot/reset-config` · config save/restore defaults · `POST /paper/reset` |
 | Trades | `GET /trades/active` · `GET /trades/history?limit=` · `POST /trades/{id}/exit` · stuck/recover endpoints |
-| P/L | `GET /pl/summary?days=` · `GET /pl/buckets?bucket_s=&candles=&days=` (OHLC candles) · `GET /pl/by-source` · `GET /costs/summary` · `GET /costs/network` |
+| P/L | `GET /pl/summary?days=` · `GET /pl/equity?tf=&mode=&book=` (equity OHLC + line points + open marks) · `GET /pl/buckets` · `GET /pl/by-source` · `GET /costs/summary` · `GET /costs/network` |
 | Books & risk | `GET /inventory` (halt, hunt/runner caps, Helius gate) · `GET /scorecard` · `POST /scorecard/cell` · `POST /book_exits/restore_defaults` |
 | Doctor | `GET /doctor/live` · `POST /doctor/live/run-now` · `GET /doctor/learning` · apply / revert · `GET /doctor/rails` · `GET /doctor/suggestions` · `GET /doctor/autopsy` · `GET /doctor/applied-history` |
 | Autopilot | `GET /autopilot/status` · `POST /autopilot/{action}` · `POST /autopilot/governor/release` · sweep endpoints |
