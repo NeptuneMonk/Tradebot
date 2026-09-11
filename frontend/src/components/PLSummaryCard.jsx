@@ -32,7 +32,7 @@ function PLSummaryCard({ pl, status, onReset }) {
     let alive = true;
     const load = () => api.plEquity(tf, mode, book).then((d) => alive && setEq(d)).catch(() => {});
     load();
-    const id = setInterval(load, 5000);
+    const id = setInterval(load, 15000);
     return () => { alive = false; clearInterval(id); };
   }, [tf, mode, book, pl?.cumulative_usd]);
 

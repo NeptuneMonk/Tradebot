@@ -1661,11 +1661,13 @@ async def recover_stuck_trade(trade_id: str):
 
 # ---------- Launches & Trades ----------
 @api.get("/launches/recent")
-async def launches_recent(limit: int = 30):
+async def launches_recent(limit: int = 30, candidates: bool = True):
     """Recent launches by detection time desc, per-chain limits so the high-volume Robinhood Chain feed
     can't push every Solana launch out of the window (and vice versa). Nothing is pinned any more."""
-    sol = await db.launches.find({"chain": {"$ne": "rh"}}, {"_id": 0}).sort("detected_at", -1).to_list(limit)
-    rh = await db.launches.find({"chain": "rh"}, {"_id": 0}).sort("detected_at", -1).to_list(limit)
+    cand = {"$or": [{"entered": True}, {"scanner_eligible": True}, {"classifier_action": {"$in": list(hub.CANDIDATE_ACTIONS)}},
+                    {"classifier_action": "pending", "unique_buyers": {"$gte": hub.PENDING_MIN_BUYERS}}]} if candidates else {}
+    sol = await db.launches.find({"chain": {"$ne": "rh"}, **cand}, {"_id": 0}).sort("detected_at", -1).to_list(limit)
+    rh = await db.launches.find({"chain": "rh", **cand}, {"_id": 0}).sort("detected_at", -1).to_list(limit)
     out = sorted(sol + rh, key=lambda r: str(r.get("detected_at") or ""), reverse=True)
     # Stamp LIVE PnL% on every open position so the operator can rip the
     # cord manually from the feed/active-trades cards. Cheap: in-memory

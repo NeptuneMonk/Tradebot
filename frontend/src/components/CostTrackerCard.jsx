@@ -29,7 +29,7 @@ function CostTrackerCard({ apiBase }) {
       }
     };
     load();
-    timer = setInterval(load, 8000);
+    timer = setInterval(load, 30000);
     return () => clearInterval(timer);
   }, [apiBase, days]);
 

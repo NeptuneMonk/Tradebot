@@ -240,3 +240,25 @@ def test_breakers_fail_closed_when_store_unreadable():
     assert ld.breakers_fail_closed() and ld.book_paused("scalp") and ld.book_paused("hunt")   # unknown → closed
     ld._evaluated_once = True                                                                  # Doctor looked → normal rule
     assert not ld.book_paused("scalp")
+
+
+def test_ws_hub_forwards_candidates_only():
+    from ws_hub import WSHub
+    h = WSHub.__new__(WSHub)
+    h._seen = {}
+    # raw launch with no tape → dropped
+    assert h._gate_launch("launch", {"id": "a", "classifier_action": "pending", "unique_buyers": 1}) == (None, None)
+    # pending with real tape → candidate (merged payload)
+    ev, d = h._gate_launch("launch_update", {"id": "a", "classifier_action": "pending", "unique_buyers": 7})
+    assert ev == "candidate" and d["unique_buyers"] == 7
+    # follow-up metrics → candidate_update
+    ev, d = h._gate_launch("launch_update", {"id": "a", "unique_buyers": 9})
+    assert ev == "candidate_update" and d == {"id": "a", "unique_buyers": 9}
+    # degraded to skip → one final update flagged dropped, then silence
+    ev, d = h._gate_launch("launch_update", {"id": "a", "classifier_action": "skip"})
+    assert ev == "candidate_update" and d["dropped"] is True
+    assert h._gate_launch("launch_update", {"id": "a", "unique_buyers": 10}) == (None, None)
+    # scalp / hunt / entered are always candidates; skip never
+    assert h._gate_launch("launch", {"id": "b", "classifier_action": "scalp"})[0] == "candidate"
+    assert h._gate_launch("launch", {"id": "c", "entered": True})[0] == "candidate"
+    assert h._gate_launch("launch", {"id": "d", "classifier_action": "skip", "unique_buyers": 50}) == (None, None)

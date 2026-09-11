@@ -20,7 +20,7 @@ export default function HaltBanner() {
     const load = () => api.inventory().then((d) => alive && setInv(d)).catch(() => {});
     loadRef.current = load;
     load();
-    const poll = setInterval(load, 15000);
+    const poll = setInterval(load, 30000);
     const clock = setInterval(() => tick((n) => n + 1), 1000);
     return () => { alive = false; clearInterval(poll); clearInterval(clock); };
   }, []);

@@ -99,8 +99,8 @@ export default function Dashboard() {
       launchUpdateNewBufRef.current = [];
       if (updates.size === 0 && newOnes.length === 0) return;
       setLaunches((prev) => {
-        // 1. Merge updates against current state
-        let next = prev.map((l) => (updates.has(l.id) ? { ...l, ...updates.get(l.id) } : l));
+        // 1. Merge updates against current state; a candidate that degraded to a skip arrives with `dropped` → remove it
+        let next = prev.map((l) => (updates.has(l.id) ? { ...l, ...updates.get(l.id) } : l)).filter((l) => !l.dropped);
         // Drop any updates that hit mints we never displayed — keeps state tight
         // 2. Prepend brand-new launches, dropping dupes (BOTH against `next`
         //    AND within `newOnes` itself — the backend can re-broadcast a
@@ -139,8 +139,8 @@ export default function Dashboard() {
         const keep = new Set();
         let nSol = 0, nRh = 0;
         for (const l of next) {
-          if (l.chain === "rh") { if (nRh < 50) { keep.add(l.id); nRh++; } }
-          else if (nSol < 50) { keep.add(l.id); nSol++; }
+          if (l.chain === "rh") { if (nRh < 30) { keep.add(l.id); nRh++; } }
+          else if (nSol < 30) { keep.add(l.id); nSol++; }
         }
         return next.filter((l) => keep.has(l.id));
       });
@@ -222,16 +222,13 @@ export default function Dashboard() {
       case "wallet":
         setWallet(data);
         break;
-      case "launch":
-        // Buffer brand-new launches for the coalesced flush (perf — see
-        // scheduleLaunchFlush). Drops the per-event setLaunches mutation.
+      case "candidate":
+        // The hub only forwards CANDIDATES (tens/min) — raw launches never reach the wire.
+        // Buffered for the 400 ms coalesced flush (see scheduleLaunchFlush).
         launchUpdateNewBufRef.current.push(data);
         scheduleLaunchFlush();
         break;
-      case "launch_update":
-        // Buffer the update keyed by mint — successive updates for the
-        // same mint overwrite earlier ones in the buffer. One render per
-        // 400ms regardless of event volume.
+      case "candidate_update":
         launchUpdateBufRef.current.set(data.id, data);
         scheduleLaunchFlush();
         break;
