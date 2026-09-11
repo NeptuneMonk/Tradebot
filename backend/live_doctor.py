@@ -143,7 +143,12 @@ class LiveDoctor:
         self._loser_arch: dict | None = None
         self._hunt_winner_arch: dict | None = None   # learned from hunt fills only
         self._hunt_loser_arch: dict | None = None
-        self.book_paused_until: dict[str, float] = {}   # book → ts (payoff / MFE breaker)
+        # Breaker pauses are DURABLE: {book: {paused, reason, paused_at, lift_after, expires_at, payoff_at_pause, lifted_by, lifted_at}}
+        # stored in bot_config/_id="breakers"; rehydrated on start. Fail closed while unknown.
+        self.breakers: dict[str, dict] = {}
+        self._breakers_loaded = False       # hydrate() finished (ok or empty)
+        self._breakers_failed = False       # hydrate() raised → entries blocked until the first evaluation
+        self._evaluated_once = False
 
     async def score_launch(self, mint: str, book: str = "scalp") -> dict:
         """Entry policy for one tracked mint: winner/exit-liquidity likeness → skip / half / full.
@@ -171,18 +176,63 @@ class LiveDoctor:
         return {"winner_likeness_pct": round(w, 1), "exit_liquidity_likeness_pct": round(x, 1), "doctor_decision": decision,
                 "doctor_size_mult": DECISION_MULT[decision], "reason": f"winner {w:.0f}% / exit-liquidity {x:.0f}% → {decision}"}
 
-    def lift_breaker(self, book: str | None = None) -> list[str]:
-        """Operator override: clear the breaker pause for one book (or all). Returns the books lifted."""
-        books = [book] if book else list(self.book_paused_until)
-        lifted = [b for b in books if self.book_paused(b)]
-        for b in books:
-            self.book_paused_until.pop(b, None)
-        if lifted:
-            logger.warning(f"live-doctor breaker LIFTED by operator: {', '.join(lifted)}")
-        return lifted
+    BREAKER_TTL_S = 2 * BREAKER_PAUSE_S       # hard expiry: a crash mid-pause can never lock a book forever
+
+    @property
+    def book_paused_until(self) -> dict[str, float]:
+        """Compat view: book → lift_after for currently-paused books."""
+        now = time.time()
+        return {b: float(st["lift_after"]) for b, st in self.breakers.items()
+                if st.get("paused") and now < float(st.get("lift_after") or 0) and now < float(st.get("expires_at") or 0)}
+
+    def breakers_fail_closed(self) -> bool:
+        return self._breakers_failed and not self._evaluated_once
 
     def book_paused(self, book: str) -> bool:
-        return time.time() < float(self.book_paused_until.get(book) or 0)
+        if self.breakers_fail_closed():
+            return True                       # state unknown after a bad restart → no entries until the Doctor has looked
+        return book in self.book_paused_until
+
+    async def hydrate(self) -> int:
+        """Load persisted breakers on startup; keep the ones still inside their window (and TTL)."""
+        try:
+            doc = await self.db.bot_config.find_one({"_id": "breakers"}) or {}
+            now = time.time()
+            self.breakers = {b: st for b, st in (doc.get("books") or {}).items() if isinstance(st, dict)}
+            live = [b for b, st in self.breakers.items() if st.get("paused") and now < float(st.get("lift_after") or 0) and now < float(st.get("expires_at") or 0)]
+            self._breakers_loaded, self._breakers_failed = True, False
+            if live:
+                logger.warning(f"live-doctor breakers rehydrated — still paused: {', '.join(live)} (entries blocked, feeds stay live)")
+            return len(live)
+        except Exception as e:
+            self._breakers_failed = True
+            logger.error(f"live-doctor breakers could not be loaded ({e}) — failing CLOSED on entries until the next evaluation")
+            return 0
+
+    async def _persist_breakers(self) -> None:
+        try:
+            await self.db.bot_config.update_one({"_id": "breakers"}, {"$set": {"books": self.breakers, "updated_at": time.time()}}, upsert=True)
+        except Exception as e:
+            logger.error(f"live-doctor breakers persist failed: {e}")
+
+    async def arm_breaker(self, book: str, reason: str, payoff: float | None) -> None:
+        now = time.time()
+        self.breakers[book] = {"paused": True, "reason": reason, "paused_at": now, "lift_after": now + BREAKER_PAUSE_S,
+                               "expires_at": now + self.BREAKER_TTL_S, "payoff_at_pause": payoff, "lifted_by": None, "lifted_at": None}
+        await self._persist_breakers()
+
+    async def lift_breaker(self, book: str | None = None, by: str = "user") -> list[str]:
+        """Operator override — an explicit durable write (paused=false, lifted_by, lifted_at). The Doctor may re-arm next cycle."""
+        books = [book] if book else list(self.breakers)
+        lifted = [b for b in books if self.book_paused(b)]
+        now = time.time()
+        for b in books:
+            st = self.breakers.get(b) or {}
+            self.breakers[b] = {**st, "paused": False, "lifted_by": by, "lifted_at": now}
+        if lifted:
+            logger.warning(f"live-doctor breaker LIFTED by {by}: {', '.join(lifted)}")
+        await self._persist_breakers()
+        return lifted
 
     async def _evaluate_book_breakers(self, joined: list[dict]) -> dict:
         """Per book, last 4h: pause when payoff (avg win / |avg loss|, after fees) < 1.0 or the median MFE
@@ -210,15 +260,18 @@ class LiveDoctor:
             elif med_mfe_r is not None and med_mfe_r < FIRST_TARGET_R[book]:
                 reason = f"median MFE {med_mfe_r:.2f}R < first target {FIRST_TARGET_R[book]:g}R — target unreachable"
             if reason:
-                self.book_paused_until[book] = time.time() + BREAKER_PAUSE_S
+                await self.arm_breaker(book, reason, payoff)
                 logger.warning(f"live-doctor breaker: pausing {book} — {reason}")
             out[book] = {"n": len(rows), "payoff": payoff, "median_mfe_r": med_mfe_r, "paused": bool(reason), "reason": reason}
+        self._evaluated_once = True
         return out
 
     async def start(self, interval_minutes: int = DEFAULT_INTERVAL_MINUTES):
         self.interval_minutes = max(5, int(interval_minutes))
         if self._task and not self._task.done():
             return
+        if not self._breakers_loaded:
+            await self.hydrate()
         self._task = asyncio.create_task(self._loop(), name="live_doctor")
 
     async def stop(self):

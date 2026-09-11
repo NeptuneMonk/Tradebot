@@ -30,7 +30,7 @@ def test_bot_config_runner_and_max_concurrent():
     r = requests.get(f"{BASE}/api/bot/config", headers=H, timeout=15)
     assert r.status_code == 200, r.text
     d = r.json()
-    assert d.get("book_runner_size_mult") == 1.0, d.get("book_runner_size_mult")
+    assert 0.25 <= float(d.get("book_runner_size_mult")) <= 2.0, d.get("book_runner_size_mult")   # allocator-owned, inside its rail
     assert d.get("max_concurrent_positions") == 3, d.get("max_concurrent_positions")
 
 
@@ -66,10 +66,10 @@ def test_trades_history_runner_rows():
     print(f"runner rows: {len(runners)}, symbols: {[x.get('symbol') for x in runners]}")
     assert len(runners) >= 2, f"expected ≥2 runner rows, got {len(runners)}"
     for row in runners:
-        assert row.get("promoted_from") == "scalp", row
+        assert row.get("promoted_from") in ("scalp", "hunt", "manual"), row
         assert "promotion_banked_usd" in row, row
         assert "runner_pnl_usd" in row, row
-        assert row.get("partial_legs") == 1, row
+        assert int(row.get("partial_legs") or 0) >= 1, row   # scalp promotion = 1 leg, hunt promotion = ladder leg(s) + chips
 
 
 # --- Doctor learning: runner allocator row ---
@@ -83,5 +83,8 @@ def test_doctor_learning_runner_row():
     runner_rows = [x for x in rows if x.get("book") == "runner"]
     assert len(runner_rows) == 1, f"expected 1 runner alloc row, got {runner_rows}"
     row = runner_rows[0]
-    assert "n=" in row.get("reason", "") and "< 20" in row["reason"], row
-    assert row.get("change") is False, row
+    n = int(row.get("n") or 0)
+    reason = row.get("reason", "")
+    assert ("< 20" in reason) if n < 20 else ("fills" in reason or "R/fill" in reason), row   # runner judged only at n ≥ 20
+    if n < 20:
+        assert row.get("change") is False, row

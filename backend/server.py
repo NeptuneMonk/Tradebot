@@ -909,7 +909,8 @@ async def inventory_snapshot():
     from helius_gate import snapshot as gate_snapshot
     return {**bot_state.inventory.snapshot(), "hunt_slot_cap": HUNT_SLOT_CAP, "hunt_cap_now": bot_state._hunt_cap(), "helius_gate": gate_snapshot(),
             "runner_cap": _runner.RUNNER_CAP, "runner_open": len(runners), "runners": runners,
-            "book_paused_until": dict(ld.book_paused_until) if ld else {}, "book_breakers": getattr(ld, "last_book_breakers", {}) if ld else {}}
+            "book_paused_until": dict(ld.book_paused_until) if ld else {}, "book_breakers": getattr(ld, "last_book_breakers", {}) if ld else {},
+            "breakers": dict(ld.breakers) if ld else {}, "breakers_fail_closed": ld.breakers_fail_closed() if ld else False}
 
 
 @api.get("/brain/summary")
@@ -2711,7 +2712,7 @@ async def doctor_live_lift(book: str):
     ld = bot_state.live_doctor
     if ld is None:
         raise HTTPException(503, "live doctor not running")
-    lifted = ld.lift_breaker(None if book == "all" else book)
+    lifted = await ld.lift_breaker(None if book == "all" else book, by="user")
     await hub.broadcast("inventory_halt", bot_state.inventory.snapshot())
     return {"ok": True, "lifted": lifted, "book_paused_until": dict(ld.book_paused_until)}
 

@@ -160,8 +160,83 @@ def test_feed_autopause_is_opt_in_and_breakers_can_be_lifted():
     assert st.helius_autopause_state() == (False, "")            # default: tape keeps flowing while books are paused
     st.config.feed_autopause_on_doctor = True
     assert st.helius_autopause_state()[0] is True
+
+
+class _FakeCfgStore:
+    """Minimal bot_config collection: one document per _id."""
+    def __init__(self): self.docs = {}
+    async def find_one(self, q): return self.docs.get(q["_id"])
+    async def update_one(self, q, u, upsert=False):
+        self.docs[q["_id"]] = {**self.docs.get(q["_id"], {"_id": q["_id"]}), **u["$set"]}
+
+
+def _fresh_doctor(store):
     from live_doctor import LiveDoctor
     ld = LiveDoctor.__new__(LiveDoctor)
-    ld.book_paused_until = {"scalp": time.time() + 3600, "hunt": time.time() + 3600, "rh_pons": time.time() - 5}
-    assert ld.lift_breaker("scalp") == ["scalp"] and not ld.book_paused("scalp") and ld.book_paused("hunt")
-    assert ld.lift_breaker() == ["hunt"] and ld.book_paused_until == {}
+    ld.db = type("DB", (), {"bot_config": store})()
+    ld.breakers, ld._breakers_loaded, ld._breakers_failed, ld._evaluated_once = {}, False, False, False
+    return ld
+
+
+def test_breakers_persist_rehydrate_lift_and_expire():
+    from live_doctor import BREAKER_PAUSE_S
+    store = _FakeCfgStore()
+    ld = _fresh_doctor(store)
+    asyncio.run(ld.hydrate())
+    asyncio.run(ld.arm_breaker("scalp", "payoff 0.34 < 1.0 after fees (4h, n=9)", 0.34))
+    asyncio.run(ld.arm_breaker("hunt", "payoff 0.74 < 1.0", 0.74))
+    doc = store.docs["breakers"]["books"]
+    assert doc["scalp"]["paused"] is True and doc["scalp"]["payoff_at_pause"] == 0.34
+    assert doc["scalp"]["lift_after"] - doc["scalp"]["paused_at"] == BREAKER_PAUSE_S
+    assert doc["scalp"]["expires_at"] - doc["scalp"]["paused_at"] == 2 * BREAKER_PAUSE_S      # TTL guard
+
+    # "restart": a brand-new doctor over the same store still blocks entries for both books
+    ld2 = _fresh_doctor(store)
+    assert asyncio.run(ld2.hydrate()) == 2
+    assert ld2.book_paused("scalp") and ld2.book_paused("hunt") and not ld2.book_paused("rh_pons")
+    assert set(ld2.book_paused_until) == {"scalp", "hunt"}
+
+    # LIFT is an explicit durable write, survives the next restart
+    assert asyncio.run(ld2.lift_breaker("scalp", by="user")) == ["scalp"]
+    assert store.docs["breakers"]["books"]["scalp"]["paused"] is False and store.docs["breakers"]["books"]["scalp"]["lifted_by"] == "user"
+    ld3 = _fresh_doctor(store)
+    asyncio.run(ld3.hydrate())
+    assert not ld3.book_paused("scalp") and ld3.book_paused("hunt")
+
+    # window over / TTL over → not paused any more
+    store.docs["breakers"]["books"]["hunt"]["lift_after"] = time.time() - 1
+    ld4 = _fresh_doctor(store); asyncio.run(ld4.hydrate())
+    assert not ld4.book_paused("hunt")
+    store.docs["breakers"]["books"]["hunt"]["lift_after"] = time.time() + 3600
+    store.docs["breakers"]["books"]["hunt"]["expires_at"] = time.time() - 1
+    ld5 = _fresh_doctor(store); asyncio.run(ld5.hydrate())
+    assert not ld5.book_paused("hunt")
+
+
+def test_restart_with_armed_breakers_blocks_entry_but_keeps_feeds_on():
+    """Entries closed (breaker rehydrated), Pump.fun + RH feeds stay live under the default feed_autopause_on_doctor=False."""
+    import helius_gate
+    store = _FakeCfgStore()
+    ld = _fresh_doctor(store); asyncio.run(ld.hydrate())
+    asyncio.run(ld.arm_breaker("scalp", "payoff 0.3", 0.3)); asyncio.run(ld.arm_breaker("hunt", "payoff 0.5", 0.5)); asyncio.run(ld.arm_breaker("rh_pons", "payoff 0.4", 0.4))
+    st = _bot_stub()
+    st.live_doctor = _fresh_doctor(store); asyncio.run(st.live_doctor.hydrate())
+    assert all(st.live_doctor.book_paused(b) for b in ("scalp", "hunt", "rh_pons"))          # entries blocked
+    assert st.config.feed_autopause_on_doctor is False
+    assert st.helius_autopause_state() == (False, "")                                         # Helius stays live
+    helius_gate.set_auto_paused(False)
+    assert helius_gate.is_helius_paused() is False
+    from rh_discovery import RHDiscovery
+    d = RHDiscovery.__new__(RHDiscovery)
+    d.state = type("S", (), {"config": st.config, "live_doctor": st.live_doctor, "rh_paper": type("P", (), {"positions": {}})()})()
+    assert d._enabled() is True and d.doctor_paused() is None                                 # RH poller stays live
+
+
+def test_breakers_fail_closed_when_store_unreadable():
+    class _Broken:
+        async def find_one(self, q): raise RuntimeError("mongo down")
+    ld = _fresh_doctor(_Broken())
+    asyncio.run(ld.hydrate())
+    assert ld.breakers_fail_closed() and ld.book_paused("scalp") and ld.book_paused("hunt")   # unknown → closed
+    ld._evaluated_once = True                                                                  # Doctor looked → normal rule
+    assert not ld.book_paused("scalp")
