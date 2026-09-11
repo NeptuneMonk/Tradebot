@@ -134,17 +134,15 @@ export default function Dashboard() {
             ];
           }
         }
-        const pinned = next.filter((l) => l.pinned);
-        const unpinned = next.filter((l) => !l.pinned);
         // Per-chain caps: the Robinhood Chain feed (~12 launches/min) must
         // never evict Solana launches from the window, and vice versa.
         const keep = new Set();
         let nSol = 0, nRh = 0;
-        for (const l of unpinned) {
+        for (const l of next) {
           if (l.chain === "rh") { if (nRh < 50) { keep.add(l.id); nRh++; } }
           else if (nSol < 50) { keep.add(l.id); nSol++; }
         }
-        return [...pinned.slice(0, 200), ...unpinned.filter((l) => keep.has(l.id))];
+        return next.filter((l) => keep.has(l.id));
       });
     }, 400);
   }, []);
@@ -239,9 +237,7 @@ export default function Dashboard() {
         break;
       case "trade_enter":
         setActiveTrades((prev) => [data, ...prev.filter((t) => t.id !== data.id)]);
-        // Re-fetch launches so the new pinned card appears at the top
-        // immediately, with pin_strategy / pin_creator_pattern populated.
-        api.launches().then(setLaunches).catch(() => {});
+        api.launches().then(setLaunches).catch(() => {});   // refresh ENT badges / live P/L stamps
         break;
       case "trade_update":
         setActiveTrades((prev) => prev.map((t) => (t.id === data.id ? { ...t, ...data } : t)));
@@ -319,8 +315,6 @@ export default function Dashboard() {
       refreshAll();
     }
   }, [refreshAll]);
-  const onUnpin = useCallback((launchId) =>
-    setLaunches((prev) => prev.map((l) => (l.id === launchId ? { ...l, pinned: false, pin_exited: undefined } : l))), []);
   const onRulesSave = useCallback(async (r) => { setRules(await api.updateRules(r)); }, []);
   const onDoctorApplied = useCallback(() => api.config().then(setConfig).catch(() => {}), []);
   const onReentryRefresh = useCallback(() => api.reentryWatchlist().then(setReentry).catch(() => {}), []);
@@ -441,7 +435,7 @@ export default function Dashboard() {
           <ActiveTradesTable trades={activeTrades} onExit={onExitTrade} />
           </MinimizableCard>
           <MinimizableCard id="launch-feed" title="Live launch feed" stat={`${launches.length} tracked`}>
-          <RecentLaunchesFeed launches={launches} onUnpin={onUnpin} />
+          <RecentLaunchesFeed launches={launches} />
           </MinimizableCard>
         </div>
 

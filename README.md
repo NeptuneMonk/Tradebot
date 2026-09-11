@@ -149,7 +149,7 @@ Scalp promotion banks 45 % first; hunt promotion converts the remainder with not
 
 * **Bot Control** — start/stop/abort, feeds (Pump.fun / RH / RH paper), live toggles, slots, per-book exits editor, config sync, brain sync. Toggles send **patches**, not the whole form.
 * **Active trades** — book badge (`RUNNER · stage · pk % · gb % · pool yes/no` for runners), unrealised P/L, drawdown from peak, manual exit.
-* **Live launch feed** — pending / scalp / hunt / skip labels with reasons, pins for entered mints.
+* **Live launch feed** — pending / scalp / hunt / skip labels with reasons, ENT badge + live P/L stamp on entered mints (plain recency, nothing is pinned).
 * **P/L Today** — a real equity chart (TradingView lightweight-charts): Line (baseline 0) or Wicks (OHLC equity candles), 5m…1d timeframes, paper / live / all and per-book chips, unrealised mark of open slots, crosshair tooltip, zoom + pan.
 * **Halt banner** — inventory halt, doctor book pauses, runner slot full.
 * **Autopilot** — bankroll snapshot, governor state + release, profit sweep.
@@ -272,7 +272,7 @@ All routes are prefixed with `/api` and require the session cookie / bearer toke
 | Autopilot | `GET /autopilot/status` · `POST /autopilot/{action}` · `POST /autopilot/governor/release` · sweep endpoints |
 | Scanner | `GET /scanner/candidates` · `POST /scanner/manual-buy/{mint}?runner=false` |
 | Creators | `GET /creator-greylist` · `/creator-greylist/{creator}` · blacklist · pattern analytics · backfills (jobs) · `GET /creators/{creator}` |
-| Launches | `GET /launches/recent` · `POST /launches/{id}/unpin` |
+| Launches | `GET /launches/recent` |
 | Wallets | `GET /wallet` · `POST /wallet/send` · token scan / unwrap / recover · `GET /rh/wallet` · `POST /rh/wallet/import` |
 | Brain | `GET /brain/summary` · `GET /brain/export` · chunked `POST /brain/import/*` |
 | Diagnostics | `GET /diagnostics/loop` (event-loop lag, gate) · `/diagnostics/helius-budget` · `/diagnostics/account-bus` · `/diagnostics/tracking-summary` · `/diagnostics/recipient-health` |

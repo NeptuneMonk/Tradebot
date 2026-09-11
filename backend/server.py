@@ -1633,30 +1633,11 @@ async def recover_stuck_trade(trade_id: str):
 # ---------- Launches & Trades ----------
 @api.get("/launches/recent")
 async def launches_recent(limit: int = 30):
-    """Recent launches. Pinned-first (Phase 2.9: greylist-creator mints stay
-    pinned at the top of whichever feed they belong to until manually
-    unpinned), then by detection time desc. Pinned items don't count
-    against `limit` so a noisy 50-launches-per-minute feed never pushes
-    the user's tracked mints off-screen."""
-    pinned_cur = db.launches.find(
-        {"pinned": True}, {"_id": 0},
-    ).sort([("pin_exited", 1), ("pinned_at", -1)])
-    pinned = await pinned_cur.to_list(200)
-    pinned_mints = {p["mint"] for p in pinned}
-    # Per-chain limits so the high-volume Robinhood Chain feed can't push
-    # every Solana launch out of the window (and vice versa).
-    unpinned_sol = await db.launches.find(
-        {"mint": {"$nin": list(pinned_mints)}, "chain": {"$ne": "rh"}}, {"_id": 0},
-    ).sort("detected_at", -1).to_list(limit)
-    unpinned_rh = await db.launches.find(
-        {"mint": {"$nin": list(pinned_mints)}, "chain": "rh"}, {"_id": 0},
-    ).sort("detected_at", -1).to_list(limit)
-    unpinned = sorted(
-        unpinned_sol + unpinned_rh,
-        key=lambda r: str(r.get("detected_at") or ""),
-        reverse=True,
-    )
-    out = pinned + unpinned
+    """Recent launches by detection time desc, per-chain limits so the high-volume Robinhood Chain feed
+    can't push every Solana launch out of the window (and vice versa). Nothing is pinned any more."""
+    sol = await db.launches.find({"chain": {"$ne": "rh"}}, {"_id": 0}).sort("detected_at", -1).to_list(limit)
+    rh = await db.launches.find({"chain": "rh"}, {"_id": 0}).sort("detected_at", -1).to_list(limit)
+    out = sorted(sol + rh, key=lambda r: str(r.get("detected_at") or ""), reverse=True)
     # Stamp LIVE PnL% on every open position so the operator can rip the
     # cord manually from the feed/active-trades cards. Cheap: in-memory
     # lookup against the active_trades slot. Each slot caches

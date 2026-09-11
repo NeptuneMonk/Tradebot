@@ -142,14 +142,14 @@ def test_momentum_on_non_greylisted_creator_uses_standard_exits():
 # -----------------------------------------------------------------------
 
 def _should_pin(action: str, greylist_ctx: dict | None) -> bool:
-    """Mirror of the gate in `bot.py::_enter_impl` (post-2026-05-30):
-        pinned ⇔ snipe_pattern_ctx is not None
+    """Snipe-ladder gate (feed pinning itself was removed on operator request — nothing is pinned any more):
+        pattern exits apply ⇔ snipe_pattern_ctx is not None
     """
     return _make_snipe_ctx(greylist_ctx or {}, action) is not None
 
 
-def test_pin_invariant_matches_snipe_ladder():
-    """The pin gate and the snipe-ladder gate must move in lockstep."""
+def test_snipe_ladder_gate():
+    """Which fills inherit the snipe ladder (formerly also the pin gate)."""
     # Snipes always pinned
     assert _should_pin("greylist_snipe", _ctx(pattern="slow_rug_tradeable"))
     assert _should_pin("greylist_snipe", _ctx(pattern="unknown"))

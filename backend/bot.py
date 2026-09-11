@@ -1143,18 +1143,7 @@ class BotState:
         doc["creator_tokens_graduated"] = (creator_doc or {}).get("tokens_graduated", 0)
         await self.db.launches.insert_one({**doc, "_id": launch.id})
         self.recent_launches.insert(0, doc)
-        # Aging — keep the 50 most recent unpinned launches PLUS all pinned
-        # ones (Phase 2.9). Pinned launches survive aging until manually
-        # unpinned via /api/launch/{id}/unpin. Cap pinned at 200 as a safety
-        # net so a stuck unpin can't grow the list unbounded.
-        unpinned: list[dict] = []
-        pinned: list[dict] = []
-        for r in self.recent_launches:
-            if r.get("pinned"):
-                pinned.append(r)
-            else:
-                unpinned.append(r)
-        self.recent_launches = pinned[:200] + unpinned[:50]
+        self.recent_launches = self.recent_launches[:50]   # aging — plain recency, nothing is pinned
 
         # WS push
         await hub.broadcast("launch", doc)
@@ -2921,24 +2910,7 @@ class BotState:
                 return
 
         await self._persist_trade(trade)
-        # Phase 2.9 — pin the mint in the scanner feed when this position
-        # follows the SNIPE LADDER (pattern-based exits). The gate aligns
-        # with `_make_snipe_ctx` / `_is_snipe`: an explicit greylist_snipe
-        # action ALWAYS pins; a momentum/reentry entry on a greylisted
-        # creator with a tradeable pattern ALSO pins (since it inherits
-        # the pattern ladder via ctx population — option C, 2026-05-30).
-        # Pin invariant: PINNED ⇔ pattern exits apply to this trade.
-        # `pin_exited` flips later in `_exit` so the card greys out.
-        launch_update = {"entered": True, "entry_action": action}
-        if trade.snipe_pattern_ctx is not None:
-            launch_update.update({
-                "pinned": True,
-                "pinned_at": datetime.now(timezone.utc).isoformat(),
-                "pin_reason": "greylist_entry",
-                "pin_creator_pattern": greylist_ctx.get("pattern"),
-                "pin_strategy": greylist_ctx.get("strategy"),
-                "pin_exited": False,
-            })
+        launch_update = {"entered": True, "entry_action": action}   # snipes are no longer pinned to the feed (operator request)
         await self.db.launches.update_one({"_id": launch.id}, {"$set": launch_update})
         for r in self.recent_launches:
             if r.get("id") == launch.id:
@@ -4218,33 +4190,6 @@ class BotState:
                 await hub.broadcast("inventory_halt", self.inventory.snapshot())
         except Exception as e:
             logger.debug(f"scorecard/inventory post-close failed: {e}")
-        # Phase 2.9 — grey-out the pinned launch card (but DON'T remove the
-        # pin; user manually unpins when done watching). The card stays at
-        # the top of its feed but renders dimmed so the user knows the bot
-        # is no longer in the position. If the launch was never pinned the
-        # update is a no-op on a non-existent doc — cheap.
-        try:
-            exit_pnl_pct = trade_doc.get("pnl_pct")
-            await self.db.launches.update_one(
-                {"mint": mint, "pinned": True, "pin_exited": False},
-                {"$set": {
-                    "pin_exited": True,
-                    "pin_exited_at": datetime.now(timezone.utc).isoformat(),
-                    "exit_pnl_pct": exit_pnl_pct,
-                    "exit_reason": reason,
-                }},
-            )
-            # In-memory mirror so the scanner UI flips immediately without
-            # waiting for the next /api/launches poll.
-            for r in self.recent_launches:
-                if r.get("mint") == mint and r.get("pinned") and not r.get("pin_exited"):
-                    r["pin_exited"] = True
-                    r["pin_exited_at"] = datetime.now(timezone.utc).isoformat()
-                    r["exit_pnl_pct"] = exit_pnl_pct
-                    r["exit_reason"] = reason
-                    break
-        except Exception as e:
-            logger.debug(f"pin-exit update skipped: {e}")
         # Universal post-exit cooldown — block re-entry on this mint for 90s
         # regardless of exit reason. This prevents the "4 positions in 3 min"
         # pattern where the scanner immediately re-bought the mint we just
