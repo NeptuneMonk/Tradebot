@@ -126,3 +126,6 @@ backend/rh_wallet.json
 backend/rh_wallet.pass
 frontend/node_modules/.cache/default-development/8.pack
 frontend/node_modules/.cache/default-development/7.pack_
+
+# keep the template, never the secrets
+!backend/.env.example
