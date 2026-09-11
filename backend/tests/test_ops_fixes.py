@@ -297,3 +297,52 @@ def test_discovery_clip_caps_entry_notional_but_not_runner_add_on():
     plan = runner.add_on_plan(cfg, {"r_usd": 4.0}, depth_usd=5000.0, exit_slip_bps=800, entry_slip_bps=500, fee_usd_round_trip=0.05, max_trade_usd=25.0)
     assert plan["size_usd"] == 4.0                                         # 0.5R × 4 × runner mult 2.0 — the only lever that scales
     assert "discovery_clip_usd" in __import__("rails").NEVER_TOUCH        # operator-owned, the Doctor cannot lift it
+
+
+def test_sequencer_factory_calldata_wakes_the_poller_and_feed_idles_with_doctor():
+    import rh_feed
+    from rh_discovery import RHDiscovery, FACTORY
+    d = RHDiscovery.__new__(RHDiscovery)
+    d.stats, d._wake, d._last_poll_ts = {}, asyncio.Event(), 0.0
+    d.state = type("S", (), {"config": BotConfig(rh_feed_enabled=True, feed_autopause_on_doctor=True),
+                             "live_doctor": type("LD", (), {"book_paused": staticmethod(lambda b: b == "rh_pons")})(),
+                             "rh_paper": type("P", (), {"positions": {}})()})()
+    assert not d._wake.is_set()
+    d.wake("factory tx seq=42")
+    assert d._wake.is_set() and d.stats["wakes"] == 1 and d.stats["last_wake_reason"] == "factory tx seq=42"
+    # the feed classifies FACTORY calldata as a wake, not as a curve trade
+    feed = rh_feed.RHSequencerFeed.__new__(rh_feed.RHSequencerFeed)
+    feed.state = type("S2", (), {"config": d.state.config, "rh_discovery": d, "rh_paper": d.state.rh_paper})()
+    feed.stats = {"messages": 0, "txs": 0, "curve_sells": 0, "rug_alerts": 0, "factory_txs": 0, "last_seq": 0}
+    d.tracking, d._curve_to_token = {}, {}
+    rh_feed.decode_tx = lambda txb: {"to": FACTORY, "value": 0, "data": b"\\x00"}
+    rh_feed._walk = lambda body: [b"tx"]
+    import base64, json
+    raw = json.dumps({"messages": [{"sequenceNumber": 7, "message": {"message": {"header": {"kind": 3}, "l2Msg": base64.b64encode(b"x").decode()}}}]})
+    feed._on_message(raw)
+    assert feed.stats["factory_txs"] == 1 and d.stats["wakes"] == 2
+    # rh_pons benched + flat + autopause opt-in → the sequencer socket idles exactly like the poller
+    assert d.doctor_paused() and feed._enabled() is False
+    d.state.config.feed_autopause_on_doctor = False
+    assert feed._enabled() is True
+
+
+def test_poll_loop_wake_cuts_the_sleep_short():
+    from rh_discovery import RHDiscovery
+    d = RHDiscovery.__new__(RHDiscovery)
+    d.stats, d._wake, d._last_poll_ts, d._consec_429, d._next_from = {}, asyncio.Event(), 0.0, 0, 0
+    d._enabled = lambda: True
+    polls = []
+    async def _poll(): polls.append(time.time())
+    d.poll_once = _poll
+
+    async def run():
+        task = asyncio.create_task(d._loop())
+        await asyncio.sleep(3.3)            # initial 3 s delay + first poll
+        n0 = len(polls)
+        d.wake("factory")                   # should poll again well before the 2 s tick
+        await asyncio.sleep(0.8)
+        task.cancel()
+        return n0, len(polls)
+    n0, n1 = asyncio.run(run())
+    assert n0 == 1 and n1 == 2

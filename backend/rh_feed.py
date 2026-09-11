@@ -24,6 +24,8 @@ from hexbytes import HexBytes
 
 logger = logging.getLogger("rh_feed")
 
+from rh_discovery import FACTORY
+
 FEED_URL = os.environ.get("RH_FEED_URL", "wss://feed.mainnet.chain.robinhood.com")
 SELL_SEL = bytes.fromhex("d04c6983")
 BUY_SEL = bytes.fromhex("59a87bc1")
@@ -77,7 +79,7 @@ def classify(tx: dict) -> tuple[str, int] | None:
 class RHSequencerFeed:
     def __init__(self, state):
         self.state = state
-        self.stats = {"connected": False, "messages": 0, "txs": 0, "curve_sells": 0, "rug_alerts": 0,
+        self.stats = {"connected": False, "messages": 0, "txs": 0, "curve_sells": 0, "rug_alerts": 0, "factory_txs": 0,
                       "last_seq": 0, "last_msg_ts": 0.0, "reconnects": 0, "last_error": None}
         self._task: asyncio.Task | None = None
 
@@ -86,8 +88,10 @@ class RHSequencerFeed:
             self._task = asyncio.create_task(self._loop())
 
     def _enabled(self) -> bool:
-        return bool(getattr(self.state.config, "rh_feed_enabled", True)) and \
-            bool(getattr(self.state.config, "rh_seq_feed_enabled", True))
+        if not (bool(getattr(self.state.config, "rh_feed_enabled", True)) and bool(getattr(self.state.config, "rh_seq_feed_enabled", True))):
+            return False
+        disc = getattr(self.state, "rh_discovery", None)
+        return not (disc is not None and disc.doctor_paused())   # idle exactly like the poller when rh_pons is benched + flat
 
     async def _loop(self):
         await asyncio.sleep(3.0)
@@ -139,6 +143,11 @@ class RHSequencerFeed:
                 self.stats["txs"] += 1
                 tx = decode_tx(txb)
                 if not tx:
+                    continue
+                if tx["to"] == FACTORY:
+                    # PONS factory calldata ordered by the sequencer = a launch is landing → wake the poller now
+                    self.stats["factory_txs"] += 1
+                    self.state.rh_discovery.wake(f"factory tx seq={seq}")
                     continue
                 # buy()/sell() are called on the CURVE contract, not the token
                 token = self.state.rh_discovery._curve_to_token.get(tx["to"]) or (tx["to"] if tx["to"] in tracking else None)

@@ -219,6 +219,8 @@ class RHDiscovery:
         self._curve_to_token: dict[str, str] = {}
         self._task: asyncio.Task | None = None
         self._next_from = 0
+        self._wake = asyncio.Event()          # sequencer feed saw factory calldata → poll now, don't wait out the 2 s
+        self._last_poll_ts = 0.0
         self._meta_pending: list[str] = []
         self._dirty: set[str] = set()
         self._last_db_gc = 0.0
@@ -267,7 +269,9 @@ class RHDiscovery:
                     await asyncio.sleep(POLL_INTERVAL_S)
                     continue
                 self.stats["paused"] = False
+                self._wake.clear()
                 await self.poll_once()
+                self._last_poll_ts = time.time()
                 backoff = POLL_INTERVAL_S
                 self._consec_429 = 0
             except asyncio.CancelledError:
@@ -299,7 +303,14 @@ class RHDiscovery:
                     self._next_from = 0
                     self.stats["resyncs"] = self.stats.get("resyncs", 0) + 1
                     backoff = 1.0
-            await asyncio.sleep(backoff)
+            # sleep `backoff`, but a sequencer wake cuts it short (min 0.5 s spacing so a burst can't 429 us)
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout=backoff)
+                spacing = 0.5 - (time.time() - self._last_poll_ts)
+                if spacing > 0:
+                    await asyncio.sleep(spacing)
+            except asyncio.TimeoutError:
+                pass
 
     async def _rpc(self, calls: list[tuple[str, list]]) -> list:
         """One HTTP request PER call. The public RPC now 429s every JSON-RPC
@@ -790,6 +801,14 @@ class RHDiscovery:
             out.append(m)
         out.sort(key=lambda x: (x["passes"], x["growth_pct"], x["recent_inflow_quote"]), reverse=True)
         return out[:40]
+
+    def wake(self, reason: str = "") -> None:
+        """Wake path from the sequencer WS (order + calldata, no receipt): confirm inclusion + metadata via one poll
+        right away instead of at the next 2 s tick. The poller stays the source of truth."""
+        self.stats["wakes"] = self.stats.get("wakes", 0) + 1
+        self.stats["last_wake_ts"] = time.time()
+        self.stats["last_wake_reason"] = reason
+        self._wake.set()
 
     def alive(self, window_s: float = 15.0) -> bool:
         """The poll loop is really moving: the chain head advanced within `window_s`."""
