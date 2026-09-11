@@ -10,10 +10,13 @@ import HelpHint from "./HelpHint";
 
 // desired (operator toggle) vs actual (transport health). Three states, never "RUNNING":
 //   OFF (amber) · ON · CONNECTING/OFFLINE (red) · ON · LIVE (green)
-function feedHealth(desired, actual) {
-  if (!desired) return { text: "OFF", dot: "bg-amber-500", cls: "text-amber-300" };
-  if (!actual) return { text: "ON · OFFLINE", dot: "bg-red-500", cls: "text-red-300" };
-  return { text: "ON · LIVE", dot: "bg-emerald-500", cls: "text-emerald-300" };
+function feedHealth(desired, actual, extra = {}) {
+  if (!desired) return { text: "OFF", dot: "bg-amber-500", cls: "text-amber-300", why: "operator switch OFF" };
+  if (actual) return { text: "ON · LIVE", dot: "bg-emerald-500", cls: "text-emerald-300", why: extra.okTs ? `subscribed ${Math.max(0, Math.round(Date.now() / 1000 - extra.okTs))}s ago` : "subscribed" };
+  if (extra.paused?.auto) return { text: "ON · PAUSED · DOCTOR", dot: "bg-amber-500", cls: "text-amber-300", why: extra.paused.auto_reason || "auto-paused" };
+  const connecting = extra.attemptTs && Date.now() / 1000 - extra.attemptTs < 15;
+  return { text: connecting ? "ON · CONNECTING" : "ON · OFFLINE", dot: "bg-red-500", cls: "text-red-300",
+           why: extra.lastError || "reconnecting…" };
 }
 
 function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoaded }) {
@@ -194,9 +197,13 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
           Pump.fun Feed · Solana Trading
         </span>
         <span className="flex items-center gap-1.5">
-          {(() => { const h = feedHealth(local.helius_tracker_enabled ?? true, status?.listener_connected); return (
-            <span className={`flex items-center gap-1 text-[9px] ${h.cls}`} data-testid="feed-pump-health" title="desired vs actual Pump.fun WebSocket">
+          {(() => { const h = feedHealth(local.helius_tracker_enabled ?? true, status?.listener_connected,
+              { paused: status?.helius_paused, lastError: status?.listener_last_error, okTs: status?.listener_last_ok_ts, attemptTs: status?.listener_last_attempt_ts }); return (
+            <span className={`flex items-center gap-1 text-[9px] ${h.cls}`} data-testid="feed-pump-health" title={h.why}>
               <span className={`w-1.5 h-1.5 rounded-full ${h.dot}`} /> {h.text}
+              {!status?.listener_connected && (local.helius_tracker_enabled ?? true) && (
+                <span className="normal-case tracking-normal text-neutral-500 max-w-[220px] truncate" data-testid="feed-pump-why">— {h.why}</span>
+              )}
             </span>
           ); })()}
           <span className={`text-[10px] ${(local.helius_tracker_enabled ?? true) ? "text-emerald-300" : "text-amber-300"}`} data-testid="feed-pump-desired">

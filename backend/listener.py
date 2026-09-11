@@ -5,6 +5,7 @@ Detects Create + Trade events for Pump.fun and emits them.
 import os
 import json
 import asyncio
+import time
 import base64
 import struct
 import hashlib
@@ -101,6 +102,19 @@ class PumpFunListener:
         self._ws = None
         self._stop = False
         self.connected = False
+        self.last_error: str | None = None      # why we are not connected (short, operator-facing)
+        self.last_ok_ts: float = 0.0            # last successful subscribe
+        self.last_attempt_ts: float = 0.0       # last connect attempt
+        self._kick = False                      # skip the remaining backoff and reconnect now
+
+    def kick(self):
+        """Reconnect immediately (feed toggled ON / bot started) instead of waiting out the backoff."""
+        self._kick = True
+        self.start()
+
+    def health(self) -> dict:
+        return {"connected": self.connected, "last_error": self.last_error, "last_ok_ts": self.last_ok_ts or None,
+                "last_attempt_ts": self.last_attempt_ts or None, "task_alive": bool(self._task and not self._task.done())}
 
     def start(self):
         if self._task and not self._task.done():
@@ -135,18 +149,24 @@ class PumpFunListener:
             # disconnect (or never connect) and idle here. Polling every
             # 5s gets us back online quickly when the switch flips ON.
             try:
-                from helius_gate import is_helius_paused
+                from helius_gate import is_helius_paused, snapshot as gate_snapshot
                 if is_helius_paused():
+                    g = gate_snapshot()
                     if self.connected:
-                        logger.info(
-                            "Helius tracker disabled by user — keeping listener idle"
-                        )
+                        logger.info("Helius gate paused — keeping listener idle")
                     self.connected = False
+                    self.last_error = "paused: operator switch OFF" if g["manual"] else f"paused: {g['auto_reason'] or 'auto'}"
                     await asyncio.sleep(gate_check_interval_s)
                     continue
             except Exception:
                 pass
+            if not WSS_URL:
+                self.last_error = "no HELIUS_WSS_URL configured"
+                await asyncio.sleep(5)
+                continue
             try:
+                self._kick = False
+                self.last_attempt_ts = time.time()
                 logger.info("Connecting to Helius WSS for logsSubscribe...")
                 async with websockets.connect(
                     WSS_URL, ping_interval=20, ping_timeout=20, max_size=4 * 1024 * 1024
@@ -164,6 +184,8 @@ class PumpFunListener:
                         ],
                     }
                     await ws.send(json.dumps(sub_req))
+                    self.last_ok_ts = time.time()
+                    self.last_error = None
                     logger.info("Subscribed to Pump.fun logs.")
                     async for raw in ws:
                         if self._stop:
@@ -184,6 +206,7 @@ class PumpFunListener:
                 break
             except Exception as e:
                 self.connected = False
+                self.last_error = f"{type(e).__name__}: {str(e)[:100]}" if str(e) else type(e).__name__
                 logger.warning(f"WSS connection error: {e}; retrying in {backoff}s")
                 # Chunked sleep — poll the helius gate every 1s during the
                 # reconnect backoff. Without this, an OFF toggle issued
@@ -191,13 +214,15 @@ class PumpFunListener:
                 # 30s to take effect; with chunking it bites within ~1s.
                 for _ in range(backoff):
                     await asyncio.sleep(1)
+                    if self._kick:
+                        break
                     try:
                         from helius_gate import is_helius_paused
                         if is_helius_paused():
                             break
                     except Exception:
                         pass
-                backoff = min(backoff * 2, 30)
+                backoff = 1 if self._kick else min(backoff * 2, 30)
         self.connected = False
 
     async def _handle_message(self, raw):

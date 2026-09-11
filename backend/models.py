@@ -643,6 +643,10 @@ class BotStatus(BaseModel):
     live_trading: bool
     kill_switch_tripped: bool
     listener_connected: bool            # ACTUAL Pump.fun WS
+    helius_paused: dict = {}            # gate snapshot: paused / manual / auto / auto_reason
+    listener_last_error: Optional[str] = None
+    listener_last_ok_ts: Optional[float] = None
+    listener_last_attempt_ts: Optional[float] = None
     helius_tracker_enabled: bool = True # DESIRED Pump.fun WS
     rh_feed_enabled: bool = True        # DESIRED RH poll
     rh_feed_alive: bool = False         # ACTUAL RH loop (head moved in the last 15 s)

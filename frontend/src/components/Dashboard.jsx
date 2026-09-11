@@ -347,9 +347,12 @@ export default function Dashboard() {
             {(() => {
               const desired = status?.helius_tracker_enabled ?? config?.helius_tracker_enabled ?? true;
               const live = !!status?.listener_connected;
-              const dot = !desired ? "bg-amber-500" : live ? "bg-emerald-500" : "bg-red-500";
-              const text = !desired ? "PUMP.FUN FEED OFF" : live ? "PUMP.FUN FEED ON · LIVE" : "PUMP.FUN FEED ON · OFFLINE";
-              return (<><span className={`w-2 h-2 rounded-full ${dot}`}></span><span className="text-neutral-400" data-testid="listener-status">{text}</span></>);
+              const paused = status?.helius_paused?.auto;
+              const connecting = status?.listener_last_attempt_ts && Date.now() / 1000 - status.listener_last_attempt_ts < 15;
+              const dot = !desired || (!live && paused) ? "bg-amber-500" : live ? "bg-emerald-500" : "bg-red-500";
+              const text = !desired ? "PUMP.FUN FEED OFF" : live ? "PUMP.FUN FEED ON · LIVE" : paused ? "PUMP.FUN FEED ON · PAUSED · DOCTOR" : connecting ? "PUMP.FUN FEED ON · CONNECTING" : "PUMP.FUN FEED ON · OFFLINE";
+              const why = !desired ? "operator switch OFF" : live ? "" : (status?.listener_last_error || (connecting ? "connecting…" : ""));
+              return (<><span className={`w-2 h-2 rounded-full ${dot}`}></span><span className="text-neutral-400" data-testid="listener-status" title={why}>{text}</span></>);
             })()}
           </span>
           {me && (

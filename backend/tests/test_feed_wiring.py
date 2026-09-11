@@ -94,3 +94,40 @@ def test_start_with_helius_off_does_not_reconnect():
         requests.put(f"{BASE}/api/bot/config", json={"helius_tracker_enabled": before["helius_tracker_enabled"]}, headers=H, timeout=20)
         if not before["enabled"]:
             requests.post(f"{BASE}/api/bot/stop?mode=graceful", headers=H, timeout=20)
+
+
+def test_status_has_listener_health_and_start_kicks_listener():
+    import time
+    before = _cfg()
+    try:
+        requests.put(f"{BASE}/api/bot/config", json={"helius_tracker_enabled": True}, headers=H, timeout=20)
+        r = requests.post(f"{BASE}/api/bot/start", headers=H, timeout=20).json()
+        assert "listener" in r and {"connected", "last_error", "last_ok_ts", "last_attempt_ts", "task_alive"} <= set(r["listener"])
+        assert r["listener"]["task_alive"] is True
+        time.sleep(3)
+        st = requests.get(f"{BASE}/api/bot/status", headers=H, timeout=20).json()
+        for k in ("helius_paused", "listener_last_error", "listener_last_ok_ts", "listener_last_attempt_ts"):
+            assert k in st, k
+        assert st["helius_tracker_enabled"] is True and st["helius_paused"]["manual"] is False
+        # either connected, or the payload says why (paused / error / connecting)
+        assert st["listener_connected"] or st["listener_last_error"] or (st["listener_last_attempt_ts"] and time.time() - st["listener_last_attempt_ts"] < 15)
+    finally:
+        requests.put(f"{BASE}/api/bot/config", json={"helius_tracker_enabled": before["helius_tracker_enabled"]}, headers=H, timeout=20)
+        if not before["enabled"]:
+            requests.post(f"{BASE}/api/bot/stop?mode=graceful", headers=H, timeout=20)
+
+
+def test_listener_reports_pause_reason_and_kick_resets_backoff():
+    import helius_gate
+    import listener as L
+    lst = L.PumpFunListener.__new__(L.PumpFunListener)
+    lst._task, lst._ws, lst._stop, lst.connected, lst._kick = None, None, False, False, False
+    lst.last_error, lst.last_ok_ts, lst.last_attempt_ts = None, 0.0, 0.0
+    lst.start = lambda: None
+    lst.kick()
+    assert lst._kick is True
+    h = lst.health()
+    assert h["connected"] is False and h["task_alive"] is False and h["last_ok_ts"] is None
+    helius_gate.set_auto_paused(True, "live-doctor paused scalp + hunt · no open Solana position")
+    assert helius_gate.snapshot()["auto_reason"].startswith("live-doctor")
+    helius_gate.set_auto_paused(False)

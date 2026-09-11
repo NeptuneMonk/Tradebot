@@ -478,13 +478,16 @@ async def update_config(body: dict = Body(...)):
     return cfg
 
 
+from helius_gate import snapshot as _gate_snapshot
+
+
 async def sync_helius_feed(desired: bool, prev: bool | None = None) -> None:
     """Desired → actual for the Pump.fun WS: ON unpauses the gate and makes sure the listener task is running
     (reconnects a dead task); OFF pauses the gate and drops the socket now so `listener_connected` is false within 2 s."""
     from helius_gate import set_paused as _set_helius_paused
     _set_helius_paused(not desired)
     if desired:
-        listener.start()
+        listener.kick()                     # start if the task is dead, else skip the backoff and reconnect now
         if prev is False:
             logger.info("Pump.fun feed ON — listener (re)connecting")
     else:
@@ -502,7 +505,9 @@ async def bot_start():
         await bot_state.cancel_graceful_stop()
     bot_state.config.enabled = True
     await bot_state.save_enabled()          # ONLY {enabled} — feed toggles are never touched by start/stop
-    return {"ok": True, "enabled": True}
+    if bot_state.config.helius_tracker_enabled:
+        await sync_helius_feed(True)        # flag already ON → make sure the WS is actually up (never sets the flag)
+    return {"ok": True, "enabled": True, "listener": listener.health()}
 
 
 @api.post("/bot/stop")
@@ -675,6 +680,10 @@ async def bot_status():
         live_trading=bot_state.config.live_trading,
         kill_switch_tripped=bot_state.kill_switch_tripped,
         listener_connected=listener.connected,
+        helius_paused=_gate_snapshot(),
+        listener_last_error=listener.last_error,
+        listener_last_ok_ts=listener.last_ok_ts or None,
+        listener_last_attempt_ts=listener.last_attempt_ts or None,
         helius_tracker_enabled=bot_state.config.helius_tracker_enabled,
         rh_feed_enabled=bot_state.config.rh_feed_enabled,
         rh_feed_alive=bot_state.rh_discovery.alive() if getattr(bot_state, "rh_discovery", None) else False,
