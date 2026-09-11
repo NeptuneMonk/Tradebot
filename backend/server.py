@@ -687,6 +687,7 @@ async def bot_status():
         helius_tracker_enabled=bot_state.config.helius_tracker_enabled,
         rh_feed_enabled=bot_state.config.rh_feed_enabled,
         rh_feed_alive=bot_state.rh_discovery.alive() if getattr(bot_state, "rh_discovery", None) else False,
+        rh_feed_paused_reason=bot_state.rh_discovery.doctor_paused() if getattr(bot_state, "rh_discovery", None) else None,
         rh_paper_enabled=bot_state.config.rh_paper_enabled,
         rh_live_trading=bot_state.config.rh_live_trading,
         scanner_enabled=bot_state.config.scanner_enabled,

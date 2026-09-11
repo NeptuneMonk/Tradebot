@@ -93,9 +93,9 @@ def test_rh_feed_idles_when_rh_pons_paused_and_flat():
         def book_paused(self, b): return b == "rh_pons"
     d.state = type("S", (), {"config": BotConfig(rh_feed_enabled=True), "live_doctor": _LD(),
                              "rh_paper": type("P", (), {"positions": {}})()})()
-    assert d._enabled() is False
+    assert d._enabled() is False and d.doctor_paused() == "live-doctor paused rh_pons · no open RH position"
     d.state.rh_paper.positions["0xabc"] = {"trade": {}}
-    assert d._enabled() is True
+    assert d._enabled() is True and d.doctor_paused() is None
     d.state.config.rh_feed_enabled = False
     assert d._enabled() is False
 

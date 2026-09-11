@@ -650,6 +650,7 @@ class BotStatus(BaseModel):
     helius_tracker_enabled: bool = True # DESIRED Pump.fun WS
     rh_feed_enabled: bool = True        # DESIRED RH poll
     rh_feed_alive: bool = False         # ACTUAL RH loop (head moved in the last 15 s)
+    rh_feed_paused_reason: Optional[str] = None   # set when the live-doctor idles the poller
     rh_paper_enabled: bool = True       # arming flags — still need `enabled` to fire
     rh_live_trading: bool = False
     scanner_enabled: bool = True

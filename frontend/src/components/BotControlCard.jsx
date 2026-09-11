@@ -240,9 +240,13 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
           Robinhood Chain Feed
         </span>
         <span className="flex items-center gap-1.5">
-          {(() => { const h = feedHealth(local.rh_feed_enabled ?? true, status?.rh_feed_alive); return (
-            <span className={`flex items-center gap-1 text-[9px] ${h.cls}`} data-testid="feed-rh-health" title="desired vs actual RH poll loop (head moved in the last 15 s)">
+          {(() => { const h = feedHealth(local.rh_feed_enabled ?? true, status?.rh_feed_alive,
+              { paused: status?.rh_feed_paused_reason ? { auto: true, auto_reason: status.rh_feed_paused_reason } : null, lastError: status?.rh_feed_alive ? null : "poll loop idle (head not moving)" }); return (
+            <span className={`flex items-center gap-1 text-[9px] ${h.cls}`} data-testid="feed-rh-health" title={h.why}>
               <span className={`w-1.5 h-1.5 rounded-full ${h.dot}`} /> {h.text}
+              {!status?.rh_feed_alive && (local.rh_feed_enabled ?? true) && (
+                <span className="normal-case tracking-normal text-neutral-500 max-w-[220px] truncate" data-testid="feed-rh-why">— {h.why}</span>
+              )}
             </span>
           ); })()}
           <span className={`text-[10px] ${(local.rh_feed_enabled ?? true) ? "text-lime-300" : "text-neutral-400"}`} data-testid="feed-rh-desired">

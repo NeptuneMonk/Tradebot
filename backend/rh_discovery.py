@@ -242,14 +242,18 @@ class RHDiscovery:
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._loop())
 
-    def _enabled(self) -> bool:
-        if not bool(getattr(self.state.config, "rh_feed_enabled", True)):
-            return False
+    def doctor_paused(self) -> str | None:
+        """Reason string when the poller is idled by the live-doctor (RH_PONS breaker, nothing open), else None."""
         ld = getattr(self.state, "live_doctor", None)
         rh = getattr(self.state, "rh_paper", None)
         if ld is not None and ld.book_paused("rh_pons") and not (rh and rh.positions):
-            return False   # doctor paused RH_PONS and nothing is open → don't burn RPC on a feed nobody can trade
-        return True
+            return "live-doctor paused rh_pons · no open RH position"
+        return None
+
+    def _enabled(self) -> bool:
+        if not bool(getattr(self.state.config, "rh_feed_enabled", True)):
+            return False
+        return self.doctor_paused() is None   # don't burn RPC on a feed nobody can trade
 
     async def _loop(self):
         await asyncio.sleep(3.0)
