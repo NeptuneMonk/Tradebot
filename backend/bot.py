@@ -609,6 +609,8 @@ class BotState:
         """Doctor pause → Helius idle: both Solana books paused by the live-doctor breaker (or inventory halt),
         and no open Solana position that still needs monitoring. The operator switch always wins (gate ORs them)."""
         ld = self.live_doctor
+        if not bool(getattr(self.config, "feed_autopause_on_doctor", False)):
+            return False, ""   # operator wants the tape (and the Doctor's learning) to keep flowing while books are paused
         both = ld is not None and ld.book_paused("scalp") and ld.book_paused("hunt")
         halt = self.inventory.active()
         sol_open = any((sl.get("trade") or {}).get("chain") != "rh" for sl in self.active_trades.values())

@@ -1,5 +1,5 @@
 import { useState, useEffect, memo } from "react";
-import { Power, Zap, Settings2, ChevronDown, ChevronRight, Radio, Pause, Eye } from "lucide-react";
+import { PauseCircle, Power, Zap, Settings2, ChevronDown, ChevronRight, Radio, Pause, Eye } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import SpeedModeSlider from "./SpeedModeSlider";
@@ -258,6 +258,30 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
               <div><strong>Paper by default, live when enabled.</strong> RH launches are paper-traded (auto + manual buy); flip "RH Live Trading" below to execute ETH-quoted curves with the Robinhood hot wallet.</div>
               <div className="text-neutral-400">Uses zero Helius credits in either state.</div>
             </div>
+          </HelpHint>
+        </span>
+      </button>
+      {/* Doctor pause → feeds: OFF (default) keeps the tape + learning flowing while books are paused;
+          ON idles Helius/RH to save credits (nothing can trade anyway). */}
+      <button
+        type="button"
+        data-testid="feed-autopause-toggle"
+        onClick={() => {
+          const next = !(local.feed_autopause_on_doctor ?? false);
+          flipKey("feed_autopause_on_doctor", next, () => toast.success(next
+            ? "Feeds will idle while the Doctor has the books paused (saves credits)"
+            : "Feeds keep streaming while the Doctor has the books paused"));
+        }}
+        className={`w-full flex items-center justify-between px-3 py-1.5 border text-[10px] font-mono uppercase tracking-[0.15em] transition-colors ${
+          (local.feed_autopause_on_doctor ?? false) ? "border-amber-800 bg-amber-950/20 text-amber-300" : "border-neutral-800 text-neutral-400 hover:bg-neutral-900/60"}`}
+      >
+        <span className="flex items-center gap-2"><PauseCircle className="w-3.5 h-3.5" /> Idle feeds while Doctor pauses books</span>
+        <span className="flex items-center gap-1.5">
+          <span data-testid="feed-autopause-state">{(local.feed_autopause_on_doctor ?? false) ? "ON" : "OFF"}</span>
+          <HelpHint label="Idle feeds on Doctor pause">
+            OFF (default): the Pump.fun WebSocket and the Robinhood poller keep streaming while the live-doctor breakers have
+            the books paused — the tape, scanner and Doctor learning keep flowing, you just can&apos;t enter. ON: both feeds idle
+            (amber PAUSED · DOCTOR) while every Solana / RH book is paused and nothing is open — saves Helius credits.
           </HelpHint>
         </span>
       </button>

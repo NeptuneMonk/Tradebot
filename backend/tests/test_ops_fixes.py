@@ -69,6 +69,7 @@ def test_helius_gate_manual_or_auto():
 
 def test_autopause_only_when_both_books_paused_and_no_solana_position():
     st = _bot_stub()
+    st.config.feed_autopause_on_doctor = True
     class _LD:
         def __init__(self, paused): self.p = paused
         def book_paused(self, b): return b in self.p
@@ -91,7 +92,7 @@ def test_rh_feed_idles_when_rh_pons_paused_and_flat():
     d = RHDiscovery.__new__(RHDiscovery)
     class _LD:
         def book_paused(self, b): return b == "rh_pons"
-    d.state = type("S", (), {"config": BotConfig(rh_feed_enabled=True), "live_doctor": _LD(),
+    d.state = type("S", (), {"config": BotConfig(rh_feed_enabled=True, feed_autopause_on_doctor=True), "live_doctor": _LD(),
                              "rh_paper": type("P", (), {"positions": {}})()})()
     assert d._enabled() is False and d.doctor_paused() == "live-doctor paused rh_pons · no open RH position"
     d.state.rh_paper.positions["0xabc"] = {"trade": {}}
@@ -147,3 +148,20 @@ def test_equity_three_trades_one_15m_bucket_ohlc():
     trades2 = [{"exit_time": "2026-06-01T10:01:00+00:00", "pnl_usd": 2.0}, {"exit_time": "2026-06-01T11:31:00+00:00", "pnl_usd": -1.0}]
     out2 = build_equity(trades2, 900, now_ts=1_800_000_000)
     assert len(out2["candles"]) == 2 and out2["candles"][1]["open"] == out2["candles"][0]["close"] == 2.0
+
+
+def test_feed_autopause_is_opt_in_and_breakers_can_be_lifted():
+    st = _bot_stub()
+    class _LD:
+        def __init__(self): self.book_paused_until = {"scalp": time.time() + 3600, "hunt": time.time() + 3600}
+        def book_paused(self, b): return time.time() < self.book_paused_until.get(b, 0)
+    st.live_doctor = _LD()
+    st.config.feed_autopause_on_doctor = False
+    assert st.helius_autopause_state() == (False, "")            # default: tape keeps flowing while books are paused
+    st.config.feed_autopause_on_doctor = True
+    assert st.helius_autopause_state()[0] is True
+    from live_doctor import LiveDoctor
+    ld = LiveDoctor.__new__(LiveDoctor)
+    ld.book_paused_until = {"scalp": time.time() + 3600, "hunt": time.time() + 3600, "rh_pons": time.time() - 5}
+    assert ld.lift_breaker("scalp") == ["scalp"] and not ld.book_paused("scalp") and ld.book_paused("hunt")
+    assert ld.lift_breaker() == ["hunt"] and ld.book_paused_until == {}

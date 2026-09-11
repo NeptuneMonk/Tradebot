@@ -171,6 +171,16 @@ class LiveDoctor:
         return {"winner_likeness_pct": round(w, 1), "exit_liquidity_likeness_pct": round(x, 1), "doctor_decision": decision,
                 "doctor_size_mult": DECISION_MULT[decision], "reason": f"winner {w:.0f}% / exit-liquidity {x:.0f}% → {decision}"}
 
+    def lift_breaker(self, book: str | None = None) -> list[str]:
+        """Operator override: clear the breaker pause for one book (or all). Returns the books lifted."""
+        books = [book] if book else list(self.book_paused_until)
+        lifted = [b for b in books if self.book_paused(b)]
+        for b in books:
+            self.book_paused_until.pop(b, None)
+        if lifted:
+            logger.warning(f"live-doctor breaker LIFTED by operator: {', '.join(lifted)}")
+        return lifted
+
     def book_paused(self, book: str) -> bool:
         return time.time() < float(self.book_paused_until.get(book) or 0)
 

@@ -2705,6 +2705,17 @@ async def doctor_live_snapshot():
     }
 
 
+@api.post("/doctor/live/lift/{book}")
+async def doctor_live_lift(book: str):
+    """Lift a live-doctor breaker pause now (book = scalp | hunt | rh_pons | all)."""
+    ld = bot_state.live_doctor
+    if ld is None:
+        raise HTTPException(503, "live doctor not running")
+    lifted = ld.lift_breaker(None if book == "all" else book)
+    await hub.broadcast("inventory_halt", bot_state.inventory.snapshot())
+    return {"ok": True, "lifted": lifted, "book_paused_until": dict(ld.book_paused_until)}
+
+
 @api.post("/doctor/live/run-now")
 async def doctor_live_run_now():
     """Force an immediate Doctor Live cycle (re-mines archetypes + re-scores

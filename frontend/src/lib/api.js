@@ -77,6 +77,7 @@ export const api = {
   // Doctor Live (archetype scorer + trailing-stop circuit breaker)
   doctorLive: () => client.get("/doctor/live").then(r => r.data),
   doctorLiveRunNow: () => longClient.post("/doctor/live/run-now").then(r => r.data),
+  doctorLiveLift: (book = "all") => client.post(`/doctor/live/lift/${book}`).then(r => r.data),
   doctorTrailResume: () => client.post("/doctor/trail/resume").then(r => r.data),
   doctorAppliedHistory: () => client.get("/doctor/applied-history").then(r => r.data),
   doctorLearning: () => client.get("/doctor/learning").then(r => r.data),

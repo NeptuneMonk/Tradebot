@@ -244,6 +244,8 @@ class RHDiscovery:
 
     def doctor_paused(self) -> str | None:
         """Reason string when the poller is idled by the live-doctor (RH_PONS breaker, nothing open), else None."""
+        if not bool(getattr(self.state.config, "feed_autopause_on_doctor", False)):
+            return None
         ld = getattr(self.state, "live_doctor", None)
         rh = getattr(self.state, "rh_paper", None)
         if ld is not None and ld.book_paused("rh_pons") and not (rh and rh.positions):

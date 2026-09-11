@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
-import { OctagonAlert, PauseCircle, Rocket } from "lucide-react";
+import { useEffect, useState, useRef } from "react";
+import { OctagonAlert, PauseCircle, Rocket, Unlock } from "lucide-react";
+import { toast } from "sonner";
 import { api } from "@/lib/api";
 
 const fmtLeft = (untilTs) => {
@@ -11,10 +12,13 @@ const fmtLeft = (untilTs) => {
 // per-book live-doctor breaker pauses (payoff < 1 or MFE can't reach the first target), with countdowns.
 export default function HaltBanner() {
   const [inv, setInv] = useState(null);
+  const loadRef = useRef(() => {});
+  const load = () => loadRef.current();
   const [, tick] = useState(0);
   useEffect(() => {
     let alive = true;
     const load = () => api.inventory().then((d) => alive && setInv(d)).catch(() => {});
+    loadRef.current = load;
     load();
     const poll = setInterval(load, 15000);
     const clock = setInterval(() => tick((n) => n + 1), 1000);
@@ -45,6 +49,15 @@ export default function HaltBanner() {
           <span key={book} className="inline-flex items-center gap-1.5 text-amber-300" data-testid={`book-paused-${book}`}>
             <PauseCircle className="w-3.5 h-3.5" />
             {book.toUpperCase()} paused by live-doctor breaker{br.reason ? ` — ${br.reason}` : ""} · resumes in {fmtLeft(ts)}
+            <button
+              type="button"
+              data-testid={`lift-breaker-${book}`}
+              title={`Lift the ${book} breaker now — the Doctor may re-arm it on the next cycle if the payoff is still < 1.0`}
+              onClick={() => api.doctorLiveLift(book).then((r) => { toast.success(`${book} breaker lifted`); load(); }).catch((e) => toast.error(e?.response?.data?.detail || e.message))}
+              className="ml-1 px-1.5 border border-amber-800 hover:bg-amber-900/40 uppercase text-[9px] inline-flex items-center gap-1"
+            >
+              <Unlock className="w-3 h-3" /> lift
+            </button>
           </span>
         );
       })}

@@ -35,6 +35,7 @@ class BotConfig(BaseModel):
     # bounded by `max_concurrent_positions` (default 8) so it's tiny.
     # Default True so behaviour is unchanged for existing users.
     helius_tracker_enabled: bool = True
+    feed_autopause_on_doctor: bool = False   # True = idle Helius/RH feeds while the live-doctor has the books paused (saves credits, stops learning)
     # Robinhood Chain (PONS) watch-only feed. Polls the RH public RPC —
     # zero Helius credits. Off = rh_discovery loop idles.
     rh_feed_enabled: bool = True
