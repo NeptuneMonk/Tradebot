@@ -239,7 +239,8 @@ class RHDiscovery:
 
     def start(self):
         if not RH_RPC_URL:
-            logger.warning("RH_RPC_URL not set — Robinhood Chain feed disabled")
+            self.stats["boot_error"] = "RH_RPC_URL is empty in this environment — Robinhood poller never started (set it in the service env / backend/.env)"
+            logger.error(self.stats["boot_error"])
             return
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._loop())

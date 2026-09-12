@@ -29,12 +29,16 @@ def rh_readiness(state) -> dict:
 
     checks["rh_rpc_url_set"] = bool(rh_discovery.RH_RPC_URL)
     if not checks["rh_rpc_url_set"]:
-        reasons.append("RH_RPC_URL not set in this environment — poller never started")
+        reasons.append("RH_RPC_URL is empty in this environment — Robinhood poller never started (copy it into the published service env; a git push does not carry .env secrets)")
 
     if live:
         checks["rh_wallet_files"] = rh_wallet.WALLET_PATH.exists() and rh_wallet.PASS_PATH.exists()
         if not checks["rh_wallet_files"]:
             reasons.append("RH live wallet files missing in this container (rh_wallet.json / rh_wallet.pass) — live buys cannot sign")
+        checks["rh_wallet_funded_key"] = not rh_wallet.CREATED_THIS_BOOT
+        if rh_wallet.CREATED_THIS_BOOT:
+            reasons.append(f"RH live wallet was freshly generated on this boot ({rh_wallet.address()[:6]}…{rh_wallet.address()[-4:]}) — "
+                           "the funded key is not in this container; import it (RH wallet card → import private key)")
 
     ld = getattr(state, "live_doctor", None)
     checks["rh_book_open"] = not (ld is not None and ld.book_paused("rh_pons"))

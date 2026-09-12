@@ -42,13 +42,19 @@ def _password() -> str:
     return pw
 
 
+CREATED_THIS_BOOT = False  # a fresh container (publish) generates a NEW unfunded wallet — readiness surfaces it
+
+
 def _load_or_create() -> Account:
+    global CREATED_THIS_BOOT
     if WALLET_PATH.exists():
         keyfile = json.loads(WALLET_PATH.read_text())
         return Account.from_key(Account.decrypt(keyfile, _password()))
     acct = Account.create()
     _persist(acct)
-    logger.warning(f"RH wallet created: {acct.address}")
+    CREATED_THIS_BOOT = True
+    logger.error(f"RH wallet CREATED on this boot: {acct.address} — no key file was present in this container; live RH sells/buys "
+                 f"will sign with this unfunded address until you import the funded key (RH wallet card → import private key)")
     return acct
 
 
@@ -68,6 +74,8 @@ def address() -> str:
 
 
 def import_private_key(hex_key: str) -> str:
+    global CREATED_THIS_BOOT
+    CREATED_THIS_BOOT = False
     """Replace the hot wallet with an imported key (preview/operator action)."""
     global _ACCT
     acct = Account.from_key(hex_key.strip())
