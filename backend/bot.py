@@ -1344,7 +1344,9 @@ class BotState:
             await self._persist_metrics(mint)
 
     def _hunt_open(self) -> int:
-        return sum(1 for sl in self.active_trades.values() if (sl.get("trade") or {}).get("book") == "hunt")
+        # hunt cap counts snipes/re-entries only; seasoned continuation (scanner_momentum) rides hunt exits on a normal slot
+        return sum(1 for sl in self.active_trades.values()
+                   if (sl.get("trade") or {}).get("book") == "hunt" and (sl.get("trade") or {}).get("classifier_action") != "scanner_momentum")
 
     def _runner_open(self) -> int:
         return runner.open_count(self.active_trades)
@@ -2021,7 +2023,20 @@ class BotState:
 
     async def _skip_event(self, payload: dict):
         self._ledger_sol(payload.get("mint", ""), payload.get("reason") or "skip")
+        tally = self._skip_counts = getattr(self, "_skip_counts", {})
+        key = f"{payload.get('band') or 'new'}:{payload.get('reason') or 'skip'}"
+        tally[key] = tally.get(key, 0) + 1
         await hub.broadcast("scanner_skip", payload)
+
+    def skip_tallies(self) -> dict:
+        """Skip reasons since process start, split by band (new / seasoned) — the diagnostic for 'seasoned is silent'."""
+        t = getattr(self, "_skip_counts", {}) or {}
+        seasoned = {k.split(":", 1)[1]: v for k, v in t.items() if k.startswith("seasoned:")}
+        new = {k.split(":", 1)[1]: v for k, v in t.items() if k.startswith("new:")}
+        other = {k: v for k, v in t.items() if ":" not in k}
+        tracked = [b for b in self.tracking.values() if b.get("protocol") == "pumpswap"]
+        return {"seasoned": seasoned, "new": new, "other": other, "seasoned_tracked": len(tracked),
+                "seasoned_with_pool": sum(1 for b in tracked if b.get("pumpswap_pool"))}
 
     def _rules_for_classify(self) -> dict:
         """Classifier rules + the Doctor-tunable Project Score floor from BotConfig (the stricter wins)."""
@@ -2621,12 +2636,11 @@ class BotState:
         pumpswap_state: dict | None = None
         if protocol == "pumpswap":
             pool = bucket.get("pumpswap_pool") or (await pumpswap.find_pool_for_mint(launch.mint))
-            if not pool:
-                logger.info(f"skip {launch.mint} [pumpswap]: no pool found")
-                return
-            pumpswap_state = await pumpswap.fetch_pool_state(pool)
+            pumpswap_state = await pumpswap.fetch_pool_state(pool) if pool else None
             if not pumpswap_state:
-                logger.info(f"skip {launch.mint} [pumpswap]: pool state unavailable")
+                # pool is mandatory: never enter seasoned on an API price alone
+                await self._skip_event({"mint": launch.mint, "symbol": launch.symbol, "band": "seasoned", "reason": "seasoned-no-pool",
+                                        "details": ["no pool found" if not pool else "pool state unavailable"]})
                 return
             bucket["pumpswap_pool"] = pool
             state = {
@@ -2694,6 +2708,20 @@ class BotState:
                     "details": [f"{buyers} < min {min_buyers}"],
                 })
                 return
+            if not is_new_band:
+                # seasoned continuation wants a live tape: a print within seasoned_max_last_trade_s, and buyers since
+                # graduation not shrinking when both readings exist (skip the compare otherwise)
+                last_tick = max(float(b.get("last_inflow_ts") or 0), float(b.get("last_trade_ts") or 0), float(b.get("last_new_buyer_ts") or 0))
+                max_age = float(getattr(self.config, "seasoned_max_last_trade_s", 20.0) or 20.0)
+                if last_tick and time.time() - last_tick > max_age:
+                    await self._skip_event({"mint": launch.mint, "symbol": launch.symbol, "band": "seasoned", "reason": "stale-tape",
+                                            "details": [f"last print {time.time() - last_tick:.0f}s ago > {max_age:g}s"]})
+                    return
+                bag, bnow = b.get("buyers_at_grad"), len(b.get("buyers") or ())
+                if bag is not None and b.get("graduated_at") and bnow < int(bag):
+                    await self._skip_event({"mint": launch.mint, "symbol": launch.symbol, "band": "seasoned", "reason": "buyers-since-grad",
+                                            "details": [f"{bnow} buyers now < {bag} at graduation"]})
+                    return
 
         # Pre-trade classifier gate (NEW band PumpFun only — seasoned/PumpSwap
         # tokens don't have mempool metrics so the classifier would spuriously

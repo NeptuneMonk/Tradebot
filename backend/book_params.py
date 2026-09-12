@@ -62,6 +62,8 @@ def book_for_action(action: str | None, chain: str | None = None) -> str:
     a = action or ""
     if chain == "rh" or a.startswith("rh_pons"):
         return "rh_pons"
+    if a == "scanner_momentum":
+        return "hunt"          # seasoned PumpSwap continuation: hunt exits (no clock, R ladder), NOT a hunt-cap action
     return "hunt" if a in HUNT_ACTIONS else "scalp"
 
 

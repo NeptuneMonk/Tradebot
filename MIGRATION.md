@@ -1,112 +1,12 @@
-# MIGRATION — profitability refactor (books · R · cost gate · scorecard)
+# MIGRATION — Seasoned as hunt-exits + RH post-pool
 
-Factual record of what changed in this pass. No compatibility flags exist; the old paths are deleted.
+**What changed**
+- `scanner_momentum` (seasoned PumpSwap continuation) now routes to **book = hunt** (`book_exits.hunt`: SL 20, +1R 35% / +2R 30%, `hold_max_seconds = 0`). It is **not** a HUNT_ACTION: the hunt slot cap still counts only `greylist_snipe` + `reentry`; seasoned takes a normal Solana slot. New-band `momentum_new` stays scalp with the 40 s clock. Scorecard cell: book hunt, band seasoned.
+- Pool is mandatory for seasoned: no `pumpswap_pool` / pool state → skip `seasoned-no-pool` (never an API-price entry). Extra seasoned gates: last print ≤ `seasoned_max_last_trade_s` (20 s) → `stale-tape`; buyers now ≥ buyers at graduation when both readings exist → `buyers-since-grad`. MC floor / 5 m velocity / growth / liquidity unchanged. Classifier still runs on the new Pump.fun band only.
+- Promotion unchanged: a seasoned hunt that banks +1R becomes a runner; `runner_stage` starts `graduated` (protocol pumpswap).
+- **RH post-pool**: `_gates` no longer returns a blanket `graduated`. Graduated bucket → `rh-grad-no-pool` until a v4 pool swap is seen (`pool_live`), `rh-seasoned-stale` if the last pool print is > 20 s old, `rh-seasoned-age` past `rh_seasoned_max_age_min` (60). Curve-% and curve-age gates are skipped post-pool; MC / inflow / buyers / cost gates still apply. Paper fills price from pool prints (bucket `last_price_quote` is fed by pool swaps once graduated); exits already use rh_dex. **Live RH seasoned is refused** (`rh-seasoned-live-unsupported`) — there is no v4 pool buy path yet.
+- Visibility: `GET /api/scanner/skips` → skip tallies by band (new / seasoned) and RH (curve / seasoned) with `seasoned_tracked` / `seasoned_with_pool`.
 
-## Removed
+**Not changed**: default MC / velocity gates, rh_paper / rh_feed toggles (nothing auto-enabled), Helius budget, start/stop wiring.
 
-| Removed | Replaced by |
-|---|---|
-| Global `take_profit_pct`, `stop_loss_pct`, `trailing_stop_pct`, `trailing_arm_pct`, `hold_max_seconds`, `partial_tp_pct`, `partial_tp_trail_tighten_pct` on `BotConfig` | `book_exits.<book>.<param>` only (`book_params.BOOK_DEFAULTS`); `exit_param()` has no global fallback |
-| `winner_ride_*`, `hold_timeout_velocity_*` (clock softeners) | scalp clock is a plain clock; hunt has no clock |
-| Risk-score size buckets (`≤30→1.0 / ≤60→0.6 / >60→0.3`), `greylist_snipe_research_size_mult`, stacked snipe/research/book multipliers | `r_sizer.size_trade()` — one multiplier chain `book × live_doctor × governor` |
-| `project_score_min`, `social_score_min`, `creator_rug_threshold` classifier aborts | creator history is a routing input; project score is a weak risk tie-break |
-| Classifier verdicts `exit_early / hold_briefly / abort_trade` | closed set `{scalp, hunt, skip}` (`classifier.ACTIONS`) |
-| In-position classifier re-evaluation ("classifier abort" exits) | book ladders only |
-| `bot._compute_auto_exit_slip_bps`, `_recent_vol_pct`, `_pool_depth_sol`, `_exit_param` | `slippage.py`, `exits.levels()` |
-| `strategy_doctor` legacy 24h-WR rules (`_rule_sizing_advantage`, `_rule_take_profit_frequency`, `_rule_stop_loss_tightness`, `_rule_hold_time`, `_rule_partial_tp_threshold`, `_rule_time_of_day`, `_rule_protocol_focus`, `_rule_classifier_bucket_focus`, `_rule_sl_too_wide`, `_rule_tp_unreachable`, `_rule_flat_bleeders`, `_rule_trailing_giveback`, `_rule_churn_exits`, `_rule_source_edge`, `_rule_greylist_sniper_tuning`, `_rule_distribution_vacuum_gate`, `_rule_pattern_*`), `_auto_apply`, `_auto_revert_watchdog` (12-trade WR revert) | `doctor_learning` canary: one book-scoped change per cycle, promoted on post-start fills in R |
-| `suggestions.py` + `GET /api/suggestions` ("TP/SL from 24h win rate") | — |
-| `doctor_learning.GLOBAL_KEYS`, `TECHNIQUE_MIN_GAIN_USD = 0.02` | `BOOK_EXIT_KEYS` (dotted only), `TECHNIQUE_MIN_GAIN_R = 0.05` + 15 % relative rule |
-| `allocator.TARGET_EXPECTANCY_USD = 0.50` | `TARGET_EXPECTANCY_R = 0.30` (stake-relative) |
-| `book_momentum_size_mult`, `book_snipe_size_mult`; books `momentum / greylist_snipe / reentry` | `book_scalp_size_mult`, `book_hunt_size_mult`; books `scalp / hunt / rh_pons` |
-| Live-doctor scores "informational only" | `live_doctor.decide()` → skip / half / full on every non-manual entry |
-| `max_concurrent_positions = 8/20` as a normal operating point | default **3**, rail max **8**; hunt may hold at most **2** (`inventory.HUNT_SLOT_CAP`) |
-| UI: global TP/SL/Trail/Hold/Partial inputs, Ride-winner input, rug-threshold / project-score rule inputs, SuggestionsCard | `BookExitsEditor` (per book), `TradeTicket` on trade rows |
-
-`classifier_action` on trade docs is the **entry source** (`momentum_new`, `scanner_momentum`, `greylist_snipe`, `reentry`, `manual`, `rh_pons_*`) and is unchanged; the classifier's verdict is no longer stored under that name.
-
-## Startup migration (`BotState._migrate_books`, runs once, sets `books_migrated_v2`)
-
-* old `book_exits.momentum → scalp`, `greylist_snipe / reentry → hunt` (old `take_profit_pct` dropped — books use `target_r`)
-* global `stop_loss_pct / trailing_stop_pct / trailing_arm_pct` copied into `book_exits.scalp` and `book_exits.rh_pons`; global `take_profit_pct` into `book_exits.rh_pons`
-* `book_momentum_size_mult → book_scalp_size_mult`, `book_snipe_size_mult → book_hunt_size_mult`
-* `max_concurrent_positions` clamped to ≤ 8
-* `trades.book`: `momentum → scalp`, `greylist_snipe / reentry → hunt`, `chain == rh → rh_pons`
-* removed keys are `$unset` from `bot_config`
-
-## New modules
-
-`cost_gate.py`, `r_sizer.py`, `slippage.py`, `exits.py`, `scorecard.py`, `inventory.py`. `book_params.py`, `classifier.py`, `rails.py`, `allocator.py` rewritten.
-
-## New defaults per book (`book_params.BOOK_DEFAULTS`)
-
-| book | SL % | target_r | trail % | arm % | clock s | +1R sell % | +2R sell % | first target (cost gate / breaker) |
-|---|---|---|---|---|---|---|---|---|
-| scalp (momentum, manual) | 12 | 1.5 | 6 | 12 | 40 | — | — | 1.5R |
-| hunt (greylist_snipe, reentry) | 20 | 2.0 | 8 | 0 (arms after leg 1) | **0 = none** | 35 | 30 | 1R |
-| rh_pons | 12 | 0 → TP 20 % | 6 | 12 | 35 | — | — | 1R |
-
-Hunt ladder: at +1R sell 35 %, stop → breakeven + remaining expected exit cost; at +2R sell 30 %; runner trails. Pattern rip-cord (`_check_snipe_pattern_exit`) fires before the ladder. `no_momentum_exit` may flatten a dead runner on any book; a clock never does on hunt.
-
-## Entry pipeline (Solana, `BotState._plan_entry`)
-
-1. inventory halt (last 5 closes in 90 min were stop-outs/rugs → no Solana entries until the window rolls off) · book pause (live-doctor breaker) · slot cap (3, hunt ≤ 2)
-2. classifier verdict must be `scalp` for scalp entries (`hunt` and `skip` refuse)
-3. live doctor: `winner < 40 → skip`; `winner ≥ 60 & exit_liq < 50 → full`; otherwise `half`
-4. R sizing: `size = bankroll × risk% ÷ (SL + expected exit slip) × book × doctor × governor`, clamped to `[min_trade_usd, max_trade_usd]`; below min → skip
-5. cost gate: `first_target_r × r_usd ≥ 2 × expected round-trip cost` and cost ≤ 8 % (slip = impact + 1 %/side, protocol fee both ways, priority fees, 0.5 % shave / 5 % ladder shave)
-6. scorecard cell must not be disabled
-
-## New trade fields
-
-`r_usd` (**actual** cash at risk after the cap = `size × (SL + slip)`; used for the ladder, E[R], cost gate, Doctor), `r_usd_nominal` (bankroll × risk %), `size_usd`, `size_clamped`, `sl_pct`, `sl_pct_with_slip`, `target_r`, `expected_cost_pct`, `expected_cost_usd`, `expected_target_pct`, `cost_gate_pass`, `winner_likeness_pct`, `exit_liquidity_likeness_pct`, `doctor_decision`, `scorecard_cell`, `ladder_legs_done`, `ladder_stop_pct`, `mfe_pct`.
-
-## Interpreting `expectancy_r`
-
-`pnl_usd / r_usd` averaged over fills. +1.0R = the trade earned exactly the cash it risked. Because `r_usd` is the post-cap risk, a full +1R winner on a capped $1 stake is +1R, not 0.1R. Pre-migration rows without `r_usd` use `entry_usd × book SL %`. Allocator target: blended `expectancy_r ≥ 0.30` earns ×2; ≤ 0 falls to the ×0.25 floor. Scorecard: `n ≥ 30 & expectancy_r < 0` disables a cell; reopen only after 72 h **and** 10 fresh paper fills with `expectancy_r ≥ 0`.
-
-## Live-doctor breaker (per book, last 4 h, n ≥ 8)
-
-Pause 4 h if payoff `avg_win / |avg_loss| < 1.0` after fees, or median MFE (in R) `<` the book's first target (scalp 1.5R, hunt 1R).
-
-## Doctor after this change
-
-Allowed: enable/disable a scorecard cell (`POST /api/scorecard/cell`), one `book_exits.<book>.<param>` key, one book entry threshold, one allocator step. Promotion needs `PROMOTION_MIN_FILLS` per book (scalp 30, hunt 20, rh 20) **after** `canary.started_at`; revert if `expectancy_r` since start is below baseline or drawdown is worse by > 15 %. Pattern miner and autopsy no longer change live config.
-
-## Scanner
-
-* New-band scalps enter on the **second impulse** only (`scanner_second_impulse_enabled`, dip ≥ `scanner_second_impulse_dip_pct` = 8 % from the tracked peak and recovering with buyers still arriving). The first vertical fill is a skip in both scanner and classifier.
-* `gate_distribution_vacuum` is default-on again (recommended defaults included).
-
-## New endpoints
-
-`GET /api/scorecard`, `POST /api/scorecard/cell {cell, disabled}`, `GET /api/inventory`.
-
-## Pre-test patch
-
-* **Defaults restored**: startup resets `book_exits` to `BOOK_DEFAULTS` once (`book_exits_defaults_v1`); `_migrate_books` no longer copies global SL/trail/TP into books. `POST /api/book_exits/restore_defaults` + "Restore book defaults" button; the editor shows "drifted from defaults" (amber) when any field differs.
-* **One hunt brain**: `_check_snipe_pattern_exit` returns risk exits only (stale, velocity decay, curve/peak-MC rug window, drawdown rip-cord). The profit rip-cord (`greylist_snipe_profit_ripcord_pct`), pattern TP (`greylist_pattern_suggested_tp_pct`) and `strategy_overrides` (`greylist_overrides_at_entry`) are deleted. Order for `book == hunt`: rip-cord → `exits.decide_hunt` via `_run_ladder`; ladder legs persist on every hunt fill.
-* **Default skip**: `classifier.classify` returns `skip` on an empty tape; `scalp` needs a buyer surge (many_buyers) or inflow > 1 SOL. Project score only lowers risk on an already-scalp verdict.
-* **Hunt cap counts snipes and re-entries**: both `_enter` (snipes, scanner) and the re-entry gate refuse when `HUNT_SLOT_CAP` (2) hunt slots are open (`skip reason = hunt-cap`); every fill counts toward `max_concurrent_positions` (3).
-* `inventory.LOSS_MARKERS` no longer contains `classifier`.
-* Cockpit: `HaltBanner` (inventory halt + per-book breaker pause with countdown, from `GET /api/inventory`), `ScorecardPanel` (cells, n, E[R], wr, avg W/L, state, enable/disable via `POST /api/scorecard/cell`), Scorecard collapsible section on the dashboard.
-
-## Feed labelling patch
-
-* The Recent Launches feed may show **`pending`** (feed-only label, never part of the entry closed set `{scalp, hunt, skip}`) while the tape (< `low_inflow_window_s`), metadata (`meta_seen`) or the creator pattern is still arriving. Re-assessed at 3 s / 8 s / 15 s (`FEED_REASSESS_S`) and on events (metadata fetched, buyers hit `many_buyers_count`, inflow crosses `low_inflow_sol`); the 15 s pass is final. Late-chase and rug-history skips are final immediately. A later scalp / hunt / skip overwrites `pending`; events never re-open a final label.
-* Entry gates (`_enter_impl`) always call `classify()` on fresh metrics (pattern + tape + score at entry time); the feed label is never used as a veto.
-
-## Hunt cost-gate + cold-start doctor/scorecard
-
-The hunt book had zero fills: `LADDER_SHAVE_PCT = 5` + 2 % protocol + ~2.7 % slip put every hunt quote over the 8 % ceiling. `cost_gate.quote()` now prices the **first cash-out only** for ladders (entry slip/fee on the full bag, exit slip/fee/shave on the first 35 % leg) with `LADDER_SHAVE_PCT = 1.5`; `MAX_ROUND_TRIP_PCT = 8` and `COST_MULT = 2` are unchanged, thin pools still fail. Scorecard `stats()` ignores fills without `r_usd` (legacy exits no longer judge the new system) and disables a cell only at n ≥ 30 **and** E[R] ≤ −0.15; the two breakeven-noise cells were re-opened. Live doctor: hunt is judged only against archetypes built from hunt fills; below 10 hunt fills (7 d) every hunt entry is `half`, never `skip` (the classifier already vetoes untradeable creators); scalp policy unchanged. Book size mults reset to ×1, and `doctor_learning.book_stats()` (allocator + Doctor) likewise counts only fills with `r_usd`, otherwise the allocator immediately re-cut the books on legacy fills. Skip log lines now carry the gate's reason text. The bankroll governor no longer derives `max_concurrent_positions` (it was silently pushing slots to 8) — slots are operator-owned, default 3, rail 8.
-
-## Runner book (winners only)
-
-A fourth book, **`runner`**, that is never opened cold: `book_params.ALL_BOOKS = BOOKS + ("runner",)`; the scanner, classifier and Doctor entry policies still route only to `{scalp, hunt, skip}`. A live **scalp** (at its +target·R exit) or **hunt** (after the +1R 35 % leg) is **promoted** (`bot._try_promote` → `runner.promotion_ok`) when all hold: pnl/R ≥ +1.0, MFE ≥ 1.5R, buyers **and** inflow expanding vs `entry_ctx` (no tape → 5 m velocity > 0), live-doctor exit-liquidity likeness < 70, cost to flatten the remainder < 8 %, and the runner slot is free (`runner.RUNNER_CAP = 1`). Scalp promotion sells 45 % first and converts the remainder; hunt promotion converts the remainder with nothing sold. Otherwise the scalp/hunt exit stands (skip reason `runner-cap` when the slot is full). The trade doc gets `promoted_from / promoted_at / promotion_price_sol / promotion_banked_usd / runner_stage`; `book` becomes `runner` and the scorecard/doctor stats for the runner cell use `runner_pnl_usd` (= total − banked before promotion) so pre-promotion chips never mix in. Slots: Solana cap stays 3; while a runner is open the hunt cap is 1 (`bot._hunt_cap`), otherwise 2 — a runner is never a third name.
-
-Stages (`runner.update_stage`, every monitor tick): `launch` → `graduating` (curve complete, no pool — the monitor no longer panic-exits a runner on `complete`) → `graduated` (pool live) ↔ `retail` (last trade < 20 s, new buyers in the 60 s window, 5 m MC velocity > 0, no distribution vacuum, giveback < `giveback_pct` 25) → `exhausted` after `dead_s` 90 s of failing retail rules. Flow comes from the Pump.fun tape when the bucket has one, otherwise from pool activity the monitor sees (Helius pushes / price changes, `runner.note_tick`). `exits.decide_runner`: no pool after `grad_grace_s` 45 → **rip-cord** (existing pattern exits still run first) → giveback from the peak-since-promotion ≥ `trailing_stop_pct` 15 (armed after +1R from the promotion price) → `stop_loss_pct` 25 from the promotion price → optional **+3R chip** (sell 25 %, trail → 10 %) → `exhausted` exit. **No clock**, no `hold_max_seconds`, no-momentum exit skipped for runners. One **add-on** (`runner.add_on_plan`, `bot._runner_add_on`): `add_on_r` 0.5 × original R, cost-gated, ≤ `max_trade_usd`, only in `graduated/retail` with the retail rules passing, PumpSwap only, one attempt ever (`runner_add_on_done`).
-
-`BOOK_DEFAULTS["runner"]`: SL 25 · target_r 0 · trail 15 · arm 0 · clock 0 · ladder 0/0 · `add_on_r` 0.5 · `giveback_pct` 25 · `dead_s` 90 · `grad_grace_s` 45. `book_runner_size_mult` exists (rail 0.25–2) but the allocator judges the runner only at n ≥ 20 runner fills (`allocator.RUNNER_MIN_N`); `propose_technique` still iterates `BOOKS` so the Doctor never tunes runner exits from scalp/hunt data. `_partial_exit` is now cumulative (`partial_realized_*`, `partial_sigs`, `partial_legs`) so hunt leg 2, the promotion bank and the +3R chip can each sell once; the PnL reconciler sums every partial sig plus `add_on_sig`. Manual: `POST /api/scanner/manual-buy/{mint}?runner=true` (operator flag, default off) seeds a temp bucket from `find_pool_for_mint` for an untracked graduated mint and converts the fill to runner; the scanner never opens a runner. UI: `RUNNER · stage · pk % · gb % · pool yes/no` badge on active rows, "RUNNER SLOT FULL" in the halt banner (`GET /api/inventory` → `runner_open / runner_cap / hunt_cap_now / runners`), runner row in the book-exits editor. Skip/exit reasons: `runner-cap`, `runner-no-pool`, `runner-exhausted`. Tests: `tests/test_runner_book.py`.
-
-## Ops patch (feeds · governor · Helius auto-pause)
-
-Bot Control writes are **patches** (`{key: value}` / diff vs baseline) — the whole-form PUT was overwriting sibling toggles. `bankroll.release_governor` records `released_at` + `released_dd_pct`; `_refresh_chain` will not re-arm within `governor_hours` unless the 24h drawdown deepens by another `governor_drawdown_pct`. `helius_gate.is_helius_paused()` = operator switch **or** auto-pause (`BotState.helius_autopause_state`: live-doctor paused scalp **and** hunt, or inventory halt, and no open Solana position); `rh_discovery._enabled()` also idles while RH_PONS is paused and flat. `/api/trades/history` omits `entry_ctx / dip_forensics / snipe_pattern_ctx / greylist_overrides_at_entry / cost_breakdown / exit_deferrals`. `/api/diagnostics/loop` reports event-loop lag + gate state.
+**Read the tallies before loosening anything**: all `seasoned-no-pool` → discovery / Helius pool reads are the bug; fills dying on a 40 s clock → routing missed; RH still `rh-grad-no-pool` with a live pool → pool swap ingest not stamping `pool_live`.

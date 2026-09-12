@@ -127,8 +127,17 @@ class RHPaperTrader:
             return "already-entered"
         if len(self.positions) + len(self._pending_entries) >= cfg.rh_max_positions:
             return "max-positions"
-        if b.get("graduated"):
-            return "graduated"
+        seasoned = bool(b.get("graduated"))
+        if seasoned:
+            # post-sweep: the curve is gone. Enter only on a LIVE v4 pool with a fresh print, priced from pool swaps.
+            if not b.get("pool_live"):
+                return "rh-grad-no-pool"
+            if now - float(b.get("last_pool_swap_ts") or 0) > float(getattr(cfg, "seasoned_max_last_trade_s", 20.0) or 20.0):
+                return "rh-seasoned-stale"
+            if now - float(b.get("graduated_at") or b["start"]) > float(getattr(cfg, "rh_seasoned_max_age_min", 60.0) or 60.0) * 60:
+                return "rh-seasoned-age"
+            if self.live_ok(b):
+                return "rh-seasoned-live-unsupported"   # no v4 pool buy path yet: paper only
         blk = getattr(self.state, "search_regime_block", lambda: None)()
         if blk:
             return blk
@@ -136,11 +145,11 @@ class RHPaperTrader:
         if quote_usd <= 0:
             return "unpriced-quote"
         age = now - b["start"]
-        if age < cfg.rh_min_age_s or age > cfg.rh_max_age_min * 60:
+        if not seasoned and (age < cfg.rh_min_age_s or age > cfg.rh_max_age_min * 60):
             return "age"
         from book_params import regime_gate_mult
         rm = regime_gate_mult(cfg, "rh_pons", self._launch_rate(now))   # quiet/busy hours scale the gates
-        if not (cfg.rh_min_curve_pct <= b["curve_fill_pct"] <= cfg.rh_max_curve_pct):
+        if not seasoned and not (cfg.rh_min_curve_pct <= b["curve_fill_pct"] <= cfg.rh_max_curve_pct):
             return "curve"
         mc = b["usd_market_cap"]
         if mc <= 0 or mc < cfg.rh_min_mc_usd * rm or mc > cfg.rh_max_mc_usd:
@@ -180,6 +189,9 @@ class RHPaperTrader:
                 reason = focus_block   # would have entered — deferred by hot focus
                 self.stats["focus_deferred"] = self.stats.get("focus_deferred", 0) + 1
             verdict = "pass" if reason is None else reason
+            tally = self.stats.setdefault("skip_reasons", {})
+            key = ("seasoned:" if b.get("graduated") else "curve:") + verdict
+            tally[key] = tally.get(key, 0) + 1
             if b.get("gate_reason") != verdict:
                 b["gate_reason"] = verdict
                 self.state.rh_discovery._dirty.add(token)      # verdict change → launch_update → feed

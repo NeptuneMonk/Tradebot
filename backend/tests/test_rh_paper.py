@@ -137,7 +137,7 @@ def test_gates_pass_and_reasons():
     assert st.rh_paper._gates(TOKEN, b, now) == "age"
     b["start"] = now - 60
     b["graduated"] = True
-    assert st.rh_paper._gates(TOKEN, b, now) == "graduated"
+    assert st.rh_paper._gates(TOKEN, b, now) == "rh-grad-no-pool"   # post-pool entries need a live v4 pool print
     b["graduated"] = False
     b["quote_symbol"] = "NVDA"
     assert st.rh_paper._gates(TOKEN, b, now) == "unpriced-quote"

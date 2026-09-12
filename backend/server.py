@@ -2512,6 +2512,17 @@ async def scanner_candidates():
     return bot_state.scanner.candidates_snapshot() + bot_state.rh_discovery.candidates_snapshot()
 
 
+@api.get("/scanner/skips")
+async def scanner_skips():
+    """Why seasoned / new / RH entries were skipped since process start. Read this before loosening any gate."""
+    rh = (bot_state.rh_paper.stats or {}).get("skip_reasons", {})
+    return {**bot_state.skip_tallies(),
+            "rh": {"seasoned": {k.split(":", 1)[1]: v for k, v in rh.items() if k.startswith("seasoned:")},
+                   "curve": {k.split(":", 1)[1]: v for k, v in rh.items() if k.startswith("curve:")},
+                   "seasoned_tracked": sum(1 for b in bot_state.rh_discovery.tracking.values() if b.get("graduated")),
+                   "seasoned_with_pool": sum(1 for b in bot_state.rh_discovery.tracking.values() if b.get("graduated") and b.get("pool_live"))}}
+
+
 @api.post("/scanner/manual-buy/{mint}")
 async def scanner_manual_buy(mint: str, runner: bool = False):
     """Operator override: buy a scanner candidate now, bypassing the momentum

@@ -524,6 +524,8 @@ class RHDiscovery:
                 continue
             tr = rh_dex.decode_swap(log)
             self.stats["pool_swaps_seen"] = self.stats.get("pool_swaps_seen", 0) + 1
+            b["pool_live"] = True
+            b["last_pool_swap_ts"] = now
             if tr["side"] == "buy":
                 if tr["wallet"] not in b["buyers"]:
                     b["last_new_buyer_ts"] = now
