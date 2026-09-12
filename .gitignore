@@ -127,3 +127,6 @@ frontend/node_modules/.cache/default-development/7.pack_
 
 # keep the template, never the secrets
 !backend/.env.example
+.env
+.env.*
+*.env
