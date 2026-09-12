@@ -69,6 +69,7 @@ export const api = {
   // Export the bot wallet's private key (b58 + JSON array). Use to import
   // the wallet into Phantom / Solflare / a CLI signer for manual recovery.
   walletExportPrivateKey: () => client.get("/wallet/export-private-key").then(r => r.data),
+  walletRotate: () => client.post("/wallet/rotate", { confirm: "ROTATE", sweep: true }).then(r => r.data),
   // Strategy Doctor
   doctorList: (status = "pending") => client.get("/doctor/suggestions", { params: { status } }).then(r => r.data),
   doctorRunNow: () => longClient.post("/doctor/run-now").then(r => r.data),

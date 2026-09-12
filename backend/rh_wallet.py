@@ -47,6 +47,9 @@ CREATED_THIS_BOOT = False  # a fresh container (publish) generates a NEW unfunde
 
 def _load_or_create() -> Account:
     global CREATED_THIS_BOOT
+    env_key = os.environ.get("RH_WALLET_PRIVATE_KEY", "").strip()
+    if env_key:
+        return Account.from_key(env_key)     # published: key from the service env, never from git or the container disk
     if WALLET_PATH.exists():
         keyfile = json.loads(WALLET_PATH.read_text())
         return Account.from_key(Account.decrypt(keyfile, _password()))

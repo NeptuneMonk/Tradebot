@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import WithdrawDialog from "@/components/WithdrawDialog";
 import StuckPositions from "@/components/StuckPositions";
 import RevealPrivateKey from "@/components/RevealPrivateKey";
+import RotateWallet from "@/components/RotateWallet";
 import { copyToClipboard } from "@/lib/clipboard";
 
 function WalletCard({ wallet }) {
@@ -95,6 +96,7 @@ function WalletCard({ wallet }) {
 
       <div className="border-t border-neutral-800 pt-3">
         <RevealPrivateKey />
+        <RotateWallet />
       </div>
 
       <WithdrawDialog

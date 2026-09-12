@@ -1,0 +1,10 @@
+{
+  "note": "Recorded shape of a Pump.fun graduate: curve reads while live, the completed curve, then the PumpSwap pool as it appeared ~20 s later. Raw units (6-dec tokens, lamports).",
+  "mint": "So11111111111111111111111111111111111111112",
+  "creator": "11111111111111111111111111111111",
+  "entry": {"entry_tokens": 1000000000000, "entry_sol": 0.16, "entry_price_sol": 1.6e-13},
+  "curve_open": {"complete": false, "virtual_sol_reserves": 60000000000, "virtual_token_reserves": 560000000000000, "real_sol_reserves": 30000000000, "real_token_reserves": 280000000000000},
+  "curve_complete": {"complete": true, "virtual_sol_reserves": 115005359000, "virtual_token_reserves": 279900000000000, "real_sol_reserves": 85005359000, "real_token_reserves": 0},
+  "pool": "PumpSwapPool11111111111111111111111111111111",
+  "pool_state": {"base_reserves": 206900000000000, "quote_reserves": 85000000000}
+}

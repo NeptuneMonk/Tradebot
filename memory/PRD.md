@@ -1728,3 +1728,9 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - `stop_loops()` also cancels `rh_feed._task`.
 - **No credentials in `pod_commands`**: the follower validates the session itself (`_relay_resolve_user`) and stores only `user_id`; the leader executes with a one-shot `X-Pod-Exec` nonce (`auth.issue_exec_nonce/consume_exec_nonce`, 30 s TTL) accepted by `get_current_user`. Unauthenticated callers get 401 on the follower, nothing parked. Verified live with a second uvicorn: relayed status OK, stored command holds `{accept}` + `user_id` only.
 - Tests: `tests/test_singleton.py` (11).
+
+## 2026-06 — Key hygiene + recorded graduation test (DONE)
+- **`backend/wallet.json` WAS tracked in git** (commit 50b57a8) despite the later .gitignore entry → `git rm --cached` (file kept on disk; history still holds it → rotate). `POST /wallet/rotate {confirm:"ROTATE", sweep}`: refuses when `live_trading` on, live positions open, or not leader; retires the key file (`wallet.json.retired-<ts>`, 0600), hot-swaps a fresh keypair, sweeps SOL (minus 15k lamports) old→new. UI: WalletCard "rotate key" (arm → rotate now). Operator has NOT clicked it yet (wallet held 0.0015 SOL, paper mode).
+- Keys from env for Published: `WALLET_SECRET_B58` (Solana) and `RH_WALLET_PRIVATE_KEY` (RH) take precedence over files; `.env.example` updated. Private-key export gated: `ALLOW_KEY_EXPORT=true` else 403.
+- `tests/test_graduation_integration.py` + `tests/fixtures/graduation_recorded.json`: recorded graduate walks complete → graduating (2 probes) → pool → exit on PumpSwap with `exit_sol > 0` from the AMM quote, same mint throughout; grace-expiry variant parks (intent exit, PnL null).
+- Acknowledged backlog: Dashboard fat REST poll on connect; overlapping agent-written test modules (v3/v4/v5, iter8/10/23) — consolidate; run pytest on a clean checkout before trusting "all green"; pin Published to 1 replica via support.

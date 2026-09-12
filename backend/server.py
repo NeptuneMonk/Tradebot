@@ -312,6 +312,53 @@ async def wallet_send(req: WithdrawRequest):
         raise HTTPException(500, f"send failed: {e}")
 
 
+class _RotateReq(BaseModel):
+    confirm: str
+    sweep: bool = True
+
+
+@api.post("/wallet/rotate")
+async def wallet_rotate(req: _RotateReq):
+    """Retire the current Solana hot key and hot-swap a fresh one. Paper mode + no active live trades required.
+    Sweeps the retired key's SOL into the new wallet (token accounts stay on the retired key file)."""
+    import pumpfun
+    from wallet import rotate_keypair, get_pubkey_str
+    from solders.system_program import TransferParams, transfer
+    if req.confirm != "ROTATE":
+        raise HTTPException(400, 'confirm must be "ROTATE"')
+    if bot_state.config.live_trading:
+        raise HTTPException(409, "switch to paper first — a live rotation mid-position would strand tokens on the old key")
+    live_open = await db.trades.count_documents({"status": "active", "mode": "live", "chain": {"$ne": "rh"}})
+    if live_open:
+        raise HTTPException(409, f"{live_open} live position(s) still open — close or force-recover them first")
+    if singleton is not None and not await singleton.is_leader_now():
+        raise HTTPException(409, "this pod is not the leader — retry (the relay should have routed this)")
+    try:
+        old_kp, new_kp, retired = rotate_keypair()
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    old_pk = str(old_kp.pubkey())
+    swept = {"lamports": 0, "signature": None, "error": None}
+    if req.sweep:
+        try:
+            bal = int((await get_sol_balance(old_pk)) * 1_000_000_000)
+            amount = bal - 15_000
+            if amount > 0:
+                ix = transfer(TransferParams(from_pubkey=old_kp.pubkey(), to_pubkey=new_kp.pubkey(), lamports=amount))
+                sig = await pumpfun.send_versioned_tx(old_kp, [ix], bot_state.config.priority_fee_microlamports)
+                swept.update(lamports=amount, signature=sig)
+        except Exception as e:
+            swept["error"] = str(e)
+    logger.critical(f"WALLET ROTATED: {old_pk} → {get_pubkey_str()} (retired key file {retired.name}); swept {swept['lamports']} lamports")
+    try:
+        await hub.broadcast("wallet", (await wallet_info()).model_dump())
+    except Exception:
+        pass
+    return {"ok": True, "old_public_key": old_pk, "new_public_key": get_pubkey_str(), "retired_key_file": str(retired), "swept": swept,
+            "next": "fund the new address; token accounts left on the retired key can be recovered with that key file; "
+                    "set WALLET_SECRET_B58 in the Published service env so redeploys keep the same wallet"}
+
+
 @api.get("/wallet/export-private-key")
 async def wallet_export_private_key():
     """Return the bot wallet's private key (base58 + JSON-array forms).
@@ -321,6 +368,8 @@ async def wallet_export_private_key():
     a CLI signer to manually recover stranded tokens when the in-bot
     recovery path can't land a tx (graduated mid-sell, RPC-down, etc.).
     """
+    if os.environ.get("ALLOW_KEY_EXPORT", "").lower() not in ("1", "true", "yes"):
+        raise HTTPException(403, "private-key export is disabled (set ALLOW_KEY_EXPORT=true in the service env to enable it temporarily)")
     from wallet import get_secret_b58, get_keypair, get_pubkey_str
     kp = get_keypair()
     # JSON-array form is what `solana-keygen` and most CLI tools expect
