@@ -40,10 +40,21 @@ function ActiveTradesTable({ trades, onExit }) {
                     <span
                       data-testid={`active-pool-badge-${t.id}`}
                       className="mr-1 inline-block px-1 py-0 border border-fuchsia-700 text-fuchsia-300 bg-fuchsia-950/40 text-[9px] font-mono align-middle"
-                      title={`Graduated while held (${t.graduated_at_pnl_pct != null ? (t.graduated_at_pnl_pct >= 0 ? "+" : "") + t.graduated_at_pnl_pct.toFixed(1) + "%" : "?"}) — riding on the Uniswap v4 pool; exits route through the Universal Router.`}
-                    >POOL</span>
+                      title={`Graduated while held (${t.graduated_at_pnl_pct != null ? (t.graduated_at_pnl_pct >= 0 ? "+" : "") + t.graduated_at_pnl_pct.toFixed(1) + "%" : "?"}) — PONS curve swept into the Uniswap v4 pool; priced and exited via the pool, never a zero curve quote.`}
+                    >pons → v4</span>
                   )}
                   {t.book === "runner" && <RunnerBadge t={t} />}
+                  {t.venue_stage && t.venue_stage !== "pumpswap" && (
+                    <span data-testid={`venue-stage-${t.mint}`} title="Curve finished — tokens held, waiting for the PumpSwap pool. No PnL is booked until a real AMM fill."
+                      className="mr-1.5 px-1 py-0 border border-amber-700 text-amber-300 bg-amber-950/40 text-[9px] font-mono align-middle">
+                      pumpfun → pumpswap · {t.venue_stage}
+                    </span>
+                  )}
+                  {t.venue_stage === "pumpswap" && (
+                    <span data-testid={`venue-stage-${t.mint}`} className="mr-1.5 px-1 py-0 border border-fuchsia-700 text-fuchsia-300 bg-fuchsia-950/40 text-[9px] font-mono align-middle">
+                      pumpfun → pumpswap
+                    </span>
+                  )}
                   <span className="mr-1.5 align-middle inline-flex"><ChainBadge chain={t.chain} mint={t.mint} /></span>
                   {t.symbol ? <span className="text-neutral-200">{t.symbol}</span> : <span className="text-neutral-500">—</span>}
                   <span className="text-neutral-600 ml-2 text-[10px]">{short(t.mint)}</span>

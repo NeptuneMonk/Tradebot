@@ -263,6 +263,7 @@ class BotState:
                     "trade": t,
                     "protocol": t.get("protocol", "pumpfun"),
                     "pumpswap_pool": t.get("pumpswap_pool") or "",
+                    **({"_runner_pool_missing_since": float(t["graduating_since"]), "_curve_complete": True} if t.get("graduating_since") and t.get("venue_stage") in ("graduating", "pool-missing") else {}),
                     "greylist_strategy": t.get("greylist_strategy_at_entry"),
                     # Restore the snipe pattern context for `classifier_action ==
                     # "greylist_snipe"` trades that survived restart. Without
@@ -403,7 +404,7 @@ class BotState:
         """
         r = (reason or "").lower()
         if any(k in r for k in (
-            "stop-loss", "ladder stop", "rip-cord", "ripcord", "hard-stop", "bonding curve completed"
+            "stop-loss", "ladder stop", "rip-cord", "ripcord", "hard-stop"
         )):
             return True
         # Trailing-stop on a hot position — extract peak pct from the reason
@@ -697,6 +698,7 @@ class BotState:
                     "trade": t,
                     "protocol": t.get("protocol", "pumpfun"),
                     "pumpswap_pool": t.get("pumpswap_pool") or "",
+                    **({"_runner_pool_missing_since": float(t["graduating_since"]), "_curve_complete": True} if t.get("graduating_since") and t.get("venue_stage") in ("graduating", "pool-missing") else {}),
                     "peak_price_sol": t.get("peak_price_sol") or t.get("entry_price_sol") or 0,
                     "first_seen_price_sol": t.get("first_seen_price_sol") or 0,
                     "partial_done": bool(t.get("partial_done", False)),
@@ -2942,6 +2944,54 @@ class BotState:
             {"_id": trade.id}, {"$set": {**doc, "_id": trade.id}}, upsert=True
         )
 
+    async def _mark_graduating(self, mint: str, slot: dict, why: str) -> None:
+        """Curve finished / unreadable but no AMM pool yet. Mark the venue stage, keep the row active, log grace."""
+        trade_doc = slot["trade"]
+        slot["_curve_complete"] = True
+        since = slot.setdefault("_runner_pool_missing_since", time.time())
+        waited = time.time() - since
+        grace = runner.param(self.config, "grad_grace_s")
+        if trade_doc.get("venue_stage") != "graduating":
+            trade_doc["venue_stage"] = "graduating"
+            trade_doc["graduating_since"] = since
+            logger.info(f"GRADUATING {mint[:8]}… [{trade_doc.get('book')}] {why} — position stays active, no PnL booked")
+            await self.db.trades.update_one({"_id": trade_doc["id"]}, {"$set": {"venue_stage": "graduating", "graduating_since": since}})
+            await hub.broadcast("trade_update", trade_doc)
+        if waited >= grace and time.time() - float(slot.get("_pool_missing_log_ts") or 0) >= 60:
+            slot["_pool_missing_log_ts"] = time.time()
+            trade_doc["venue_stage"] = "pool-missing"
+            await self.db.trades.update_one({"_id": trade_doc["id"]}, {"$set": {"venue_stage": "pool-missing"}})
+            logger.warning(f"{mint[:8]}… graduated {waited:.0f}s ago and no PumpSwap pool yet — holding (tokens in wallet, manual recovery if it never appears)")
+
+    def _grad_grace_expired(self, slot: dict) -> bool:
+        since = slot.get("_runner_pool_missing_since")
+        return bool(since) and time.time() - float(since) >= runner.param(self.config, "grad_grace_s")
+
+    async def _hold_through_migrate(self, mint: str, slot: dict, reason: str) -> None:
+        """Curve is dead, no AMM fill happened and the tokens are still in the wallet: park the row as a
+        recoverable stuck position with PnL UNSET. Never a realised -100% from a zero curve quote."""
+        trade_doc = slot["trade"]
+        trade_doc["status"] = "exit_failed_terminal"
+        trade_doc["venue_stage"] = "held_through_migrate"
+        trade_doc["exit_time"] = now_utc().isoformat()
+        trade_doc["exit_reason"] = f"{reason} | held through graduation — tokens still in wallet, no AMM fill (use Force / recover-all to sell on PumpSwap)"
+        trade_doc["exit_sig"] = None
+        trade_doc["pnl_sol"] = None
+        trade_doc["pnl_usd"] = None
+        trade_doc["pnl_pct"] = None
+        trade_doc["mark_price_sol"] = slot.get("_last_price_sol")
+        await self.db.trades.update_one({"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True)
+        self.active_trades.pop(mint, None)
+        self.recent_exit_until[mint] = time.time() + 90.0
+        await hub.broadcast("trade_exit_terminal", trade_doc)
+        logger.warning(f"HELD THROUGH MIGRATE {trade_doc.get('symbol')} {mint[:8]}… [{trade_doc.get('book')}] — {reason}; PnL unset, tokens in wallet")
+
+    async def _graduation_hold_or_wait(self, mint: str, slot: dict, why: str) -> None:
+        """Dead curve, no pool yet: keep waiting inside grad_grace_s, park the bag as held-through-migrate after."""
+        await self._mark_graduating(mint, slot, why)
+        if self._grad_grace_expired(slot):
+            await self._hold_through_migrate(mint, slot, why)
+
     async def _detect_and_migrate_graduation(self, mint: str, slot: dict) -> bool:
         """Detect post-entry graduation (pumpfun bonding curve → PumpSwap AMM)
         and migrate the slot's protocol/pool in-place.
@@ -2988,6 +3038,8 @@ class BotState:
         slot["protocol"] = "pumpswap"
         slot["pumpswap_pool"] = pool
         slot["_graduation_detected_ts"] = time.time()
+        slot.pop("_runner_pool_missing_since", None)
+        slot["trade"]["venue_stage"] = "pumpswap"
         # Also flip the tracking bucket (if still around) so the scanner's
         # band classification stays consistent across in-flight and tracked
         # views of this mint.
@@ -3026,6 +3078,7 @@ class BotState:
                     {"$set": {
                         "protocol": "pumpswap",
                         "pumpswap_pool": pool,
+                        "venue_stage": "pumpswap",
                         "graduation_migrated_at": datetime.now(timezone.utc).isoformat(),
                     }},
                 )
@@ -3174,14 +3227,9 @@ class BotState:
                         # runner: a closed curve account is graduation in progress — wait grad_grace_s for the pool
                         if await self._detect_and_migrate_graduation(mint, slot):
                             continue
-                        slot.setdefault("_runner_pool_missing_since", time.time())
-                        if time.time() - slot["_runner_pool_missing_since"] >= runner.param(self.config, "grad_grace_s"):
-                            slot["exit_in_progress"] = True
-                            try:
-                                await self._exit(mint, reason=f"runner-no-pool: curve gone, no PumpSwap pool after {runner.param(self.config, 'grad_grace_s'):g}s")
-                                return
-                            finally:
-                                slot["exit_in_progress"] = False
+                        await self._graduation_hold_or_wait(mint, slot, "runner: curve gone, waiting for PumpSwap pool")
+                        if mint not in self.active_trades:
+                            return
                         await asyncio.sleep(1.0)
                         continue
                     if not state:
@@ -3196,20 +3244,11 @@ class BotState:
                         # failures usually clear within 1-2 ticks).
                         if await self._detect_and_migrate_graduation(mint, slot):
                             continue  # loop again, will hit pumpswap branch
-                        grace_s = float(getattr(self.config, "graduation_grace_seconds", 30) or 30)
-                        if slot.get("_graduation_grace_start") is None:
-                            slot["_graduation_grace_start"] = time.time()
-                        elif time.time() - slot["_graduation_grace_start"] >= grace_s:
-                            logger.warning(
-                                f"null bonding curve for {mint[:8]}… persisted {grace_s:.0f}s "
-                                f"without graduation — emergency-exiting"
-                            )
-                            slot["exit_in_progress"] = True
-                            try:
-                                await self._exit(mint, reason=f"null curve state >{grace_s:.0f}s")
-                                return
-                            finally:
-                                slot["exit_in_progress"] = False
+                        # Graduation is a VENUE CHANGE, not an exit: the tokens are still in the wallet and the
+                        # curve can no longer price them. Stay active, wait for the AMM pool, never book a 0 fill.
+                        await self._graduation_hold_or_wait(mint, slot, "curve account gone")
+                        if mint not in self.active_trades:
+                            return
                         await asyncio.sleep(1.0)
                         continue
                     # Curve readable — clear any in-flight grace timer
@@ -3227,16 +3266,13 @@ class BotState:
                         if await self._detect_and_migrate_graduation(mint, slot):
                             await asyncio.sleep(0.4)
                             continue
-                        if not is_runner:
-                            slot["exit_in_progress"] = True
-                            try:
-                                await self._exit(mint, reason="bonding curve completed (LP about to deploy)")
-                                return
-                            finally:
-                                slot["exit_in_progress"] = False
-                        # runner: stage = graduating; decide_runner flattens after grad_grace_s without a pool
-                        slot["_curve_complete"] = True
-                        slot.setdefault("_runner_pool_missing_since", time.time())
+                        # curve complete, pool not live yet: graduating for EVERY book — hold the bag until the AMM
+                        # prices it, park it as held-through-migrate once grad_grace_s has passed with no pool
+                        await self._graduation_hold_or_wait(mint, slot, "curve complete, waiting for PumpSwap pool")
+                        if mint not in self.active_trades:
+                            return
+                        await asyncio.sleep(1.0)
+                        continue
                     cur_price_sol = state["virtual_sol_reserves"] / state["virtual_token_reserves"] / LAMPORTS_PER_SOL
                     slot["_depth_sol"] = float(state.get("real_sol_reserves") or 0) / LAMPORTS_PER_SOL
 
@@ -3349,6 +3385,8 @@ class BotState:
             state = pumpswap_state
         else:
             state = await pumpfun.fetch_bonding_curve_state(mint)
+            if state and state.get("complete"):
+                return False  # dead curve: no partial from a stale quote — the monitor migrates to PumpSwap first
         if not state:
             return False
 
@@ -3694,14 +3732,22 @@ class BotState:
         else:
             state = await pumpfun.fetch_bonding_curve_state(mint)
         if not state:
-            trade_doc["status"] = "closed"
-            trade_doc["exit_reason"] = f"{reason} | {protocol} state unavailable"
-            trade_doc["exit_time"] = now_utc().isoformat()
-            await self.db.trades.update_one(
-                {"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
-            )
-            self.recent_exit_until[mint] = time.time() + 90.0
-            return
+            # Put the slot back first: nothing below may book a fill that never happened.
+            self.active_trades[mint] = slot
+            if protocol != "pumpswap":
+                # curve account gone = graduation in progress (tokens still in the wallet), not a dead position
+                if await self._detect_and_migrate_graduation(mint, slot):
+                    protocol = "pumpswap"
+                    pumpswap_state = await pumpswap.fetch_pool_state(slot.get("pumpswap_pool") or "")
+                    state = pumpswap_state
+                if not state:
+                    await self._graduation_hold_or_wait(mint, slot, f"exit '{reason}' found no curve account")
+                    return
+            else:
+                # pool unreadable (RPC blip) — keep the position, the monitor retries on its next tick
+                logger.warning(f"exit '{reason}' deferred for {mint[:8]}…: pumpswap pool state unavailable — position stays active")
+                return
+            self.active_trades.pop(mint, None)
 
         tokens_in = int(trade_doc["entry_tokens"])
         # Resolve effective fees from speed_mode for this exit, then widen
@@ -3845,6 +3891,23 @@ class BotState:
             sol_out, min_sol = pumpswap.quote_sell_sol(pumpswap_state, tokens_in, exit_slip)
         else:
             sol_out, min_sol = pumpfun.quote_sell_sol(state, tokens_in, exit_slip)
+            if sol_out <= 0 or bool(state.get("complete")) or slot.get("_curve_complete"):
+                # the curve is dead (graduated) — a 0 quote is not a market wipe. If the AMM pool is already live,
+                # sell there right now; otherwise put the slot back and wait for it. PnL is only ever booked from
+                # real AMM proceeds.
+                migrated = await self._detect_and_migrate_graduation(mint, slot)
+                pumpswap_state = await pumpswap.fetch_pool_state(slot.get("pumpswap_pool") or "") if migrated else None
+                if not pumpswap_state:
+                    self.active_trades[mint] = slot
+                    await self._graduation_hold_or_wait(mint, slot, f"exit '{reason}' hit a completed curve")
+                    return
+                protocol = "pumpswap"
+                state = pumpswap_state
+                sol_out, min_sol = pumpswap.quote_sell_sol(pumpswap_state, tokens_in, exit_slip)
+                if sol_out <= 0:
+                    self.active_trades[mint] = slot
+                    logger.warning(f"exit '{reason}' deferred for {mint[:8]}…: PumpSwap quote is 0 for {tokens_in} tokens — position stays active")
+                    return
         exit_sol = sol_out / LAMPORTS_PER_SOL
         exit_price_sol = sol_out / tokens_in / LAMPORTS_PER_SOL if tokens_in > 0 else 0
 
@@ -3985,27 +4048,10 @@ class BotState:
                         # Bump effective priority so the fee accounting is honest
                         eff_priority = max(eff_priority, 5_000_000)
                     else:
-                        trade_doc["status"] = "exit_failed_terminal"
-                        trade_doc["exit_time"] = now_utc().isoformat()
-                        trade_doc["exit_reason"] = (
-                            f"{reason} | bonding curve completed mid-sell AND "
-                            f"emergency PumpSwap fallback failed — manual "
-                            f"recovery needed (export privkey to recover)"
-                        )
-                        trade_doc["pnl_sol"] = 0.0
-                        trade_doc["pnl_usd"] = 0.0
-                        trade_doc["pnl_pct"] = 0.0
-                        await self.db.trades.update_one(
-                            {"id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
-                        )
-                        self.active_trades.pop(mint, None)
-                        self.recent_exit_until[mint] = time.time() + 90.0
-                        await hub.broadcast("trade_exit_terminal", trade_doc)
-                        logger.warning(
-                            f"GRADUATED+UNRECOVERABLE mint {mint[:8]}… — curve "
-                            f"complete and PumpSwap fallback failed. Position "
-                            f"terminal; user must recover with exported privkey."
-                        )
+                        # no AMM fill yet and the tokens are still in the wallet: this is a held bag, not a
+                        # realised loss. Wait for the pool inside grad_grace_s, park as held-through-migrate after.
+                        self.active_trades[mint] = slot
+                        await self._graduation_hold_or_wait(mint, slot, f"{reason} | bonding curve completed mid-sell (6005), no PumpSwap fill")
                         return
 
         cu = CU_PUMPSWAP if protocol == "pumpswap" else CU_PUMPFUN

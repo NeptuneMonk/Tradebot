@@ -54,7 +54,7 @@ def _book_view(t: dict) -> dict:
 
 
 def stats(trades: list[dict]) -> dict:
-    trades = [_book_view(t) for t in trades if t.get("r_usd")]   # post-migration fills only — legacy exits don't judge the new system
+    trades = [_book_view(t) for t in trades if t.get("r_usd") and not t.get("misclose")]   # post-migration fills only; venue-change mis-closes never judge a cell
     rs = [r for r in (pnl_r(t) for t in trades) if r is not None]
     if not rs:
         return {"n": 0}

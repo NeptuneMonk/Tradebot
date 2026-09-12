@@ -150,7 +150,10 @@ def book_of(t: dict) -> str | None:
 
 def _pnl(t: dict) -> float | None:
     """USD after-fee realised PnL — the one unit SOL and RH books share. Promoted runners count only the
-    post-promotion leg (runner_pnl_usd); the chips banked before promotion belong to the book they came from."""
+    post-promotion leg (runner_pnl_usd); the chips banked before promotion belong to the book they came from.
+    Rows flagged `misclose` (graduation booked against a dead curve) are not real outcomes and return None."""
+    if t.get("misclose"):
+        return None
     v = t.get("runner_pnl_usd") if t.get("book") == "runner" and t.get("runner_pnl_usd") is not None else t.get("pnl_usd")
     if v is None:
         return None

@@ -47,6 +47,7 @@ SNIPE_TAX_START_BPS = 9900
 SNIPE_TAX_SECONDS = 3
 RH_GAS_USD = 0.09  # fallback per-side gas; live fills refine it (observed ~$0.08 buy / ~$0.10 sell)
 LIVE_SELL_RETRY_COOLDOWN_S = 10.0  # after 3 failed on-chain sells, wait before the next exit attempt
+ZERO_QUOTE_RETRY_S = 5.0  # paper exit met a zero quote with tokens held (dead venue) — retry, never book -100%
 RH_BLOCK_TIME_S = 0.1
 MONITOR_INTERVAL_S = 1.0
 
@@ -997,6 +998,9 @@ class RHPaperTrader:
         pos = self.positions.get(token)
         if not pos:
             return
+        if fill_price is None and time.time() < pos.get("_zero_quote_retry_after", 0.0):
+            pos.pop("_exiting", None)
+            return
         pos["_exiting"] = True
         cfg = self.state.config
         t = pos["trade"]
@@ -1014,6 +1018,9 @@ class RHPaperTrader:
             bk = self.state.rh_discovery.tracking.get(token) or {}
             if not t.get("symbol") and bk.get("symbol"):
                 t["symbol"], t["name"] = bk.get("symbol"), bk.get("name")
+            if bk.get("graduated") and t.get("venue") != "pool":
+                # the curve was swept while we hold: PONS → v4 is a venue change, price/sell on the pool
+                self._switch_to_pool(pos, bk, time.time())
             live_fill = None
             if t.get("mode") == "live":
                 if pos.get("_live_sell_inflight"):
@@ -1045,6 +1052,14 @@ class RHPaperTrader:
                     price = proceeds_quote / (t["entry_tokens"] * (1.0 - fee)) if t.get("entry_tokens") else price
                 else:
                     proceeds_quote = t["entry_tokens"] * price * (1.0 - fee)
+                if proceeds_quote <= 0 < float(t.get("entry_tokens") or 0):
+                    # a zero quote with tokens still held is a dead venue, not a -100% fill: stay active, retry next tick
+                    pos["_zero_quote_retry_after"] = time.time() + ZERO_QUOTE_RETRY_S
+                    pos.pop("_exiting", None)
+                    pos.pop("_fill_task", None)
+                    t["exit_error"] = f"{reason}: zero quote on {t.get('venue') or 'curve'} — holding"
+                    logger.warning(f"rh_paper {t.get('symbol')} {token[:10]} exit '{reason}' got a zero quote on {t.get('venue') or 'curve'} — position stays active")
+                    return
                 exit_usd = max(0.0, proceeds_quote * quote_usd - self._paper_gas_usd())
             # live: entry gas is a real cost of the round trip — book it against the trade
             pnl_usd = exit_usd - t["entry_usd"] - (float(t.get("entry_gas_usd") or 0.0) if live_fill else 0.0)

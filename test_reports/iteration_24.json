@@ -1,0 +1,11 @@
+{
+  "summary": "Iteration 24: Graduation-is-not-an-exit P0. Backend: 25/25 graduation tests + 58/58 regression green; read-only review confirmed no code path writes pnl_pct=-100 from a zero curve/PONS quote while tokens are held (bot.py _exit_impl state-None/complete/6005 paths, _hold_through_migrate, _partial_exit_impl; rh_paper.exit switch-to-pool + zero-quote guard). API: /api/trades/active returned seeded graduating, pumpswap and RH pool rows; /api/trades/stuck rendered a held_through_migrate row with null pnl (200). Frontend: badges 'pumpfun → pumpswap · graduating', 'pumpfun → pumpswap' and 'pons → v4' verified by screenshot on seeded rows. Seeds cleaned, bot left RUNNING/paper, active=0.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/backend/tests/test_graduation_hold.py", "/app/test_reports/seed_iter24.py"],
+  "action_items": ["Pre-existing: rh_paper closes a restored RH position as 'tracking_lost' after a backend restart when its bucket is gone (paper fill at last price) — consider re-seeding the bucket from rh_dex.spot_price on restore"],
+  "success_rate": {"backend": "100% (83/83)", "frontend": "100% (3/3 badges)"},
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Graduation P0 verified. Seeding recipe for badge tests lives in /app/test_reports/seed_iter24.py (note /api/trades/stuck returns {stuck:[...]}). rh_paper only restores RH rows at process start; any backend reload closes seeded RH rows as tracking_lost."
+}

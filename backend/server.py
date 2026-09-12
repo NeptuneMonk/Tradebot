@@ -1404,7 +1404,7 @@ async def list_stuck_trades():
     cursor = bot_state.db.trades.find(
         {"status": "exit_failed_terminal"},
         {"_id": 0, "id": 1, "symbol": 1, "mint": 1, "entry_sol": 1, "entry_usd": 1,
-         "entry_tokens": 1, "exit_reason": 1, "exit_time": 1, "protocol": 1},
+         "entry_tokens": 1, "exit_reason": 1, "exit_time": 1, "protocol": 1, "venue_stage": 1},
     )
     rows = [t async for t in cursor]
     user = get_pubkey()
