@@ -899,6 +899,13 @@ async def diagnostics_loop():
             "active_positions": len(bot_state.active_trades), "tracked_mints": len(bot_state.tracking)}
 
 
+@api.get("/readiness")
+async def readiness():
+    """Why is RH not trading? Run state, feed, arming, env, wallet files, breaker, poller, kill — one answer."""
+    from readiness import rh_readiness
+    return rh_readiness(bot_state)
+
+
 @api.get("/inventory")
 async def inventory_snapshot():
     ld = bot_state.live_doctor

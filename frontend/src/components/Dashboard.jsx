@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { useWebSocket } from "@/lib/useWebSocket";
 import StatusBanner from "@/components/StatusBanner";
 import HaltBanner from "@/components/HaltBanner";
+import ReadinessBanner from "@/components/ReadinessBanner";
 import ScorecardPanel from "@/components/ScorecardPanel";
 import WalletCard from "@/components/WalletCard";
 import BotControlCard from "@/components/BotControlCard";
@@ -406,6 +407,7 @@ export default function Dashboard() {
 
       <StatusBanner status={status} onResetKill={async () => { await api.resetKillSwitch(); refreshAll(); }} />
       <HaltBanner />
+      <ReadinessBanner onChanged={refreshAll} />
 
       <main className="max-w-[1600px] mx-auto p-4 md:p-6 space-y-4 md:space-y-6">
         {/* TOP KPI STRIP — always visible. Wallet + PnL + DailyLoss.

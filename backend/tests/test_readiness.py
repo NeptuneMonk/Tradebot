@@ -1,0 +1,62 @@
+"""RH readiness: one answer for 'why is RH not trading' — every deployed-only failure mode has a named reason."""
+import sys
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import readiness
+from models import BotConfig
+
+
+def _state(**cfg):
+    base = dict(enabled=True, rh_feed_enabled=True, rh_paper_enabled=True, rh_live_trading=False)
+    base.update(cfg)
+    disc = SimpleNamespace(stats={"head": 0, "last_error": ""}, alive=lambda window_s=60.0: False, doctor_paused=lambda: None)
+    return SimpleNamespace(config=BotConfig(**base), live_doctor=None, rh_paper=SimpleNamespace(live_kill_tripped=False, last_live_error=""),
+                           rh_discovery=disc, process_started_ts=time.time())
+
+
+def test_all_green_when_running_armed_and_fed():
+    with patch.object(readiness.rh_discovery, "RH_RPC_URL", "https://rpc"):
+        r = readiness.rh_readiness(_state())
+    assert r["trading"] is True and r["reasons"] == [] and r["mode"] == "paper"
+
+
+def test_stopped_after_restart_names_the_restart_and_the_flag():
+    st = _state(enabled=False)
+    st.auto_disabled_on_restart_at = "2026-06-01T00:00:00+00:00"
+    with patch.object(readiness.rh_discovery, "RH_RPC_URL", "https://rpc"):
+        r = readiness.rh_readiness(st)
+    assert r["trading"] is False and r["checks"]["bot_enabled"] is False
+    assert "auto-disabled after a backend restart" in r["reasons"][0] and "resume_on_restart" in r["reasons"][0]
+    assert r["auto_disabled_on_restart_at"] == "2026-06-01T00:00:00+00:00"
+
+
+def test_feed_off_not_armed_env_wallet_breaker_kill_each_get_a_reason(tmp_path):
+    st = _state(rh_feed_enabled=False, rh_paper_enabled=False, rh_live_trading=True)
+    st.live_doctor = SimpleNamespace(book_paused=lambda b: b == "rh_pons")
+    st.rh_paper.live_kill_tripped = True
+    with patch.object(readiness.rh_discovery, "RH_RPC_URL", ""), \
+         patch.object(readiness.rh_wallet, "WALLET_PATH", tmp_path / "missing.json"), \
+         patch.object(readiness.rh_wallet, "PASS_PATH", tmp_path / "missing.pass"):
+        r = readiness.rh_readiness(st)
+    joined = " | ".join(r["reasons"])
+    for needle in ("RH feed OFF", "RH_RPC_URL not set", "wallet files missing", "benched by the live-doctor breaker", "kill switch tripped"):
+        assert needle in joined, needle
+    assert r["mode"] == "live" and r["checks"]["rh_wallet_files"] is False and r["checks"]["rh_book_open"] is False
+
+
+def test_dead_poller_reported_only_after_warmup():
+    st = _state()
+    with patch.object(readiness.rh_discovery, "RH_RPC_URL", "https://rpc"):
+        assert readiness.rh_readiness(st)["trading"] is True          # fresh process: no verdict on the poller yet
+        st.process_started_ts = time.time() - 300
+        st.rh_discovery.stats["last_error"] = "429 rate limited"
+        r = readiness.rh_readiness(st)
+    assert r["trading"] is False and "RH poller not moving" in r["reasons"][0] and "429" in r["reasons"][0]
+    st.rh_discovery.alive = lambda window_s=60.0: True
+    with patch.object(readiness.rh_discovery, "RH_RPC_URL", "https://rpc"):
+        assert readiness.rh_readiness(st)["trading"] is True

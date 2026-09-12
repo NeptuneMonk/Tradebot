@@ -237,9 +237,11 @@ class BotState:
                 # Deployed app: pods restart on deploys/reschedules with nobody at the UI to press Start —
                 # keep trading (positions are re-attached below) and tell any connected client we resumed.
                 resumed = True
+                self.resumed_on_restart_at = now_utc().isoformat()
                 logger.warning("BOT WAS RUNNING BEFORE THIS PROCESS START — resuming (resume_on_restart=true).")
             elif was_running_before_restart:
                 self.config.enabled = False
+                self.auto_disabled_on_restart_at = now_utc().isoformat()
                 await self.db.bot_config.update_one(
                     {"_id": "current"},
                     {"$set": {"enabled": False}},
@@ -331,6 +333,7 @@ class BotState:
         if first_load:
             asyncio.create_task(self._active_trades_reconciler_loop())
             asyncio.create_task(self._held_bag_watcher_loop())
+            asyncio.create_task(self._readiness_watchdog_loop())
             asyncio.create_task(self._helius_autopause_loop())
             asyncio.create_task(self._loop_lag_meter())
         # Surface the auto-disable to any WS clients listening — front-end
@@ -3118,6 +3121,28 @@ class BotState:
                                            "pumpswap_pool": pool, "held_pool_sol": round(depth, 3), "held_next_check_ts": now + 60.0})
                 out["ready"] += 1
         return out
+
+    async def _readiness_watchdog_loop(self):
+        """Every 60 s: if RH cannot trade, say why in the log (once per reason set, re-logged every 5 min)."""
+        from readiness import rh_readiness
+        self.process_started_ts = getattr(self, "process_started_ts", None) or time.time()
+        last_key, last_log = None, 0.0
+        await asyncio.sleep(30.0)
+        while True:
+            try:
+                r = rh_readiness(self)
+                key = "|".join(r["reasons"])
+                if r["reasons"] and (key != last_key or time.time() - last_log >= 300):
+                    logger.warning(f"RH NOT TRADING — {'; '.join(r['reasons'])}")
+                    last_key, last_log = key, time.time()
+                elif not r["reasons"] and last_key:
+                    logger.warning("RH readiness restored — all checks green")
+                    last_key = None
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"readiness watchdog error: {e}")
+            await asyncio.sleep(60.0)
 
     async def _held_bag_watcher_loop(self):
         await asyncio.sleep(20.0)
