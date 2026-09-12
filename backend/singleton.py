@@ -194,18 +194,27 @@ class LeaderLease:
 class CommandRelay:
     """Follower side parks the request; leader side executes it in-process (ASGI transport) and replies via Mongo."""
 
-    def __init__(self, db, lease: LeaderLease, app):
+    def __init__(self, db, lease: LeaderLease, app, *, resolve_user=None, issue_nonce=None):
+        """resolve_user(request) -> user_id|None validates the caller on the follower; issue_nonce(user_id) -> str
+        mints the one-shot header the leader's auth dependency accepts. Credentials never touch Mongo."""
         self.db, self.lease, self.app = db, lease, app
+        self.resolve_user, self.issue_nonce = resolve_user, issue_nonce
         self._task: asyncio.Task | None = None
-        self.stats = {"relayed": 0, "executed": 0, "timeouts": 0}
+        self.stats = {"relayed": 0, "executed": 0, "timeouts": 0, "unauthorized": 0}
 
     async def submit(self, request: Request) -> Response:
+        user_id = None
+        if self.resolve_user is not None:
+            user_id = await self.resolve_user(request)
+            if not user_id:
+                self.stats["unauthorized"] += 1
+                return JSONResponse({"detail": "Not authenticated"}, status_code=401, headers={"X-Pod-Role": "follower"})
         body = await request.body()
         cid = uuid.uuid4().hex
-        hdrs = {k: v for k, v in request.headers.items() if k.lower() in ("authorization", "cookie", "content-type", "accept")}
+        hdrs = {k: v for k, v in request.headers.items() if k.lower() in ("content-type", "accept")}
         await self.db.pod_commands.insert_one({
             "_id": cid, "method": request.method, "path": request.url.path, "query": request.url.query or "",
-            "headers": hdrs, "body": base64.b64encode(body).decode(), "created_at": time.time(),
+            "headers": hdrs, "user_id": user_id, "body": base64.b64encode(body).decode(), "created_at": time.time(),
             "status": "pending", "by": self.lease.pod_id})
         self.stats["relayed"] += 1
         deadline = time.time() + RELAY_TIMEOUT_S
@@ -224,8 +233,11 @@ class CommandRelay:
     async def _execute(self, client: httpx.AsyncClient, cmd: dict):
         try:
             url = cmd["path"] + (f"?{cmd['query']}" if cmd.get("query") else "")
+            hdrs = {**cmd.get("headers", {}), "X-Pod-Relayed": "1"}
+            if cmd.get("user_id") and self.issue_nonce is not None:
+                hdrs["X-Pod-Exec"] = self.issue_nonce(cmd["user_id"])
             r = await client.request(cmd["method"], url, content=base64.b64decode(cmd.get("body") or ""),
-                                     headers={**cmd.get("headers", {}), "X-Pod-Relayed": "1"}, timeout=RELAY_TIMEOUT_S - 2)
+                                     headers=hdrs, timeout=RELAY_TIMEOUT_S - 2)
             code, content, ct = r.status_code, r.content, r.headers.get("content-type")
         except Exception as e:
             code, content, ct = 500, f'{{"detail":"relay execution failed: {e}"}}'.encode(), "application/json"

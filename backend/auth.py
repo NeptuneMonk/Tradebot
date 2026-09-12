@@ -1,3 +1,5 @@
+import secrets
+import time
 """
 Emergent-managed Google Auth for the Pump.fun bot.
 
@@ -129,6 +131,30 @@ def get_db():
     return AuthDB.db
 
 
+# ---------- Relayed execution (pod singleton) ----------
+# A follower pod validates the caller's session itself and relays only the user_id. The leader executes the
+# request in-process with a one-shot nonce header — no cookie or bearer token is ever written to Mongo.
+_EXEC_NONCES: dict[str, tuple[str, float]] = {}
+EXEC_NONCE_TTL_S = 30.0
+
+
+def issue_exec_nonce(user_id: str) -> str:
+    now = time.time()
+    for k, (_, exp) in list(_EXEC_NONCES.items()):
+        if exp < now:
+            _EXEC_NONCES.pop(k, None)
+    nonce = secrets.token_urlsafe(32)
+    _EXEC_NONCES[nonce] = (user_id, now + EXEC_NONCE_TTL_S)
+    return nonce
+
+
+def consume_exec_nonce(nonce: str) -> Optional[str]:
+    item = _EXEC_NONCES.pop(nonce, None)
+    if not item or item[1] < time.time():
+        return None
+    return item[0]
+
+
 # ---------- Dependency ----------
 async def get_current_user(
     request: Request,
@@ -139,6 +165,15 @@ async def get_current_user(
     """Validate session via cookie first, then Bearer header.
     Sliding expiry: each successful call extends `expires_at` by SESSION_TTL,
     capped at SESSION_MAX_LIFETIME from session creation."""
+    nonce = request.headers.get("x-pod-exec")
+    if nonce:
+        user_id = consume_exec_nonce(nonce)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid relay nonce")
+        user_doc = await get_db().users.find_one({"user_id": user_id}, {"_id": 0})
+        if not user_doc:
+            raise HTTPException(status_code=401, detail="User not found")
+        return User(**user_doc)
     token = session_token
     if not token and authorization and authorization.lower().startswith("bearer "):
         token = authorization.split(" ", 1)[1].strip()

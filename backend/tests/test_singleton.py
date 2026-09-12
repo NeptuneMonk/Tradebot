@@ -131,11 +131,16 @@ def test_relay_round_trip_executes_on_leader_in_process():
         @app.post("/api/echo")
         async def echo(request: Request):
             seen["auth"] = request.headers.get("authorization")
+            seen["cookie"] = request.headers.get("cookie")
             seen["relayed"] = request.headers.get("x-pod-relayed")
+            seen["nonce"] = request.headers.get("x-pod-exec")
             return JSONResponse({"got": await request.json(), "q": request.url.query})
-        exec_relay = sg.CommandRelay(db, leader, app)
+
+        async def resolve_user(request):
+            return "user-42" if request.headers.get("authorization") == "Bearer tok" else None
+        exec_relay = sg.CommandRelay(db, leader, app, issue_nonce=lambda uid: f"nonce-for-{uid}")
         exec_task = asyncio.create_task(exec_relay.executor_loop())
-        sub_relay = sg.CommandRelay(db, follower, app)
+        sub_relay = sg.CommandRelay(db, follower, app, resolve_user=resolve_user)
         scope = {"type": "http", "method": "POST", "path": "/api/echo", "query_string": b"x=1", "headers": [
             (b"authorization", b"Bearer tok"), (b"content-type", b"application/json")], "scheme": "http", "server": ("f", 80)}
         body = b'{"a": 1}'
@@ -151,8 +156,88 @@ def test_relay_round_trip_executes_on_leader_in_process():
         assert resp.status_code == 200 and resp.headers["x-pod-relayed"] == "1" and resp.headers["x-pod-leader"] == "pod-l"
         import json
         assert json.loads(resp.body) == {"got": {"a": 1}, "q": "x=1"}
-        assert seen == {"auth": "Bearer tok", "relayed": "1"}
+        # credentials never cross Mongo: the leader sees a one-shot nonce, no bearer, no cookie
+        assert seen == {"auth": None, "cookie": None, "relayed": "1", "nonce": "nonce-for-user-42"}
+        stored = await db.pod_commands.find_one({})
+        assert stored["user_id"] == "user-42" and "authorization" not in stored["headers"] and "cookie" not in stored["headers"]
+        assert "tok" not in json.dumps(stored, default=str)
+        # unauthenticated caller is refused on the follower, nothing is parked
+        scope2 = {**scope, "headers": [(b"content-type", b"application/json")]}
+        got["sent"] = False
+        r2 = await sub_relay.submit(Request(scope2, receive))
+        assert r2.status_code == 401 and await db.pod_commands.count_documents({}) == 1
         await db.client.drop_database(db.name)
+    asyncio.run(run())
+
+
+def test_exec_nonce_is_one_shot_and_expires():
+    import auth
+    n = auth.issue_exec_nonce("u1")
+    assert auth.consume_exec_nonce(n) == "u1" and auth.consume_exec_nonce(n) is None
+    n2 = auth.issue_exec_nonce("u2")
+    auth._EXEC_NONCES[n2] = ("u2", time.time() - 1)
+    assert auth.consume_exec_nonce(n2) is None
+
+
+def test_active_mint_unique_index_and_entry_lock():
+    async def run():
+        db = _db()
+        await db.trades.create_index([("mint", 1)], name="uniq_active_mint", unique=True, partialFilterExpression={"status": "active"})
+        await db.trades.insert_one({"_id": "t1", "mint": "M1", "status": "active"})
+        from pymongo.errors import DuplicateKeyError
+        with pytest.raises(DuplicateKeyError):
+            await db.trades.update_one({"_id": "t2"}, {"$set": {"mint": "M1", "status": "active"}}, upsert=True)
+        await db.trades.insert_one({"_id": "t3", "mint": "M1", "status": "closed"})          # closed rows are free
+        # entry lock: first claim wins, second pod aborts before send
+        import bot as botmod
+        from types import SimpleNamespace
+        st = SimpleNamespace(db=db, singleton=None)
+        assert await botmod.BotState.claim_entry_lock(st, "M2") is True
+        assert await botmod.BotState.claim_entry_lock(st, "M2") is False
+        assert await botmod.BotState.claim_entry_lock(st, "M2", "rh") is True
+        await db.client.drop_database(db.name)
+    asyncio.run(run())
+
+
+def test_persist_trade_duplicate_parks_fill_instead_of_losing_it():
+    async def run():
+        db = _db()
+        await db.trades.create_index([("mint", 1)], name="uniq_active_mint", unique=True, partialFilterExpression={"status": "active"})
+        await db.trades.insert_one({"_id": "first", "mint": "M1", "status": "active"})
+        import bot as botmod
+        from models import Trade
+        from types import SimpleNamespace
+        st = SimpleNamespace(db=db)
+        t = Trade(mint="M1", symbol="X", name="X", risk_score=1, classifier_action="manual", mode="live", entry_sol=0.1,
+                  entry_usd=10.0, entry_tokens=1, entry_price_sol=0.1)
+        await botmod.BotState._persist_trade(st, t)
+        doc = await db.trades.find_one({"_id": t.id})
+        assert t.status == "exit_failed_terminal" and doc["status"] == "exit_failed_terminal" and doc["venue_stage"] == "duplicate_fill"
+        assert doc["pnl_pct"] is None
+        await db.client.drop_database(db.name)
+    asyncio.run(run())
+
+
+def test_stop_loops_cancels_rh_feed_and_background_tasks():
+    from tests.test_profitability_refactor import _bot_stub
+
+    async def run():
+        st = _bot_stub()
+
+        async def forever():
+            await asyncio.sleep(3600)
+        from types import SimpleNamespace
+        for name in ("rh_feed", "rh_discovery", "discovery", "rh_paper", "pnl_reconciler"):
+            if not hasattr(st, name):
+                setattr(st, name, SimpleNamespace())
+        st.rh_feed._task = asyncio.create_task(forever())
+        st.rh_discovery._task = asyncio.create_task(forever())
+        st._bg_tasks = [asyncio.create_task(forever())]
+        st.active_trades["M"] = {"trade": {}}
+        await st.stop_loops("test")
+        await asyncio.sleep(0)
+        assert st.rh_feed._task.cancelled() and st.rh_discovery._task.cancelled()
+        assert st.active_trades == {} and st.leader_ok is False and st._initial_load_done is False
     asyncio.run(run())
 
 

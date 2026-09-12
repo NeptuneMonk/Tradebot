@@ -34,7 +34,7 @@ from creator_history import get_creator
 from wallet_send import send_sol
 from pl_sources import compute_pl_by_source
 from pattern_miner import generate_insights
-from auth import auth_router, AuthDB, get_current_user, validate_token_str
+from auth import auth_router, AuthDB, get_current_user, validate_token_str, issue_exec_nonce
 
 logging.basicConfig(
     level=logging.INFO,
@@ -144,6 +144,7 @@ async def start_leader_services():
     from creator_greylist import inactivity_prune_loop
     bot_state.leader_ok = True
     await bot_state.load()                       # config + start_loops(): restart-resume, position restore, feeds
+    await ensure_indexes()                       # after the duplicate-active sweep in start_loops
     listener.start()
     _leader_tasks[:] = [asyncio.create_task(_status_broadcaster()),
                         asyncio.create_task(inactivity_prune_loop(db, lambda: bot_state.config.creator_greylist_inactive_days)),
@@ -208,6 +209,33 @@ async def _follower_config_refresh_loop():
         await asyncio.sleep(3.0)
 
 
+async def _relay_resolve_user(request: Request) -> str | None:
+    """Follower-side auth for relayed calls: validate the session here, forward only the user_id."""
+    token = request.cookies.get("session_token")
+    auth = request.headers.get("authorization", "")
+    if not token and auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+    user = await validate_token_str(token or "")
+    return user.user_id if user else None
+
+
+async def ensure_indexes():
+    """One `active` row per mint (partial unique), entry locks expire on their own, relay/ws queues stay small."""
+    try:
+        await db.trades.create_index([("mint", 1)], name="uniq_active_mint", unique=True,
+                                     partialFilterExpression={"status": "active"})
+    except Exception as e:
+        logger.error(f"uniq_active_mint index not created (duplicate active rows present? sweep first): {e}")
+    for coll, key, ttl in (("entry_locks", "ts", 120), ("pod_commands", "created_at", None), ("ws_events", "seq", None), ("pods", "seen_at", None)):
+        try:
+            if ttl:
+                await db[coll].create_index([(key, 1)], expireAfterSeconds=ttl)
+            else:
+                await db[coll].create_index([(key, 1)])
+        except Exception as e:
+            logger.debug(f"index {coll}.{key}: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global singleton, relay, ws_mirror
@@ -218,7 +246,8 @@ async def lifespan(app: FastAPI):
     await _build_services()
     singleton = LeaderLease(db, on_gain=start_leader_services, on_loss=stop_leader_services)
     bot_state.singleton = singleton
-    relay = CommandRelay(db, singleton, app)
+    relay = CommandRelay(db, singleton, app, resolve_user=_relay_resolve_user, issue_nonce=issue_exec_nonce)
+    await ensure_indexes()
     ws_mirror = WSMirror(db, singleton, hub)
     await ws_mirror.ensure_collection()
     hub.mirror = ws_mirror.write

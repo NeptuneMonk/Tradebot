@@ -1722,3 +1722,9 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - UI: header **PodPill** (`pod: leader|follower · N`, red on `two leaders!`/`no leader`); readiness reasons `two leader pods detected` / `this pod is a follower`. `GET /api/pods`.
 - Verified e2e in preview with a second uvicorn on :8002 sharing Mongo: follower relayed `/bot/status` (164 ms) and a config PUT, WS on the follower received leader `status/wallet` events, `supervisorctl stop` → follower became leader in <1 s, `kill -9` of the leader → takeover within TTL. Tests: `tests/test_singleton.py` (7, real local Mongo).
 - Operator: email support@emergent.sh to pin the app to 1 replica (rolling deploys still overlap; the lease covers that).
+
+## 2026-06 — Singleton hardening (DONE)
+- **Unique index** `trades.uniq_active_mint` (partial: `status=active`) created at boot and after the duplicate sweep (`ensure_indexes`). `_persist_trade` / rh_paper on DuplicateKeyError park the fill as `exit_failed_terminal · duplicate_fill` (never lose a live fill). **Entry lock** `entry_locks/_id=chain:mint` (insert-only, TTL 120 s) claimed BEFORE any send in `_enter_impl` and `rh_paper._enter`.
+- `stop_loops()` also cancels `rh_feed._task`.
+- **No credentials in `pod_commands`**: the follower validates the session itself (`_relay_resolve_user`) and stores only `user_id`; the leader executes with a one-shot `X-Pod-Exec` nonce (`auth.issue_exec_nonce/consume_exec_nonce`, 30 s TTL) accepted by `get_current_user`. Unauthenticated callers get 401 on the follower, nothing parked. Verified live with a second uvicorn: relayed status OK, stored command holds `{accept}` + `user_id` only.
+- Tests: `tests/test_singleton.py` (11).

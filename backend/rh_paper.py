@@ -31,6 +31,7 @@ from reentry_logic import (decide_reentry, hot_walk_away_reason, recent_buyers_a
 import rh_dex
 import rh_live
 import rh_wallet
+from pymongo.errors import DuplicateKeyError
 from flush import dip_forensics, is_flush
 
 if TYPE_CHECKING:
@@ -460,6 +461,10 @@ class RHPaperTrader:
                             "sl_pct": bx0["stop_loss_pct"], "sl_pct_with_slip": sz["sl_pct_with_slip"], "target_r": bx0["target_r"] or None,
                             "expected_cost_pct": q["expected_cost_pct"], "expected_cost_usd": q["expected_cost_usd"],
                             "expected_target_pct": q["expected_target_pct"], "cost_gate_pass": True, "doctor_decision": "full"}}
+            claim = getattr(self.state, "claim_entry_lock", None)
+            if claim is not None and not await claim(token, CHAIN):
+                logger.warning(f"rh_paper {token[:10]}: another pod holds the entry lock — aborted before send")
+                return
             if self.live_ok(b):
                 live_fill = await self._live_buy(token, b, stake_quote, price)
                 if live_fill is None:
@@ -575,7 +580,14 @@ class RHPaperTrader:
                 doc["classifier_action"] = "rh_pons_reentry"
             if manual:
                 doc["classifier_action"] = "rh_pons_manual"
-            await self.state.db.trades.update_one({"_id": trade.id}, {"$set": {**doc, "_id": trade.id}}, upsert=True)
+            try:
+                await self.state.db.trades.update_one({"_id": trade.id}, {"$set": {**doc, "_id": trade.id}}, upsert=True)
+            except DuplicateKeyError:
+                logger.critical(f"rh_paper {token[:10]}: duplicate active row across pods — fill parked as exit_failed_terminal")
+                doc.update(status="exit_failed_terminal", venue_stage="duplicate_fill", held_intent="exit",
+                           held_exit_reason="duplicate active row across pods", exit_reason="duplicate active row — second pod filled the same token")
+                await self.state.db.trades.update_one({"_id": trade.id}, {"$set": {**doc, "_id": trade.id}}, upsert=True)
+                return
             self.positions[token] = {"trade": doc, "peak_price": price, "_last_price": price, "opened": now}
             self.entered.add(token)
             self.stats["entries"] += 1

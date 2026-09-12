@@ -21,6 +21,7 @@ import pumpswap
 from solana_client import get_sol_usd_price, LAMPORTS_PER_SOL
 from wallet import get_keypair, get_pubkey
 from ws_hub import hub
+from pymongo.errors import DuplicateKeyError
 from creator_history import record_new_launch, mark_outcome, get_creator, derive_rug_count
 from project_score import project_score
 from scanner import MomentumScanner, velocity_pct_strict
@@ -241,7 +242,9 @@ class BotState:
             t = getattr(self, name, None)
             if t:
                 tasks.append(t)
-        for svc in (self.discovery, self.rh_discovery, self.rh_paper, self.pnl_reconciler):
+        for svc in (self.discovery, self.rh_discovery, self.rh_paper, self.pnl_reconciler, getattr(self, "rh_feed", None)):
+            if svc is None:
+                continue
             for attr in ("_task", "_refresh_task", "_graduated_task"):
                 t = getattr(svc, attr, None)
                 if isinstance(t, asyncio.Task):
@@ -2901,6 +2904,10 @@ class BotState:
             "snipe_pattern_ctx": _make_snipe_ctx(greylist_ctx, action),
         }
 
+        # cross-pod entry lock: one buy per mint, taken BEFORE anything goes on-chain (unique _id in entry_locks)
+        if not await self.claim_entry_lock(launch.mint):
+            logger.warning(f"entry {launch.mint[:8]}…: another pod holds the entry lock — aborted before send")
+            return
         if mode == "live":
             try:
                 kp = get_keypair()
@@ -2961,6 +2968,8 @@ class BotState:
                 return
 
         await self._persist_trade(trade)
+        if trade.status != "active":
+            return
         launch_update = {"entered": True, "entry_action": action}   # snipes are no longer pinned to the feed (operator request)
         await self.db.launches.update_one({"_id": launch.id}, {"$set": launch_update})
         for r in self.recent_launches:
@@ -2977,14 +2986,36 @@ class BotState:
         await hub.broadcast("trade_enter", trade.model_dump())
         asyncio.create_task(self._monitor_position(launch.mint))
 
+    async def claim_entry_lock(self, mint: str, chain: str = "solana") -> bool:
+        """Insert-only lock (`entry_locks/_id=chain:mint`, TTL 2 min). DuplicateKey = another pod is buying this mint."""
+        try:
+            await self.db.entry_locks.insert_one({"_id": f"{chain}:{mint}", "ts": datetime.now(timezone.utc),
+                                                  "pod": getattr(getattr(self, "singleton", None), "pod_id", "single")})
+            return True
+        except DuplicateKeyError:
+            return False
+        except Exception as e:
+            logger.warning(f"entry lock unavailable ({e}) — proceeding on the in-process gate only")
+            return True
+
     async def _persist_trade(self, trade: Trade):
         doc = trade.model_dump()
         doc["entry_time"] = doc["entry_time"].isoformat()
         if doc.get("exit_time"):
             doc["exit_time"] = doc["exit_time"].isoformat()
-        await self.db.trades.update_one(
-            {"_id": trade.id}, {"$set": {**doc, "_id": trade.id}}, upsert=True
-        )
+        try:
+            await self.db.trades.update_one(
+                {"_id": trade.id}, {"$set": {**doc, "_id": trade.id}}, upsert=True
+            )
+        except DuplicateKeyError:
+            # the partial unique index (one `active` row per mint) refused a second live row: the tokens ARE in
+            # the wallet, so keep the row visible in Stuck Positions instead of losing it — never drop a fill.
+            logger.critical(f"DUPLICATE ACTIVE ROW for {trade.mint[:8]}… — parking this fill as exit_failed_terminal (venue_stage=duplicate_fill)")
+            doc.update(status="exit_failed_terminal", venue_stage="duplicate_fill", held_intent="exit",
+                       held_exit_reason="duplicate active row across pods", pnl_sol=None, pnl_usd=None, pnl_pct=None,
+                       exit_reason="duplicate active row — second pod filled the same mint; recover via Force")
+            await self.db.trades.update_one({"_id": trade.id}, {"$set": {**doc, "_id": trade.id}}, upsert=True)
+            trade.status = "exit_failed_terminal"
 
     async def _mark_graduating(self, mint: str, slot: dict, why: str) -> None:
         """Curve finished / unreadable but no AMM pool yet. Mark the venue stage, keep the row active, log grace."""
