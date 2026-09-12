@@ -74,6 +74,11 @@ function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh
                     {isRh && l.graduated && (
                       <span className="text-[10px] font-mono px-1 py-0 border border-lime-700 text-lime-300 uppercase" data-testid={`launch-graduated-${l.mint}`}>grad</span>
                     )}
+                    {isRh && l.rh_gate && !l.entered && (
+                      <span className={`text-[10px] font-mono px-1 py-0 border uppercase ${l.rh_gate === "pass" ? "border-emerald-700 text-emerald-300" : "border-neutral-700 text-neutral-500"}`}
+                        title={l.rh_gate === "pass" ? "cleared every PONS entry gate" : `backend gate verdict: ${l.rh_gate}`}
+                        data-testid={`launch-rh-gate-${l.mint}`}>{l.rh_gate === "pass" ? "gate ✓" : `gate: ${l.rh_gate}`}</span>
+                    )}
                   </div>
                   <div className="text-[10px] font-mono text-neutral-500 mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
                     <span>{isRh ? "token" : "mint"} <span className="text-neutral-300">{short(l.mint)}</span></span>

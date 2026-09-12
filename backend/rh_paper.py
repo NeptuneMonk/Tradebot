@@ -176,6 +176,10 @@ class RHPaperTrader:
             if reason is None and focus_block:
                 reason = focus_block   # would have entered — deferred by hot focus
                 self.stats["focus_deferred"] = self.stats.get("focus_deferred", 0) + 1
+            verdict = "pass" if reason is None else reason
+            if b.get("gate_reason") != verdict:
+                b["gate_reason"] = verdict
+                self.state.rh_discovery._dirty.add(token)      # verdict change → launch_update → feed
             if reason is None:
                 self._pending_entries.add(token)
                 self._last_fresh_entry_ts = now

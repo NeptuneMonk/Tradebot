@@ -39,6 +39,8 @@ class WSHub:
     PENDING_MIN_BUYERS = 5
     _seen: dict = {}          # launch id → last merged payload we broadcast
 
+    CANDIDATE_ACTIONS = CANDIDATE_ACTIONS | {"rh_pons", "rh_pons_paper", "rh_pons_reentry", "rh_pons_manual"}
+
     @classmethod
     def is_candidate(cls, d: dict) -> bool:
         if d.get("entered") or d.get("scanner_eligible"):
@@ -46,15 +48,29 @@ class WSHub:
         a = d.get("classifier_action")
         if a in cls.CANDIDATE_ACTIONS:
             return True
-        return a == "pending" and int(d.get("unique_buyers") or 0) >= cls.PENDING_MIN_BUYERS
+        buyers = int(d.get("unique_buyers") or 0)
+        if d.get("chain") == "rh":
+            # RH rows are gated by rh_paper (`rh_gate`): pass → candidate; otherwise the same "hot enough to watch"
+            # tier as Solana pending rows so the RH tab is never empty while the poller is alive
+            return d.get("rh_gate") == "pass" or buyers >= cls.PENDING_MIN_BUYERS
+        return a == "pending" and buyers >= cls.PENDING_MIN_BUYERS
+
+    _raw: dict = {}           # launch id → full launch doc that was NOT a candidate yet (so a late qualifier arrives whole)
 
     def _gate_launch(self, event_type: str, data):
         lid = data.get("id")
-        merged = {**(self._seen.get(lid) or {}), **data} if lid else dict(data)
+        base = self._seen.get(lid) or self._raw.get(lid) or {}
+        merged = {**base, **data} if lid else dict(data)
         was = lid in self._seen
         ok = self.is_candidate(merged)
+        if not ok and lid and event_type == "launch":
+            self._raw[lid] = merged
+            if len(self._raw) > 2000:
+                for k in list(self._raw)[:500]:
+                    self._raw.pop(k, None)
         if ok:
             if lid:
+                self._raw.pop(lid, None)
                 self._seen[lid] = merged
                 if len(self._seen) > 600:
                     for k in list(self._seen)[:100]:

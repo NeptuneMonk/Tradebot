@@ -656,7 +656,12 @@ class RHDiscovery:
                 b["symbol"] = _dec_str(res[i * 2 + 1]) or None
 
     def _launch_fields(self, b: dict) -> dict:
+        gate = b.get("gate_reason")
         return {
+            # backend gate verdict travels with the row so the candidate-only WS feed can pass RH tokens that
+            # cleared (or are close to clearing) the PONS entry gates — "tracking" alone never reaches the UI
+            "rh_gate": gate,
+            "classifier_action": "rh_pons" if gate == "pass" else "tracking",
             "unique_buyers": len(b["buyers"]),
             "buy_count": b["buy_count"],
             "curve_fill_pct": round(b["curve_fill_pct"], 2),
