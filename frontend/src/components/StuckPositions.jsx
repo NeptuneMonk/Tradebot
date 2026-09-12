@@ -7,6 +7,22 @@ function shortMint(m) {
   return m ? `${m.slice(0, 4)}…${m.slice(-4)}` : "—";
 }
 
+// held_through_migrate row: intent stamped at park time (hold = reattach when the pool is live; exit = sell only
+// when the gate is on) + pool readiness from the watcher.
+function HeldBadge({ p }) {
+  const intent = p.held_intent || "exit";
+  const state = p.held_watch_done ? `stopped · ${p.held_done_reason || ""}`
+    : p.held_pool_ready ? (intent === "exit" ? `pool ready ${Number(p.held_pool_sol || 0).toFixed(0)} SOL · sell gated` : `pool ready · reattaching`)
+    : "watching for pool";
+  return (
+    <div className="text-[9px] font-mono truncate" data-testid={`held-badge-${p.id}`}
+      title={`Held through graduation · intent ${intent}${p.held_exit_reason ? ` · ${p.held_exit_reason}` : ""}${p.held_retry_count ? ` · ${p.held_retry_count}/3 sell retries` : ""}`}>
+      <span className={`px-1 border ${intent === "hold" ? "border-fuchsia-800 text-fuchsia-300" : "border-amber-800 text-amber-300"}`}>HELD · {intent}</span>
+      <span className={`ml-1 ${p.held_pool_ready ? "text-emerald-400" : "text-neutral-500"}`}>{state}</span>
+    </div>
+  );
+}
+
 function StuckPositions() {
   const [stuck, setStuck] = useState([]);
   const [walletTokens, setWalletTokens] = useState([]);
@@ -27,6 +43,27 @@ function StuckPositions() {
   // on slippage. Distinct from the bulk `recovering` flag so individual
   // rows can spin independently.
   const [forcingId, setForcingId] = useState(null);
+
+  // Held-bag sell gate: exit-intent held rows only sell on PumpSwap while this is ON (default OFF = no tx).
+  const [autoSell, setAutoSell] = useState(null);
+  const [gateBusy, setGateBusy] = useState(false);
+  useEffect(() => {
+    api.config().then((c) => setAutoSell(!!c.auto_sell_held_bags)).catch(() => {});
+  }, []);
+  const toggleGate = useCallback(async () => {
+    const next = !autoSell;
+    if (next && !window.confirm("Turn ON auto-sell for held bags?\n\nEvery held row whose exit had already fired will be sold on PumpSwap at the next watcher pass (real tx in live mode). Hold-intent rows are unaffected — they reattach and ride.")) return;
+    setGateBusy(true);
+    try {
+      await api.updateConfig({ auto_sell_held_bags: next });
+      setAutoSell(next);
+      toast.success(next ? "Held-bag auto-sell ON" : "Held-bag auto-sell OFF — pool-ready bags stay held");
+    } catch (e) {
+      toast.error(`Gate update failed: ${e?.response?.data?.detail || e.message}`);
+    } finally {
+      setGateBusy(false);
+    }
+  }, [autoSell]);
 
   const refresh = useCallback(async () => {
     try {
@@ -272,8 +309,13 @@ function StuckPositions() {
               <RefreshCw className="w-3 h-3" />
             </button>
           </div>
-          <div className="text-[10px] font-mono text-neutral-400 mb-2">
-            Total: <span className="text-amber-300">${totalUsd.toFixed(4)}</span>
+          <div className="flex items-center justify-between text-[10px] font-mono text-neutral-400 mb-2">
+            <span>Total: <span className="text-amber-300">${totalUsd.toFixed(4)}</span></span>
+            <button type="button" onClick={toggleGate} disabled={gateBusy || autoSell === null} data-testid="held-bag-auto-sell-toggle"
+              title="Held bags whose exit had already fired sell on PumpSwap only while this is ON. OFF = pool-ready bags stay held, no tx."
+              className={`px-1.5 py-0.5 border uppercase tracking-wider text-[9px] transition-colors duration-100 ${autoSell ? "border-red-700 text-red-300 bg-red-950/40" : "border-neutral-700 text-neutral-400 hover:text-neutral-200"}`}>
+              auto-sell held bags · {autoSell === null ? "…" : autoSell ? "ON" : "OFF"}
+            </button>
           </div>
           <div className="border border-neutral-800 rounded-sm overflow-hidden">
             <div className="grid grid-cols-[24px_1fr_60px_70px_56px] gap-2 px-2 py-1.5 bg-neutral-900/60 text-[9px] uppercase tracking-wider text-neutral-500">
@@ -294,6 +336,7 @@ function StuckPositions() {
                     <div className="min-w-0">
                       <div className="text-neutral-200 truncate" title={p.mint}>{p.symbol || shortMint(p.mint)}</div>
                       <div className="text-[9px] text-neutral-600 truncate">{shortMint(p.mint)} {p.graduated && <span className="ml-1 text-blue-400">grad</span>}</div>
+                      {p.venue_stage === "held_through_migrate" && <HeldBadge p={p} />}
                     </div>
                     <div className="text-right text-neutral-400 self-center">{p.entry_pct_held ? `${p.entry_pct_held.toFixed(0)}%` : "—"}</div>
                     <div className={`text-right self-center ${isZero ? "text-neutral-600" : "text-amber-300"}`}>${(p.current_usd || 0).toFixed(4)}</div>

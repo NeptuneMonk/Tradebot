@@ -330,6 +330,7 @@ class BotState:
         # monitor instead of sitting orphaned in DB.
         if first_load:
             asyncio.create_task(self._active_trades_reconciler_loop())
+            asyncio.create_task(self._held_bag_watcher_loop())
             asyncio.create_task(self._helius_autopause_loop())
             asyncio.create_task(self._loop_lag_meter())
         # Surface the auto-disable to any WS clients listening — front-end
@@ -694,19 +695,7 @@ class BotState:
                 # forget the trailing-stop peak, partial-tp flag, or stale-
                 # exit clock. Without these, the rebuilt slot's first tick
                 # can re-fire partial TP or mis-trigger a trailing stop.
-                self.active_trades[mint] = {
-                    "trade": t,
-                    "protocol": t.get("protocol", "pumpfun"),
-                    "pumpswap_pool": t.get("pumpswap_pool") or "",
-                    **({"_runner_pool_missing_since": float(t["graduating_since"]), "_curve_complete": True} if t.get("graduating_since") and t.get("venue_stage") in ("graduating", "pool-missing") else {}),
-                    "peak_price_sol": t.get("peak_price_sol") or t.get("entry_price_sol") or 0,
-                    "first_seen_price_sol": t.get("first_seen_price_sol") or 0,
-                    "partial_done": bool(t.get("partial_done", False)),
-                    "ladder_legs_done": int(t.get("ladder_legs_done") or 0),
-                    "ladder_stop_pct": float(t.get("ladder_stop_pct") or 0),
-                    "_entry_ts_mono": t.get("_entry_ts_mono") or time.time(),
-                    "snipe_pattern_ctx": t.get("snipe_pattern_ctx"),
-                }
+                self.active_trades[mint] = self._slot_from_doc(t)
                 asyncio.create_task(self._monitor_position(mint))
                 reattached += 1
                 logger.warning(
@@ -2967,12 +2956,21 @@ class BotState:
         since = slot.get("_runner_pool_missing_since")
         return bool(since) and time.time() - float(since) >= runner.param(self.config, "grad_grace_s")
 
-    async def _hold_through_migrate(self, mint: str, slot: dict, reason: str) -> None:
+    async def _hold_through_migrate(self, mint: str, slot: dict, reason: str, *, intent: str = "hold") -> None:
         """Curve is dead, no AMM fill happened and the tokens are still in the wallet: park the row as a
-        recoverable stuck position with PnL UNSET. Never a realised -100% from a zero curve quote."""
+        recoverable stuck position with PnL UNSET. Never a realised -100% from a zero curve quote.
+        `intent` is stamped now, never inferred later: "hold" = graduation only (the ladder never fired, the
+        watcher reattaches when the pool is live); "exit" = an exit had already been decided (the watcher may
+        only sell when `auto_sell_held_bags` is on)."""
         trade_doc = slot["trade"]
         trade_doc["status"] = "exit_failed_terminal"
         trade_doc["venue_stage"] = "held_through_migrate"
+        trade_doc["held_intent"] = intent
+        trade_doc["held_exit_reason"] = reason if intent == "exit" else None
+        trade_doc["held_parked_at"] = now_utc().isoformat()
+        trade_doc["held_pool_ready"] = False
+        trade_doc["held_next_check_ts"] = float(trade_doc.get("held_next_check_ts") or 0.0)
+        trade_doc["held_retry_count"] = int(trade_doc.get("held_retry_count") or 0)
         trade_doc["exit_time"] = now_utc().isoformat()
         trade_doc["exit_reason"] = f"{reason} | held through graduation — tokens still in wallet, no AMM fill (use Force / recover-all to sell on PumpSwap)"
         trade_doc["exit_sig"] = None
@@ -2984,13 +2982,156 @@ class BotState:
         self.active_trades.pop(mint, None)
         self.recent_exit_until[mint] = time.time() + 90.0
         await hub.broadcast("trade_exit_terminal", trade_doc)
-        logger.warning(f"HELD THROUGH MIGRATE {trade_doc.get('symbol')} {mint[:8]}… [{trade_doc.get('book')}] — {reason}; PnL unset, tokens in wallet")
+        logger.warning(f"HELD THROUGH MIGRATE {trade_doc.get('symbol')} {mint[:8]}… [{trade_doc.get('book')}] intent={intent} — {reason}; PnL unset, tokens in wallet")
 
-    async def _graduation_hold_or_wait(self, mint: str, slot: dict, why: str) -> None:
+    @staticmethod
+    def _held_intent_for(exit_reason: str) -> str:
+        """An exit reaching a dead curve was a real decision (SL / trail / clock / panic / manual) unless the
+        reason itself is graduation bookkeeping (runner-no-pool)."""
+        return "hold" if (exit_reason or "").lower().startswith("runner-no-pool") else "exit"
+
+    async def _graduation_hold_or_wait(self, mint: str, slot: dict, why: str, *, intent: str = "hold") -> None:
         """Dead curve, no pool yet: keep waiting inside grad_grace_s, park the bag as held-through-migrate after."""
         await self._mark_graduating(mint, slot, why)
         if self._grad_grace_expired(slot):
-            await self._hold_through_migrate(mint, slot, why)
+            await self._hold_through_migrate(mint, slot, why, intent=intent)
+
+    # ---------------- held-bag watcher ----------------
+    def _slot_from_doc(self, t: dict) -> dict:
+        """Rebuild an in-memory monitor slot from a persisted trade doc (restart, orphan reattach, held-bag reattach)."""
+        return {
+            "trade": t,
+            "protocol": t.get("protocol", "pumpfun"),
+            "pumpswap_pool": t.get("pumpswap_pool") or "",
+            **({"_runner_pool_missing_since": float(t["graduating_since"]), "_curve_complete": True} if t.get("graduating_since") and t.get("venue_stage") in ("graduating", "pool-missing") else {}),
+            "peak_price_sol": t.get("peak_price_sol") or t.get("entry_price_sol") or 0,
+            "first_seen_price_sol": t.get("first_seen_price_sol") or 0,
+            "partial_done": bool(t.get("partial_done", False)),
+            "ladder_legs_done": int(t.get("ladder_legs_done") or 0),
+            "ladder_stop_pct": float(t.get("ladder_stop_pct") or 0),
+            "_entry_ts_mono": t.get("_entry_ts_mono") or time.time(),
+            "snipe_pattern_ctx": t.get("snipe_pattern_ctx"),
+        }
+
+    async def _held_rows(self) -> list[dict]:
+        cur = self.db.trades.find({"status": "exit_failed_terminal", "chain": {"$ne": "rh"}, "held_watch_done": {"$ne": True}}, {"_id": 0})
+        return [t async for t in cur.sort("exit_time", -1).limit(50)]
+
+    async def _held_pool_probe(self, t: dict) -> tuple[str | None, float]:
+        """(pool, quote depth in SOL) for a parked row; (None, 0) when there is no live pool yet."""
+        try:
+            pool = t.get("pumpswap_pool") or await pumpswap.find_pool_for_mint(t["mint"])
+            if not pool:
+                return None, 0.0
+            st = await pumpswap.fetch_pool_state(pool)
+            if not st:
+                return None, 0.0
+            return pool, float(st.get("quote_reserves") or 0) / LAMPORTS_PER_SOL
+        except Exception as e:
+            logger.debug(f"held-bag pool probe failed {t.get('mint', '')[:8]}…: {e}")
+            return None, 0.0
+
+    async def _held_token_balance(self, mint: str) -> int | None:
+        """On-chain balance for a live held bag; None when the read fails (treat as unknown, keep watching)."""
+        try:
+            user = get_pubkey()
+            mint_pk = Pubkey.from_string(mint)
+            tp = await pumpfun.get_mint_token_program(mint)
+            return int(await pumpswap.get_token_balance(pumpswap.get_associated_token_address(user, mint_pk, tp)))
+        except Exception as e:
+            logger.debug(f"held-bag balance read failed {mint[:8]}…: {e}")
+            return None
+
+    async def _held_patch(self, t: dict, patch: dict) -> None:
+        t.update(patch)
+        await self.db.trades.update_one({"_id": t["id"]}, {"$set": patch})
+
+    async def _reattach_held_bag(self, t: dict, pool: str, depth_sol: float) -> dict:
+        """The pool is live and the ladder never fired: back to Active on PumpSwap, same monitor as a live migrate."""
+        now_iso = now_utc().isoformat()
+        history = [*(t.get("held_history") or []), {"parked_at": t.get("held_parked_at") or t.get("exit_time"), "reason": t.get("exit_reason"),
+                                                    "reattached_at": now_iso, "pool_sol": round(depth_sol, 3)}]
+        await self._held_patch(t, {"status": "active", "protocol": "pumpswap", "pumpswap_pool": pool, "venue_stage": "pumpswap",
+                                   "exit_time": None, "exit_reason": None, "held_pool_ready": True, "held_pool_sol": round(depth_sol, 3),
+                                   "held_reattached_at": now_iso, "held_history": history})
+        slot = self._slot_from_doc(t)
+        self.active_trades[t["mint"]] = slot
+        asyncio.create_task(self._monitor_position(t["mint"]))
+        await hub.broadcast("held_bag_reattached", {"id": t["id"], "mint": t["mint"], "symbol": t.get("symbol"), "pool_sol": round(depth_sol, 3)})
+        await hub.broadcast("trade_update", t)
+        logger.warning(f"HELD BAG REATTACHED {t.get('symbol')} {t['mint'][:8]}… → Active on PumpSwap (pool {depth_sol:.1f} SOL) — ladder resumes, nothing sold")
+        return slot
+
+    async def _sell_held_bag(self, t: dict, pool: str, depth_sol: float) -> None:
+        """Gate is on and an exit had already been decided: retry the sell on PumpSwap through the normal exit
+        path (slip ladder, phantom guard, PnL from AMM proceeds only). Capped at 3 attempts with backoff."""
+        retries = int(t.get("held_retry_count") or 0)
+        if retries >= 3:
+            await self._held_patch(t, {"held_watch_done": True, "held_done_reason": "3 PumpSwap sell retries failed — manual recovery"})
+            logger.warning(f"held bag {t.get('symbol')} {t['mint'][:8]}…: 3 sell retries failed — leaving held for manual recovery")
+            return
+        await self._held_patch(t, {"held_retry_count": retries + 1, "held_next_check_ts": time.time() + 60.0 * (2 ** retries)})
+        original = t.get("held_exit_reason") or "exit decided before graduation"
+        await self._reattach_held_bag(t, pool, depth_sol)
+        await self._exit(t["mint"], f"held-bag sell (attempt {retries + 1}/3): {original}")
+        slot = self.active_trades.pop(t["mint"], None)
+        if slot is not None:
+            # the sell did not land: back to held (same intent), the watcher retries with backoff — never a ride by accident
+            await self._hold_through_migrate(t["mint"], slot, original, intent="exit")
+
+    async def _held_bag_watch_once(self) -> dict:
+        now = time.time()
+        min_depth = float(getattr(self.config, "held_bag_min_pool_sol", 10.0) or 0.0)
+        gate_on = bool(getattr(self.config, "auto_sell_held_bags", False))
+        out = {"checked": 0, "reattached": 0, "sold": 0, "ready": 0, "waiting": 0, "gone": 0}
+        for t in await self._held_rows():
+            mint = t.get("mint")
+            if not mint or float(t.get("held_next_check_ts") or 0) > now or mint in self.active_trades or mint in self._pending_entry_mints:
+                continue
+            out["checked"] += 1
+            if t.get("mode") == "live":
+                bal = await self._held_token_balance(mint)
+                if bal == 0:
+                    await self._held_patch(t, {"held_watch_done": True, "held_done_reason": "wallet holds 0 tokens — nothing left to recover"})
+                    out["gone"] += 1
+                    continue
+                if bal:
+                    t["entry_tokens"] = bal
+            pool, depth = await self._held_pool_probe(t)
+            if not pool or depth < min_depth:
+                misses = int(t.get("held_pool_misses") or 0) + 1
+                await self._held_patch(t, {"held_pool_misses": misses, "held_next_check_ts": now + min(600.0, 60.0 * (2 ** min(misses, 4))),
+                                           **({"pumpswap_pool": pool, "held_pool_sol": round(depth, 3)} if pool else {})})
+                out["waiting"] += 1
+                continue
+            intent = t.get("held_intent") or "exit"          # legacy GAVE UP rows: an exit had been decided
+            if intent == "hold":
+                await self._reattach_held_bag(t, pool, depth)
+                out["reattached"] += 1
+            elif gate_on:
+                await self._sell_held_bag(t, pool, depth)
+                out["sold"] += 1
+            else:
+                if not t.get("held_pool_ready"):
+                    logger.warning(f"held bag {t.get('symbol')} {mint[:8]}…: pool live ({depth:.1f} SOL) — sell gated (auto_sell_held_bags off), staying held")
+                await self._held_patch(t, {"held_pool_ready": True, "held_pool_ready_at": t.get("held_pool_ready_at") or now_utc().isoformat(),
+                                           "pumpswap_pool": pool, "held_pool_sol": round(depth, 3), "held_next_check_ts": now + 60.0})
+                out["ready"] += 1
+        return out
+
+    async def _held_bag_watcher_loop(self):
+        await asyncio.sleep(20.0)
+        while True:
+            try:
+                if getattr(self.config, "held_bag_watcher_enabled", True):
+                    res = await self._held_bag_watch_once()
+                    if res["reattached"] or res["sold"]:
+                        logger.warning(f"held-bag watcher: {res}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.exception(f"held-bag watcher error: {e}")
+            await asyncio.sleep(30.0)
 
     async def _detect_and_migrate_graduation(self, mint: str, slot: dict) -> bool:
         """Detect post-entry graduation (pumpfun bonding curve → PumpSwap AMM)
@@ -3741,7 +3882,7 @@ class BotState:
                     pumpswap_state = await pumpswap.fetch_pool_state(slot.get("pumpswap_pool") or "")
                     state = pumpswap_state
                 if not state:
-                    await self._graduation_hold_or_wait(mint, slot, f"exit '{reason}' found no curve account")
+                    await self._graduation_hold_or_wait(mint, slot, f"exit '{reason}' found no curve account", intent=self._held_intent_for(reason))
                     return
             else:
                 # pool unreadable (RPC blip) — keep the position, the monitor retries on its next tick
@@ -3899,7 +4040,7 @@ class BotState:
                 pumpswap_state = await pumpswap.fetch_pool_state(slot.get("pumpswap_pool") or "") if migrated else None
                 if not pumpswap_state:
                     self.active_trades[mint] = slot
-                    await self._graduation_hold_or_wait(mint, slot, f"exit '{reason}' hit a completed curve")
+                    await self._graduation_hold_or_wait(mint, slot, f"exit '{reason}' hit a completed curve", intent=self._held_intent_for(reason))
                     return
                 protocol = "pumpswap"
                 state = pumpswap_state
@@ -4051,7 +4192,7 @@ class BotState:
                         # no AMM fill yet and the tokens are still in the wallet: this is a held bag, not a
                         # realised loss. Wait for the pool inside grad_grace_s, park as held-through-migrate after.
                         self.active_trades[mint] = slot
-                        await self._graduation_hold_or_wait(mint, slot, f"{reason} | bonding curve completed mid-sell (6005), no PumpSwap fill")
+                        await self._graduation_hold_or_wait(mint, slot, f"{reason} | bonding curve completed mid-sell (6005), no PumpSwap fill", intent=self._held_intent_for(reason))
                         return
 
         cu = CU_PUMPSWAP if protocol == "pumpswap" else CU_PUMPFUN

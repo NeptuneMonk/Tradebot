@@ -79,6 +79,11 @@ class BotConfig(BaseModel):
     paper_exit_latency_ms: int = 600
     paper_entry_latency_ms: int = 400
     paper_apply_priority_fee: bool = True
+    # Held bags (graduation parked rows): watch for the AMM pool; reattach hold-intent rows, never auto-sell
+    # exit-intent rows unless the gate is on. Depth is quote reserves in SOL (a real Pump graduate lands ~85).
+    held_bag_watcher_enabled: bool = True
+    auto_sell_held_bags: bool = False
+    held_bag_min_pool_sol: float = 10.0
     # Sizing
     min_trade_usd: float = 0.50
     max_trade_usd: float = 1.00

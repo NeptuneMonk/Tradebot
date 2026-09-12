@@ -48,6 +48,8 @@ SNIPE_TAX_SECONDS = 3
 RH_GAS_USD = 0.09  # fallback per-side gas; live fills refine it (observed ~$0.08 buy / ~$0.10 sell)
 LIVE_SELL_RETRY_COOLDOWN_S = 10.0  # after 3 failed on-chain sells, wait before the next exit attempt
 ZERO_QUOTE_RETRY_S = 5.0  # paper exit met a zero quote with tokens held (dead venue) — retry, never book -100%
+TRACKING_LOST_GRACE_S = 120.0  # held position with no bucket (restart): try to rehydrate from the v4 pool before giving up
+REHYDRATE_RETRY_S = 15.0
 RH_BLOCK_TIME_S = 0.1
 MONITOR_INTERVAL_S = 1.0
 
@@ -833,12 +835,46 @@ class RHPaperTrader:
         except Exception as e:
             logger.debug(f"flush seller probe failed {token[:10]}: {e}")
 
+    async def _rehydrate_from_pool(self, token: str, pos: dict, now: float) -> bool:
+        """A held position whose bucket is gone (restart): if the v4 pool prices it, rebuild the bucket on the pool
+        and keep riding — a lost bucket is not an exit. False when there is no pool (or the read failed)."""
+        if now < pos.get("_rehydrate_next", 0.0):
+            return False
+        pos["_rehydrate_next"] = now + REHYDRATE_RETRY_S
+        t = pos["trade"]
+        try:
+            spot = await asyncio.wait_for(rh_dex.spot_price(token), timeout=6.0)
+        except Exception as e:
+            logger.debug(f"rh rehydrate probe failed {token[:10]}: {e}")
+            return False
+        if not spot or spot <= 0:
+            return False
+        disc = self.state.rh_discovery
+        b = disc._new_bucket({"token": token, "curve": t.get("curve") or token, "deployer": t.get("creator") or "0x" + "0" * 40,
+                              "pair_token": "0x" + "0" * 40, "quote_symbol": t.get("quote_symbol") or "ETH", "quote_decimals": 18,
+                              "graduation_threshold": 0.0, "block": int(t.get("entry_block") or 0)}, start=pos.get("opened") or now)
+        b.update(symbol=t.get("symbol"), name=t.get("name"), graduated=True, graduated_at=now, curve_fill_pct=100.0,
+                 first_price_quote=spot, last_price_quote=spot, rehydrated=True, published=True)
+        disc.tracking[token] = b
+        disc._curve_to_token[b["curve"]] = token
+        pos["_last_price"] = spot
+        pos.pop("_tracking_lost_since", None)
+        if t.get("venue") != "pool":
+            self._switch_to_pool(pos, b, now)
+        self.stats["rehydrated"] = self.stats.get("rehydrated", 0) + 1
+        logger.warning(f"rh_paper {t.get('symbol')} {token[:10]} REHYDRATED from the v4 pool @ {spot:.3e} — bucket was lost, position stays active")
+        return True
+
     async def _monitor(self, now: float):
         for token, pos in list(self.positions.items()):
-            if pos.get("_exiting"):
+            if pos.get("_exiting") or pos.get("_live_sell_inflight"):
                 continue
             b = self.state.rh_discovery.tracking.get(token)
             if not b:
+                if await self._rehydrate_from_pool(token, pos, now):
+                    continue
+                if now - pos.setdefault("_tracking_lost_since", now) < TRACKING_LOST_GRACE_S:
+                    continue
                 pos["_exiting"] = True
                 asyncio.create_task(self.exit(token, "tracking_lost"))
                 continue
