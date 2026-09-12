@@ -111,3 +111,20 @@ def after_partial(slot: dict, expected_exit_cost_pct: float) -> None:
     """Book a ladder leg: stop moves to breakeven + what it will still cost to get out."""
     slot["ladder_legs_done"] = int(slot.get("ladder_legs_done") or 0) + 1
     slot["ladder_stop_pct"] = round(max(float(slot.get("ladder_stop_pct") or 0.0), expected_exit_cost_pct), 2)
+
+
+def search_dead_tape(cfg, book: str, bucket: dict | None, now: float, *, entry_ts: float | None = None):
+    """Search-book time-stop: `book_exits.<book>.no_new_buyers_s` > 0 and no NEW unique buyer AND no inflow tick for
+    that long → exit "search-dead-tape". Default 0 = off. Runner never uses this."""
+    if book == "runner" or not bucket:
+        return None
+    win = float(((getattr(cfg, "book_exits", None) or {}).get(book) or {}).get("no_new_buyers_s") or 0)
+    if win <= 0:
+        return None
+    ref = max(float(bucket.get("last_new_buyer_ts") or 0), float(bucket.get("last_inflow_ts") or 0), float(entry_ts or 0))
+    if ref <= 0:
+        return None
+    idle = now - ref
+    if idle >= win:
+        return ExitDecision("exit", f"search-dead-tape: no new buyer / inflow for {idle:.0f}s (≥{win:g}s)")
+    return None

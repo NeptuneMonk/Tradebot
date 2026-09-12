@@ -84,6 +84,10 @@ class BotConfig(BaseModel):
     held_bag_watcher_enabled: bool = True
     auto_sell_held_bags: bool = False
     held_bag_min_pool_sol: float = 10.0
+    # Search economics (display only for now) + regime entry input
+    search_budget_pct: float = 0.40
+    regime_dead_rate_h: float = 8.0
+    regime_dead_blocks_search: bool = True
     # Sizing
     min_trade_usd: float = 0.50
     max_trade_usd: float = 1.00

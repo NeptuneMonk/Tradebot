@@ -239,6 +239,7 @@ class PumpFunListener:
         params = msg.get("params")
         if not params:
             return
+        slot = (params.get("result", {}).get("context") or {}).get("slot")
         value = params.get("result", {}).get("value", {})
         logs = value.get("logs", []) or []
         signature = value.get("signature")
@@ -262,6 +263,8 @@ class PumpFunListener:
 
             if disc == CREATE_EVENT_DISC or has_create:
                 parsed = parse_create_event(raw_bytes)
+                if parsed is not None and slot is not None:
+                    parsed["creation_slot"] = slot
                 if parsed:
                     parsed["signature"] = signature
                     try:
@@ -274,6 +277,8 @@ class PumpFunListener:
 
             if disc == TRADE_EVENT_DISC and self.on_trade:
                 parsed = parse_trade_event(raw_bytes)
+                if parsed is not None and slot is not None:
+                    parsed["slot"] = slot
                 if parsed:
                     parsed["signature"] = signature
                     try:

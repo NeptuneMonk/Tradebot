@@ -129,6 +129,9 @@ class RHPaperTrader:
             return "max-positions"
         if b.get("graduated"):
             return "graduated"
+        blk = getattr(self.state, "search_regime_block", lambda: None)()
+        if blk:
+            return blk
         quote_usd = self._quote_usd(b["quote_symbol"])
         if quote_usd <= 0:
             return "unpriced-quote"
@@ -592,6 +595,15 @@ class RHPaperTrader:
                            held_exit_reason="duplicate active row across pods", exit_reason="duplicate active row — second pod filled the same token")
                 await self.state.db.trades.update_one({"_id": trade.id}, {"$set": {**doc, "_id": trade.id}}, upsert=True)
                 return
+            try:
+                mr = getattr(self.state, "market_regime", None)
+                doc["regime_at_entry"] = mr()["regime"] if mr else None
+                doc["expected_price"], doc["fill_price"] = float(b.get("last_price_quote") or price), float(price)
+                doc["slippage_pct"] = round((float(price) / float(b.get("last_price_quote") or price) - 1) * 100, 4) if b.get("last_price_quote") else None
+                doc["latency_ms"] = int(max(0, self.state.config.paper_entry_latency_ms))
+                await self.state.db.trades.update_one({"_id": trade.id}, {"$set": {k: doc[k] for k in ("regime_at_entry", "expected_price", "fill_price", "slippage_pct", "latency_ms")}})
+            except Exception:
+                pass
             self.positions[token] = {"trade": doc, "peak_price": price, "_last_price": price, "opened": now}
             self.entered.add(token)
             self.stats["entries"] += 1
@@ -746,6 +758,10 @@ class RHPaperTrader:
         if price > pos["peak_price"]:
             pos["peak_price"] = price
             pos["peak_ts"] = now
+        from exits import search_dead_tape
+        dead = search_dead_tape(cfg, "rh_pons", b, now, entry_ts=pos.get("opened"))
+        if dead is not None:
+            return dead.reason
         if price < pos.get("trough_price", entry):
             pos["trough_price"] = price
             pos["trough_ts"] = now
@@ -1172,6 +1188,11 @@ class RHPaperTrader:
             await hub.broadcast("launch_update", {"id": t.get("launch_id"), "mint": token, **launch_update})
             await hub.broadcast("trade_exit", {**t, "entry_time": _iso(t.get("entry_time"))})
             self.stats["exits"] += 1
+            try:
+                import search_ledger
+                asyncio.create_task(search_ledger.refresh(self.state.db, cfg))
+            except Exception:
+                pass
             self._watch_after_exit(token, t, price, self.state.rh_discovery.tracking.get(token), time.time())
             if live_fill:
                 await self._check_live_kill()

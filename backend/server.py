@@ -2457,6 +2457,8 @@ async def autopilot_status():
                    "max_concurrent_positions": cfg.max_concurrent_positions, "daily_kill_switch_usd": cfg.daily_kill_switch_usd,
                    "rh_max_trade_usd": cfg.rh_max_trade_usd, "rh_max_positions": cfg.rh_max_positions,
                    "rh_daily_kill_switch_usd": cfg.rh_daily_kill_switch_usd},
+        "search_ledger": await db.search_ledger.find_one({"_id": "current"}, {"_id": 0}),
+        "regime": bot_state.market_regime(),
         "books": {"scalp": cfg.book_scalp_size_mult, "hunt": cfg.book_hunt_size_mult,
                   "rh_pons": cfg.book_rh_size_mult if (cfg.rh_paper_enabled or cfg.rh_live_trading) else 0.0},
         "allocator": learning.get("allocator"),
@@ -2723,6 +2725,8 @@ async def _status_broadcaster():
             await hub.broadcast("status", status.model_dump())
             w = await wallet_info()
             await hub.broadcast("wallet", w.model_dump())
+            import regime as _rg
+            _rg.note_sol_price(float(getattr(w, "sol_price_usd", 0) or 0))
             n += 1
             # leader heartbeat snapshot: followers answer from this when no leader can execute for them
             await db.bot_runtime.update_one({"_id": "runtime"}, {"$set": {

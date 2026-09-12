@@ -152,6 +152,7 @@ class BotState:
         self.inventory = InventoryHalt()
         self.live_doctor = None   # set by server.py after LiveDoctor is built
         self.singleton = None     # LeaderLease, wired by server.py; None = single process (preview/tests)
+        self._skip_counts: dict = {}
         self.leader_ok = True     # False on follower pods: load() refreshes config only, no loops
         self._bg_tasks: list = []
 
@@ -223,6 +224,20 @@ class BotState:
         if self.leader_ok:
             await self.start_loops()
 
+    def market_regime(self) -> dict:
+        """dead|quiet|busy|hot from launch rate/h, SOL 1 h sign and the share of recent launches with >5 buyers."""
+        import regime as _rg
+        started = getattr(self, "process_started_ts", None)
+        observed = time.time() - started if started else 0.0
+        return _rg.snapshot(self.config, self._launch_rate(), _rg.hot_share((getattr(self, "recent_launches", None) or [])[:400]),
+                            observed_s=observed)
+
+    def search_regime_block(self) -> str | None:
+        """'search-regime-dead' when the tape is dead and the operator lets it block search entries."""
+        if not getattr(self.config, "regime_dead_blocks_search", True):
+            return None
+        return "search-regime-dead" if self.market_regime()["regime"] == "dead" else None
+
     async def leader_fence(self, what: str) -> bool:
         """Send fence: re-read the leader lease before anything that trades. True when no singleton is wired (tests, preview)."""
         s = getattr(self, "singleton", None)
@@ -265,6 +280,7 @@ class BotState:
     async def start_loops(self):
         """Leader only: restart-resume logic, position restore, feeds and background loops."""
         self.leader_ok = True
+        self.process_started_ts = time.time()      # regime warm-up clock restarts with leadership
         # SAFETY: Always start with trading disabled, regardless of what was
         # persisted before the last shutdown. A crashed/restarted process
         # should never automatically resume real-money trading — the user
@@ -1197,6 +1213,7 @@ class BotState:
 
         # Start in-memory metric tracker for this mint
         self.tracking[launch.mint] = {
+            "creation_slot": launch_data.get("creation_slot"),
             "launch_id": launch.id,
             "creator": launch.creator,
             "start": time.time(),
@@ -1273,6 +1290,12 @@ class BotState:
             return
         now = time.time()
         if trade_data.get("is_buy"):
+            if trade_data["user"] not in bucket["buyers"]:
+                bucket["last_new_buyer_ts"] = now
+            if int(trade_data.get("sol_amount", 0)) > 0:
+                bucket["last_inflow_ts"] = now
+            if trade_data.get("slot") and trade_data.get("slot") == bucket.get("creation_slot"):
+                bucket["creation_slot_buys"] = int(bucket.get("creation_slot_buys") or 0) + 1
             bucket["buyers"].add(trade_data["user"])
             bucket["sol_inflow_lamports"] += int(trade_data.get("sol_amount", 0))
             bucket["buy_count"] += 1
@@ -1498,8 +1521,9 @@ class BotState:
         book = trade_doc.get("book") or "scalp"
         if book == "runner":
             return await self._run_runner(mint, slot, cur_price_sol, sl_fire, ts_fire)
-        d = exits.decide_hunt(cfg, slot, pct, cur_price_sol, elapsed, sl_fire, ts_fire) if book == "hunt" \
-            else exits.decide_scalp(cfg, slot, pct, cur_price_sol, elapsed, sl_fire, ts_fire)
+        dead = exits.search_dead_tape(cfg, book, self.tracking.get(mint), time.time(), entry_ts=slot.get("_entry_ts_mono"))
+        d = dead if dead is not None else (exits.decide_hunt(cfg, slot, pct, cur_price_sol, elapsed, sl_fire, ts_fire) if book == "hunt"
+                                           else exits.decide_scalp(cfg, slot, pct, cur_price_sol, elapsed, sl_fire, ts_fire))
         # promotion → runner: scalp at its +target·R exit, hunt once the +1R leg is banked (never on a stop)
         promo_window = (book == "scalp" and d.kind == "exit" and "target" in d.reason) or \
                        (book == "hunt" and int(slot.get("ladder_legs_done") or 0) >= 1 and d.kind != "exit"
@@ -2399,6 +2423,14 @@ class BotState:
         is_manual = action == "manual"
         if not await self.leader_fence(f"entry {launch.mint[:8]}…"):
             return
+        if not is_manual and action != "reentry":
+            blk = self.search_regime_block()
+            if blk:
+                self._skip_counts = getattr(self, "_skip_counts", {})
+                self._skip_counts[blk] = self._skip_counts.get(blk, 0) + 1
+                if self._skip_counts[blk] % 25 == 1:
+                    logger.info(f"entry skipped for {launch.mint[:8]}…: {blk} (feeds stay up, runner untouched)")
+                return
         # Smart-stop: refuse new entries while we're winding down
         if self.stopping_gracefully and not is_manual:
             return
@@ -2486,6 +2518,7 @@ class BotState:
     async def _enter_impl(self, launch: Launch, risk_score: int, action: str):
         """The actual entry pipeline. Called from `_enter` after the
         position-count reservation has been taken atomically."""
+        t_decide = time.time()
         # cross-pod idempotency: one active row per mint, whichever pod raced us to it
         if await self.db.trades.find_one({"mint": launch.mint, "status": "active"}, {"_id": 1}):
             logger.info(f"entry skipped for {launch.mint[:8]}…: an active row already exists")
@@ -2970,6 +3003,17 @@ class BotState:
         await self._persist_trade(trade)
         if trade.status != "active":
             return
+        try:
+            b0 = self.tracking.get(launch.mint) or {}
+            exp_px = float(getattr(launch, "price_sol", 0) or trade.entry_price_sol or 0)
+            await self.db.trades.update_one({"_id": trade.id}, {"$set": {
+                "expected_price": exp_px, "fill_price": float(trade.entry_price_sol or 0) if mode == "paper" else None,
+                "slippage_pct": (round((float(trade.entry_price_sol) / exp_px - 1) * 100, 4) if mode == "paper" and exp_px > 0 and trade.entry_price_sol else None),
+                "fee_sol": float(getattr(trade, "entry_fee_sol", 0) or 0) or None, "priority_fee": int(self.config.priority_fee_microlamports),
+                "latency_ms": int((time.time() - t_decide) * 1000), "creation_slot_buys": b0.get("creation_slot_buys"),
+                "regime_at_entry": self.market_regime()["regime"]}})
+        except Exception as e:
+            logger.debug(f"fill telemetry skipped: {e}")
         launch_update = {"entered": True, "entry_action": action}   # snipes are no longer pinned to the feed (operator request)
         await self.db.launches.update_one({"_id": launch.id}, {"$set": launch_update})
         for r in self.recent_launches:
@@ -4486,6 +4530,8 @@ class BotState:
             {"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
         )
         try:
+            import search_ledger
+            asyncio.create_task(search_ledger.refresh(self.db, self.config))
             await self.scorecard.record(trade_doc)
             if self.inventory.record_close(reason):
                 logger.warning(f"INVENTORY HALT: last {self.inventory.snapshot()['trigger_n']} Solana closes were stop-outs/rugs — "

@@ -160,6 +160,17 @@ function AutopilotCard({ config, onConfigUpdate }) {
         ))}
       </div>
 
+      {s.search_ledger && (
+        <div className="mt-3 text-[9px] font-mono text-neutral-400 flex flex-wrap gap-x-3 gap-y-0.5" data-testid="search-ledger"
+          title={`7-day search vs harvest ledger (display only — no gate yet)\nseed $${s.search_ledger.seed_usd} + ${Math.round((s.search_ledger.search_budget_pct || 0) * 100)}% of harvest − |search losses| = remaining\nsearch = scalp/hunt/rh_pons closes that never became runners; harvest = runner closes + banked promotion proceeds`}>
+          <span>cost/runner <span className={s.search_ledger.cost_per_runner_usd == null ? "text-neutral-500" : "text-amber-300"}>
+            {s.search_ledger.cost_per_runner_usd == null ? "— (no runners yet)" : `$${s.search_ledger.cost_per_runner_usd.toFixed(2)}`}</span></span>
+          <span>harvest <span className={s.search_ledger.harvest_realised_usd >= 0 ? "text-emerald-300" : "text-red-300"}>${s.search_ledger.harvest_realised_usd.toFixed(2)}</span> / {s.search_ledger.harvest_fills} fills</span>
+          <span>search <span className={s.search_ledger.search_realised_usd >= 0 ? "text-emerald-300" : "text-red-300"}>${s.search_ledger.search_realised_usd.toFixed(2)}</span> / {s.search_ledger.search_fills} fills</span>
+          <span>budget left <span className={s.search_ledger.remaining_usd > 0 ? "text-neutral-200" : "text-red-300"}>${s.search_ledger.remaining_usd.toFixed(2)}</span></span>
+          {s.regime && <span>regime <span className={s.regime.regime === "dead" ? "text-red-300" : s.regime.regime === "hot" ? "text-amber-300" : "text-neutral-200"} data-testid="market-regime">{s.regime.regime}</span> ({s.regime.launch_rate_per_h}/h · hot {Math.round(s.regime.hot_share * 100)}% · SOL {s.regime.sol_1h_sign > 0 ? "↑" : s.regime.sol_1h_sign < 0 ? "↓" : "→"})</span>}
+        </div>
+      )}
       <div className="mt-3 flex flex-wrap gap-1.5 text-[9px] font-mono" data-testid="autopilot-books">
         {Object.entries(books).map(([k, v]) => (
           <span key={k} className={`px-1.5 py-0.5 border ${v >= 1 ? "border-neutral-700 text-neutral-300" : v > 0 ? "border-amber-800 text-amber-300" : "border-rose-900 text-rose-400 line-through"}`} data-testid={`book-chip-${k}`}>

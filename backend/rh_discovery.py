@@ -525,6 +525,9 @@ class RHDiscovery:
             tr = rh_dex.decode_swap(log)
             self.stats["pool_swaps_seen"] = self.stats.get("pool_swaps_seen", 0) + 1
             if tr["side"] == "buy":
+                if tr["wallet"] not in b["buyers"]:
+                    b["last_new_buyer_ts"] = now
+                b["last_inflow_ts"] = now
                 b["buyers"].add(tr["wallet"])
                 b["buy_count"] += 1
                 b["buy_events"].append((now, tr["quote"], tr["wallet"]))
@@ -568,6 +571,9 @@ class RHDiscovery:
 
     def apply_trade(self, b: dict, tr: dict, now: float):
         if tr["side"] == "buy":
+            if tr["wallet"] not in b["buyers"]:
+                b["last_new_buyer_ts"] = now
+            b["last_inflow_ts"] = now
             b["buyers"].add(tr["wallet"])
             b["buy_count"] += 1
             b["net_quote"] += tr["quote"]
