@@ -50,8 +50,17 @@ def rh_readiness(state) -> dict:
     if not checks["rh_kill_ok"]:
         reasons.append("RH live kill switch tripped today")
 
+    sing = getattr(state, "singleton", None)
+    if sing is not None:
+        checks["single_leader"] = not sing.two_leaders
+        if sing.two_leaders:
+            reasons.append("two leader pods detected — lease conflict, both fenced; check /api/pods")
+        if not sing.is_leader:
+            reasons.append("this pod is a follower — trading loops idle here by design (the leader runs them)")
+
     disc = getattr(state, "rh_discovery", None)
-    poller_expected = checks["rh_feed_enabled"] and checks["rh_rpc_url_set"] and (disc is None or disc.doctor_paused() is None)
+    poller_expected = (checks["rh_feed_enabled"] and checks["rh_rpc_url_set"] and (disc is None or disc.doctor_paused() is None)
+                       and (sing is None or sing.is_leader))
     started_ago = time.time() - float(getattr(state, "process_started_ts", 0.0) or 0.0)
     if disc is not None and poller_expected and started_ago > 120:
         checks["rh_poller_alive"] = disc.alive(window_s=60.0)

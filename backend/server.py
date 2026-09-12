@@ -9,7 +9,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
-from fastapi import FastAPI, APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends, Body
+from fastapi import FastAPI, APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends, Body, Request
+from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
@@ -24,6 +25,11 @@ from bot import BotState
 from listener import PumpFunListener
 from solana_client import get_sol_balance, get_sol_usd_price
 from ws_hub import hub
+from singleton import LeaderLease, CommandRelay, WSMirror
+
+singleton: LeaderLease | None = None
+relay: CommandRelay | None = None
+ws_mirror: WSMirror | None = None
 from creator_history import get_creator
 from wallet_send import send_sol
 from pl_sources import compute_pl_by_source
@@ -91,70 +97,141 @@ async def _run_job(job_id: str, coro_factory):
         job["ended_at"] = datetime.now(timezone.utc).isoformat()
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await bot_state.scorecard.load()
-    await bot_state.load()
-    listener.start()
-    logger.info(f"Wallet address: {wallet.get_pubkey_str()}")
-    broadcaster = asyncio.create_task(_status_broadcaster())
-    # Helius budget tracker — attach DB + hydrate persisted counters
+_svc: dict = {}          # long-lived service objects (built once, started only on the leader)
+_leader_tasks: list = [] # leader-only asyncio tasks (status broadcaster, greylist prune)
+
+
+def _cancel_task_attrs(obj, *names):
+    for n in names or ("_task",):
+        t = getattr(obj, n, None)
+        if isinstance(t, asyncio.Task) and not t.done():
+            t.cancel()
+
+
+async def _build_services():
     from helius_budget import attach_db as hb_attach, hydrate_from_mongo as hb_hydrate
     hb_attach(db)
     await hb_hydrate()
-    # Strategy Doctor — runs continuously, independent of any user session.
-    # Persists suggestions to Mongo so the user can wake up to a set of
-    # auto-generated, pre-validated config tweaks.
     from strategy_doctor import StrategyDoctor, set_doctor
-    from creator_greylist import inactivity_prune_loop
-    asyncio.create_task(inactivity_prune_loop(db, lambda: bot_state.config.creator_greylist_inactive_days))
     from bankroll import BankrollEngine
-    bot_state.bankroll = BankrollEngine(bot_state, db)
-    bot_state.bankroll.start()
     from rh_feed import RHSequencerFeed
-    bot_state.rh_feed = RHSequencerFeed(bot_state)
-    bot_state.rh_feed.start()
     from profit_sweep import ProfitSweeper
+    from tick_store import TickStore
+    from live_doctor import LiveDoctor
+    from wallet_graph import WalletGraphHunter, set_hunter
+    from failure_sweep import FailureSweeper
+    bot_state.bankroll = BankrollEngine(bot_state, db)
+    bot_state.rh_feed = RHSequencerFeed(bot_state)
     bot_state.sweeper = ProfitSweeper(bot_state, db, bot_state.bankroll)
-    bot_state.sweeper.start()
     doctor = StrategyDoctor(db=db, hub=hub)
     doctor.reload_cb = bot_state.load
     doctor.learning.reload_cb = bot_state.load
-    from tick_store import TickStore
     bot_state.tick_store = TickStore(bot_state)
-    bot_state.tick_store.start()
     doctor.learning.tick_store = bot_state.tick_store
     set_doctor(doctor)
-    await doctor.start()
-    # Live Doctor — real-time archetype scorer + trailing-stop circuit
-    # breaker. Same lifecycle as Strategy Doctor; persists snapshots to
-    # `live_doctor_state` and trail state to `doctor_trail_state`.
-    from live_doctor import LiveDoctor
     live_doc = LiveDoctor(db=db, bot_state=bot_state, hub=hub)
     app.state.live_doctor = live_doc
     bot_state.live_doctor = live_doc
-    await live_doc.start()
-    # Wallet-graph hunter — background 1-2 hop traversal of greylisted-but-
-    # failing creators. Builds DB only; doesn't influence live trading.
-    # On/off via `wallet_graph_enabled`; daily cap protects Helius budget.
-    from wallet_graph import WalletGraphHunter, set_hunter
     hunter = WalletGraphHunter(db=db)
     set_hunter(hunter)
-    hunter.start()
-    # Failure sweep — every 6h, classify dormant launches as fizzled vs
-    # instant-rug vs chaotic. Feeds the peak-MC component of greylist
-    # scoring without burning Helius credits.
-    from failure_sweep import FailureSweeper
-    sweeper = FailureSweeper(db=db)
-    app.state.failure_sweeper = sweeper
-    sweeper.start()
-    yield
-    sweeper.stop()
-    hunter.stop()
-    await live_doc.stop()
-    await doctor.stop()
-    broadcaster.cancel()
+    failure = FailureSweeper(db=db)
+    app.state.failure_sweeper = failure
+    _svc.update(doctor=doctor, live_doc=live_doc, hunter=hunter, failure=failure)
+
+
+async def start_leader_services():
+    """Lease gained: this pod runs the bot. Everything that trades, listens or writes state starts here."""
+    from creator_greylist import inactivity_prune_loop
+    bot_state.leader_ok = True
+    await bot_state.load()                       # config + start_loops(): restart-resume, position restore, feeds
+    listener.start()
+    _leader_tasks[:] = [asyncio.create_task(_status_broadcaster()),
+                        asyncio.create_task(inactivity_prune_loop(db, lambda: bot_state.config.creator_greylist_inactive_days)),
+                        asyncio.create_task(_config_watch_loop())]
+    bot_state.bankroll.start()
+    bot_state.rh_feed.start()
+    bot_state.sweeper.start()
+    bot_state.tick_store.start()
+    await _svc["doctor"].start()
+    await _svc["live_doc"].start()
+    _svc["hunter"].start()
+    _svc["failure"].start()
+    logger.warning(f"pod {singleton.pod_id}: leader services started")
+
+
+async def stop_leader_services(reason: str = "shutdown"):
+    """Lease lost: stop in-process and stay up as a follower (never kill the process — that flaps both pods)."""
+    await bot_state.stop_loops(reason)
     listener.stop()
+    for t in _leader_tasks:
+        t.cancel()
+    _leader_tasks.clear()
+    for obj in (bot_state.bankroll, bot_state.rh_feed, bot_state.sweeper, bot_state.tick_store):
+        _cancel_task_attrs(obj)
+    _svc["hunter"].stop()
+    _svc["failure"].stop()
+    await _svc["live_doc"].stop()
+    await _svc["doctor"].stop()
+    logger.error(f"pod {singleton.pod_id}: leader services stopped ({reason})")
+
+
+async def _config_watch_loop():
+    """Leader: another pod may have written bot_config (a relayed PUT lands on the leader, but be safe) — apply it."""
+    import hashlib, json as _json
+    last = None
+    while True:
+        try:
+            doc = await db.bot_config.find_one({"_id": "current"}, {"_id": 0})
+            h = hashlib.md5(_json.dumps(doc, sort_keys=True, default=str).encode()).hexdigest() if doc else None
+            if last is not None and h != last:
+                await bot_state.load()
+            last = h
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug(f"config watch: {e}")
+        await asyncio.sleep(3.0)
+
+
+async def _follower_config_refresh_loop():
+    """Follower: keep the in-memory config a mirror of Mongo so local fallbacks never show a stale view."""
+    while True:
+        try:
+            if not singleton.is_leader:
+                cfg = await db.bot_config.find_one({"_id": "current"}, {"_id": 0})
+                if cfg:
+                    bot_state.config = BotConfig(**cfg)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug(f"follower config refresh: {e}")
+        await asyncio.sleep(3.0)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global singleton, relay, ws_mirror
+    await bot_state.scorecard.load()
+    bot_state.leader_ok = False
+    await bot_state.load()                        # config only — loops wait for the lease
+    logger.info(f"Wallet address: {wallet.get_pubkey_str()}")
+    await _build_services()
+    singleton = LeaderLease(db, on_gain=start_leader_services, on_loss=stop_leader_services)
+    bot_state.singleton = singleton
+    relay = CommandRelay(db, singleton, app)
+    ws_mirror = WSMirror(db, singleton, hub)
+    await ws_mirror.ensure_collection()
+    hub.mirror = ws_mirror.write
+    singleton.start()
+    relay.start()
+    ws_mirror.start()
+    follower_cfg = asyncio.create_task(_follower_config_refresh_loop())
+    yield
+    follower_cfg.cancel()
+    if singleton.is_leader:
+        await stop_leader_services("shutdown")
+    await singleton.release()
+    singleton.stop()
     mongo_client.close()
 
 
@@ -351,6 +428,10 @@ async def force_recover_stuck_trade(trade_id: str):
 # ---------- Bot config / status ----------
 @api.get("/bot/config", response_model=BotConfig)
 async def get_config():
+    if _is_follower():
+        cfg = await db.bot_config.find_one({"_id": "current"}, {"_id": 0})
+        if cfg:
+            return BotConfig(**cfg)
     return bot_state.config
 
 
@@ -663,6 +744,10 @@ async def paper_reset():
 
 @api.get("/bot/status", response_model=BotStatus)
 async def bot_status():
+    if _is_follower():
+        snap = await _runtime_snapshot()
+        if snap and snap.get("status"):
+            return BotStatus(**snap["status"])
     pnl = await bot_state.daily_pnl_usd()
     pnl_live = await bot_state.daily_pnl_usd(mode="live")
     pnl_paper = await bot_state.daily_pnl_usd(mode="paper")
@@ -903,6 +988,16 @@ async def diagnostics_loop():
 async def readiness():
     """Why is RH not trading? Run state, feed, arming, env, wallet files, breaker, poller, kill — one answer."""
     from readiness import rh_readiness
+    if _is_follower():
+        snap = await _runtime_snapshot()
+        if snap and snap.get("readiness"):
+            return {**snap["readiness"], "follower": True, "snapshot_ts": snap.get("ts")}
+        r = rh_readiness(bot_state)
+        r["reasons"] = ["this pod is a follower and no leader heartbeat is visible — trading loops idle on every pod"] + [
+            x for x in r["reasons"] if "poller" not in x]
+        r["trading"] = False
+        r["follower"] = True
+        return r
     return rh_readiness(bot_state)
 
 
@@ -2418,6 +2513,10 @@ async def doctor_autopsy():
 @api.get("/rh/status")
 async def rh_status():
     """Robinhood Chain feed health — head block, tracked tokens, RPC usage."""
+    if _is_follower():
+        snap = await _runtime_snapshot()
+        if snap and snap.get("rh"):
+            return {**snap["rh"], "follower": True, "snapshot_ts": snap.get("ts")}
     return {**bot_state.rh_discovery.status(), "paper": bot_state.rh_paper.status(),
             "seq_feed": getattr(getattr(bot_state, "rh_feed", None), "stats", None)}
 
@@ -2520,7 +2619,7 @@ async def ws_endpoint(websocket: WebSocket):
 
     await hub.connect(websocket)
     try:
-        status = await bot_status()
+        status = await bot_status()          # follower → leader snapshot from bot_runtime
         await websocket.send_json({"type": "status", "data": status.model_dump()})
     except Exception:
         pass
@@ -2538,15 +2637,43 @@ async def ws_endpoint(websocket: WebSocket):
 
 
 async def _status_broadcaster():
+    from readiness import rh_readiness
+    n = 0
     while True:
         try:
             status = await bot_status()
             await hub.broadcast("status", status.model_dump())
             w = await wallet_info()
             await hub.broadcast("wallet", w.model_dump())
+            n += 1
+            # leader heartbeat snapshot: followers answer from this when no leader can execute for them
+            await db.bot_runtime.update_one({"_id": "runtime"}, {"$set": {
+                "ts": time.time(), "leader": singleton.pod_id if singleton else None,
+                "status": status.model_dump(), "wallet": w.model_dump(),
+                "rh": await rh_status(), "readiness": rh_readiness(bot_state)}}, upsert=True)
         except Exception as e:
             logger.debug(f"status broadcaster: {e}")
         await asyncio.sleep(3)
+
+
+async def _runtime_snapshot() -> dict | None:
+    doc = await db.bot_runtime.find_one({"_id": "runtime"}, {"_id": 0})
+    return doc if doc and time.time() - float(doc.get("ts") or 0) < 120 else None
+
+
+def _is_follower() -> bool:
+    return singleton is not None and not singleton.is_leader
+
+
+@api.get("/pods")
+async def pods_info():
+    """Served by whichever pod answers (never relayed): lease view + this pod's role."""
+    if singleton is None:
+        return {"pod_id": "single", "role": "leader", "leader_id": "single", "pods": [], "pods_seen": 1, "two_leaders": False, "leader_alive": True}
+    info = singleton.info()
+    info["relay"] = relay.stats if relay else None
+    info["ws_mirror"] = ws_mirror.stats if ws_mirror else None
+    return info
 
 
 # ---------- Strategy Doctor ----------
@@ -3021,6 +3148,29 @@ async def creator_greylist_profile(creator: str):
     if not out:
         raise HTTPException(404, "creator not found")
     return out
+
+
+LOCAL_PATHS = {"/api/pods", "/api/"}
+
+
+@app.middleware("http")
+async def pod_relay_middleware(request: Request, call_next):
+    """Follower pods do not answer /api from their own RAM: the request is executed by the leader through Mongo
+    (CommandRelay). If no leader heartbeat is visible, GETs fall back to Mongo-backed local handlers and
+    mutations are refused — a follower never starts loops 'to be helpful'."""
+    path = request.url.path
+    if (singleton is not None and not singleton.is_leader and path.startswith("/api/")
+            and not path.startswith("/api/auth") and path not in LOCAL_PATHS
+            and request.headers.get("x-pod-relayed") != "1"):
+        if singleton.leader_alive() and relay is not None:
+            return await relay.submit(request)
+        if request.method != "GET":
+            return JSONResponse({"detail": "no leader pod is alive right now — retry in a few seconds"}, status_code=503,
+                                headers={"X-Pod-Role": "follower"})
+    response = await call_next(request)
+    if singleton is not None:
+        response.headers["X-Pod-Role"] = "leader" if singleton.is_leader else "follower"
+    return response
 
 
 app.include_router(api)

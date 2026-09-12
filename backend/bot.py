@@ -150,6 +150,9 @@ class BotState:
         self.scorecard = Scorecard(db)
         self.inventory = InventoryHalt()
         self.live_doctor = None   # set by server.py after LiveDoctor is built
+        self.singleton = None     # LeaderLease, wired by server.py; None = single process (preview/tests)
+        self.leader_ok = True     # False on follower pods: load() refreshes config only, no loops
+        self._bg_tasks: list = []
 
     async def load(self):
         cfg = await self.db.bot_config.find_one({"_id": "current"}, {"_id": 0})
@@ -216,6 +219,49 @@ class BotState:
         rules = await self.db.classifier_rules.find_one({"_id": "current"}, {"_id": 0})
         if rules:
             self.rules = ClassifierRules(**rules)
+        if self.leader_ok:
+            await self.start_loops()
+
+    async def leader_fence(self, what: str) -> bool:
+        """Send fence: re-read the leader lease before anything that trades. True when no singleton is wired (tests, preview)."""
+        s = getattr(self, "singleton", None)
+        if s is None:
+            return True
+        ok = await s.is_leader_now()
+        if not ok:
+            logger.warning(f"FENCE: this pod is not the leader — {what} aborted")
+        return ok
+
+    async def stop_loops(self, reason: str = "leadership lost"):
+        """Follower mode: cancel every trading/feed task in-process, drop in-memory monitors (rows stay `active` in
+        Mongo for the new leader to reattach). No process kill."""
+        self.leader_ok = False
+        tasks: list[asyncio.Task] = list(getattr(self, "_bg_tasks", []))
+        for name in ("_reentry_task", "_scanner_task"):
+            t = getattr(self, name, None)
+            if t:
+                tasks.append(t)
+        for svc in (self.discovery, self.rh_discovery, self.rh_paper, self.pnl_reconciler):
+            for attr in ("_task", "_refresh_task", "_graduated_task"):
+                t = getattr(svc, attr, None)
+                if isinstance(t, asyncio.Task):
+                    tasks.append(t)
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        self._bg_tasks = []
+        try:
+            from account_event_bus import account_event_bus
+            account_event_bus.stop()
+        except Exception:
+            pass
+        self.active_trades.clear()          # monitors see their slot gone and exit on their next tick
+        self._initial_load_done = False     # a later re-gain restores positions from Mongo again
+        logger.error(f"trading loops stopped in-process ({reason}); {len(tasks)} tasks cancelled — this pod is a follower")
+
+    async def start_loops(self):
+        """Leader only: restart-resume logic, position restore, feeds and background loops."""
+        self.leader_ok = True
         # SAFETY: Always start with trading disabled, regardless of what was
         # persisted before the last shutdown. A crashed/restarted process
         # should never automatically resume real-money trading — the user
@@ -331,11 +377,9 @@ class BotState:
         # mints leaked by an unhandled exit exception get re-attached to a
         # monitor instead of sitting orphaned in DB.
         if first_load:
-            asyncio.create_task(self._active_trades_reconciler_loop())
-            asyncio.create_task(self._held_bag_watcher_loop())
-            asyncio.create_task(self._readiness_watchdog_loop())
-            asyncio.create_task(self._helius_autopause_loop())
-            asyncio.create_task(self._loop_lag_meter())
+            self._bg_tasks = [asyncio.create_task(c()) for c in (
+                self._active_trades_reconciler_loop, self._held_bag_watcher_loop, self._readiness_watchdog_loop,
+                self._helius_autopause_loop, self._loop_lag_meter)]
         # Surface the auto-disable to any WS clients listening — front-end
         # will show "Bot auto-disabled on restart" toast if connected.
         if was_running_before_restart and resumed:
@@ -2350,6 +2394,8 @@ class BotState:
         # Manual buy (operator clicked a candidate): bypass everything except
         # the Helius kill-switch, the daily kill switch and max positions.
         is_manual = action == "manual"
+        if not await self.leader_fence(f"entry {launch.mint[:8]}…"):
+            return
         # Smart-stop: refuse new entries while we're winding down
         if self.stopping_gracefully and not is_manual:
             return
@@ -2437,6 +2483,10 @@ class BotState:
     async def _enter_impl(self, launch: Launch, risk_score: int, action: str):
         """The actual entry pipeline. Called from `_enter` after the
         position-count reservation has been taken atomically."""
+        # cross-pod idempotency: one active row per mint, whichever pod raced us to it
+        if await self.db.trades.find_one({"mint": launch.mint, "status": "active"}, {"_id": 1}):
+            logger.info(f"entry skipped for {launch.mint[:8]}…: an active row already exists")
+            return
         # === Creator-greylist (Phase 2: apply OR log strategy overrides) ===
         # Resolved once at entry, then carried through sizing + slot extras
         # so the exit logic (TP/SL/trail) can read overrides per-trade.
@@ -3878,6 +3928,9 @@ class BotState:
 
     async def _exit_impl(self, mint: str, reason: str, slot: dict):
         trade_doc = slot["trade"]
+        if not await self.leader_fence(f"exit {mint[:8]}… ({reason})"):
+            self.active_trades[mint] = slot        # the new leader reattaches this row from Mongo
+            return
         # Respect any post-partial RPC-propagation block. Without this, a
         # trailing-stop tick within 1-2s of a partial sell reads the stale
         # pre-partial wallet balance and oversells (6023 NotEnoughTokensToSell).

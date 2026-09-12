@@ -404,6 +404,10 @@ class RHPaperTrader:
         cfg = self.state.config
         try:
             await asyncio.sleep(max(0, cfg.paper_entry_latency_ms) / 1000.0)
+            if not await self._fence(f"rh entry {token[:10]}"):
+                return
+            if await self._active_row_exists(token):
+                return                                    # cross-pod idempotency: one active row per token
             b = self.state.rh_discovery.tracking.get(token)
             ld = getattr(self.state, "live_doctor", None)
             if not manual and ld is not None and ld.book_paused("rh_pons"):
@@ -835,6 +839,16 @@ class RHPaperTrader:
         except Exception as e:
             logger.debug(f"flush seller probe failed {token[:10]}: {e}")
 
+    async def _fence(self, what: str) -> bool:
+        fence = getattr(self.state, "leader_fence", None)
+        return True if fence is None else await fence(what)
+
+    async def _active_row_exists(self, token: str) -> bool:
+        try:
+            return bool(await self.state.db.trades.find_one({"mint": token, "chain": CHAIN, "status": "active"}, {"_id": 1}))
+        except Exception:
+            return False
+
     async def _rehydrate_from_pool(self, token: str, pos: dict, now: float) -> bool:
         """A held position whose bucket is gone (restart): if the v4 pool prices it, rebuild the bucket on the pool
         and keep riding — a lost bucket is not an exit. False when there is no pool (or the read failed)."""
@@ -1035,6 +1049,9 @@ class RHPaperTrader:
         if not pos:
             return
         if fill_price is None and time.time() < pos.get("_zero_quote_retry_after", 0.0):
+            pos.pop("_exiting", None)
+            return
+        if not await self._fence(f"rh exit {token[:10]} ({reason})"):
             pos.pop("_exiting", None)
             return
         pos["_exiting"] = True

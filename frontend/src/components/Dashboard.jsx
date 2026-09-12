@@ -6,6 +6,7 @@ import { useWebSocket } from "@/lib/useWebSocket";
 import StatusBanner from "@/components/StatusBanner";
 import HaltBanner from "@/components/HaltBanner";
 import ReadinessBanner from "@/components/ReadinessBanner";
+import PodPill from "@/components/PodPill";
 import ScorecardPanel from "@/components/ScorecardPanel";
 import WalletCard from "@/components/WalletCard";
 import BotControlCard from "@/components/BotControlCard";
@@ -340,6 +341,7 @@ export default function Dashboard() {
               onChange={async () => { try { setConfig(await api.config()); } catch { /* noop */ } refreshAll(); }}
             />
           )}
+          <PodPill />
           <span className="flex items-center gap-2" data-testid="ws-status">
             <span className={`w-2 h-2 rounded-full ${wsConnected ? "bg-blue-500 animate-pulse" : "bg-neutral-600"}`}></span>
             <span className="text-neutral-400">{wsConnected ? "WS LIVE" : "WS OFFLINE"}</span>

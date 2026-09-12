@@ -15,6 +15,7 @@ class WSHub:
     def __init__(self):
         self.clients: set[WebSocket] = set()
         self._lock = asyncio.Lock()
+        self.mirror = None  # async (event_type, data) -> None; set by server.py when the pod singleton is wired
 
     async def connect(self, ws: WebSocket):
         await ws.accept()
@@ -64,13 +65,16 @@ class WSHub:
             return "candidate_update", {**data, "dropped": True}
         return None, None
 
-    async def broadcast(self, event_type: str, data):
-        if not self.clients:
-            return
+    async def broadcast(self, event_type: str, data, *, mirror: bool = True):
         if event_type in ("launch", "launch_update") and isinstance(data, dict):
             event_type, data = self._gate_launch(event_type, data)
             if event_type is None:
                 return
+        if mirror and self.mirror is not None:
+            # leader → capped ws_events collection; follower pods tail it into their own sockets
+            await self.mirror(event_type, data)
+        if not self.clients:
+            return
         msg = json.dumps({"type": event_type, "data": data}, default=str)
         dead: list[WebSocket] = []
         for ws in list(self.clients):
