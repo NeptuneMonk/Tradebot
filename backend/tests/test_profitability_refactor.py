@@ -133,7 +133,8 @@ def test_classifier_closed_set_and_creator_routing():
 
 # ---------------- live doctor ----------------
 def test_live_doctor_total_order_skip_half_full():
-    assert decide(39.9, 10) == "skip"
+    assert decide(39.9, 50) == "skip"            # weak winner that looks MORE like exit liquidity
+    assert decide(39.9, 10) == "half" and decide(28, 28) == "half"   # weak but not worse than exit-liq / tie → no signal, half size
     assert decide(50, 80) == "half" and decide(50, 10) == "half"
     assert decide(80, 80) == "half"          # strong winner that also looks like exit liquidity
     assert decide(65, 49.9) == "full"

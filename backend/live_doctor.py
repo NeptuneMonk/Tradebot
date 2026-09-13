@@ -75,11 +75,13 @@ BREAKER_PAUSE_S = 4 * 3600
 
 
 def decide(winner_likeness: float, exit_liquidity_likeness: float) -> str:
-    if winner_likeness < SKIP_BELOW_WINNER:
+    # skip only when the launch looks MORE like recent exit liquidity than like a winner (and the winner
+    # likeness is weak) — a tie such as 28 % / 28 % is "no signal", which sizes half rather than starving the tape
+    if winner_likeness < SKIP_BELOW_WINNER and exit_liquidity_likeness > winner_likeness:
         return "skip"
     if winner_likeness >= FULL_MIN_WINNER and exit_liquidity_likeness < HALF_IF_EXIT_LIQ_AT_LEAST:
         return "full"
-    return "half"   # strong winner that also looks like exit liquidity, or a 40–60 winner
+    return "half"   # strong winner that also looks like exit liquidity, a 40–60 winner, or no clear signal
 
 MIN_SAMPLES_PER_ARCHETYPE = 8   # below this, archetype is "not yet learned"
 DEFAULT_INTERVAL_MINUTES = 15
