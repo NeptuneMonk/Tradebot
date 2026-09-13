@@ -80,7 +80,9 @@ function AutopilotCard({ config, onConfigUpdate }) {
     try {
       const upd = await api.updateConfig(patch);
       onConfigUpdate && onConfigUpdate(upd);
-      toast.success("Risk settings saved — sizing recomputes within 60s");
+      const clamped = Object.keys(patch).filter((k) => upd?.[k] != null && Number(upd[k]) !== Number(patch[k]));
+      if (clamped.length) toast.warning(`Saved with limits applied: ${clamped.map((k) => `${k} → ${upd[k]}`).join(", ")}`);
+      else toast.success("Risk settings saved — sizing recomputes within 60s");
       load();
     } catch (e) {
       toast.error(`Save failed: ${e?.response?.data?.detail || e.message}`);

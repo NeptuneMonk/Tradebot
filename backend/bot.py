@@ -1095,6 +1095,9 @@ class BotState:
                     base_tp = await pumpfun.get_mint_token_program(mint)
                     user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
                     wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, max_sol)
+                    tokens_out, max_sol = await pumpswap.calibrate_buy(kp, user, pumpswap_state, user_token_ata, wsol_acc, base_tp,
+                                                                       sol_in_lamports, tokens_out, eff_slip, eff_priority)
+                    wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, max_sol)
                     ixs = [
                         pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp),
                         *wsol_ixs,

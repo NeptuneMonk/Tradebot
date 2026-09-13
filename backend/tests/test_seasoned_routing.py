@@ -106,3 +106,39 @@ def test_seasoned_buyers_gate_treats_unknown_buy_count_as_unknown_not_zero():
     assert 'elif b.get("buy_count") is None and b.get("protocol") == "pumpswap":' in bsrc
     assert 'if buyers is not None and buyers < min_buyers:' in bsrc
     assert 'bucket["buy_count"] = (bucket.get("buy_count") or 0) + 1' in bsrc
+
+
+def test_pumpswap_calibrate_sizes_from_program_event_and_refuses_reverting_pools(monkeypatch):
+    import base64, struct, pumpswap
+    from solders.keypair import Keypair
+    kp = Keypair(); user = kp.pubkey()
+    st = {"base_mint": str(Keypair().pubkey()), "quote_mint": str(pumpswap.WSOL), "base_reserves": 10**15, "quote_reserves": 10**11,
+          "pool": str(Keypair().pubkey()), "pool_base_token_account": str(Keypair().pubkey()), "pool_quote_token_account": str(Keypair().pubkey()),
+          "coin_creator": str(Keypair().pubkey()), "lp_mint": str(Keypair().pubkey())}
+    est = 10**12
+    ev = struct.pack("<q13Q", 0, est // 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12_500_000)  # program wants 0.0125 SOL for half → 25% worse than model
+    ev = b"\x00" * 8 + ev + b"\x00" * 200
+    calls = {"n": 0}
+
+    async def fake_rpc(method, params):
+        if method == "getLatestBlockhash":
+            return {"result": {"value": {"blockhash": "11111111111111111111111111111111"}}}
+        calls["n"] += 1
+        return {"result": {"value": {"err": None, "logs": ["Program data: " + base64.b64encode(ev).decode()]}}}
+    monkeypatch.setattr("solana_client.rpc_call", fake_rpc)
+    monkeypatch.setattr(pumpswap, "build_buy_ix", lambda *a, **k: pumpswap.build_close_wsol_ix(user, user))
+    monkeypatch.setattr(pumpswap, "build_create_ata_ix", lambda *a, **k: pumpswap.build_close_wsol_ix(user, user))
+    base_out, max_sol = asyncio.run(pumpswap.calibrate_buy(kp, user, st, user, user, pumpswap.TOKEN_PROGRAM, 10_000_000, est, 800))
+    eff = 12_500_000 / (est // 2)
+    assert abs(base_out - int(int(10_000_000 / eff) * 0.92)) <= 2 and max_sol == 10_800_000 and calls["n"] == 1
+
+    async def reverting(method, params):
+        if method == "getLatestBlockhash":
+            return {"result": {"value": {"blockhash": "11111111111111111111111111111111"}}}
+        return {"result": {"value": {"err": {"InstructionError": [5, {"Custom": 6004}]}, "logs": []}}}
+    monkeypatch.setattr("solana_client.rpc_call", reverting)
+    try:
+        asyncio.run(pumpswap.calibrate_buy(kp, user, st, user, user, pumpswap.TOKEN_PROGRAM, 10_000_000, est, 800))
+        assert False, "should refuse"
+    except RuntimeError as e:
+        assert "probe reverted" in str(e)

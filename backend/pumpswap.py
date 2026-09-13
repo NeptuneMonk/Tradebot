@@ -25,6 +25,8 @@ import base64
 import os
 import random
 import struct
+import logging
+logger = logging.getLogger("pumpswap")
 from typing import Optional
 
 from solders.pubkey import Pubkey
@@ -491,3 +493,63 @@ async def get_token_balance(ata: Pubkey) -> int:
         return int(res["result"]["value"]["amount"])
     except (KeyError, TypeError, ValueError):
         return 0
+
+
+async def calibrate_buy(kp, user, state: dict, user_token_ata, wsol_acc, base_token_program, sol_in_lamports: int,
+                        tokens_out_est: int, slippage_bps: int, priority_fee: int = 100_000) -> tuple[int, int]:
+    """Size a PumpSwap buy from the program's OWN pricing instead of our constant-product guess.
+
+    Fresh pools price 10–25 % worse than pool_base/pool_quote implies (dynamic fee tiers via GetFeesWithQuoteMint, vault
+    balances ≠ swap reserves), so a fixed base_amount_out reverts Custom:6004 ExceededSlippage even with 8 % slack —
+    four landed-but-failed txs on 2026-09-13. Probe: simulate the exact buy at 50 % of our estimate (never broadcast),
+    read `user_quote_in / base_out` from the BuyEvent → effective lamports per raw token including every fee, then ask
+    for sol_in / eff_price × (1 − slippage). Falls back to a 25 % haircut when the event can't be read."""
+    import base64
+    import struct
+    from solana_client import rpc_call
+    from solders.message import MessageV0
+    from solders.transaction import VersionedTransaction
+    from solders.hash import Hash
+    from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
+    probe_out = max(1, tokens_out_est // 2)
+    max_sol = sol_in_lamports + (sol_in_lamports * slippage_bps) // 10_000
+    mint_pk = Pubkey.from_string(state["base_mint"])
+    wsol_probe, wsol_ixs = build_wsol_wrap_ixs(user, max_sol)     # own wrap account: the caller's seed must not be reused
+    ixs = [set_compute_unit_limit(400_000), set_compute_unit_price(priority_fee), build_create_ata_ix(user, user, mint_pk, base_token_program),
+           *wsol_ixs, build_buy_ix(user, state, user_token_ata, wsol_probe, base_amount_out=probe_out, max_quote_amount_in=max_sol,
+                                   base_token_program=base_token_program), build_close_wsol_ix(user, wsol_probe)]
+    eff_price = None
+    try:
+        bh = (await rpc_call("getLatestBlockhash", [{"commitment": "confirmed"}]))["result"]["value"]["blockhash"]
+        tx = VersionedTransaction(MessageV0.try_compile(user, ixs, [], Hash.from_string(bh)), [kp])
+        resp = await rpc_call("simulateTransaction", [base64.b64encode(bytes(tx)).decode(), {"encoding": "base64", "commitment": "confirmed"}])
+        if "result" not in resp:
+            raise RuntimeError(f"rpc error {resp.get('error')}")
+        r = resp["result"]["value"]
+        for line in r.get("logs") or []:
+            if not line.startswith("Program data: "):
+                continue
+            raw = base64.b64decode(line.split("Program data: ", 1)[1])
+            if len(raw) < 8 + 8 + 13 * 8:
+                continue
+            f = struct.unpack_from("<q13Q", raw, 8)
+            base_out, user_quote_in = f[1], f[13]
+            if base_out > 0 and user_quote_in > 0:
+                eff_price = user_quote_in / base_out          # lamports per raw token, all fees in
+                break
+        if r.get("err") and eff_price is None:
+            # the exact buy at HALF our estimate already reverts → the pool is not priceable from its vaults (draining /
+            # migrating). Sending would only land a failing tx and burn the fee — refuse instead.
+            raise RuntimeError(f"pumpswap probe reverted at 50% size: {r.get('err')}")
+    except RuntimeError:
+        raise
+    except Exception as e:
+        logger.warning(f"pumpswap calibrate probe failed: {e}")
+    if eff_price:
+        target = int(sol_in_lamports / eff_price)
+        base_out = target - (target * slippage_bps) // 10_000
+        logger.info(f"pumpswap calibrate: program price {eff_price:.4e} lamports/raw vs model {sol_in_lamports / max(1, tokens_out_est):.4e} "
+                    f"→ base_out {base_out} (model {tokens_out_est})")
+    else:
+        base_out = tokens_out_est - tokens_out_est // 4
+    return base_out, max_sol
