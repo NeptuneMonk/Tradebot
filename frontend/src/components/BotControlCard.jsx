@@ -1056,6 +1056,8 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
                  value={local.rh_max_age_min ?? 15} onChange={(v) => setLocal({ ...local, rh_max_age_min: parseFloat(v) || 0 })} step="1" />
           <Field label="Min Growth %" testid="rh-min-growth-input" hint="Price growth from the first curve trade we observed."
                  value={local.rh_min_growth_pct ?? 30} onChange={(v) => setLocal({ ...local, rh_min_growth_pct: parseFloat(v) || 0 })} step="5" />
+          <Field label="Max Growth % (chased)" testid="rh-max-growth-input" hint="Skip as 'chased' once the price has already run this far from the first print we saw — early buyers are sitting on the gain and a new entry is their exit liquidity. Default 400% (5×)."
+                 value={local.rh_max_growth_pct ?? 400} onChange={(v) => setLocal({ ...local, rh_max_growth_pct: parseFloat(v) || 0 })} step="50" />
           <Field label="New Buyers (1m)" testid="rh-min-new-buyers-input" hint="Distinct wallets buying on the curve in the last 60s."
                  value={local.rh_min_new_buyers_1m ?? 5} onChange={(v) => setLocal({ ...local, rh_min_new_buyers_1m: parseInt(v, 10) || 0 })} step="1" />
           <Field label="Min Holders" testid="rh-min-holders-input" hint="Total unique curve buyers since launch."

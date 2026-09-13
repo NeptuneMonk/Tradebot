@@ -593,6 +593,7 @@ async def update_config(body: dict = Body(...)):
     cfg.paper_bankroll_usd = max(10.0, min(1_000_000.0, float(cfg.paper_bankroll_usd)))
     cfg.sweep_pct_of_profit = max(1.0, min(100.0, float(cfg.sweep_pct_of_profit)))
     cfg.rh_live_slippage_pct = max(0.5, min(50.0, float(cfg.rh_live_slippage_pct)))
+    cfg.rh_max_growth_pct = max(float(cfg.rh_min_growth_pct) + 10.0, min(10_000.0, float(cfg.rh_max_growth_pct)))
     cfg.exit_momentum_max_extra_loss_pct = max(0.0, min(50.0, float(cfg.exit_momentum_max_extra_loss_pct)))
     cfg.rh_rug_sell_usd = max(10.0, min(1_000_000.0, float(cfg.rh_rug_sell_usd)))
     cfg.rh_rug_sell_curve_pct = max(1.0, min(100.0, float(cfg.rh_rug_sell_curve_pct)))

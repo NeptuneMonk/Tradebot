@@ -1773,3 +1773,7 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - ✅ Funding model (user choice **a**): wallet must already hold the quote; `_live_buy` skips as `quote_balance_skips` with a clear `last_live_error`. `/api/rh/wallet` → `quote_balances` + `erc20_live`; RhWalletCard shows held quote assets. `live_ok`: ETH always; ERC-20 only with flag + known quote + USD price.
 - ✅ LMT + BABA added to the quote table; `rh_discovery.quote_of(sym)`.
 - ✅ Tests: `tests/test_erc20_quotes.py` (9) + full suite 608 passed (pre-existing env-dependent failures only: panic helper, doctor learning books, live-feed integration tests). Read-only on-chain verification done; **no real tx sent**. RH live remains OFF.
+
+
+## `rh_max_growth_pct` exposed (2026-09-13)
+- ✅ The "chased" gate threshold is now a real BotConfig field (`rh_max_growth_pct`, default 400) with a "Max Growth % (chased)" field in RH Paper Gates; server clamps it to ≥ min growth + 10 and ≤ 10 000. Verified via PUT /api/bot/config and screenshot.

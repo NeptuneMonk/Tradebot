@@ -63,6 +63,7 @@ class BotConfig(BaseModel):
     rh_seasoned_max_age_min: float = 60.0   # post-pool entries: minutes since the PONS sweep
     seasoned_max_last_trade_s: float = 20.0  # seasoned (PumpSwap / RH pool) entry needs a print this recent
     rh_min_growth_pct: float = 30.0       # from first observed curve price
+    rh_max_growth_pct: float = 400.0      # "chased" gate: already ran this far since first print → we'd be the exit liquidity
     rh_max_growth_pct: float = 400.0      # ceiling: don't chase a curve that already ran this far (Doctor-tuned)
     rh_min_new_buyers_1m: int = 5
     rh_min_unique_buyers: int = 8
