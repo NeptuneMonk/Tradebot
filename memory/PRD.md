@@ -1760,3 +1760,8 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 - ✅ Fix: release in `finally` (only a queued paper buy keeps its slot until `resolve_pending_buys`); queued buys expire after 120 s (`entries_expired`); 30 s orphan sweep (`slots_released`) in `expire_pending_buys()` called from `_monitor`. `/api/rh/status.paper` now exposes `pending_entries`, `pending_buys`, `slots_used`, `max_positions`.
 - ✅ Verified: `tests/test_rh_slot_leak.py` (3) + RH regression 60/60; live preview check — SLIP cost-gate reject released its slot, STOCKTIMES paper fill counted as 1/1, feeds restored OFF and position force-closed. Leak lives in RAM → Published needs a republish to clear.
 - 🟡 Not built (user chose b): slots N/10 chip on the RH card.
+
+## RH quote pricing for stock/ETF/cbBTC-quoted curves (2026-09-13)
+- ✅ `quote_prices.py` — Yahoo chart meta (`fulldayPrice` 24h print → regular session) for the 30 tokenized stocks/ETFs, Coinbase for cbBTC; 60 s cache, 5 min back-off on a miss keeping the last good print. `rh_discovery.poll_once` refreshes only the symbols currently tracked; `_quote_usd` falls through to it. `/api/rh/status.quote_prices` shows each priced quote (usd, age, source).
+- ✅ Effect: stock-quoted RH launches now get `usd_market_cap` and clear the `unpriced-quote` gate (109/509 skips today were this). Live entries stay ETH-only (`live_ok`) — stock-quoted curves are paper.
+- ✅ Tests: `tests/test_quote_prices.py` (3) + RH regression 43/43; live: TSLA/NVDA priced in preview status within 30 s of the feed being on. Feeds restored OFF.

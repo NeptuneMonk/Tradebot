@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+import quote_prices
 import rh_dex
 from models import Launch
 from ws_hub import hub
@@ -398,6 +399,10 @@ class RHDiscovery:
         # Refresh ETH/USD (60s cache, Binance/Coinbase — not the RH RPC) so MC
         # is priced on the very first trade we see.
         await get_eth_usd_price()
+        try:
+            await quote_prices.refresh(b.get("quote_symbol") for b in self.tracking.values())
+        except Exception as e:
+            logger.debug(f"rh quote price refresh failed: {e}")
         head = int(res[0], 16)
         factory_logs, trade_logs = res[1] or [], res[2] or []
         pool_logs = (res[3] or []) if pool_tokens else []
@@ -641,9 +646,7 @@ class RHDiscovery:
     def _quote_usd(self, sym: str) -> float:
         if sym == "ETH":
             return _eth_usd_cache["price"]
-        if sym == "USDG":
-            return 1.0
-        return 0.0
+        return quote_prices.quote_usd(sym)
 
     async def _fetch_metadata(self, tokens: list[str]):
         """Standalone metadata fetch (tests / manual use). The poll loop folds
@@ -835,5 +838,6 @@ class RHDiscovery:
             "tracked": len(self.tracking),
             "next_from_block": self._next_from,
             "eth_usd": _eth_usd_cache["price"],
+            "quote_prices": quote_prices.snapshot(),
             "rpc_url_set": bool(RH_RPC_URL),
         }
