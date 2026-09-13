@@ -297,6 +297,14 @@ class BotConfig(BaseModel):
     # momentum already reversed; the next 5 minutes are statistically the
     # worst time to re-enter. Set to 0 to disable.
     sl_cooldown_minutes: float = 5.0
+    # creator-solvency + dump gate (hunt / seasoned / rh_pons only — never the new-band scalp tape by default)
+    creator_solvency_enabled: bool = True
+    creator_sol_min: float = 0.5
+    creator_eth_min: float = 0.05
+    creator_sol_gate_new_band: bool = False
+    creator_dump_window_s: float = 60.0
+    creator_sold_pct_max: float = 35.0
+    creator_balance_fail: str = "closed"
     snipe_creator_cooldown_minutes: float = 30.0   # after a sniped launch stops out, ignore that creator's relaunches
     # Distribution-vacuum gate: reject tokens where ALL tracked holders appeared
     # within the most-recent holder-velocity window. Classic insider-distribution

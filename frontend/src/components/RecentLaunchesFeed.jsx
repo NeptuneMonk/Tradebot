@@ -79,6 +79,14 @@ function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh
                         title={l.rh_gate === "pass" ? "cleared every PONS entry gate" : `backend gate verdict: ${l.rh_gate}`}
                         data-testid={`launch-rh-gate-${l.mint}`}>{l.rh_gate === "pass" ? "gate ✓" : `gate: ${l.rh_gate}`}</span>
                     )}
+                    {(l.creator_eth != null || l.creator_sol != null) && (
+                      <span className="text-[10px] font-mono px-1 py-0 border border-neutral-800 text-neutral-500 lowercase"
+                        title="deployer native balance at first sight · share of their stake sold in the first minute"
+                        data-testid={`launch-creator-solvency-${l.mint}`}>
+                        creator {l.creator_eth != null ? `${Number(l.creator_eth).toFixed(3)} ETH` : `${Number(l.creator_sol).toFixed(2)} SOL`}
+                        {l.creator_sold_pct != null ? ` · dumped ${Number(l.creator_sold_pct).toFixed(0)}%` : ""}
+                      </span>
+                    )}
                   </div>
                   <div className="text-[10px] font-mono text-neutral-500 mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
                     <span>{isRh ? "token" : "mint"} <span className="text-neutral-300">{short(l.mint)}</span></span>

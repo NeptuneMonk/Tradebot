@@ -66,6 +66,7 @@ class _StubBotState:
         # Tests that need it ON explicitly flip this.
         self.config.greylist_snipe_require_classified_pattern = False
         self._greylist_snipe_fires: list[float] = []
+        self.creator_sl_cooldown_until: dict[str, float] = {}
         self.active_trades: dict = {}
         self._pending_entry_mints: set = set()
         self._snipe_research_flags: dict = {}

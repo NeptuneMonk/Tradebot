@@ -549,6 +549,10 @@ class RHDiscovery:
             else:
                 b["sell_count"] += 1
                 b.setdefault("sell_events", deque(maxlen=500)).append((now, tr["quote"], tr["wallet"]))
+                if tr["wallet"] == b.get("creator"):
+                    import creator_solvency
+                    b.setdefault("_dump_window_s", float(getattr(self.state.config, "creator_dump_window_s", 60.0) or 60.0))
+                    creator_solvency.record_creator_sell(b, tr["quote"], tr["tokens"], now)
             if tr["price"] > 0:
                 b["last_price_quote"] = tr["price"]
                 b["block_prices"].append((tr["block"], tr["price"]))
@@ -680,6 +684,8 @@ class RHDiscovery:
             # backend gate verdict travels with the row so the candidate-only WS feed can pass RH tokens that
             # cleared (or are close to clearing) the PONS entry gates — "tracking" alone never reaches the UI
             "rh_gate": gate,
+            "creator_eth": b.get("creator_eth"),
+            "creator_sold_pct": b.get("creator_sold_pct"),
             "classifier_action": "rh_pons" if gate == "pass" else "tracking",
             "unique_buyers": len(b["buyers"]),
             "buy_count": b["buy_count"],

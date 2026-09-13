@@ -294,7 +294,7 @@ def _bot_stub():
     from bot import BotState
     from inventory import InventoryHalt
     st = BotState.__new__(BotState)
-    st.config = BotConfig(max_trade_usd=1.0, min_trade_usd=0.4, intelligent_exit_v2=False)
+    st.config = BotConfig(max_trade_usd=1.0, min_trade_usd=0.4, intelligent_exit_v2=False, creator_solvency_enabled=False)
     st.inventory = InventoryHalt(); st.live_doctor = None; st.stopping_gracefully = False
     st.active_trades = {}; st._pending_entry_mints = set(); st.sl_cooldown_until = {}
     st._entry_gate_lock = asyncio.Lock(); st.calls = []; st.recent_exit_until = {}; st.entered_mints = set(); st.tracking = {}

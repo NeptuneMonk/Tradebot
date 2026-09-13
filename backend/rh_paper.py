@@ -129,6 +129,9 @@ class RHPaperTrader:
             return "already-entered"
         if len(self.positions) + len(self._pending_entries) >= cfg.rh_max_positions:
             return "max-positions"
+        cg = b.get("creator_gate")
+        if cg and now - cg[1] < 300.0:
+            return cg[0]                                  # deployer-solvency verdict cached for the balance TTL
         seasoned = bool(b.get("graduated"))
         if seasoned:
             # post-sweep: the curve is gone. Enter only on a LIVE v4 pool with a fresh print, priced from pool swaps.
@@ -460,6 +463,19 @@ class RHPaperTrader:
             if price <= 0 or quote_usd <= 0:
                 return
             now = time.time()
+            if not manual and getattr(cfg, "creator_solvency_enabled", True) and b.get("creator"):
+                import creator_solvency
+                creator_eth = await creator_solvency.balance(b["creator"], lambda a: rh_wallet.balance_wei(a))
+                creator_eth = creator_eth / 1e18 if creator_eth is not None else None
+                b["creator_eth"] = creator_eth
+                cs_reason = creator_solvency.gate(cfg, "rh", creator_eth, b)
+                if cs_reason:
+                    tally = self.stats.setdefault("skip_reasons", {})
+                    tally[f"curve:{cs_reason}"] = tally.get(f"curve:{cs_reason}", 0) + 1
+                    b["gate_reason"] = cs_reason
+                    b["creator_gate"] = (cs_reason, now)   # _gates returns this until the balance cache expires: no re-entry spam
+                    logger.info(f"rh_paper skip {b['symbol']}: {cs_reason} — deployer {b['creator'][:10]} eth={creator_eth} sold={b.get('creator_sold_pct')}%")
+                    return
             _gov = getattr(self.state, "bankroll", None)
             base_stake = float(getattr(cfg, "rh_max_trade_usd", 5.0))
             if base_stake <= 0:
@@ -507,7 +523,7 @@ class RHPaperTrader:
                             "sl_pct": bx0["stop_loss_pct"], "sl_pct_with_slip": sz["sl_pct_with_slip"], "target_r": bx0["target_r"] or None,
                             "expected_cost_pct": q["expected_cost_pct"], "expected_cost_usd": q["expected_cost_usd"],
                             "expected_target_pct": q["expected_target_pct"], "cost_gate_pass": True, "doctor_decision": "full",
-                            "pool_round_trip_pct": measured_rt}}
+                            "pool_round_trip_pct": measured_rt, "creator_eth": b.get("creator_eth"), "creator_sold_pct": b.get("creator_sold_pct")}}
             claim = getattr(self.state, "claim_entry_lock", None)
             if claim is not None and not await claim(token, CHAIN):
                 logger.warning(f"rh_paper {token[:10]}: another pod holds the entry lock — aborted before send")

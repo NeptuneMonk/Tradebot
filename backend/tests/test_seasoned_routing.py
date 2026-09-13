@@ -17,7 +17,7 @@ def test_routing_new_band_scalp_seasoned_hunt_not_a_hunt_cap_action():
     assert book_for_action("momentum_new") == "scalp"
     assert book_for_action("scanner_momentum") == "hunt"
     assert "scanner_momentum" not in HUNT_ACTIONS and book_for_action("greylist_snipe") == "hunt"
-    cfg = BotConfig()
+    cfg = BotConfig(creator_solvency_enabled=False)
     assert exit_param(cfg, "scalp", "hold_max_seconds") > 0          # 40 s clock stays on new-band scalps
     assert exit_param(cfg, "hunt", "hold_max_seconds") == 0           # seasoned rides hunt: no clock
 
@@ -31,7 +31,7 @@ def test_hunt_cap_ignores_seasoned_hunt_rows():
 
 
 def test_seasoned_hunt_has_no_clock_and_can_be_promoted():
-    cfg = BotConfig()
+    cfg = BotConfig(creator_solvency_enabled=False)
     s = _slot("hunt"); s["trade"]["classifier_action"] = "scanner_momentum"; s["trade"]["mode"] = "paper"
     d = exits.decide_hunt(cfg, s, 3.0, 1.03, 900.0, lambda *a: False, lambda *a: False)   # 15 min in, flat: nothing fires
     assert d.kind is None

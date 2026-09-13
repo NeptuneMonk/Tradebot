@@ -214,7 +214,8 @@ def test_launch_fields_payload():
     b = disc.tracking[TOKEN]
     f = disc._launch_fields(b)
     assert set(f) == {"unique_buyers", "buy_count", "curve_fill_pct", "quote_inflow",
-                      "quote_symbol", "price_quote", "usd_market_cap", "graduated", "classifier_action", "rh_gate"}
+                      "quote_symbol", "price_quote", "usd_market_cap", "graduated", "classifier_action", "rh_gate",
+                      "creator_eth", "creator_sold_pct"}
 
 
 def test_gc_drops_stale_and_caps():

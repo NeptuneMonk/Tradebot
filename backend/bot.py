@@ -31,6 +31,7 @@ from rh_paper import RHPaperTrader
 from book_params import book_for_action, book_size_mult, exit_param, FIRST_TARGET_R
 from slippage import pool_depth_sol, auto_exit_slip_bps, recent_vol_pct, entry_slip_bps
 import cost_gate
+import creator_solvency
 import r_sizer
 import exits
 import runner
@@ -1290,6 +1291,10 @@ class BotState:
         if not bucket:
             return
         now = time.time()
+        if not trade_data.get("is_buy") and trade_data.get("user") and trade_data["user"] == bucket.get("creator"):
+            bucket.setdefault("_dump_window_s", float(getattr(self.config, "creator_dump_window_s", 60.0) or 60.0))
+            creator_solvency.record_creator_sell(bucket, int(trade_data.get("sol_amount", 0)) / LAMPORTS_PER_SOL,
+                                                 float(trade_data.get("token_amount") or 0) / 1e6, now)
         if trade_data.get("is_buy"):
             if trade_data["user"] not in bucket["buyers"]:
                 bucket["last_new_buyer_ts"] = now
@@ -2651,6 +2656,16 @@ class BotState:
         # Route by protocol — graduated tokens trade on PumpSwap AMM
         bucket = self.tracking.get(launch.mint, {})
         protocol = bucket.get("protocol") or "pumpfun"
+        if creator_solvency.in_scope(self.config, action, protocol) and launch.creator:
+            from solana_client import get_sol_balance
+            creator_sol = await creator_solvency.balance(launch.creator, get_sol_balance)
+            bucket["creator_sol"] = creator_sol
+            cs_reason = creator_solvency.gate(self.config, "sol", creator_sol, bucket)
+            if cs_reason:
+                logger.info(f"skip {launch.mint[:8]} [{action}]: {cs_reason} — creator {str(launch.creator)[:8]} sol={creator_sol} sold={bucket.get('creator_sold_pct')}%")
+                await self._skip_event({"mint": launch.mint, "symbol": launch.symbol, "band": "seasoned" if protocol == "pumpswap" else "new",
+                                        "reason": cs_reason, "details": [f"creator_sol={creator_sol}", f"sold={bucket.get('creator_sold_pct')}%"]})
+                return
         pumpswap_state: dict | None = None
         if protocol == "pumpswap":
             pool = bucket.get("pumpswap_pool") or (await pumpswap.find_pool_for_mint(launch.mint))
@@ -2944,6 +2959,7 @@ class BotState:
             greylist_score_at_entry=greylist_ctx.get("score"),
             greylist_pattern_at_entry=greylist_ctx.get("pattern"),
             entry_ctx={"curve_liquidity_sol": float(real_sol),
+                       "creator_sol": bucket.get("creator_sol"), "creator_sold_pct": bucket.get("creator_sold_pct"),
                        "unique_buyers": int(getattr(launch, "unique_buyers", 0) or 0),
                        "sol_inflow": float((self.tracking.get(launch.mint) or {}).get("sol_inflow_lamports") or 0) / LAMPORTS_PER_SOL,
                        "buy_count": int(getattr(launch, "buy_count", 0) or 0),
