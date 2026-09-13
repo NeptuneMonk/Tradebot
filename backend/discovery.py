@@ -358,8 +358,8 @@ class PumpfunDiscovery:
                     # on seasoned tokens, though Pump.fun's API doesn't
                     # track post-graduation buys (the value plateaus at
                     # the graduation snapshot).
-                    if "buy_count" in c:
-                        bucket["buy_count"] = int(c.get("buy_count") or 0)
+                    if c.get("buy_count") is not None:
+                        bucket["buy_count"] = int(c["buy_count"])
                 if cur_price > 0:
                     bucket["last_price_sol"] = cur_price
                 # Append rolling MC sample. Skip zero values so the velocity
@@ -538,9 +538,9 @@ class PumpfunDiscovery:
             "buyers": set(),
             "buy_events": deque(maxlen=500),
             "sol_inflow_lamports": 0,
-            # Initial cumulative buy count from Pump.fun API. Refreshed every
-            # discovery poll. Used by `min_buyers_for_entry` seasoned-band gate.
-            "buy_count": int(coin.get("buy_count") or 0),
+            # Cumulative buy count from Pump.fun API when it still returns one (the v3 API dropped the field —
+            # None = unknown, and the seasoned buyers gate must not treat "unknown" as zero).
+            "buy_count": int(coin["buy_count"]) if coin.get("buy_count") is not None else None,
             "curve_fill_pct": (100.0 if is_pumpswap else
                                (min(100.0, max(0.0, (vsr - 30_000_000_000) / 85_000_000_000 * 100)) if vsr else 0.0)),
             "social_score": 0,

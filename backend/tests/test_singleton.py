@@ -188,12 +188,14 @@ def test_active_mint_unique_index_and_entry_lock():
         with pytest.raises(DuplicateKeyError):
             await db.trades.update_one({"_id": "t2"}, {"$set": {"mint": "M1", "status": "active"}}, upsert=True)
         await db.trades.insert_one({"_id": "t3", "mint": "M1", "status": "closed"})          # closed rows are free
-        # entry lock: first claim wins, second pod aborts before send
+        # entry lock: first claim wins; a DIFFERENT pod aborts before send; the same pod may retry (re-entrant)
         import bot as botmod
         from types import SimpleNamespace
-        st = SimpleNamespace(db=db, singleton=None)
+        st = SimpleNamespace(db=db, singleton=SimpleNamespace(pod_id="pod-A"))
+        other = SimpleNamespace(db=db, singleton=SimpleNamespace(pod_id="pod-B"))
         assert await botmod.BotState.claim_entry_lock(st, "M2") is True
-        assert await botmod.BotState.claim_entry_lock(st, "M2") is False
+        assert await botmod.BotState.claim_entry_lock(other, "M2") is False
+        assert await botmod.BotState.claim_entry_lock(st, "M2") is True
         assert await botmod.BotState.claim_entry_lock(st, "M2", "rh") is True
         await db.client.drop_database(db.name)
     asyncio.run(run())

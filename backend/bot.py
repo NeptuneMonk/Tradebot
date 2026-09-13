@@ -1304,7 +1304,7 @@ class BotState:
                 bucket["creation_slot_buys"] = int(bucket.get("creation_slot_buys") or 0) + 1
             bucket["buyers"].add(trade_data["user"])
             bucket["sol_inflow_lamports"] += int(trade_data.get("sol_amount", 0))
-            bucket["buy_count"] += 1
+            bucket["buy_count"] = (bucket.get("buy_count") or 0) + 1
             bucket["buy_events"].append((now, int(trade_data.get("sol_amount", 0)), trade_data["user"]))
             rules = self.rules
             n_buyers, inflow_sol = len(bucket["buyers"]), bucket["sol_inflow_lamports"] / LAMPORTS_PER_SOL
@@ -2424,7 +2424,7 @@ class BotState:
             b = self.tracking[mint] = {
                 "launch_id": None, "creator": "", "start": time.time(), "protocol": "pumpswap", "pumpswap_pool": pool,
                 "graduated_at": time.time(), "buyers": set(), "buy_events": deque(maxlen=500), "sol_inflow_lamports": 0,
-                "buy_count": 0, "curve_fill_pct": 100.0, "social_score": 0, "project_score": 0, "project_flags": {},
+                "buy_count": None, "curve_fill_pct": 100.0, "social_score": 0, "project_score": 0, "project_flags": {},
                 "last_persist": 0.0, "name": None, "symbol": None, "creator_rugs": 0, "first_seen_price_sol": 0.0,
                 "last_price_sol": 0.0, "price_samples": deque(maxlen=120), "last_price_sample_ts": 0.0,
                 "scanner_eligible": False, "scanner_last_attempt": 0.0, "manual_seed": True,
@@ -2733,9 +2733,13 @@ class BotState:
             b = self.tracking.get(launch.mint, {})
             if is_new_band:
                 buyers = len(b.get("buyers", set()))
+            elif b.get("buy_count") is None and b.get("protocol") == "pumpswap":
+                # Pump.fun's API no longer reports buy_count and Helius doesn't cover PumpSwap swaps: the buyer count
+                # is UNKNOWN for seasoned tokens, not zero. Growth / MC / MC-velocity / liquidity already vouch for interest.
+                buyers = None
             else:
                 buyers = int(b.get("buy_count") or 0)
-            if buyers < min_buyers:
+            if buyers is not None and buyers < min_buyers:
                 logger.info(f"skip {launch.mint} [{action}]: only {buyers} buyers < min {min_buyers}")
                 await self._skip_event({
                     "mint": launch.mint, "symbol": launch.symbol,
@@ -3098,13 +3102,19 @@ class BotState:
         asyncio.create_task(self._monitor_position(launch.mint))
 
     async def claim_entry_lock(self, mint: str, chain: str = "solana") -> bool:
-        """Insert-only lock (`entry_locks/_id=chain:mint`, TTL 2 min). DuplicateKey = another pod is buying this mint."""
+        """Insert-only lock (`entry_locks/_id=chain:mint`, TTL 2 min). DuplicateKey = another pod is buying this mint.
+        Re-entrant for the SAME pod: a queued paper buy that was rejected at fill time must be able to retry without
+        waiting out the TTL (that wait produced a 1 Hz 'another pod holds the entry lock' storm for 2 min)."""
+        pod = getattr(getattr(self, "singleton", None), "pod_id", "single")
         try:
-            await self.db.entry_locks.insert_one({"_id": f"{chain}:{mint}", "ts": datetime.now(timezone.utc),
-                                                  "pod": getattr(getattr(self, "singleton", None), "pod_id", "single")})
+            await self.db.entry_locks.insert_one({"_id": f"{chain}:{mint}", "ts": datetime.now(timezone.utc), "pod": pod})
             return True
         except DuplicateKeyError:
-            return False
+            try:
+                held = await self.db.entry_locks.find_one({"_id": f"{chain}:{mint}"}, {"pod": 1})
+            except Exception:
+                held = None
+            return bool(held and held.get("pod") == pod)
         except Exception as e:
             logger.warning(f"entry lock unavailable ({e}) — proceeding on the in-process gate only")
             return True

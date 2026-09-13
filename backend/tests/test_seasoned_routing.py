@@ -92,3 +92,17 @@ def test_classifier_unused_on_pumpswap_and_no_trending_clients():
     text = "".join(p.read_text() for p in src.glob("*.py"))
     for needle in ("dexscreener", "birdeye", "/trending"):
         assert needle not in text.lower(), needle
+
+
+def test_seasoned_buyers_gate_treats_unknown_buy_count_as_unknown_not_zero():
+    """Pump.fun's v3 API dropped `buy_count`; Helius doesn't cover PumpSwap swaps → seasoned buyer count is unknown.
+    The gate must not reject every seasoned candidate as `0 buyers`."""
+    import discovery
+    coin = {"mint": "M", "creator": "C", "symbol": "S", "name": "n", "complete": True, "pump_swap_pool": "P",
+            "virtual_sol_reserves": 0, "real_sol_reserves": 0, "usd_market_cap": 50_000, "created_timestamp": 0}
+    src = Path(__file__).resolve().parents[1].joinpath("discovery.py").read_text()
+    assert '"buy_count": int(coin["buy_count"]) if coin.get("buy_count") is not None else None' in src
+    bsrc = Path(__file__).resolve().parents[1].joinpath("bot.py").read_text()
+    assert 'elif b.get("buy_count") is None and b.get("protocol") == "pumpswap":' in bsrc
+    assert 'if buyers is not None and buyers < min_buyers:' in bsrc
+    assert 'bucket["buy_count"] = (bucket.get("buy_count") or 0) + 1' in bsrc
