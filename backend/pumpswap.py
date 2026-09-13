@@ -197,8 +197,12 @@ def quote_buy_tokens(state: dict, sol_in_lamports: int, slippage_bps: int = 500)
     tokens_out = base_r - new_base
     # NB: PumpSwap charges fees on the SOL side. Use a slight tokens_out reduction.
     tokens_out_after_fee = tokens_out - (tokens_out * TOTAL_FEE_BPS) // 10_000
+    # buy(base_amount_out, max_quote_in): the program sizes the quote it pulls for a FIXED base_amount_out, so the
+    # slippage tolerance must come off the tokens we ask for as well — with no margin here any adverse tick between
+    # the pool read and inclusion reverts Custom:6004 ExceededSlippage (3× in a row on a 61 SOL pool).
+    min_tokens_out = tokens_out_after_fee - (tokens_out_after_fee * slippage_bps) // 10_000
     max_sol = sol_in_lamports + (sol_in_lamports * slippage_bps) // 10_000
-    return tokens_out_after_fee, max_sol
+    return min_tokens_out, max_sol
 
 
 def quote_sell_sol(state: dict, tokens_in: int, slippage_bps: int = 500) -> tuple[int, int]:

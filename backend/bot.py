@@ -3055,6 +3055,9 @@ class BotState:
                 trade.entry_sig = sig
             except Exception as e:
                 logger.exception(f"Live buy failed for {launch.mint}: {e}")
+                b_fail = self.tracking.get(launch.mint)
+                if b_fail is not None:
+                    b_fail["scanner_veto_until"] = time.time() + 600.0   # don't burn another fee on this mint for 10 min
                 trade.status = "failed"
                 trade.exit_reason = f"buy failed: {e}"
                 await self._persist_trade(trade)
@@ -3791,11 +3794,8 @@ class BotState:
             try:
                 user = get_pubkey()
                 mint_pk = Pubkey.from_string(mint)
-                if protocol == "pumpswap":
-                    ata = pumpswap.get_associated_token_address(user, mint_pk, pumpswap.TOKEN_PROGRAM)
-                else:
-                    tp = await pumpfun.get_mint_token_program(mint)
-                    ata = pumpfun.derive_associated_token_for_program(user, mint_pk, tp)
+                tp = await pumpfun.get_mint_token_program(mint)          # real token program (Token-2022 mints) on both venues
+                ata = pumpswap.get_associated_token_address(user, mint_pk, tp)
                 actual = await pumpswap.get_token_balance(ata)
                 if actual > 0:
                     # 0.5% shave protects against Custom:6023 (NotEnoughTokensToSell)
@@ -4215,13 +4215,11 @@ class BotState:
             try:
                 user = get_pubkey()
                 mint_pk = Pubkey.from_string(mint)
-                if protocol == "pumpswap":
-                    ata = pumpswap.get_associated_token_address(user, mint_pk, pumpswap.TOKEN_PROGRAM)
-                    actual = await pumpswap.get_token_balance(ata)
-                else:
-                    tp = await pumpfun.get_mint_token_program(mint)
-                    ata = pumpfun.derive_associated_token_for_program(user, mint_pk, tp)
-                    actual = await pumpswap.get_token_balance(ata)
+                # Pump.fun mints are Token-2022 now: derive the ATA with the mint's REAL token program on BOTH venues.
+                # (Legacy-program ATA for PumpSwap read 0 → Medusa booked −100 % while 18.9 tokens sat in the wallet.)
+                tp = await pumpfun.get_mint_token_program(mint)
+                ata = pumpswap.get_associated_token_address(user, mint_pk, tp)
+                actual = await pumpswap.get_token_balance(ata)
                 if actual == 0:
                     # We hold zero of this mint — close the trade WITHOUT
                     # attempting to sell. Sending a 0-amount sell IX would
