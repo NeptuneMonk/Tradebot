@@ -365,7 +365,17 @@ class LearningEngine:
         if doc is None:
             await self.db.doctor_canary.delete_many({"_id": CANARY_ID})
         else:
-            await self.db.doctor_canary.update_one({"_id": CANARY_ID}, {"$set": doc}, upsert=True)
+            # replace, not $set — a new canary must not inherit ended_at / revert_reason / verdict fields from the last one
+            await self.db.doctor_canary.replace_one({"_id": CANARY_ID}, doc, upsert=True)
+
+    async def rebaseline(self, reason: str) -> dict:
+        """The trade history the Doctor learned from was wiped (paper reset): stop the running canary, restore its
+        baseline, and drop cached book/allocator/technique stats so the UI doesn't keep showing pre-wipe numbers."""
+        reverted = await self.revert(reason=reason)
+        self.last.update({"books": {}, "proposal": None, "technique": {}, "allocator": None,
+                          "note": f"re-baselined after {reason} — collecting fresh evidence"})
+        logger.warning(f"doctor LEARNING re-baselined after {reason}" + (" (canary reverted)" if reverted else ""))
+        return {"canary_reverted": bool(reverted)}
 
     async def _blacklisted(self, fp: str) -> bool:
         d = await self.db.doctor_blacklist.find_one({"fingerprint": fp}, {"_id": 0})
@@ -522,7 +532,14 @@ class LearningEngine:
     async def _evaluate_canary(self, can: dict, cfg: dict, trades_24h: list[dict]):
         started = can.get("started_at", "")
         book = can.get("book")
-        since = [t for t in trades_24h if str(t.get("exit_time") or "") >= started
+        # judge on EVERY closed fill since the canary started, however many days that spans — a 24 h window can
+        # never fill for a slow book and the canary (and its tightened setting) would hang "running" forever
+        try:
+            pool = await self.db.trades.find({"status": "closed", "exit_time": {"$gte": started}, "ghost_entry": {"$ne": True}},
+                                             {"_id": 0}).to_list(5000)
+        except Exception:
+            pool = trades_24h
+        since = [t for t in pool if str(t.get("exit_time") or "") >= started
                  and (book_of(t) is not None if book == "global" else book_of(t) == book)]
         n_req = PROMOTION_MIN_FILLS.get(book or "global", 30)
         try:

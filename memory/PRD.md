@@ -1777,3 +1777,15 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 
 ## `rh_max_growth_pct` exposed (2026-09-13)
 - ✅ The "chased" gate threshold is now a real BotConfig field (`rh_max_growth_pct`, default 400) with a "Max Growth % (chased)" field in RH Paper Gates; server clamps it to ≥ min growth + 10 and ≤ 10 000. Verified via PUT /api/bot/config and screenshot.
+
+## Holistic audit fixes (2026-09-13)
+Audit of the running preview (sign-on → feeds → gates → trading → Doctor). Healthy: auth, single leader, Pump.fun WSS, RH RPC/seq feed, quote prices, Helius budget, RH paper path, readiness. Fixed:
+- ✅ **Paper reset re-baselines the Doctor**: `LearningEngine.rebaseline()` reverts a running canary (restoring its baseline config), clears cached books/allocator/technique; `search_ledger.refresh` re-run. Previously the Doctor kept showing/acting on pre-wipe 7-day stats.
+- ✅ **Canary judged on all post-start fills** (DB query since `started_at`), not just the last 24 h — slow books could never reach `PROMOTION_MIN_FILLS` and the tightened setting hung forever. `_set_canary` now `replace_one` so a new canary doesn't inherit stale `ended_at`/`revert_reason`/verdict fields.
+- ✅ **Seasoned Solana band no longer re-arms on restart**: feed-seeded graduates (`graduated_feed`) skip the min-age bound (pool pre-dates first sight); upper bound unchanged. Live: `seasoned_in_band` 0 → 30.
+- ✅ **Scanner pre-rank gates tallied**: `st.prerank_skip(band, reason)` → `/api/scanner/skips.prerank` (growth/liquidity/mc/mc-velocity/inflow/new-buyers/no-buy-events/distribution-vacuum/pass) + `seasoned_in_band`.
+- ✅ Deterministic classifier vetoes set `scanner_veto_until` (+300 s) so the same mint isn't re-run through the greylist every 30 s pass.
+- ✅ `scanner loop error` logs `{e!r}` with traceback (was blank for TimeoutError).
+- ✅ `/api/bot/status.total_trades_today` compares BSON dates (was string-only → always 0). Live: 0 → 13.
+- ℹ️ Not changed: RH `curve:mc` dominates skips (tuning call); "RH NOT TRADING — bot STOPPED" at boot is accurate (safety rule disables the bot on restart).
+- Tests: `tests/test_audit_fixes.py` (5) + 174 regression green.

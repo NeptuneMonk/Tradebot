@@ -2028,15 +2028,25 @@ class BotState:
         tally[key] = tally.get(key, 0) + 1
         await hub.broadcast("scanner_skip", payload)
 
+    def prerank_skip(self, band: str, reason: str):
+        """Scanner pre-rank gate tally (growth / liquidity / mc / inflow…) — the gates that used to `continue` silently."""
+        tally = self._prerank_counts = getattr(self, "_prerank_counts", {})
+        key = f"{band}:{reason}"
+        tally[key] = tally.get(key, 0) + 1
+
     def skip_tallies(self) -> dict:
         """Skip reasons since process start, split by band (new / seasoned) — the diagnostic for 'seasoned is silent'."""
         t = getattr(self, "_skip_counts", {}) or {}
+        pr = getattr(self, "_prerank_counts", {}) or {}
         seasoned = {k.split(":", 1)[1]: v for k, v in t.items() if k.startswith("seasoned:")}
         new = {k.split(":", 1)[1]: v for k, v in t.items() if k.startswith("new:")}
         other = {k: v for k, v in t.items() if ":" not in k}
         tracked = [b for b in self.tracking.values() if b.get("protocol") == "pumpswap"]
         return {"seasoned": seasoned, "new": new, "other": other, "seasoned_tracked": len(tracked),
-                "seasoned_with_pool": sum(1 for b in tracked if b.get("pumpswap_pool"))}
+                "seasoned_with_pool": sum(1 for b in tracked if b.get("pumpswap_pool")),
+                "seasoned_in_band": sum(1 for b in tracked if self.scanner.classify_band(b, self.config, time.time()) == "seasoned") if getattr(self, "scanner", None) else None,
+                "prerank": {"seasoned": {k.split(":", 1)[1]: v for k, v in pr.items() if k.startswith("seasoned:")},
+                            "new": {k.split(":", 1)[1]: v for k, v in pr.items() if k.startswith("new:")}}}
 
     def _rules_for_classify(self) -> dict:
         """Classifier rules + the Doctor-tunable Project Score floor from BotConfig (the stricter wins)."""
@@ -2749,6 +2759,8 @@ class BotState:
             elif risk_score > 60:
                 veto_reason = f"scalp + high risk ({risk_score})"
             if veto_reason:
+                # deterministic for this launch's creator/pattern — don't re-run the greylist lookup every 30 s pass
+                b["scanner_veto_until"] = time.time() + 300.0
                 logger.info(
                     f"skip {launch.mint} [{action}]: pre-trade classifier "
                     f"{veto_reason} — {verdict['reasons']}"

@@ -125,6 +125,10 @@ class MomentumScanner:
                 grad_at = b.get("start") or now
             age_min = (now - grad_at) / 60.0
             lo = max(0.0, float(getattr(cfg, "band_seasoned_min_age_min", 0.0)))
+            if b.get("graduated_feed"):
+                # seeded from the graduated feed: the pool already existed when we first saw it, so the real
+                # graduation is at least this old — the min-age bound would otherwise re-arm on every restart
+                lo = 0.0
             hi = max(lo, float(getattr(cfg, "band_seasoned_max_age_min", 60.0)))
             if lo <= age_min <= hi:
                 return "seasoned"
@@ -365,33 +369,41 @@ class MomentumScanner:
                 for mint, b in st.tracking.items():
                     if mint in st.entered_mints or mint in st.active_trades:
                         continue
-                    if (now - b.get("scanner_last_attempt", 0)) < cooldown:
+                    if (now - b.get("scanner_last_attempt", 0)) < cooldown or now < b.get("scanner_veto_until", 0):
                         continue
                     band = self.classify_band(b, cfg, now)
                     if band is None:
                         continue
+                    tally = st.prerank_skip
                     # For NEW band we need mempool buy events as a proxy for activity.
                     # SEASONED band uses Pump.fun-API signals (MC + MC velocity)
                     # and can't observe events via Helius (esp. graduated tokens).
                     if band == "new" and not b.get("buy_events"):
+                        tally(band, "no-buy-events")
                         continue
                     m = self.score(b, None, now)
                     g = self._gates(cfg, band)
                     if m["growth_pct_rolling"] < g["min_growth_pct"]:
+                        tally(band, "growth")
                         continue
                     if m["real_sol_reserves"] < g["min_liquidity_sol"]:
+                        tally(band, "liquidity")
                         continue
                     if band == "seasoned":
                         mc = float(b.get("usd_market_cap") or 0.0)
                         if mc < cfg.scanner_min_mc_usd_seasoned:
+                            tally(band, "mc")
                             continue
                         v = _mc_velocity(b.get("mc_samples") or (), now)
                         if v < cfg.scanner_min_mc_velocity_5m_pct_seasoned:
+                            tally(band, "mc-velocity")
                             continue
                     else:
                         if m["recent_inflow_sol"] < g["min_inflow_sol"]:
+                            tally(band, "inflow")
                             continue
                         if m["new_buyers_recent"] < g["min_new_buyers"]:
+                            tally(band, "new-buyers")
                             continue
                     # Distribution-vacuum gate — applies to both bands. If
                     # every tracked holder appeared inside the velocity window
@@ -411,6 +423,7 @@ class MomentumScanner:
                                 f"vacuum-skip {mint[:8]}… [{band}]: all "
                                 f"{total} holders in last {win_s}s (no organic flow)"
                             )
+                            tally(band, "distribution-vacuum")
                             continue
                     rank_score = (
                         m["growth_pct_rolling"]
@@ -421,6 +434,8 @@ class MomentumScanner:
 
                 if not scored:
                     continue
+                for _m, _b, _mm, _r, _band in scored:
+                    st.prerank_skip(_band, "pass")
 
                 scored.sort(key=lambda x: x[3], reverse=True)
                 remaining = max(0, cfg.max_concurrent_positions - len(st.active_trades))
@@ -538,4 +553,4 @@ class MomentumScanner:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.warning(f"scanner loop error: {e}")
+                logger.warning(f"scanner loop error: {e!r}", exc_info=True)

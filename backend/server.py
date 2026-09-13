@@ -803,6 +803,19 @@ async def paper_reset():
     res = await db.trades.delete_many({"mode": "paper"})
     # Reset kill switch
     bot_state.kill_switch_tripped = False
+    # The Doctor learned from the rows we just deleted — stop its canary, restore the baseline, drop cached stats
+    try:
+        from strategy_doctor import get_doctor
+        _doc = get_doctor()
+        if _doc is not None:
+            await _doc.learning.rebaseline("paper reset")
+    except Exception as e:
+        logger.warning(f"paper reset: doctor re-baseline failed: {e}")
+    try:
+        import search_ledger
+        await search_ledger.refresh(db, bot_state.config)
+    except Exception as e:
+        logger.warning(f"paper reset: search ledger refresh failed: {e}")
     # Wipe LIVE history from view (rows preserved on disk for audit)
     bot_state.config.live_pnl_reset_at = datetime.now(timezone.utc).isoformat()
     await bot_state.save_config()
@@ -830,14 +843,10 @@ async def bot_status():
     pnl = await bot_state.daily_pnl_usd()
     pnl_live = await bot_state.daily_pnl_usd(mode="live")
     pnl_paper = await bot_state.daily_pnl_usd(mode="paper")
+    midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    # entry_time is a BSON date on both chains (legacy rows may hold an ISO string) — a string bound alone matches nothing
     total_today = await db.trades.count_documents(
-        {
-            "entry_time": {
-                "$gte": datetime.now(timezone.utc)
-                .replace(hour=0, minute=0, second=0, microsecond=0)
-                .isoformat()
-            }
-        }
+        {"$or": [{"entry_time": {"$gte": midnight}}, {"entry_time": {"$gte": midnight.isoformat()}}]}
     )
     return BotStatus(
         enabled=bot_state.config.enabled,
