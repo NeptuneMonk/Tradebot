@@ -133,6 +133,7 @@ class BotState:
         # Populated by `_exit_impl` when reason starts with "stop-loss hit".
         # Checked inside the entry gate lock so concurrent attempts agree.
         self.sl_cooldown_until: dict[str, float] = {}
+        self.creator_sl_cooldown_until: dict[str, float] = {}   # sniper: creator whose last snipe stopped out
         # Universal post-exit cooldown: mint -> unix timestamp. Prevents the
         # scanner from re-entering the SAME mint within the cooldown window
         # after ANY exit (TP, SL, timeout, classifier, hard-stop). Fixes
@@ -2303,6 +2304,13 @@ class BotState:
                     f"greylist_snipe: rate cap {cap}/hr hit, "
                     f"skipping {launch.mint[:8]}…"
                 )
+                return
+            cc_until = self.creator_sl_cooldown_until.get(launch.creator or "", 0.0)
+            if now < cc_until:
+                logger.info(f"greylist_snipe: skipping {launch.mint[:8]}… — creator {str(launch.creator)[:8]}… stopped out "
+                            f"{int((cc_until - now) / 60)} min of cooldown left")
+                await self._skip_event({"mint": launch.mint, "symbol": launch.symbol, "band": "new", "reason": "snipe-creator-cooldown",
+                                        "details": [f"creator stopped out; {int((cc_until - now) / 60)} min left"]})
                 return
             # Score gate. We use the LIVE (decayed) score, not the raw
             # persisted value — a creator's predictability fades if they
@@ -4599,6 +4607,13 @@ class BotState:
                     f"SL cooldown set for {trade_doc.get('symbol','?')} "
                     f"({mint[:8]}…) — locked out for {cd_min:.1f} min"
                 )
+            # a sniped launch that stopped out says something about the CREATOR, not just this mint — serial
+            # launchers relaunch within a minute and the sniper would fire again on the same wallet
+            if trade_doc.get("classifier_action") == "greylist_snipe" and trade_doc.get("creator"):
+                cc_min = float(getattr(self.config, "snipe_creator_cooldown_minutes", 30.0) or 0)
+                if cc_min > 0:
+                    self.creator_sl_cooldown_until[trade_doc["creator"]] = time.time() + cc_min * 60.0
+                    logger.info(f"snipe creator cooldown: {trade_doc['creator'][:8]}… locked out for {cc_min:.0f} min after a stopped-out snipe")
         # === Creator-greylist instrumentation ===
         # Compute rug metrics at close time so the greylist scorer has the
         # data it needs WITHOUT a separate analytics pipeline. Only meaningful

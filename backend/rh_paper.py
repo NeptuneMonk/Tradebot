@@ -185,8 +185,12 @@ class RHPaperTrader:
     def _scan_entries(self, now: float):
         self.stats["last_scan_ts"] = now
         focus_block = self._focus_blocks_fresh(now)
+        ld = getattr(self.state, "live_doctor", None)
+        benched = bool(ld is not None and ld.book_paused("rh_pons"))
         for token, b in list(self.state.rh_discovery.tracking.items()):
             reason = self._gates(token, b, now)
+            if reason is None and benched:
+                reason = "doctor-breaker"   # would have entered — rh_pons is benched by the live-doctor breaker (LIFT to override)
             if reason is None and focus_block:
                 reason = focus_block   # would have entered — deferred by hot focus
                 self.stats["focus_deferred"] = self.stats.get("focus_deferred", 0) + 1
@@ -211,7 +215,7 @@ class RHPaperTrader:
     def _ledger(b: dict, now: float, reason: str):
         """Decision ledger: record each gate verdict transition (ts, reason, price) so the replay can score
         every gate by what the token did afterwards. Only transitions are kept — ~12 per token max."""
-        if reason in ("already-entered", "max-positions", "unpriced-quote", "stale", "graduated"):
+        if reason in ("already-entered", "max-positions", "unpriced-quote", "stale", "graduated", "doctor-breaker"):
             return
         log = b.setdefault("decisions", [])
         if log and log[-1][1] == reason:

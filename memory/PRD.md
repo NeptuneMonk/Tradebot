@@ -1789,3 +1789,9 @@ Audit of the running preview (sign-on → feeds → gates → trading → Doctor
 - ✅ `/api/bot/status.total_trades_today` compares BSON dates (was string-only → always 0). Live: 0 → 13.
 - ℹ️ Not changed: RH `curve:mc` dominates skips (tuning call); "RH NOT TRADING — bot STOPPED" at boot is accurate (safety rule disables the bot on restart).
 - Tests: `tests/test_audit_fixes.py` (5) + 174 regression green.
+
+
+## Feed follow-ups (2026-09-13)
+- ✅ rh_pons benched by the live-doctor breaker now surfaces as `gate: doctor-breaker` on RH feed rows (was `gate ✓` with a per-second skip log line per token — 1 357 lines in 15 min); tallied as `curve:doctor-breaker`.
+- ✅ Sniper creator cooldown: a `greylist_snipe` that stops out locks the CREATOR out for `snipe_creator_cooldown_minutes` (30) — the $CAT creator relaunched 54 s after a −36% stop and was sniped again for −40%. Skip reason `snipe-creator-cooldown`.
+- ℹ️ Config observation: `greylist_snipe_require_classified_pattern=False` + `research_mode=True` with `research_min_score=0` lets the sniper fire on `pattern=unknown` creators (the bucket the code notes as 4/45 wins). Left for the operator.

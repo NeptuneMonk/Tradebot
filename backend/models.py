@@ -297,6 +297,7 @@ class BotConfig(BaseModel):
     # momentum already reversed; the next 5 minutes are statistically the
     # worst time to re-enter. Set to 0 to disable.
     sl_cooldown_minutes: float = 5.0
+    snipe_creator_cooldown_minutes: float = 30.0   # after a sniped launch stops out, ignore that creator's relaunches
     # Distribution-vacuum gate: reject tokens where ALL tracked holders appeared
     # within the most-recent holder-velocity window. Classic insider-distribution
     # tell — creator pre-distributes to many wallets, no organic flow follows.
