@@ -2509,6 +2509,9 @@ class BotState:
             return
         if not is_manual and self.live_doctor is not None and self.live_doctor.book_paused(book):
             logger.info(f"book {book} paused by live-doctor breaker: skipping {launch.mint[:8]}…")
+            _band = "seasoned" if (self.tracking.get(launch.mint) or {}).get("protocol") == "pumpswap" else "new"
+            await self._skip_event({"mint": launch.mint, "symbol": launch.symbol, "band": _band, "reason": f"doctor-breaker:{book}",
+                                    "details": [(getattr(self.live_doctor, "last_book_breakers", {}).get(book) or {}).get("reason") or "book paused"]})
             return
         async with self._entry_gate_lock:
             if launch.mint in self.active_trades or launch.mint in self._pending_entry_mints:
