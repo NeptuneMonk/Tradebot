@@ -656,6 +656,9 @@ class WalletInfo(BaseModel):
     sol_balance: float
     usd_balance: float
     sol_price_usd: float
+    integrity_ok: bool = True           # plain system account with no data (see wallet_integrity.py)
+    integrity_kind: str | None = None   # system | nonce-account | data-carrying | foreign-owner | unfunded
+    integrity_reason: str | None = None
 
 
 # Desired-state feed keys: owned by the operator's toggles ONLY. Start/stop, config import, doctor and brain sync

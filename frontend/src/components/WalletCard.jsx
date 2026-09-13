@@ -52,6 +52,12 @@ function WalletCard({ wallet }) {
       </div>
 
       <div className="space-y-1">
+        {wallet && wallet.integrity_ok === false && (
+          <div className="border border-rose-700 bg-rose-950/50 text-rose-200 text-[11px] font-mono px-2 py-1.5 leading-snug" data-testid="wallet-integrity-alert">
+            <span className="uppercase tracking-[0.15em] text-rose-400 mr-1">wallet compromised · {wallet.integrity_kind}</span>
+            {wallet.integrity_reason}
+          </div>
+        )}
         <div className="text-3xl font-mono font-semibold tracking-tight" data-testid="wallet-sol-balance">
           {wallet ? wallet.sol_balance.toFixed(4) : "—"} <span className="text-neutral-500 text-base">SOL</span>
         </div>

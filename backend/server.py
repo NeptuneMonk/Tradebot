@@ -276,14 +276,17 @@ async def root():
 # ---------- Wallet ----------
 @api.get("/wallet", response_model=WalletInfo)
 async def wallet_info():
+    import wallet_integrity
     pubkey = wallet.get_pubkey_str()
     sol = await get_sol_balance(pubkey)
     price = await get_sol_usd_price()
+    integ = await wallet_integrity.check(pubkey)
     return WalletInfo(
         public_key=pubkey,
         sol_balance=sol,
         usd_balance=sol * price,
         sol_price_usd=price,
+        integrity_ok=bool(integ["ok"]), integrity_kind=integ.get("kind"), integrity_reason=integ.get("reason"),
     )
 
 
@@ -604,6 +607,11 @@ async def update_config(body: dict = Body(...)):
     if cfg.rh_live_trading and not bot_state.config.rh_live_trading:
         bot_state.rh_paper.live_kill_tripped = False
         logger.warning("RH LIVE TRADING ENABLED — ETH-quoted PONS curves will be bought with real ETH")
+    if cfg.live_trading and not bot_state.config.live_trading:
+        import wallet_integrity
+        integ = await wallet_integrity.check(wallet.get_pubkey_str())
+        if not integ["ok"]:
+            raise HTTPException(409, f"refusing to arm Solana live trading: {integ['reason']}")
     cfg.sweep_interval_days = max(1, min(90, int(cfg.sweep_interval_days)))
     cfg.sweep_min_usd = max(1.0, min(100_000.0, float(cfg.sweep_min_usd)))
     cfg.sweep_reserve_sol = max(0.01, min(10.0, float(cfg.sweep_reserve_sol)))
