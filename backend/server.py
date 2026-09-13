@@ -852,6 +852,7 @@ async def bot_status():
         enabled=bot_state.config.enabled,
         live_trading=bot_state.config.live_trading,
         kill_switch_tripped=bot_state.kill_switch_tripped,
+        books_paused=dict(bot_state.live_doctor.book_paused_until) if getattr(bot_state, "live_doctor", None) else {},
         listener_connected=listener.connected,
         helius_paused=_gate_snapshot(),
         listener_last_error=listener.last_error,

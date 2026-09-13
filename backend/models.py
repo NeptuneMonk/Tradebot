@@ -667,6 +667,7 @@ class BotStatus(BaseModel):
     enabled: bool                       # master run — entries allowed
     live_trading: bool
     kill_switch_tripped: bool
+    books_paused: dict[str, float] = {}  # live-doctor breaker: book → lift_after ts (entries blocked for that book)
     listener_connected: bool            # ACTUAL Pump.fun WS
     helius_paused: dict = {}            # gate snapshot: paused / manual / auto / auto_reason
     listener_last_error: Optional[str] = None

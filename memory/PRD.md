@@ -1802,3 +1802,9 @@ Audit of the running preview (sign-on → feeds → gates → trading → Doctor
 - ✅ Stamped: Pump `entry_ctx.creator_sol/creator_sold_pct`; RH `plan.creator_eth/creator_sold_pct`; RH launch payload → feed chip `creator 0.114 eth · dumped 0%`. RH `_gates` returns the cached verdict for the TTL (no re-entry/log spam). No RPC in `poll_once`; no holder enumeration; cost gate / graduation / singleton untouched.
 - ✅ Tests `tests/test_creator_solvency.py` (7) + 80 regression. Live: WONIYA entered (0.114 ETH), T240 0.0458 / SPRING 0.0473 ETH refused. NOTE: many PONS deployers sit just under 0.05 ETH — threshold may want to be 0.04.
 - 🟡 Not this pass (by spec): dump-flatten of open positions, Doctor auto-disable of the gate, top-holder / external portfolio lookups.
+
+## Breaker visibility + operator lift respected (2026-09-13)
+- Finding: hunt breaker armed 04:10 (payoff 0.42, n=8 sniper stop-outs) → user lifted 04:33 → Doctor re-armed 04:46 on the SAME 4 h evidence → lifted again 04:47. Only the amber HaltBanner showed it; header pill said RUNNING.
+- ✅ Header pill now `RUNNING · HUNT BENCHED` (amber) when any book is paused; `/api/bot/status.books_paused` (also on the WS status push). HaltBanner polls every 10 s (was 30 s).
+- ✅ `live_doctor`: after a user lift the breaker is not re-armed until `BREAKER_REARM_MIN_NEW=4` new closes land after `lifted_at` (`lift_respected` in book_breakers). Solana breaker refusals tallied as `doctor-breaker:<book>` in `/api/scanner/skips`.
+- ⚠️ Regression I introduced+fixed in the same session: `bot/status` 500ed ~2 min (dropped `listener_connected=`). Tests `tests/test_breaker_visibility.py` (2).

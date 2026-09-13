@@ -380,14 +380,25 @@ export default function Dashboard() {
                 }
               }}
               className={`px-2.5 py-1 border text-[11px] font-mono uppercase tracking-wider transition-colors duration-100 ${
-                status.enabled
+                status.enabled && Object.keys(status.books_paused || {}).length > 0
+                  ? "border-amber-600/70 text-amber-200 bg-amber-950/40 hover:bg-amber-900/40"
+                  : status.enabled
                   ? "border-emerald-700/60 text-emerald-300 hover:bg-emerald-950/40"
                   : "border-rose-800/60 text-rose-300 hover:bg-rose-950/40"
               }`}
-              title={status.enabled ? "Bot is RUNNING — click to stop" : "Bot is STOPPED — click to start"}
+              title={status.enabled
+                ? (Object.keys(status.books_paused || {}).length > 0
+                  ? `Bot is RUNNING but the live-doctor breaker has benched: ${Object.keys(status.books_paused).join(", ")} — no new entries for those books (see the amber strip below to LIFT). Click to stop.`
+                  : "Bot is RUNNING — click to stop")
+                : "Bot is STOPPED — click to start"}
+              data-testid="bot-status-pill"
             >
-              <span className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 ${status.enabled ? "bg-emerald-500 animate-pulse" : "bg-rose-500"}`} />
-              {status.enabled ? "RUNNING" : "STOPPED"}
+              <span className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 ${status.enabled ? (Object.keys(status.books_paused || {}).length > 0 ? "bg-amber-400 animate-pulse" : "bg-emerald-500 animate-pulse") : "bg-rose-500"}`} />
+              {status.enabled
+                ? (Object.keys(status.books_paused || {}).length > 0
+                  ? `RUNNING · ${Object.keys(status.books_paused).map((b) => b.replace("_", " ")).join(" + ")} BENCHED`
+                  : "RUNNING")
+                : "STOPPED"}
             </button>
           )}
           <span className="hidden lg:inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-neutral-500" data-testid="minimize-all-group">

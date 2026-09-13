@@ -59,6 +59,17 @@ FULL_MIN_WINNER = 60.0
 HALF_IF_EXIT_LIQ_AT_LEAST = 50.0
 DECISION_MULT = {"skip": 0.0, "half": 0.5, "full": 1.0}
 BREAKER_MIN_N = 8
+BREAKER_REARM_MIN_NEW = 4      # after an operator lift: this many NEW closes before the same window can re-arm the breaker
+
+
+def _exit_ts(t: dict) -> float | None:
+    v = t.get("exit_time")
+    if not v:
+        return None
+    try:
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
 HUNT_COLD_START_FILLS = 10   # below this many hunt fills (7d) the doctor has no hunt archetype → "half", never "skip"
 BREAKER_PAUSE_S = 4 * 3600
 
@@ -260,6 +271,15 @@ class LiveDoctor:
             elif med_mfe_r is not None and med_mfe_r < FIRST_TARGET_R[book]:
                 reason = f"median MFE {med_mfe_r:.2f}R < first target {FIRST_TARGET_R[book]:g}R — target unreachable"
             if reason:
+                prior = self.breakers.get(book) or {}
+                if prior.get("lifted_by") == "user" and not prior.get("paused"):
+                    # the operator lifted this breaker: don't re-arm on the same evidence — wait for new closes since the lift
+                    lifted_at = float(prior.get("lifted_at") or 0)
+                    fresh = [t for t in rows if float(_exit_ts(t) or 0) > lifted_at]
+                    if len(fresh) < BREAKER_REARM_MIN_NEW:
+                        out[book] = {"n": len(rows), "payoff": payoff, "median_mfe_r": med_mfe_r, "paused": False, "reason": None,
+                                     "lift_respected": f"lifted by user; {len(fresh)}/{BREAKER_REARM_MIN_NEW} new closes before re-arm"}
+                        continue
                 await self.arm_breaker(book, reason, payoff)
                 logger.warning(f"live-doctor breaker: pausing {book} — {reason}")
             out[book] = {"n": len(rows), "payoff": payoff, "median_mfe_r": med_mfe_r, "paused": bool(reason), "reason": reason}
