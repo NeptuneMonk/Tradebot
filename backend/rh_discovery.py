@@ -305,7 +305,7 @@ class RHDiscovery:
                 backoff = min(30.0, backoff * 2)
                 self.stats["errors"] += 1
                 self.stats["last_error"] = str(e)[:200]
-                logger.warning(f"rh_discovery poll error: {e}")
+                logger.warning(f"rh_discovery poll error: {e!r}")
                 if "exceeds limit" in str(e) or "query returned more than" in str(e):
                     # The cursor is too far behind head (stale after a restart / outage): a stale window is
                     # worthless for a live scanner — resync from a fresh head instead of failing forever.

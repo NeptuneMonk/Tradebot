@@ -1815,3 +1815,5 @@ Audit of the running preview (sign-on → feeds → gates → trading → Doctor
 - ✅ Entry lock re-entrant for the same pod (`claim_entry_lock` checks the lock's `pod`) — a rejected queued RH paper buy no longer produces a 1 Hz "another pod holds the entry lock" storm for the 2-min TTL (796 lines).
 
 - ✅ `live_doctor.decide`: skip only when winner likeness < 40 AND exit-liquidity likeness > winner likeness; ties / weak-but-not-worse → half size (was: any winner < 40 → skip, which starved scalp at 28/28).
+
+- ✅ Live P/L over WS: `_push_live_pnl` broadcasts `trade_update` (unrealized_pnl_pct, current/peak price, drawdown, live curve/MC) every 2 s per open Solana position — the Active Trades table showed "—" because the UI never polls /api/trades/active while the WS is healthy and nothing pushed prices.

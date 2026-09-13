@@ -3101,6 +3101,25 @@ class BotState:
         await hub.broadcast("trade_enter", trade.model_dump())
         asyncio.create_task(self._monitor_position(launch.mint))
 
+    def _push_live_pnl(self, mint: str, slot: dict, trade_doc: dict, cur: float) -> None:
+        """Live P/L tick for the Active Trades table over WS (throttled 2 s/position). While the WS is healthy the UI
+        never polls /api/trades/active, so without this an open position showed '—' until some state change."""
+        now = time.time()
+        if now - float(slot.get("_pnl_push_ts") or 0) < 2.0:
+            return
+        entry = float(trade_doc.get("entry_price_sol") or 0)
+        if cur <= 0 or entry <= 0:
+            return
+        slot["_pnl_push_ts"] = now
+        peak = float(slot.get("peak_price_sol") or cur)
+        tb = self.tracking.get(mint) or {}
+        asyncio.create_task(hub.broadcast("trade_update", {
+            "id": trade_doc["id"], "mint": mint, "current_price_sol": cur,
+            "unrealized_pnl_pct": round((cur - entry) / entry * 100.0, 2), "peak_price_sol": peak,
+            "drawdown_from_peak_pct": round((peak - cur) / peak * 100.0, 1) if peak > 0 else None,
+            "live_curve_fill_pct": tb.get("curve_fill_pct") or 0, "live_usd_market_cap": tb.get("usd_market_cap") or 0}))
+
+
     async def claim_entry_lock(self, mint: str, chain: str = "solana") -> bool:
         """Insert-only lock (`entry_locks/_id=chain:mint`, TTL 2 min). DuplicateKey = another pod is buying this mint.
         Re-entrant for the SAME pod: a queued paper buy that was rejected at fill time must be able to retry without
@@ -3662,6 +3681,7 @@ class BotState:
                 if cur_price_sol > peak_mon:
                     peak_mon = cur_price_sol
                     slot["peak_price_sol"] = cur_price_sol
+                self._push_live_pnl(mint, slot, trade_doc, cur_price_sol)
 
                 # Bail out of this tick if another exit (fast-exit path or a
                 # prior monitor tick) is already in flight — they're operating
