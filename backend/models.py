@@ -46,6 +46,7 @@ class BotConfig(BaseModel):
     rh_paper_enabled: bool = False
     # Live EVM execution on RH (ETH-quoted curves only). Independent of Solana live_trading.
     rh_live_trading: bool = False
+    rh_live_erc20_quotes: bool = False     # live buys on USDG/stock-quoted curves + pools (wallet must hold the quote asset)
     rh_live_slippage_pct: float = 8.0
     rh_gas_reserve_eth: float = 0.002      # never spend below this ETH balance (gas for exits)
     rh_daily_kill_switch_usd: float = 20.0 # live RH realised loss today → rh_live_trading auto-off

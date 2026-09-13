@@ -138,8 +138,8 @@ class RHPaperTrader:
                 return "rh-seasoned-stale"
             if now - float(b.get("graduated_at") or b["start"]) > float(getattr(cfg, "rh_seasoned_max_age_min", 60.0) or 60.0) * 60:
                 return "rh-seasoned-age"
-            # live entries here go through rh_dex.buy (ETH → token on the v4 pool); live_ok already keeps ERC-20-quoted
-            # curves paper-only, so nothing extra to refuse
+            # live entries here go through rh_dex.buy (quote → token on the v4 pool); ERC-20 quotes need rh_live_erc20_quotes
+            # and a wallet that already holds the quote (checked in _live_buy), so nothing extra to refuse here
         blk = getattr(self.state, "search_regime_block", lambda: None)()
         if blk:
             return blk
@@ -222,6 +222,19 @@ class RHPaperTrader:
 
     def _quote_usd(self, sym: str) -> float:
         return self.state.rh_discovery._quote_usd(sym)
+
+    @staticmethod
+    def _quote_asset(b_or_t: dict) -> tuple[str, int]:
+        """(pair_token, decimals) of the quote a bucket / trade is denominated in — native ETH when unknown."""
+        pair = b_or_t.get("pair_token")
+        if pair:
+            return pair, int(b_or_t.get("quote_decimals") or 18)
+        from rh_discovery import quote_of
+        return quote_of(b_or_t.get("quote_symbol"))
+
+    @classmethod
+    def _qscale(cls, b_or_t: dict) -> float:
+        return float(10 ** cls._quote_asset(b_or_t)[1])
 
     def _launch_rate(self, now: float) -> float:
         from rh_discovery import launch_rate_per_h
@@ -436,8 +449,8 @@ class RHPaperTrader:
             if not manual and ld is not None and ld.book_paused("rh_pons"):
                 logger.info(f"rh_paper skip {token[:10]}: rh_pons paused by live-doctor breaker")
                 return
-            if not b or b.get("graduated") or token in self.entered:
-                return
+            if not b or token in self.entered or (b.get("graduated") and not b.get("pool_live")):
+                return                                    # seasoned buckets trade on their live v4 pool; no pool → nothing to buy
             price = b["last_price_quote"]
             quote_usd = self._quote_usd(b["quote_symbol"])
             if price <= 0 or quote_usd <= 0:
@@ -462,6 +475,11 @@ class RHPaperTrader:
             depth_usd = float(b.get("net_quote") or 0) * quote_usd
             tol_bps = int(float(getattr(cfg, "rh_live_slippage_pct", 8.0)) * 100)
             exit_slip_pct = _cg.expected_slip_pct(base_stake, depth_usd, tol_bps)
+            measured_rt = None
+            if b.get("graduated"):
+                # post-sweep: ask the pool itself (V4Quoter buy → sell at our size) — hook take + our impact, not a model
+                measured_rt = await self._pool_round_trip_pct(token, b, base_stake / quote_usd)
+                exit_slip_pct = measured_rt / 2.0
             sz = _rs.size_trade(bankroll_usd=bank_usd, risk_per_trade_pct=float(cfg.risk_per_trade_pct), sl_pct=bx0["stop_loss_pct"],
                                 exit_slip_pct=exit_slip_pct, book_mult=max(0.0, float(getattr(cfg, "book_rh_size_mult", 1.0) or 1.0)) * max(0.1, float(size_mult)),
                                 doctor_mult=1.0, governor_mult=(_gov.size_mult("rh") if _gov else 1.0),
@@ -472,17 +490,20 @@ class RHPaperTrader:
                 return
             first_r = float(bx0["target_r"]) if bx0["target_r"] else float(bx0["take_profit_pct"]) / sz["sl_pct_with_slip"]   # RH: TP% is the first cash-out
             q = _cg.quote(size_usd=sz["size_usd"], r_usd=sz["r_usd"], first_target_r=first_r, protocol="rh", entry_slip_bps=tol_bps,
-                          exit_slip_bps=tol_bps, fee_usd_round_trip=2 * self._paper_gas_usd(), ladder=False, depth_usd=depth_usd)
+                          exit_slip_bps=tol_bps, fee_usd_round_trip=2 * self._paper_gas_usd(), ladder=False, depth_usd=depth_usd,
+                          measured_round_trip_pct=measured_rt)
             if not q["cost_gate_pass"]:
-                logger.info(f"rh_paper skip {b['symbol']}: cost-gate — {q['cost_gate_reason']}")
+                self.stats["cost_gate_skips"] = self.stats.get("cost_gate_skips", 0) + 1
+                logger.info(f"rh_paper skip {b['symbol']}: cost-gate — {q['cost_gate_reason']}" + (f" (pool round trip {measured_rt:.2f}%)" if measured_rt is not None else ""))
                 return
             stake_usd = sz["size_usd"]
             stake_quote = stake_usd / quote_usd
-            ctx = {"reentry": reentry, "reentry_ctx": reentry_ctx, "manual": manual,
+            ctx = {"reentry": reentry, "reentry_ctx": reentry_ctx, "manual": manual, "seasoned": bool(b.get("graduated")),
                    "plan": {"r_usd": sz["r_usd"], "r_usd_nominal": sz["r_usd_nominal"], "size_usd": sz["size_usd"], "size_clamped": sz["size_clamped"],
                             "sl_pct": bx0["stop_loss_pct"], "sl_pct_with_slip": sz["sl_pct_with_slip"], "target_r": bx0["target_r"] or None,
                             "expected_cost_pct": q["expected_cost_pct"], "expected_cost_usd": q["expected_cost_usd"],
-                            "expected_target_pct": q["expected_target_pct"], "cost_gate_pass": True, "doctor_decision": "full"}}
+                            "expected_target_pct": q["expected_target_pct"], "cost_gate_pass": True, "doctor_decision": "full",
+                            "pool_round_trip_pct": measured_rt}}
             claim = getattr(self.state, "claim_entry_lock", None)
             if claim is not None and not await claim(token, CHAIN):
                 logger.warning(f"rh_paper {token[:10]}: another pod holds the entry lock — aborted before send")
@@ -548,7 +569,7 @@ class RHPaperTrader:
             self.pending_buys.pop(token, None)
             b = self.state.rh_discovery.tracking.get(token)
             reason = None
-            if not b or b.get("graduated"):
+            if not b or (b.get("graduated") and not pb["ctx"].get("seasoned")):
                 reason = "graduated before fill"
             else:
                 fill = pb["decision_price"]
@@ -578,13 +599,17 @@ class RHPaperTrader:
             reentry, reentry_ctx, manual = ctx.get("reentry"), ctx.get("reentry_ctx"), ctx.get("manual")
             if live_fill:
                 mode = "live"
-                stake_quote = live_fill["quote_wei"] / 1e18
+                stake_quote = live_fill["quote_wei"] / self._qscale(b)
                 tokens = live_fill["tokens_raw"] / 1e18
                 price = stake_quote / tokens if tokens > 0 else price
             else:
                 mode = "paper"
                 k0 = b.get("curve_k0")
-                if k0 and b.get("curve_a"):
+                if b.get("graduated"):
+                    # pool fill: the hook take, not the curve fee; the round trip was priced from the quoter at decision time
+                    fee = POOL_FEE_FRACTION
+                    tokens = stake_quote * (1.0 - fee) / price
+                elif k0 and b.get("curve_a"):
                     # exact curve at the fill price: our own buy moves the price too
                     a = (price * k0) ** 0.5
                     a2 = a + stake_quote * (1.0 - fee)
@@ -602,10 +627,11 @@ class RHPaperTrader:
                 protocol=PROTOCOL, classifier_action=ENTRY_ACTION, risk_score=50,
                 chain=CHAIN, quote_symbol=b["quote_symbol"], entry_quote=stake_quote,
                 entry_price_quote=price,
-                fees_usd=((live_fill["fee_wei"] + live_fill["gas_cost_wei"]) / 1e18 * quote_usd) if live_fill
+                fees_usd=(live_fill["fee_wei"] / self._qscale(b) * quote_usd + live_fill["gas_cost_wei"] / 1e18 * self._quote_usd("ETH")) if live_fill
                          else stake_quote * fee * quote_usd + self._paper_gas_usd(),
             )
             doc = trade.model_dump()
+            doc["pair_token"], doc["quote_decimals"] = self._quote_asset(b)
             if b.get("graduated"):
                 doc["venue"], doc["graduated_during_hold"] = "pool", False   # entered post-sweep: priced & exited on the v4 pool
             first = float(b.get("first_price_quote") or 0.0)
@@ -621,7 +647,7 @@ class RHPaperTrader:
             }
             if live_fill:
                 doc.update({"entry_sig": live_fill["tx"], "entry_tokens_raw": str(live_fill["tokens_raw"]), "curve": b.get("curve"),
-                            "entry_gas_usd": live_fill["gas_cost_wei"] / 1e18 * quote_usd,
+                            "entry_gas_usd": live_fill["gas_cost_wei"] / 1e18 * self._quote_usd("ETH"),
                             "entry_latency_s": live_fill["latency_s"], "entry_block": live_fill["block"]})
             else:
                 doc.update({"entry_block": fill_block, "entry_decision_price_quote": decision_price})
@@ -670,8 +696,28 @@ class RHPaperTrader:
     # ---------- live execution ----------
     def live_ok(self, b: dict) -> bool:
         cfg = self.state.config
-        return bool(getattr(cfg, "rh_live_trading", False)) and b.get("quote_symbol") == "ETH" \
-            and not self.live_kill_tripped
+        if not getattr(cfg, "rh_live_trading", False) or self.live_kill_tripped:
+            return False
+        sym = b.get("quote_symbol")
+        if sym == "ETH":
+            return True
+        # ERC-20 quotes (USDG, tokenized stocks): opt-in, and only when the quote is known and USD-priced
+        return bool(getattr(cfg, "rh_live_erc20_quotes", False)) and sym not in (None, "?") \
+            and not rh_dex.is_native(b.get("pair_token")) and self._quote_usd(sym) > 0
+
+    async def _pool_round_trip_pct(self, token: str, b: dict, stake_quote: float) -> float:
+        """Real friction of a pool round trip at our size from the V4Quoter; falls back to the hook-take model."""
+        pair, dec = self._quote_asset(b)
+        try:
+            rt = await asyncio.wait_for(rh_dex.round_trip(token, max(1, int(stake_quote * 10 ** dec)), pair), timeout=4.0)
+            self.stats["pool_quotes"] = self.stats.get("pool_quotes", 0) + 1
+            b["pool_round_trip_pct"] = rt["cost_pct"]
+            return float(rt["cost_pct"])
+        except Exception as e:
+            self.stats["pool_quote_failures"] = self.stats.get("pool_quote_failures", 0) + 1
+            logger.debug(f"rh_dex round-trip quote failed {token[:10]}: {e}")
+            import cost_gate as _cg
+            return 2 * POOL_FEE_FRACTION * 100.0 + _cg.ADVERSE_FILL_PCT
 
     async def live_pnl_today_usd(self) -> float:
         since = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
@@ -684,19 +730,31 @@ class RHPaperTrader:
     async def _live_buy(self, token: str, b: dict, stake_quote: float, price: float) -> dict | None:
         cfg = self.state.config
         try:
+            pair, dec = self._quote_asset(b)
+            native = rh_dex.is_native(pair)
             bal = await rh_wallet.balance_wei()
             reserve = int(float(cfg.rh_gas_reserve_eth) * 1e18)
-            quote_wei = int(stake_quote * 1e18)
-            if bal - quote_wei < reserve:
+            quote_raw = int(stake_quote * 10 ** dec)
+            if native and bal - quote_raw < reserve:
                 logger.warning(f"rh_live skip {b.get('symbol')}: balance {bal / 1e18:.5f} ETH < stake {stake_quote:.5f} + reserve")
                 return None
+            if not native:
+                # ERC-20 quote: the wallet must already hold it (no ETH→quote conversion here) and keep ETH for gas
+                held = await rh_wallet.erc20_balance(pair)
+                if held < quote_raw or bal < reserve:
+                    self.stats["quote_balance_skips"] = self.stats.get("quote_balance_skips", 0) + 1
+                    self.last_live_error = (f"buy {b.get('symbol')}: wallet holds {held / 10 ** dec:.4f} {b.get('quote_symbol')} "
+                                            f"< stake {stake_quote:.4f} (or ETH below gas reserve)")
+                    logger.warning(f"rh_live skip {self.last_live_error}")
+                    return None
             if b.get("graduated"):
-                # post-sweep: the curve is gone — buy on the v4 pool (ETH → token, no approval needed)
-                fill = await rh_dex.buy(token, quote_wei, float(cfg.rh_live_slippage_pct))
+                # post-sweep: the curve is gone — buy on the v4 pool (quote → token; ERC-20 quotes go through Permit2)
+                fill = await rh_dex.buy(token, quote_raw, float(cfg.rh_live_slippage_pct), quote=pair)
             else:
-                fill = await rh_live.buy(b["curve"], quote_wei, price, float(cfg.rh_live_slippage_pct))
+                fill = await rh_live.buy(b["curve"], quote_raw, price, float(cfg.rh_live_slippage_pct),
+                                         quote_token=None if native else pair, quote_decimals=dec)
             self.stats["live_buys"] = self.stats.get("live_buys", 0) + 1
-            logger.warning(f"rh_live BUY {b.get('symbol')} {token[:10]} {fill['quote_wei'] / 1e18:.5f} ETH → {fill['tokens_raw'] / 1e18:,.0f} tokens tx={fill['tx'][:12]} ({fill['latency_s']}s)")
+            logger.warning(f"rh_live BUY {b.get('symbol')} {token[:10]} {fill['quote_wei'] / 10 ** dec:.5f} {b.get('quote_symbol')} → {fill['tokens_raw'] / 1e18:,.0f} tokens tx={fill['tx'][:12]} ({fill['latency_s']}s)")
             return fill
         except Exception as e:
             self.stats["live_errors"] = self.stats.get("live_errors", 0) + 1
@@ -710,11 +768,12 @@ class RHPaperTrader:
         b = self.state.rh_discovery.tracking.get(token) or {}
         curve = t.get("curve") or b.get("curve") or token
         pool = bool(b.get("graduated")) or t.get("venue") == "pool"
+        pair, dec = self._quote_asset(b if b.get("pair_token") else t)
         try:
             on_chain = await rh_wallet.erc20_balance(token)
             if on_chain == 0:
                 # nothing left to sell — the sell may have landed without being booked (restart mid-exit)
-                fill = await (rh_dex.recover_sell(token, int(t.get("entry_block") or 0)) if pool
+                fill = await (rh_dex.recover_sell(token, int(t.get("entry_block") or 0), pair, dec) if pool
                               else rh_live.recover_sell(curve, int(t.get("entry_block") or 0)))
                 if fill:
                     self.stats["live_sells"] = self.stats.get("live_sells", 0) + 1
@@ -730,11 +789,11 @@ class RHPaperTrader:
             try:
                 slip = float(cfg.rh_live_slippage_pct) * (attempt + 1)
                 if pool:
-                    fill = await rh_dex.sell(token, raw, slip)
+                    fill = await rh_dex.sell(token, raw, slip, quote=pair)
                 else:
                     fill = await rh_live.sell(curve, raw, price, slip, token=token)
                 self.stats["live_sells"] = self.stats.get("live_sells", 0) + 1
-                logger.warning(f"rh_live SELL {t.get('symbol')} {token[:10]} {fill['quote_wei'] / 1e18:.5f} ETH tx={fill['tx'][:12]} "
+                logger.warning(f"rh_live SELL {t.get('symbol')} {token[:10]} {fill['quote_wei'] / 10 ** dec:.5f} {t.get('quote_symbol') or 'ETH'} tx={fill['tx'][:12]} "
                                f"({fill['latency_s']}s){' [pool]' if pool else ''}")
                 return fill
             except Exception as e:
@@ -743,7 +802,7 @@ class RHPaperTrader:
                 if not pool and attempt == 0:
                     # the curve may have been swept between our poll and this tx — pool initialised ⇒ graduated
                     try:
-                        if await rh_dex.spot_price(token) > 0:
+                        if await rh_dex.spot_price(token, pair, dec) > 0:
                             pool = True
                             b["graduated"] = True
                             t["venue"] = "pool"
@@ -791,10 +850,11 @@ class RHPaperTrader:
         """Paper fill on the pool: the real V4Quoter output for our size, else spot minus the hook take."""
         tokens = float(t.get("entry_tokens") or 0.0)
         fee = POOL_FEE_FRACTION
+        pair, dec = self._quote_asset(t)
         try:
-            out = await asyncio.wait_for(rh_dex.quote_sell(token, int(tokens * 1e18)), timeout=4.0)
+            out = await asyncio.wait_for(rh_dex.quote_sell(token, int(tokens * 1e18), pair), timeout=4.0)
             if out > 0:
-                return out / 1e18, fee
+                return out / 10 ** dec, fee
         except Exception as e:
             logger.debug(f"rh_dex paper quote failed {token[:10]}: {e}")
         return tokens * price * (1.0 - fee), fee
@@ -940,8 +1000,9 @@ class RHPaperTrader:
             return False
         pos["_rehydrate_next"] = now + REHYDRATE_RETRY_S
         t = pos["trade"]
+        pair, dec = self._quote_asset(t)
         try:
-            spot = await asyncio.wait_for(rh_dex.spot_price(token), timeout=6.0)
+            spot = await asyncio.wait_for(rh_dex.spot_price(token, pair, dec), timeout=6.0)
         except Exception as e:
             logger.debug(f"rh rehydrate probe failed {token[:10]}: {e}")
             return False
@@ -949,7 +1010,7 @@ class RHPaperTrader:
             return False
         disc = self.state.rh_discovery
         b = disc._new_bucket({"token": token, "curve": t.get("curve") or token, "deployer": t.get("creator") or "0x" + "0" * 40,
-                              "pair_token": "0x" + "0" * 40, "quote_symbol": t.get("quote_symbol") or "ETH", "quote_decimals": 18,
+                              "pair_token": pair, "quote_symbol": t.get("quote_symbol") or "ETH", "quote_decimals": dec,
                               "graduation_threshold": 0.0, "block": int(t.get("entry_block") or 0)}, start=pos.get("opened") or now)
         b.update(symbol=t.get("symbol"), name=t.get("name"), graduated=True, graduated_at=now, curve_fill_pct=100.0,
                  first_price_quote=spot, last_price_quote=spot, rehydrated=True, published=True)
@@ -1015,10 +1076,10 @@ class RHPaperTrader:
                 fill = await self._live_buy(token, b, add_quote, price)
                 if fill is None:
                     return
-                add_quote = fill["quote_wei"] / 1e18
+                add_quote = fill["quote_wei"] / self._qscale(b)
                 tokens = fill["tokens_raw"] / 1e18
                 t["entry_tokens_raw"] = str(int(t.get("entry_tokens_raw") or 0) + fill["tokens_raw"])
-                t["fees_usd"] = float(t.get("fees_usd") or 0) + (fill["fee_wei"] + fill["gas_cost_wei"]) / 1e18 * quote_usd
+                t["fees_usd"] = float(t.get("fees_usd") or 0) + fill["fee_wei"] / self._qscale(b) * quote_usd + fill["gas_cost_wei"] / 1e18 * self._quote_usd("ETH")
             else:
                 k0 = b.get("curve_k0")
                 if k0 and b.get("curve_a"):
@@ -1179,8 +1240,8 @@ class RHPaperTrader:
                     pos.pop("_fill_task", None)
                     t["exit_error"] = self.last_live_error
                     return
-                proceeds_quote = live_fill["quote_wei"] / 1e18
-                gas_usd = live_fill["gas_cost_wei"] / 1e18 * quote_usd
+                proceeds_quote = live_fill["quote_wei"] / self._qscale(t)
+                gas_usd = live_fill["gas_cost_wei"] / 1e18 * self._quote_usd("ETH")
                 price = proceeds_quote / t["entry_tokens"] if t.get("entry_tokens") else price
                 exit_usd = max(0.0, proceeds_quote * quote_usd - gas_usd)
                 t.update({"exit_sig": live_fill["tx"], "exit_gas_usd": gas_usd, "exit_latency_s": live_fill["latency_s"]})
@@ -1206,7 +1267,7 @@ class RHPaperTrader:
                 "status": "closed", "exit_time": now_utc().isoformat(), "exit_reason": reason,
                 "exit_usd": round(exit_usd, 6), "exit_quote": proceeds_quote, "exit_price_quote": price,
                 "pnl_usd": round(pnl_usd, 6), "pnl_pct": round(pnl_pct, 4),
-                "fees_usd": round((t.get("fees_usd") or 0.0) + ((live_fill["fee_wei"] + live_fill["gas_cost_wei"]) / 1e18 * quote_usd if live_fill
+                "fees_usd": round((t.get("fees_usd") or 0.0) + ((live_fill["fee_wei"] / self._qscale(t) * quote_usd + live_fill["gas_cost_wei"] / 1e18 * self._quote_usd("ETH")) if live_fill
                                                                  else proceeds_quote / (1 - fee) * fee * quote_usd + self._paper_gas_usd()), 6),
                 "peak_price_quote": pos["peak_price"],
                 "trough_price_quote": pos.get("trough_price", t["entry_price_quote"]),

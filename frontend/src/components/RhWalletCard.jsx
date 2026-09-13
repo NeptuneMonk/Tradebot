@@ -97,6 +97,20 @@ function RhWalletCard({ config }) {
             <div><div className="text-[9px] uppercase tracking-[0.15em] text-neutral-600">status</div><div className={w.live_kill_tripped ? "text-rose-300" : "text-neutral-200"}>{w.live_kill_tripped ? "RH kill switch tripped" : live ? "live · gas reserve " + w.gas_reserve_eth + " ETH" : "paper only"}</div></div>
           </div>
           {w.last_live_error && <div className="text-rose-400/90 text-[10px]">last live error: {w.last_live_error}</div>}
+          {(w.quote_balances || []).length > 0 && (
+            <div className="flex items-center gap-2 flex-wrap text-[10px]" data-testid="rh-wallet-quote-balances">
+              <span className="text-[9px] uppercase tracking-[0.15em] text-neutral-600">quote assets held</span>
+              {w.quote_balances.map((q) => (
+                <span key={q.symbol} className={`px-1.5 py-0.5 border ${q.amount > 0 ? "border-amber-800/70 text-amber-200" : "border-neutral-800 text-neutral-600"}`}
+                      title={w.erc20_live ? "spent by ERC-20 quote live buys" : "ERC-20 quote live buys are OFF — paper only"} data-testid={`rh-quote-balance-${q.symbol}`}>
+                  {q.amount.toLocaleString(undefined, { maximumFractionDigits: 4 })} {q.symbol}{q.usd != null ? ` · $${q.usd.toFixed(2)}` : ""}
+                </span>
+              ))}
+              <span className={`text-[9px] uppercase px-1.5 py-0.5 border ${w.erc20_live ? "border-amber-700 text-amber-300" : "border-neutral-800 text-neutral-600"}`} data-testid="rh-wallet-erc20-mode">
+                {w.erc20_live ? "erc-20 live" : "erc-20 paper"}
+              </span>
+            </div>
+          )}
           {w.fee_floor && (
             <div className={`text-[10px] ${w.stake_usd > 0 && w.stake_usd < w.fee_floor.min_stake_usd ? "text-amber-300" : "text-neutral-500"}`} data-testid="rh-wallet-fee-floor">
               stake ${Number(w.stake_usd ?? 0).toFixed(2)} · gas ≈ ${Number(w.fee_floor.gas_round_trip_usd).toFixed(2)}/round trip + {w.fee_floor.curve_fee_round_trip_pct}% curve fee → break-even ≈ +{(w.fee_floor.curve_fee_round_trip_pct + (w.stake_usd > 0 ? (w.fee_floor.gas_round_trip_usd / w.stake_usd) * 100 : 0)).toFixed(1)}%

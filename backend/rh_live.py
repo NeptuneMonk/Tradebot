@@ -35,38 +35,48 @@ def _trade_log(receipt: dict, contract: str, topic: str) -> tuple[int, int, int]
     return None
 
 
-async def quote_buy(curve: str, quote_wei: int, est_price_quote: float) -> int:
+async def quote_buy(curve: str, quote_wei: int, est_price_quote: float, quote_token: str | None = None,
+                    quote_decimals: int = 18) -> int:
     """Expected raw tokens out. Tries eth_call on buy(minOut=0) for the exact
-    return value; falls back to the feed price."""
+    return value; falls back to the feed price. `quote_wei` is raw quote units (ETH wei or ERC-20 raw)."""
     try:
         data = rh_wallet.calldata(BUY_SIG, ["uint256", "uint256", "address"], [quote_wei, 0, rh_wallet.address()])
-        res = await rh_wallet.simulate(curve, data, quote_wei)
+        res = await rh_wallet.simulate(curve, data, 0 if quote_token else quote_wei)
         if res and res != "0x":
             v = int(res[2:66], 16)
             if v > 0:
                 return v
     except Exception as e:
         logger.debug(f"rh_live quote_buy simulate failed {curve[:10]}: {e}")
-    return int(quote_wei / est_price_quote) if est_price_quote > 0 else 0
+    return int(quote_wei / 10 ** quote_decimals / est_price_quote * WEI) if est_price_quote > 0 else 0
 
 
-async def buy(curve: str, quote_wei: int, est_price_quote: float, slippage_pct: float) -> dict:
-    est_out = await quote_buy(curve, quote_wei, est_price_quote)
+async def buy(curve: str, quote_wei: int, est_price_quote: float, slippage_pct: float,
+              quote_token: str | None = None, quote_decimals: int = 18) -> dict:
+    """buy(amountIn, minOut, recipient). ETH-quoted curves take the input as msg.value; ERC-20-quoted curves pull it
+    with transferFrom (verified from live buys: Approval → Transfer to the curve inside the same tx), so approve first."""
+    approve_gas = 0
+    if quote_token:
+        approve_tx = await rh_wallet.ensure_allowance(quote_token, curve, quote_wei)
+        if approve_tx:
+            approve_gas = (await rh_wallet.wait_receipt(approve_tx))["gas_cost_wei"]
+    est_out = await quote_buy(curve, quote_wei, est_price_quote, quote_token, quote_decimals)
     if est_out <= 0:
         raise RuntimeError("cannot estimate tokens out")
     min_out = int(est_out * (1.0 - slippage_pct / 100.0))
     me = rh_wallet.address()
+    value = 0 if quote_token else quote_wei
     data = rh_wallet.calldata(BUY_SIG, ["uint256", "uint256", "address"], [quote_wei, min_out, me])
-    await rh_wallet.simulate(curve, data, quote_wei)          # revert → RhRpcError before we spend gas
+    await rh_wallet.simulate(curve, data, value)          # revert → RhRpcError before we spend gas
     t0 = time.time()
-    tx = await rh_wallet.send(curve, data, quote_wei, gas_limit=GAS_BUY)
+    tx = await rh_wallet.send(curve, data, value, gas_limit=GAS_BUY)
     rc = await rh_wallet.wait_receipt(tx)
     if not rc["ok"]:
         raise RuntimeError(f"buy reverted on-chain tx={tx}")
     ev = _trade_log(rc, curve, T_BUY)
     quote_in, tokens_out, fee = ev if ev else (quote_wei, est_out, 0)
     return {"tx": tx, "quote_wei": quote_in, "tokens_raw": tokens_out, "fee_wei": fee,
-            "gas_cost_wei": rc["gas_cost_wei"], "latency_s": round(time.time() - t0, 2),
+            "gas_cost_wei": rc["gas_cost_wei"] + approve_gas, "latency_s": round(time.time() - t0, 2),
             "block": int(rc.get("blockNumber", "0x0"), 16)}
 
 

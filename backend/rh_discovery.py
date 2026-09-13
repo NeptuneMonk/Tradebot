@@ -104,12 +104,14 @@ QUOTES: dict[str, tuple[str, int]] = {
 }
 _STOCKS = {
     "AAPL": "0xaf3d76f1834a1d425780943c99ea8a608f8a93f9", "AMD": "0x86923f96303d656e4aa86d9d42d1e57ad2023fdc",
-    "AMZN": "0x12f190a9f9d7d37a250758b26824b97ce941bf54", "BB": "0x48e39e56acdba37b09020c0b734a613c9a2f100a",
+    "AMZN": "0x12f190a9f9d7d37a250758b26824b97ce941bf54", "BABA": "0xad25ac6c84d497db898fa1e8387bf6af3532a1c4",
+    "BB": "0x48e39e56acdba37b09020c0b734a613c9a2f100a",
     "COIN": "0x6330d8c3178a418788df01a47479c0ce7ccf450b", "COST": "0x4ea005168d7f09a7a0ba9d1def21a479950e44c2",
     "CRCL": "0xdf0992e440dd0be65bd8439b609d6d4366bf1cb5", "DELL": "0x941ae714ec6d8130c7b75d67160ca08f1e7d11dd",
     "DJT": "0x1d11f0496982706c5e14a514d4e79f2e6bde4516", "GLD": "0xc9a981fee1f9dec688bb123ccdecc63d0debfc4e",
     "GME": "0x1b0e319c6a659f002271b69db8a7df2f911c153e", "GOOGL": "0x2e0847e8910a9732eb3fb1bb4b70a580adad4fe3",
     "HIMS": "0xccee82fe024c36fa15e1005ede3e9e4787e23d09", "LLY": "0x8005d266423c7ea827372c9c864491e5786600ea",
+    "LMT": "0x329fcaceb9ad6f9580dd5f643fed0646900d043c",
     "META": "0xc0d6457c16cc70d6790dd43521c899c87ce02f35", "MSFT": "0xe93237c50d904957cf27e7b1133b510c669c2e74",
     "MSTR": "0xec262a75e413fafd0df80480274532c79d42da09", "MU": "0xff080c8ce2e5feadaca0da81314ae59d232d4afd",
     "NVDA": "0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec", "PLTR": "0x894e1ec2d74ffe5aef8dc8a9e84686accb964f2a",
@@ -121,6 +123,12 @@ _STOCKS = {
     "USO": "0xa30fa36db767ad9ed3f7a60fc79526fb4d56d344", "WYFI": "0x9e7abd3c9139d14e4c86dce0e455aab7a0c2fb3e",
 }
 QUOTES.update({addr: (sym, 18) for sym, addr in _STOCKS.items()})
+QUOTE_BY_SYMBOL: dict[str, tuple[str, int]] = {sym: (addr, dec) for addr, (sym, dec) in QUOTES.items()}
+
+
+def quote_of(sym: str | None) -> tuple[str, int]:
+    """(pair_token address, decimals) for a quote symbol; native ETH when unknown."""
+    return QUOTE_BY_SYMBOL.get(sym or "ETH", (rh_dex.NATIVE, 18))
 
 _eth_usd_cache = {"price": 0.0, "ts": 0.0}
 
@@ -390,7 +398,7 @@ class RHDiscovery:
         ]
         if pool_tokens:
             calls.append(("eth_getLogs", [{"address": rh_dex.POOL_MANAGER, "fromBlock": hex(fr), "toBlock": to_hex,
-                                           "topics": [rh_dex.T_SWAP, ["0x" + rh_dex.pool_id(t).hex() for t in pool_tokens]]}]))
+                                           "topics": [rh_dex.T_SWAP, ["0x" + rh_dex.pool_id(t, self.tracking[t]["pair_token"]).hex() for t in pool_tokens]]}]))
         n_fixed = len(calls)
         for t in meta_tokens:
             calls.append(("eth_call", [{"to": t, "data": SEL_NAME}, "latest"]))
@@ -520,14 +528,14 @@ class RHDiscovery:
     def _ingest_pool_swaps(self, logs: list[dict], now: float):
         """PoolManager Swap events on pools we hold: same price/momentum bookkeeping the
         curve path does, then hand each swap to rh_paper.on_trade for block-accurate stops."""
-        pid_to_token = {"0x" + rh_dex.pool_id(t).hex(): t for t in self._pool_watch_tokens()}
+        pid_to_token = {"0x" + rh_dex.pool_id(t, self.tracking[t]["pair_token"]).hex(): t for t in self._pool_watch_tokens()}
         paper = getattr(self.state, "rh_paper", None)
         for log in sorted(logs, key=lambda l: (int(l["blockNumber"], 16), int(l.get("logIndex", "0x0"), 16))):
             token = pid_to_token.get((log["topics"][1] or "").lower())
             b = self.tracking.get(token) if token else None
             if not b:
                 continue
-            tr = rh_dex.decode_swap(log)
+            tr = rh_dex.decode_swap(log, rh_dex.token_is_c0(token, b["pair_token"]), int(b.get("quote_decimals") or 18))
             self.stats["pool_swaps_seen"] = self.stats.get("pool_swaps_seen", 0) + 1
             b["pool_live"] = True
             b["last_pool_swap_ts"] = now

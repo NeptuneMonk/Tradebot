@@ -1,9 +1,11 @@
 """Robinhood Chain post-graduation DEX path (Uniswap v4 pool behind the PONS hook).
 
-On graduation the PONS curve sweeps tokens + ETH into a v4 pool and its sell()
+On graduation the PONS curve sweeps tokens + quote into a v4 pool and its sell()
 reverts forever. Verified on-chain (chain 4663, `PoolGraduated` tx):
-  PoolKey = (currency0 = native ETH, currency1 = token, fee 0, tickSpacing 200, PonsV2MemeHook)
-  Swaps go PoolManager <- Universal Router (execute 0x3593564c, V4_SWAP) <- Permit2.
+  PoolKey = (currency0, currency1 sorted by address, fee 0, tickSpacing 200, PonsV2MemeHook)
+  ETH-quoted pools: currency0 = native ETH. ERC-20-quoted pools (USDG, tokenized stocks): same hook /
+  fee / tickSpacing, the meme token may land on either side of the key — every helper takes `quote`.
+  Swaps go PoolManager <- Universal Router (execute 0x3593564c, V4_SWAP) <- Permit2 (ERC-20 inputs).
 The hook takes ~3% on every swap (quoter vs spot), so fills come from V4Quoter.
 """
 from __future__ import annotations
@@ -39,100 +41,132 @@ CMD_V4_SWAP = bytes([0x10])
 ACT_SWAP_EXACT_IN_SINGLE, ACT_SETTLE_ALL, ACT_TAKE_ALL = 0x06, 0x0C, 0x0F
 
 
-def pool_key(token: str) -> tuple:
-    return (NATIVE, rh_wallet.checksum(token), FEE, TICK_SPACING, rh_wallet.checksum(HOOK))
+def is_native(quote: str | None) -> bool:
+    return not quote or quote.lower() == NATIVE
 
 
-def pool_id(token: str) -> bytes:
-    return keccak(abi_encode([KEY_T], [pool_key(token)]))
+def token_is_c0(token: str, quote: str = NATIVE) -> bool:
+    """v4 sorts currencies by address; native ETH (0x0) is always currency0."""
+    return not is_native(quote) and int(token, 16) < int(quote, 16)
 
 
-def price_from_sqrt(sqrt_price_x96: int) -> float:
-    """currency0=ETH, currency1=token → sqrtP² is tokens per ETH; invert to ETH per token."""
+def pool_key(token: str, quote: str = NATIVE) -> tuple:
+    tok, q = rh_wallet.checksum(token), rh_wallet.checksum(quote or NATIVE)
+    c0, c1 = (tok, q) if token_is_c0(token, quote) else (q, tok)
+    return (c0, c1, FEE, TICK_SPACING, rh_wallet.checksum(HOOK))
+
+
+def pool_id(token: str, quote: str = NATIVE) -> bytes:
+    return keccak(abi_encode([KEY_T], [pool_key(token, quote)]))
+
+
+def price_from_sqrt(sqrt_price_x96: int, token_c0: bool = False, quote_decimals: int = 18) -> float:
+    """sqrtP² = currency1_raw / currency0_raw. Returns quote per token in human units."""
     if sqrt_price_x96 <= 0:
         return 0.0
-    return (Q96 / sqrt_price_x96) ** 2
+    ratio = (sqrt_price_x96 / Q96) ** 2                     # c1 per c0 (raw)
+    scale = 10 ** (18 - quote_decimals)                     # token is 18-dec
+    return ratio * scale if token_c0 else (1.0 / ratio) * scale
 
 
-def decode_swap(log: dict) -> dict:
+def decode_swap(log: dict, token_c0: bool = False, quote_decimals: int = 18) -> dict:
     """PoolManager.Swap(id, sender; amount0, amount1, sqrtPriceX96, liquidity, tick, fee).
-    Deltas are the swapper's: amount0 < 0 → paid ETH (a buy of the token)."""
+    Deltas are the swapper's: paying the quote (negative quote delta) is a buy of the token."""
     a0, a1, sqrt_p, _liq, _tick, _fee = abi_decode(["int128", "int128", "uint160", "uint128", "int24", "uint24"],
                                                     bytes.fromhex(log["data"][2:]))
-    side = "buy" if a0 < 0 else "sell"
-    return {"side": side, "wallet": "0x" + log["topics"][2][-40:], "quote": abs(a0) / 1e18,
-            "q_eff": abs(a0) / 1e18, "tokens": abs(a1) / 1e18, "price": price_from_sqrt(sqrt_p),
+    q_raw, t_raw = (a1, a0) if token_c0 else (a0, a1)
+    side = "buy" if q_raw < 0 else "sell"
+    quote = abs(q_raw) / 10 ** quote_decimals
+    return {"side": side, "wallet": "0x" + log["topics"][2][-40:], "quote": quote,
+            "q_eff": quote, "tokens": abs(t_raw) / 1e18, "price": price_from_sqrt(sqrt_p, token_c0, quote_decimals),
             "block": int(log["blockNumber"], 16), "venue": "pool"}
 
 
-async def spot_price(token: str) -> float:
-    """ETH per token from StateView.getSlot0; 0.0 when the pool was never initialised (not graduated)."""
-    res = await rh_wallet.rpc("eth_call", [{"to": STATE_VIEW, "data": rh_wallet.calldata("getSlot0(bytes32)", ["bytes32"], [pool_id(token)])}, "latest"])
+async def spot_price(token: str, quote: str = NATIVE, quote_decimals: int = 18) -> float:
+    """Quote per token from StateView.getSlot0; 0.0 when the pool was never initialised (not graduated)."""
+    res = await rh_wallet.rpc("eth_call", [{"to": STATE_VIEW, "data": rh_wallet.calldata("getSlot0(bytes32)", ["bytes32"], [pool_id(token, quote)])}, "latest"])
     if not res or res == "0x":
         return 0.0
     sqrt_p = abi_decode(["uint160", "int24", "uint24", "uint24"], bytes.fromhex(res[2:]))[0]
-    return price_from_sqrt(sqrt_p)
+    return price_from_sqrt(sqrt_p, token_is_c0(token, quote), quote_decimals)
 
 
-async def quote_sell(token: str, tokens_raw: int) -> int:
-    """Exact wei out for selling `tokens_raw` via V4Quoter (includes the hook take + impact)."""
+async def _quote_exact_in(token: str, quote: str, zero_for_one: bool, amount_in: int) -> int:
     qt = f"({KEY_T},bool,uint128,bytes)"
-    data = rh_wallet.calldata(f"quoteExactInputSingle({qt})", [qt], [(pool_key(token), False, tokens_raw, b"")])
+    data = rh_wallet.calldata(f"quoteExactInputSingle({qt})", [qt], [(pool_key(token, quote), zero_for_one, amount_in, b"")])
     res = await rh_wallet.rpc("eth_call", [{"to": QUOTER, "data": data}, "latest"])
     return abi_decode(["uint256", "uint256"], bytes.fromhex(res[2:]))[0]
 
 
-def build_sell_calldata(token: str, tokens_raw: int, min_out_wei: int, deadline: int | None = None) -> str:
-    """UniversalRouter.execute(V4_SWAP: SWAP_EXACT_IN_SINGLE(token→ETH) → SETTLE_ALL(token) → TAKE_ALL(ETH))."""
-    tok = rh_wallet.checksum(token)
-    swap = abi_encode([f"({KEY_T},bool,uint128,uint128,bytes)"], [(pool_key(token), False, tokens_raw, min_out_wei, b"")])
+async def quote_sell(token: str, tokens_raw: int, quote: str = NATIVE) -> int:
+    """Exact quote (raw) out for selling `tokens_raw` via V4Quoter (includes the hook take + impact)."""
+    return await _quote_exact_in(token, quote, token_is_c0(token, quote), tokens_raw)
+
+
+async def quote_buy(token: str, quote_raw: int, quote: str = NATIVE) -> int:
+    """Exact tokens (raw) out for `quote_raw` in via V4Quoter (hook take + impact included)."""
+    return await _quote_exact_in(token, quote, not token_is_c0(token, quote), quote_raw)
+
+
+async def round_trip(token: str, quote_raw: int, quote: str = NATIVE) -> dict:
+    """What the pool really charges for our size: buy `quote_raw`, then sell every token back. Both legs from the
+    V4Quoter, so hook take + our own impact are in the number. cost_pct is the round-trip friction."""
+    tokens = await quote_buy(token, quote_raw, quote)
+    if tokens <= 0:
+        raise RuntimeError("pool buy quote returned 0")
+    back = await quote_sell(token, tokens, quote)
+    cost_pct = (1.0 - back / quote_raw) * 100.0 if quote_raw > 0 else 100.0
+    return {"quote_in": quote_raw, "tokens_raw": tokens, "quote_back": back, "cost_pct": round(max(0.0, cost_pct), 3)}
+
+
+def _execute(actions: bytes, params: list[bytes], deadline: int | None) -> str:
+    v4_input = abi_encode(["bytes", "bytes[]"], [actions, params])
+    return rh_wallet.calldata("execute(bytes,bytes[],uint256)", ["bytes", "bytes[]", "uint256"],
+                              [CMD_V4_SWAP, [v4_input], deadline or int(time.time()) + 120])
+
+
+def build_sell_calldata(token: str, tokens_raw: int, min_out: int, deadline: int | None = None, quote: str = NATIVE) -> str:
+    """UniversalRouter.execute(V4_SWAP: SWAP_EXACT_IN_SINGLE(token→quote) → SETTLE_ALL(token) → TAKE_ALL(quote))."""
+    tok, q = rh_wallet.checksum(token), rh_wallet.checksum(quote or NATIVE)
+    swap = abi_encode([f"({KEY_T},bool,uint128,uint128,bytes)"], [(pool_key(token, quote), token_is_c0(token, quote), tokens_raw, min_out, b"")])
     settle = abi_encode(["address", "uint256"], [tok, tokens_raw])
-    take = abi_encode(["address", "uint256"], [NATIVE, min_out_wei])
-    v4_input = abi_encode(["bytes", "bytes[]"], [bytes([ACT_SWAP_EXACT_IN_SINGLE, ACT_SETTLE_ALL, ACT_TAKE_ALL]), [swap, settle, take]])
-    return rh_wallet.calldata("execute(bytes,bytes[],uint256)", ["bytes", "bytes[]", "uint256"],
-                              [CMD_V4_SWAP, [v4_input], deadline or int(time.time()) + 120])
+    take = abi_encode(["address", "uint256"], [q, min_out])
+    return _execute(bytes([ACT_SWAP_EXACT_IN_SINGLE, ACT_SETTLE_ALL, ACT_TAKE_ALL]), [swap, settle, take], deadline)
 
 
-async def quote_buy(token: str, eth_wei: int) -> int:
-    """Exact tokens (raw) out for `eth_wei` in via V4Quoter (hook take + impact included)."""
-    qt = f"({KEY_T},bool,uint128,bytes)"
-    data = rh_wallet.calldata(f"quoteExactInputSingle({qt})", [qt], [(pool_key(token), True, eth_wei, b"")])
-    res = await rh_wallet.rpc("eth_call", [{"to": QUOTER, "data": data}, "latest"])
-    return abi_decode(["uint256", "uint256"], bytes.fromhex(res[2:]))[0]
-
-
-def build_buy_calldata(token: str, eth_wei: int, min_tokens_raw: int, deadline: int | None = None) -> str:
-    """UniversalRouter.execute(V4_SWAP: SWAP_EXACT_IN_SINGLE(ETH→token, zeroForOne) → SETTLE_ALL(ETH) → TAKE_ALL(token)).
-    ETH is currency0 in every PONS pool, so the buy needs no approval — msg.value carries the input."""
-    tok = rh_wallet.checksum(token)
-    swap = abi_encode([f"({KEY_T},bool,uint128,uint128,bytes)"], [(pool_key(token), True, eth_wei, min_tokens_raw, b"")])
-    settle = abi_encode(["address", "uint256"], [NATIVE, eth_wei])
+def build_buy_calldata(token: str, quote_raw: int, min_tokens_raw: int, deadline: int | None = None, quote: str = NATIVE) -> str:
+    """UniversalRouter.execute(V4_SWAP: SWAP_EXACT_IN_SINGLE(quote→token) → SETTLE_ALL(quote) → TAKE_ALL(token)).
+    Native ETH input rides on msg.value; an ERC-20 quote is pulled through Permit2 (approve first)."""
+    tok, q = rh_wallet.checksum(token), rh_wallet.checksum(quote or NATIVE)
+    swap = abi_encode([f"({KEY_T},bool,uint128,uint128,bytes)"], [(pool_key(token, quote), not token_is_c0(token, quote), quote_raw, min_tokens_raw, b"")])
+    settle = abi_encode(["address", "uint256"], [q, quote_raw])
     take = abi_encode(["address", "uint256"], [tok, min_tokens_raw])
-    v4_input = abi_encode(["bytes", "bytes[]"], [bytes([ACT_SWAP_EXACT_IN_SINGLE, ACT_SETTLE_ALL, ACT_TAKE_ALL]), [swap, settle, take]])
-    return rh_wallet.calldata("execute(bytes,bytes[],uint256)", ["bytes", "bytes[]", "uint256"],
-                              [CMD_V4_SWAP, [v4_input], deadline or int(time.time()) + 120])
+    return _execute(bytes([ACT_SWAP_EXACT_IN_SINGLE, ACT_SETTLE_ALL, ACT_TAKE_ALL]), [swap, settle, take], deadline)
 
 
-async def buy(token: str, eth_wei: int, slippage_pct: float) -> dict:
-    """Buy the graduated token with native ETH on its v4 pool. Same fill shape as rh_live.buy; tokens_raw is the
-    wallet's ERC-20 delta (truth), quote_wei the ETH actually sent."""
-    est_out = await quote_buy(token, eth_wei)
+async def buy(token: str, quote_raw: int, slippage_pct: float, quote: str = NATIVE) -> dict:
+    """Buy the graduated token on its v4 pool with `quote_raw` of the quote asset (native ETH or an ERC-20 the wallet
+    already holds). Same fill shape as rh_live.buy; tokens_raw is the wallet's ERC-20 delta (truth)."""
+    est_out = await quote_buy(token, quote_raw, quote)
     if est_out <= 0:
         raise RuntimeError("pool buy quote returned 0")
     min_out = int(est_out * (1.0 - slippage_pct / 100.0))
-    data = build_buy_calldata(token, eth_wei, min_out)
-    await rh_wallet.simulate(UNIVERSAL_ROUTER, data, eth_wei)
+    native = is_native(quote)
+    approve_gas = 0 if native else await ensure_permit2(quote, quote_raw)
+    data = build_buy_calldata(token, quote_raw, min_out, quote=quote)
+    value = quote_raw if native else 0
+    await rh_wallet.simulate(UNIVERSAL_ROUTER, data, value)
     pre = await rh_wallet.erc20_balance(token)
     t0 = time.time()
-    tx = await rh_wallet.send(UNIVERSAL_ROUTER, data, eth_wei, gas_limit=GAS_SWAP)
+    tx = await rh_wallet.send(UNIVERSAL_ROUTER, data, value, gas_limit=GAS_SWAP)
     rc = await rh_wallet.wait_receipt(tx)
     if not rc["ok"]:
         raise RuntimeError(f"pool buy reverted on-chain tx={tx}")
     post = await rh_wallet.erc20_balance(token)
     got = max(0, post - pre) or est_out
-    impl_wei = int(eth_wei * got / est_out) if est_out else eth_wei
-    return {"tx": tx, "quote_wei": eth_wei, "tokens_raw": got, "fee_wei": max(0, eth_wei - impl_wei),
-            "gas_cost_wei": rc["gas_cost_wei"], "latency_s": round(time.time() - t0, 2),
+    impl_raw = int(quote_raw * got / est_out) if est_out else quote_raw
+    return {"tx": tx, "quote_wei": quote_raw, "tokens_raw": got, "fee_wei": max(0, quote_raw - impl_raw),
+            "gas_cost_wei": rc["gas_cost_wei"] + approve_gas, "latency_s": round(time.time() - t0, 2),
             "block": int(rc.get("blockNumber", "0x0"), 16), "venue": "pool"}
 
 
@@ -163,42 +197,44 @@ async def ensure_permit2(token: str, tokens_raw: int) -> int:
     return gas + rc["gas_cost_wei"]
 
 
-async def sell(token: str, tokens_raw: int, slippage_pct: float) -> dict:
-    """Sell `tokens_raw` for native ETH on the graduated pool. Same fill shape as rh_live.sell."""
-    est_out = await quote_sell(token, tokens_raw)
+async def sell(token: str, tokens_raw: int, slippage_pct: float, quote: str = NATIVE) -> dict:
+    """Sell `tokens_raw` for the pool's quote asset. Same fill shape as rh_live.sell; quote_wei is raw quote units."""
+    est_out = await quote_sell(token, tokens_raw, quote)
     if est_out <= 0:
         raise RuntimeError("pool quote returned 0")
     min_out = int(est_out * (1.0 - slippage_pct / 100.0))
     approve_gas = await ensure_permit2(token, tokens_raw)
-    data = build_sell_calldata(token, tokens_raw, min_out)
+    data = build_sell_calldata(token, tokens_raw, min_out, quote=quote)
     try:
         await rh_wallet.simulate(UNIVERSAL_ROUTER, data, 0)
     except rh_wallet.RhRpcError as e:
         logger.warning(f"rh_dex sell sim failed ({e}); retrying with minOut=0")
-        data = build_sell_calldata(token, tokens_raw, 0)
+        data = build_sell_calldata(token, tokens_raw, 0, quote=quote)
         await rh_wallet.simulate(UNIVERSAL_ROUTER, data, 0)
     me = rh_wallet.address()
-    pre = await rh_wallet.balance_wei(me)
+    native = is_native(quote)
+    pre = await (rh_wallet.balance_wei(me) if native else rh_wallet.erc20_balance(quote, me))
     t0 = time.time()
     tx = await rh_wallet.send(UNIVERSAL_ROUTER, data, 0, gas_limit=GAS_SWAP)
     rc = await rh_wallet.wait_receipt(tx)
     if not rc["ok"]:
         raise RuntimeError(f"pool sell reverted on-chain tx={tx}")
-    post = await rh_wallet.balance_wei(me)
-    received = max(0, post - pre + rc["gas_cost_wei"])   # wallet delta is the truth (hook take already applied)
+    post = await (rh_wallet.balance_wei(me) if native else rh_wallet.erc20_balance(quote, me))
+    received = max(0, post - pre + (rc["gas_cost_wei"] if native else 0))   # wallet delta is the truth (hook take already applied)
     return {"tx": tx, "tokens_raw": tokens_raw, "quote_wei": received or est_out, "fee_wei": max(0, est_out - received) if received else 0,
             "gas_cost_wei": rc["gas_cost_wei"] + approve_gas, "latency_s": round(time.time() - t0, 2),
             "block": int(rc.get("blockNumber", "0x0"), 16), "venue": "pool"}
 
 
-async def recover_sell(token: str, from_block: int) -> dict | None:
+async def recover_sell(token: str, from_block: int, quote: str = NATIVE, quote_decimals: int = 18) -> dict | None:
     """Find a pool sell from OUR wallet since `from_block` (tx landed, process restarted before booking)."""
     me = rh_wallet.address().lower()
     head = int(await rh_wallet.rpc("eth_blockNumber", []), 16)
     logs = await rh_wallet.rpc("eth_getLogs", [{"fromBlock": hex(max(0, from_block)), "toBlock": hex(head),
-                                                "address": POOL_MANAGER, "topics": [T_SWAP, "0x" + pool_id(token).hex()]}])
+                                                "address": POOL_MANAGER, "topics": [T_SWAP, "0x" + pool_id(token, quote).hex()]}])
+    c0 = token_is_c0(token, quote)
     for lg in reversed(logs or []):
-        sw = decode_swap(lg)
+        sw = decode_swap(lg, c0, quote_decimals)
         if sw["side"] != "sell":
             continue
         rc = await rh_wallet.rpc("eth_getTransactionReceipt", [lg["transactionHash"]])
@@ -206,6 +242,6 @@ async def recover_sell(token: str, from_block: int) -> dict | None:
             continue
         gas = int(rc.get("gasUsed", "0x0"), 16) * int(rc.get("effectiveGasPrice", "0x0"), 16)
         logger.warning(f"rh_dex recovered unbooked POOL SELL {token[:10]} tx={lg['transactionHash'][:12]}")
-        return {"tx": lg["transactionHash"], "tokens_raw": int(sw["tokens"] * 1e18), "quote_wei": int(sw["quote"] * 1e18), "fee_wei": 0,
+        return {"tx": lg["transactionHash"], "tokens_raw": int(sw["tokens"] * 1e18), "quote_wei": int(sw["quote"] * 10 ** quote_decimals), "fee_wei": 0,
                 "gas_cost_wei": gas, "latency_s": 0.0, "block": sw["block"], "recovered": True, "venue": "pool"}
     return None

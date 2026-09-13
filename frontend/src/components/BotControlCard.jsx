@@ -360,6 +360,35 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
                value={local.rh_rug_sell_curve_pct ?? 15} onChange={(v) => setLocal({ ...local, rh_rug_sell_curve_pct: parseFloat(v) || 0 })} step="5" />
       </div>
       {(local.rh_live_trading ?? false) && (
+        <button
+          type="button"
+          data-testid="rh-live-erc20-toggle"
+          onClick={() => {
+            const next = !(local.rh_live_erc20_quotes ?? false);
+            if (next && !window.confirm("Enable live buys on USDG / stock-quoted RH curves and pools? The wallet must already hold the quote asset (USDG, MSFT, NVDA…) — the bot spends what is there and never converts ETH into it. ETH is still needed for gas.")) return;
+            flipKey("rh_live_erc20_quotes", next,
+              () => toast[next ? "warning" : "success"](next ? "ERC-20 quote live buys ON" : "ERC-20 quote live buys OFF — ETH-quoted only"),
+              (e) => e?.response?.data?.detail);
+          }}
+          className={`w-full flex items-center justify-between px-3 py-1.5 border text-[10px] uppercase tracking-[0.15em] font-mono transition-colors duration-100 ${
+            (local.rh_live_erc20_quotes ?? false)
+              ? "border-amber-700 text-amber-200 bg-amber-950/40 hover:bg-amber-900/40"
+              : "border-neutral-800 text-neutral-500 bg-neutral-900/40 hover:bg-neutral-800/60"
+          }`}
+        >
+          <span>Stock / USDG quotes live</span>
+          <span className="flex items-center gap-1.5">
+            <span>{(local.rh_live_erc20_quotes ?? false) ? "ON · spends held quote" : "OFF · ETH-quoted only"}</span>
+            <HelpHint label="ERC-20 quote live buys">
+              <div className="space-y-1.5">
+                <div>Lets RH live trading buy curves and graduated pools quoted in <strong>USDG or a tokenized stock</strong> (MSFT, NVDA, TSLA…). Curve buys approve the quote token to the curve; pool buys go through Permit2 → Universal Router, the same v4 hook as ETH pools (verified on-chain: fee 0, tick 200).</div>
+                <div>The wallet must already hold the quote asset — see the RH wallet card. Short balance → the entry is skipped as a quote-balance skip, nothing is converted. USDG is 6-decimal; P/L is booked in USD via the live quote prices.</div>
+              </div>
+            </HelpHint>
+          </span>
+        </button>
+      )}
+      {(local.rh_live_trading ?? false) && (
         <div className="grid grid-cols-3 gap-2">
           <Field label="RH slippage %" testid="rh-live-slippage-input" hint="minOut guard on live buys/sells; sells retry with widening slippage, then minOut=0 rather than strand tokens."
                  value={local.rh_live_slippage_pct ?? 8} onChange={(v) => setLocal({ ...local, rh_live_slippage_pct: parseFloat(v) || 0 })} step="1" />

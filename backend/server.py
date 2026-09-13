@@ -2367,7 +2367,31 @@ async def rh_wallet_info():
         pass
     out["stake_usd"] = cfg.rh_max_trade_usd
     out["fee_floor"] = bot_state.bankroll.rh_fee_floor or None
+    out["erc20_live"] = bool(getattr(cfg, "rh_live_erc20_quotes", False))
+    out["quote_balances"] = await _rh_quote_balances()
     return out
+
+
+async def _rh_quote_balances() -> list[dict]:
+    """ERC-20 quote assets the wallet holds (USDG always, plus whatever the tracked curves are quoted in) — the
+    ERC-20 live path spends these, never converts ETH into them."""
+    import rh_wallet
+    import quote_prices
+    from rh_discovery import QUOTE_BY_SYMBOL
+    syms = {"USDG"} | {b.get("quote_symbol") for b in bot_state.rh_discovery.tracking.values()}
+    syms = [s for s in syms if s in QUOTE_BY_SYMBOL and s != "ETH"]
+
+    async def one(sym: str):
+        addr, dec = QUOTE_BY_SYMBOL[sym]
+        try:
+            raw = await rh_wallet.erc20_balance(addr)
+        except Exception:
+            return None
+        amt = raw / 10 ** dec
+        px = quote_prices.quote_usd(sym)
+        return {"symbol": sym, "amount": round(amt, 6), "usd": round(amt * px, 2) if px else None}
+    rows = [r for r in await asyncio.gather(*(one(s) for s in sorted(syms))) if r]
+    return sorted(rows, key=lambda r: -(r["usd"] or 0))
 
 
 @api.post("/rh/wallet/send")

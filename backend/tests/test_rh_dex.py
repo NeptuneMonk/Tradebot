@@ -99,8 +99,8 @@ def test_paper_pool_exit_uses_quoter_and_marks_exit_venue(monkeypatch):
     assert t["venue"] == "pool"
     tokens = float(t["entry_tokens"])
 
-    async def fake_quote(token, raw):
-        assert token == TOKEN and raw == int(tokens * 1e18)
+    async def fake_quote(token, raw, quote=rh_dex.NATIVE):
+        assert token == TOKEN and raw == int(tokens * 1e18) and quote == rh_dex.NATIVE
         return int(tokens * 2e-9 * 0.97 * 1e18)      # quoter says 2x price minus a 3% hook take
 
     monkeypatch.setattr(rh_dex, "quote_sell", fake_quote)
@@ -120,7 +120,7 @@ def test_live_sell_routes_to_pool_when_graduated(monkeypatch):
     async def fake_balance(token, owner=None):
         return 10**21
 
-    async def fake_dex_sell(token, raw, slip):
+    async def fake_dex_sell(token, raw, slip, quote=rp.rh_dex.NATIVE):
         calls.append(("pool", token, raw, slip))
         return {"tx": "0xabc", "tokens_raw": raw, "quote_wei": 10**15, "fee_wei": 0, "gas_cost_wei": 10**12,
                 "latency_s": 0.3, "block": 5, "venue": "pool"}
@@ -150,10 +150,10 @@ def test_live_sell_falls_back_to_pool_when_curve_closed(monkeypatch):
         calls.append("curve")
         raise RuntimeError("execution reverted: CurveClosed()")
 
-    async def fake_spot(token):
+    async def fake_spot(token, quote=rp.rh_dex.NATIVE, dec=18):
         return 2e-9                                    # pool initialised ⇒ graduated
 
-    async def fake_dex_sell(token, raw, slip):
+    async def fake_dex_sell(token, raw, slip, quote=rp.rh_dex.NATIVE):
         calls.append("pool")
         return {"tx": "0xdef", "tokens_raw": raw, "quote_wei": 10**15, "fee_wei": 0, "gas_cost_wei": 10**12,
                 "latency_s": 0.3, "block": 6, "venue": "pool"}
