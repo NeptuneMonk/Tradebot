@@ -136,8 +136,8 @@ class RHPaperTrader:
                 return "rh-seasoned-stale"
             if now - float(b.get("graduated_at") or b["start"]) > float(getattr(cfg, "rh_seasoned_max_age_min", 60.0) or 60.0) * 60:
                 return "rh-seasoned-age"
-            if self.live_ok(b):
-                return "rh-seasoned-live-unsupported"   # no v4 pool buy path yet: paper only
+            # live entries here go through rh_dex.buy (ETH → token on the v4 pool); live_ok already keeps ERC-20-quoted
+            # curves paper-only, so nothing extra to refuse
         blk = getattr(self.state, "search_regime_block", lambda: None)()
         if blk:
             return blk
@@ -572,6 +572,8 @@ class RHPaperTrader:
                          else stake_quote * fee * quote_usd + self._paper_gas_usd(),
             )
             doc = trade.model_dump()
+            if b.get("graduated"):
+                doc["venue"], doc["graduated_during_hold"] = "pool", False   # entered post-sweep: priced & exited on the v4 pool
             first = float(b.get("first_price_quote") or 0.0)
             doc["entry_ctx"] = {
                 "growth_pct": ((price / first) - 1.0) * 100.0 if first > 0 else None,
@@ -654,7 +656,11 @@ class RHPaperTrader:
             if bal - quote_wei < reserve:
                 logger.warning(f"rh_live skip {b.get('symbol')}: balance {bal / 1e18:.5f} ETH < stake {stake_quote:.5f} + reserve")
                 return None
-            fill = await rh_live.buy(b["curve"], quote_wei, price, float(cfg.rh_live_slippage_pct))
+            if b.get("graduated"):
+                # post-sweep: the curve is gone — buy on the v4 pool (ETH → token, no approval needed)
+                fill = await rh_dex.buy(token, quote_wei, float(cfg.rh_live_slippage_pct))
+            else:
+                fill = await rh_live.buy(b["curve"], quote_wei, price, float(cfg.rh_live_slippage_pct))
             self.stats["live_buys"] = self.stats.get("live_buys", 0) + 1
             logger.warning(f"rh_live BUY {b.get('symbol')} {token[:10]} {fill['quote_wei'] / 1e18:.5f} ETH → {fill['tokens_raw'] / 1e18:,.0f} tokens tx={fill['tx'][:12]} ({fill['latency_s']}s)")
             return fill

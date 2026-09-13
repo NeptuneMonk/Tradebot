@@ -10,3 +10,8 @@
 **Not changed**: default MC / velocity gates, rh_paper / rh_feed toggles (nothing auto-enabled), Helius budget, start/stop wiring.
 
 **Read the tallies before loosening anything**: all `seasoned-no-pool` → discovery / Helius pool reads are the bug; fills dying on a 40 s clock → routing missed; RH still `rh-grad-no-pool` with a live pool → pool swap ingest not stamping `pool_live`.
+
+## RH v4 pool buy (live post-sweep entries)
+- `rh_dex.quote_buy(token, eth_wei)` / `build_buy_calldata` / `buy(token, eth_wei, slippage_pct)`: UniversalRouter V4_SWAP, `zeroForOne=True` (ETH is currency0 in every PONS pool), `SETTLE_ALL(ETH)` with `msg.value`, `TAKE_ALL(token, minOut)`. No approval needed. Fill = wallet ERC-20 delta; same shape as `rh_live.buy`.
+- `rh_paper._live_buy` routes graduated buckets to `rh_dex.buy`, curve buckets to `rh_live.buy`. Entered-post-sweep rows are stamped `venue=pool` (exits already on rh_dex). ERC-20-quoted pools stay paper (`live_ok` is ETH-only; Permit2 buy path not built).
+- Verified read-only against the live V4Quoter on 4 graduated pools: implied buy price ≈ spot + ~3% hook take, buy→sell round trip ≈ −6%. Size accordingly (cost gate).

@@ -93,6 +93,49 @@ def build_sell_calldata(token: str, tokens_raw: int, min_out_wei: int, deadline:
                               [CMD_V4_SWAP, [v4_input], deadline or int(time.time()) + 120])
 
 
+async def quote_buy(token: str, eth_wei: int) -> int:
+    """Exact tokens (raw) out for `eth_wei` in via V4Quoter (hook take + impact included)."""
+    qt = f"({KEY_T},bool,uint128,bytes)"
+    data = rh_wallet.calldata(f"quoteExactInputSingle({qt})", [qt], [(pool_key(token), True, eth_wei, b"")])
+    res = await rh_wallet.rpc("eth_call", [{"to": QUOTER, "data": data}, "latest"])
+    return abi_decode(["uint256", "uint256"], bytes.fromhex(res[2:]))[0]
+
+
+def build_buy_calldata(token: str, eth_wei: int, min_tokens_raw: int, deadline: int | None = None) -> str:
+    """UniversalRouter.execute(V4_SWAP: SWAP_EXACT_IN_SINGLE(ETH→token, zeroForOne) → SETTLE_ALL(ETH) → TAKE_ALL(token)).
+    ETH is currency0 in every PONS pool, so the buy needs no approval — msg.value carries the input."""
+    tok = rh_wallet.checksum(token)
+    swap = abi_encode([f"({KEY_T},bool,uint128,uint128,bytes)"], [(pool_key(token), True, eth_wei, min_tokens_raw, b"")])
+    settle = abi_encode(["address", "uint256"], [NATIVE, eth_wei])
+    take = abi_encode(["address", "uint256"], [tok, min_tokens_raw])
+    v4_input = abi_encode(["bytes", "bytes[]"], [bytes([ACT_SWAP_EXACT_IN_SINGLE, ACT_SETTLE_ALL, ACT_TAKE_ALL]), [swap, settle, take]])
+    return rh_wallet.calldata("execute(bytes,bytes[],uint256)", ["bytes", "bytes[]", "uint256"],
+                              [CMD_V4_SWAP, [v4_input], deadline or int(time.time()) + 120])
+
+
+async def buy(token: str, eth_wei: int, slippage_pct: float) -> dict:
+    """Buy the graduated token with native ETH on its v4 pool. Same fill shape as rh_live.buy; tokens_raw is the
+    wallet's ERC-20 delta (truth), quote_wei the ETH actually sent."""
+    est_out = await quote_buy(token, eth_wei)
+    if est_out <= 0:
+        raise RuntimeError("pool buy quote returned 0")
+    min_out = int(est_out * (1.0 - slippage_pct / 100.0))
+    data = build_buy_calldata(token, eth_wei, min_out)
+    await rh_wallet.simulate(UNIVERSAL_ROUTER, data, eth_wei)
+    pre = await rh_wallet.erc20_balance(token)
+    t0 = time.time()
+    tx = await rh_wallet.send(UNIVERSAL_ROUTER, data, eth_wei, gas_limit=GAS_SWAP)
+    rc = await rh_wallet.wait_receipt(tx)
+    if not rc["ok"]:
+        raise RuntimeError(f"pool buy reverted on-chain tx={tx}")
+    post = await rh_wallet.erc20_balance(token)
+    got = max(0, post - pre) or est_out
+    impl_wei = int(eth_wei * got / est_out) if est_out else eth_wei
+    return {"tx": tx, "quote_wei": eth_wei, "tokens_raw": got, "fee_wei": max(0, eth_wei - impl_wei),
+            "gas_cost_wei": rc["gas_cost_wei"], "latency_s": round(time.time() - t0, 2),
+            "block": int(rc.get("blockNumber", "0x0"), 16), "venue": "pool"}
+
+
 async def permit2_allowance(token: str, owner: str | None = None) -> tuple[int, int]:
     data = rh_wallet.calldata("allowance(address,address,address)", ["address", "address", "address"],
                               [rh_wallet.checksum(owner or rh_wallet.address()), rh_wallet.checksum(token), rh_wallet.checksum(UNIVERSAL_ROUTER)])

@@ -82,7 +82,7 @@ def test_rh_graduated_without_pool_skips_with_pool_may_pass():
     b["graduated_at"] = now - 120
     st.config.rh_live_trading = True
     b["quote_symbol"] = "ETH"
-    assert st.rh_paper._gates(TOKEN, b, now) == "rh-seasoned-live-unsupported"
+    assert st.rh_paper._gates(TOKEN, b, now) not in ("rh-seasoned-live-unsupported", "rh-grad-no-pool", "graduated")   # live via rh_dex.buy
 
 
 def test_classifier_unused_on_pumpswap_and_no_trending_clients():
