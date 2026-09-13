@@ -82,6 +82,8 @@ class RHPaperTrader:
         self._last_fresh_entry_ts = 0.0
         self._task: asyncio.Task | None = None
         self._pending_entries: set[str] = set()
+        self._enter_inflight: set[str] = set()
+        self._pending_since: dict[str, float] = {}
         self.pending_buys: dict[str, dict] = {}
         self.stats = {"entries": 0, "exits": 0, "skipped": 0, "last_scan_ts": 0.0}
 
@@ -422,6 +424,7 @@ class RHPaperTrader:
     async def _enter(self, token: str, size_mult: float = 1.0, reentry: str | None = None,
                      manual: bool = False, reentry_ctx: dict | None = None):
         cfg = self.state.config
+        self._enter_inflight.add(token)
         try:
             await asyncio.sleep(max(0, cfg.paper_entry_latency_ms) / 1000.0)
             if not await self._fence(f"rh entry {token[:10]}"):
@@ -501,7 +504,38 @@ class RHPaperTrader:
             raise
         except Exception as e:
             logger.warning(f"rh_paper enter failed {token[:10]}: {e}")
-        self._pending_entries.discard(token)
+        finally:
+            self._enter_inflight.discard(token)
+            # every early return above (fence, lock, gates, unpriced quote…) must release the reserved slot —
+            # only a queued paper buy keeps it until resolve_pending_buys() settles it
+            if token not in self.pending_buys:
+                self._pending_entries.discard(token)
+
+    PENDING_BUY_TTL_S = 120.0
+
+    def expire_pending_buys(self, now: float) -> int:
+        """A queued paper buy whose fill block never lands (feed off, head stalled, bucket gone) must not hold a
+        max-positions slot forever."""
+        n = 0
+        for token, pb in list(self.pending_buys.items()):
+            if now - float(pb.get("ts") or now) > self.PENDING_BUY_TTL_S:
+                self.pending_buys.pop(token, None)
+                self._pending_entries.discard(token)
+                self.stats["entries_expired"] = self.stats.get("entries_expired", 0) + 1
+                n += 1
+                logger.info(f"rh_paper pending buy EXPIRED {token[:10]}: fill block never landed within {self.PENDING_BUY_TTL_S:.0f}s")
+        # a pending reservation with neither a position nor a queued buy behind it is a leak — release it
+        for token in list(self._pending_entries):
+            if token not in self.pending_buys and token not in self.positions and token not in getattr(self, "_enter_inflight", ()):
+                if now - self._pending_since.setdefault(token, now) > 30.0:
+                    self._pending_entries.discard(token)
+                    self._pending_since.pop(token, None)
+                    self.stats["slots_released"] = self.stats.get("slots_released", 0) + 1
+                    logger.warning(f"rh_paper released a stale max-positions reservation for {token[:10]}")
+        for token in list(self._pending_since):
+            if token not in self._pending_entries:
+                self._pending_since.pop(token, None)
+        return n
 
     def resolve_pending_buys(self, head: int):
         """Fill queued paper buys once their fill block has landed, mirroring what a live
@@ -930,6 +964,7 @@ class RHPaperTrader:
         return True
 
     async def _monitor(self, now: float):
+        self.expire_pending_buys(now)
         for token, pos in list(self.positions.items()):
             if pos.get("_exiting") or pos.get("_live_sell_inflight"):
                 continue
@@ -1276,6 +1311,8 @@ class RHPaperTrader:
     def status(self) -> dict:
         now = time.time()
         return {**self.stats, "active": self._active(), "open_positions": len(self.positions), "hot_board": self.hot_board(),
+                "pending_entries": sorted(self._pending_entries), "pending_buys": len(self.pending_buys),
+                "slots_used": len(self.positions) + len(self._pending_entries), "max_positions": int(self.state.config.rh_max_positions),
                 "focus": self.focus_state(now), "hot_dropped": list(self.hot_history),
                 "positions": [{"mint": m, "symbol": p["trade"].get("symbol"), "entry_price_quote": p["trade"].get("entry_price_quote"),
                                "last_price": p["_last_price"], "peak_price": p["peak_price"], "riding": bool(p.get("_riding")),

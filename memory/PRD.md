@@ -1754,3 +1754,9 @@ Audit of last 40 re-entries (3d): mean −2.4%, 40% WR. Findings: (1) "pullback"
 
 ## 2026-06 — RH v4 pool buy (DONE)
 - `rh_dex.quote_buy/build_buy_calldata/buy` (ETH→token, zeroForOne, SETTLE_ALL ETH via msg.value, TAKE_ALL token). `_live_buy` → `rh_dex.buy` when `b.graduated`; `venue=pool` stamped at entry; `rh-seasoned-live-unsupported` gate removed (ERC-20 quotes remain paper via `live_ok`). Live quoter check on 4 graduated pools: buy ≈ spot+3%, round trip ≈ −6%. Tests `tests/test_rh_pool_buy.py` (3); 38 green across RH/seasoned/graduation suites. No real buy sent.
+
+## RH phantom "max-positions" leak fixed (2026-09-13)
+- ✅ Root cause: `rh_paper._enter` reserved a slot in `_pending_entries` for every gate-passing candidate but every early return (cost-gate, r-size, doctor pause, fence, entry lock, unpriced quote) skipped the release → slots filled with phantoms, all RH entries gated as `max-positions` with 0 real positions.
+- ✅ Fix: release in `finally` (only a queued paper buy keeps its slot until `resolve_pending_buys`); queued buys expire after 120 s (`entries_expired`); 30 s orphan sweep (`slots_released`) in `expire_pending_buys()` called from `_monitor`. `/api/rh/status.paper` now exposes `pending_entries`, `pending_buys`, `slots_used`, `max_positions`.
+- ✅ Verified: `tests/test_rh_slot_leak.py` (3) + RH regression 60/60; live preview check — SLIP cost-gate reject released its slot, STOCKTIMES paper fill counted as 1/1, feeds restored OFF and position force-closed. Leak lives in RAM → Published needs a republish to clear.
+- 🟡 Not built (user chose b): slots N/10 chip on the RH card.
