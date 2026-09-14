@@ -21,7 +21,7 @@ def test_recorded_graduate_complete_then_pool_then_exit_books_amm_proceeds():
     curve = {**FIX["curve_open"], "creator": FIX["creator"]}
     pool_calls = {"n": 0}
 
-    async def find_pool(_mint):
+    async def find_pool(_mint, **_kw):
         pool_calls["n"] += 1
         return FIX["pool"] if pool_calls["n"] >= 3 else None      # pool shows up on the third probe (~20 s later)
 

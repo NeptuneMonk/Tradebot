@@ -53,6 +53,7 @@ TRACK_DURATION_S = 60.0       # short-window heavy tracking (for fresh-launch cl
 SCANNER_TRACK_HOURS = 4       # how long we keep light tracking for the scanner
 PERSIST_INTERVAL_S = 2.0      # how often to flush tracker metrics to DB
 MAX_TRACKED_MINTS = 500       # cap memory
+MONITOR_SAFETY_POLL_S = 3.0   # HTTP re-read cadence per open position while its WSS subscription is live (was every 0.8 s tick)
 
 
 # Set of greylist patterns recognised as "tradeable" — i.e. patterns the
@@ -270,6 +271,7 @@ class BotState:
             if not t.done():
                 t.cancel()
         self._bg_tasks = []
+        auto_tuner.stop()
         try:
             from account_event_bus import account_event_bus
             account_event_bus.stop()
@@ -3423,7 +3425,7 @@ class BotState:
         if slot.get("protocol") == "pumpswap":
             return True  # already migrated, idempotent
         try:
-            pool = await pumpswap.find_pool_for_mint(mint)
+            pool = await pumpswap.find_pool_for_mint(mint, canonical_only=True)   # Pump.fun graduations always land on the canonical PDA
         except Exception as e:
             logger.debug(f"graduation pool lookup failed for {mint[:8]}…: {e}")
             return False
@@ -3499,6 +3501,44 @@ class BotState:
             pass
         return True
 
+    async def _monitor_curve_state(self, mint: str, slot: dict, watch_account: str) -> dict | None:
+        """Bonding-curve state for this tick: decoded from the WSS push when one arrived, reused from the last
+        read while the subscription is live and younger than MONITOR_SAFETY_POLL_S, else one getAccountInfo."""
+        from account_event_bus import account_event_bus as bus
+        now = time.time()
+        pushed = bus.take_latest(watch_account) if watch_account else None
+        if pushed is not None:
+            slot["_curve_cache"] = pumpfun.decode_bonding_curve(pushed) if pushed else None   # b"" = account closed
+            slot["_curve_read_ts"] = now
+            self.rpc_saved_by_push = getattr(self, "rpc_saved_by_push", 0) + 1
+            return slot["_curve_cache"]
+        if ("_curve_cache" in slot and watch_account and bus.is_live(watch_account)
+                and now - float(slot.get("_curve_read_ts") or 0) < MONITOR_SAFETY_POLL_S):
+            return slot["_curve_cache"]
+        st = await pumpfun.fetch_bonding_curve_state(mint)
+        slot["_curve_cache"], slot["_curve_read_ts"] = st, now
+        return st
+
+    async def _monitor_pool_state(self, slot: dict, pool: str) -> dict | None:
+        """PumpSwap reserves for this tick. Watches the pool's WSOL vault (the pool account itself does not
+        change on swaps); a push or the safety-net interval triggers ONE getMultipleAccounts on the two vaults."""
+        from account_event_bus import account_event_bus as bus
+        now = time.time()
+        static = pumpswap.pool_static(pool)
+        vault = (static or {}).get("pool_quote_token_account") or ""
+        if vault and slot.get("watch_account") != vault:
+            if slot.get("watch_account"):
+                bus.unsubscribe(slot["watch_account"])
+            bus.subscribe(vault)
+            slot["watch_account"] = vault
+        pushed = bus.take_latest(vault) if vault else None
+        if (pushed is None and slot.get("_pool_cache") and vault and bus.is_live(vault)
+                and now - float(slot.get("_pool_read_ts") or 0) < MONITOR_SAFETY_POLL_S):
+            return slot["_pool_cache"]
+        st = await pumpswap.fetch_pool_state(pool)
+        slot["_pool_cache"], slot["_pool_read_ts"] = st, now
+        return st
+
     async def _monitor_position(self, mint: str):
         slot = self.active_trades.get(mint)
         if not slot:
@@ -3528,7 +3568,9 @@ class BotState:
         # so a stale WSS never blocks SL/TP from firing.
         from account_event_bus import account_event_bus
         if slot.get("protocol") == "pumpswap":
-            watch_account = slot.get("pumpswap_pool") or ""
+            # swaps mutate the vaults, not the pool account — watch the WSOL vault when its address is known
+            _static = pumpswap.pool_static(slot.get("pumpswap_pool") or "")
+            watch_account = (_static or {}).get("pool_quote_token_account") or slot.get("pumpswap_pool") or ""
         else:
             # Try (in order): explicit field on slot, launch dict, trade dict,
             # derive PDA from mint as a deterministic fallback (works even
@@ -3557,6 +3599,7 @@ class BotState:
             if not slot or slot.get("monitor_uid") != monitor_uid:
                 return  # slot evicted OR another monitor took over
             slot["last_monitor_tick"] = time.time()
+            watch_account = slot.get("watch_account") or watch_account   # may move (pool → vault) after a migration
             # Persist in-flight monitor state every ~10s so the orphan
             # reattach path can restore the trailing-stop peak, partial-tp
             # flag, and stale-exit clock if the process restarts or the
@@ -3613,11 +3656,14 @@ class BotState:
                         finally:
                             slot["exit_in_progress"] = False
 
-                # Protocol-aware price polling
+                # Protocol-aware price polling — one state read per tick, shared by every check below.
+                # Push-first: a WSS push carries the account bytes (decoded locally, no RPC); while the
+                # subscription is live, "no push" means "no change", so the HTTP read only runs as a
+                # safety net every MONITOR_SAFETY_POLL_S instead of every 0.8 s tick.
                 protocol = slot.get("protocol", "pumpfun")
                 if protocol == "pumpswap":
                     pool = slot.get("pumpswap_pool") or ""
-                    pool_state = await pumpswap.fetch_pool_state(pool) if pool else None
+                    pool_state = await self._monitor_pool_state(slot, pool) if pool else None
                     if not pool_state:
                         await asyncio.sleep(1.0)
                         continue
@@ -3625,7 +3671,7 @@ class BotState:
                     slot["_depth_sol"] = float(pool_state.get("quote_reserves") or 0) / LAMPORTS_PER_SOL
                     slot.pop("_runner_pool_missing_since", None)
                 else:
-                    state = await pumpfun.fetch_bonding_curve_state(mint)
+                    state = await self._monitor_curve_state(mint, slot, watch_account)
                     if not state and is_runner:
                         # runner: a closed curve account is graduation in progress — wait grad_grace_s for the pool
                         if await self._detect_and_migrate_graduation(mint, slot):

@@ -24,6 +24,7 @@ from __future__ import annotations
 import base64
 import os
 import random
+import re
 import struct
 import logging
 logger = logging.getLogger("pumpswap")
@@ -118,63 +119,113 @@ BREAKING_FEE_RECIPIENTS_PS = [
 
 
 # ---- Pool account decoder ----
-async def fetch_pool_state(pool_address: str) -> Optional[dict]:
-    """Decode a PumpSwap pool account. Returns reserves + key addresses."""
-    pool = Pubkey.from_string(pool_address)
-    res = await rpc_call(
-        "getAccountInfo",
-        [str(pool), {"encoding": "base64", "commitment": "confirmed"}],
-    )
-    val = res.get("result", {}).get("value")
-    if not val:
-        return None
-    raw = base64.b64decode(val["data"][0])
+# Static pool fields (mints, vaults, creator, flags) never change after creation — decode once per pool and
+# only re-read the two vault balances afterwards (1 RPC per read instead of 2).
+_POOL_STATIC: dict[str, dict] = {}
+_BATCH = 100   # getMultipleAccounts hard limit
+
+
+def _decode_pool_static(pool: str, raw: bytes) -> Optional[dict]:
     # 8 disc + 1 bump + 2 index + 32 creator = 43
     # base_mint @ 43, quote_mint @ 75, lp_mint @ 107,
     # pool_base_token_account @ 139, pool_quote_token_account @ 171,
-    # lp_supply @ 203 (u64), coin_creator @ 211
+    # lp_supply @ 203 (u64), coin_creator @ 211, is_mayhem_mode @ 243, is_cashback @ 244
     if len(raw) < 211 + 32:
         return None
-    base_mint = Pubkey.from_bytes(raw[43:75])
-    quote_mint = Pubkey.from_bytes(raw[75:107])
-    pool_base = Pubkey.from_bytes(raw[139:171])
-    pool_quote = Pubkey.from_bytes(raw[171:203])
-    coin_creator = Pubkey.from_bytes(raw[211:243])
-    # Per pump-public-docs: byte 243 = is_mayhem_mode, byte 244 = is_cashback.
-    # Both affect the IX layout (extra accounts) and fee recipient resolution.
-    is_mayhem_mode = bool(raw[243]) if len(raw) > 243 else False
-    is_cashback = bool(raw[244]) if len(raw) > 244 else False
+    return {
+        "pool": pool,
+        "base_mint": str(Pubkey.from_bytes(raw[43:75])),
+        "quote_mint": str(Pubkey.from_bytes(raw[75:107])),
+        "pool_base_token_account": str(Pubkey.from_bytes(raw[139:171])),
+        "pool_quote_token_account": str(Pubkey.from_bytes(raw[171:203])),
+        "coin_creator": str(Pubkey.from_bytes(raw[211:243])),
+        "is_mayhem_mode": bool(raw[243]) if len(raw) > 243 else False,
+        "is_cashback": bool(raw[244]) if len(raw) > 244 else False,
+    }
 
-    # Fetch the two vaults' balances
-    bal_res = await rpc_call(
-        "getMultipleAccounts",
-        [[str(pool_base), str(pool_quote)], {"encoding": "jsonParsed", "commitment": "confirmed"}],
-    )
-    accts = bal_res.get("result", {}).get("value") or []
-    if len(accts) < 2 or not accts[0] or not accts[1]:
+
+def _with_reserves(static: dict, base_acct: Optional[dict], quote_acct: Optional[dict]) -> Optional[dict]:
+    if not base_acct or not quote_acct:
         return None
     try:
-        base_amt = int(accts[0]["data"]["parsed"]["info"]["tokenAmount"]["amount"])
-        base_decimals = int(accts[0]["data"]["parsed"]["info"]["tokenAmount"]["decimals"])
-        quote_amt = int(accts[1]["data"]["parsed"]["info"]["tokenAmount"]["amount"])
+        base_amt = int(base_acct["data"]["parsed"]["info"]["tokenAmount"]["amount"])
+        base_decimals = int(base_acct["data"]["parsed"]["info"]["tokenAmount"]["decimals"])
+        quote_amt = int(quote_acct["data"]["parsed"]["info"]["tokenAmount"]["amount"])
     except (KeyError, TypeError, ValueError):
         return None
     return {
-        "pool": str(pool),
-        "base_mint": str(base_mint),
-        "quote_mint": str(quote_mint),
-        "pool_base_token_account": str(pool_base),
-        "pool_quote_token_account": str(pool_quote),
-        "coin_creator": str(coin_creator),
+        **static,
         "base_reserves": base_amt,
         "quote_reserves": quote_amt,
         "base_decimals": base_decimals,
         # For symmetry with pumpfun's state dict
         "real_sol_reserves": quote_amt,  # WSOL vault balance == real SOL liquidity
         "complete": False,                # AMM pools don't "complete"
-        "is_mayhem_mode": is_mayhem_mode,
-        "is_cashback": is_cashback,
     }
+
+
+async def _get_multiple(pubkeys: list[str], encoding: str) -> list:
+    global _BATCH
+    out: list = []
+    i = 0
+    while i < len(pubkeys):
+        chunk = pubkeys[i:i + _BATCH]
+        res = await rpc_call("getMultipleAccounts", [chunk, {"encoding": encoding, "commitment": "confirmed"}])
+        err = res.get("error") or {}
+        m = re.search(r"limited to a (\d+) range", str(err.get("message") or "")) if err else None
+        if m and int(m.group(1)) < _BATCH:
+            # provider plan caps the key count (QuickNode Discover = 5) — shrink once for the process and retry the chunk
+            _BATCH = max(1, int(m.group(1)))
+            logger.warning(f"getMultipleAccounts capped by RPC plan → batch size {_BATCH}")
+            continue
+        if err:
+            raise RuntimeError(f"getMultipleAccounts error: {err}")
+        vals = (res.get("result") or {}).get("value") or []
+        out.extend(vals + [None] * (len(chunk) - len(vals)))
+        i += len(chunk)
+    return out
+
+
+async def _load_statics(pools: list[str]) -> None:
+    missing = [p for p in dict.fromkeys(pools) if p not in _POOL_STATIC]
+    if not missing:
+        return
+    for pool, val in zip(missing, await _get_multiple(missing, "base64")):
+        if val:
+            st = _decode_pool_static(pool, base64.b64decode(val["data"][0]))
+            if st:
+                _POOL_STATIC[pool] = st
+
+
+async def fetch_pool_states_batch(pools: list[str]) -> dict[str, dict]:
+    """Reserves for many pools in ⌈n/100⌉ getMultipleAccounts calls (plus one-off static decodes).
+    Missing/unreadable pools are simply absent from the result."""
+    pools = [p for p in dict.fromkeys(pools) if p]
+    if not pools:
+        return {}
+    await _load_statics(pools)
+    known = [p for p in pools if p in _POOL_STATIC]
+    vaults: list[str] = []
+    for p in known:
+        vaults += [_POOL_STATIC[p]["pool_base_token_account"], _POOL_STATIC[p]["pool_quote_token_account"]]
+    accts = await _get_multiple(vaults, "jsonParsed")
+    out: dict[str, dict] = {}
+    for i, p in enumerate(known):
+        st = _with_reserves(_POOL_STATIC[p], accts[2 * i], accts[2 * i + 1])
+        if st:
+            out[p] = st
+    return out
+
+
+async def fetch_pool_state(pool_address: str) -> Optional[dict]:
+    """Decode a PumpSwap pool account. Returns reserves + key addresses."""
+    pool = str(Pubkey.from_string(pool_address))
+    return (await fetch_pool_states_batch([pool])).get(pool)
+
+
+def pool_static(pool_address: str) -> Optional[dict]:
+    """Cached static fields for a pool already read once (None if never fetched)."""
+    return _POOL_STATIC.get(pool_address)
 
 
 def price_sol_per_raw_token(state: dict) -> float:
@@ -223,9 +274,44 @@ def quote_sell_sol(state: dict, tokens_in: int, slippage_bps: int = 500) -> tupl
 
 
 # ---- Pool lookup by mint (used when discovery only gives us the mint) ----
-async def find_pool_for_mint(mint_str: str) -> Optional[str]:
-    """Find the highest-liquidity PumpSwap pool for a given base mint paired
-    with WSOL. Uses getProgramAccounts with the canonical filter offsets."""
+PUMP_PROGRAM_ID = Pubkey.from_string(os.environ["PUMP_PROGRAM_ID"])
+
+
+def derive_canonical_pool(mint: Pubkey) -> Pubkey:
+    """The pool Pump.fun's migration creates on graduation: creator = PDA("pool-authority", mint) under the Pump
+    program, index 0, quote WSOL. Verified against live pools — turns the 2×getProgramAccounts scan into one
+    getAccountInfo."""
+    authority, _ = Pubkey.find_program_address([b"pool-authority", bytes(mint)], PUMP_PROGRAM_ID)
+    pda, _ = Pubkey.find_program_address(
+        [b"pool", (0).to_bytes(2, "little"), bytes(authority), bytes(mint), bytes(WSOL)], PUMPSWAP_PROGRAM_ID)
+    return pda
+
+
+_POOL_MISS: dict[str, float] = {}     # mint -> ts of last miss (short negative cache: graduation wait loops re-ask every second)
+POOL_MISS_TTL_S = 3.0
+
+
+async def find_pool_for_mint(mint_str: str, canonical_only: bool = False) -> Optional[str]:
+    """PumpSwap pool for a base mint paired with WSOL. Canonical graduation PDA first (1 cheap read); the
+    getProgramAccounts scan only runs for non-canonical pools unless `canonical_only`."""
+    import time as _t
+    last_miss = _POOL_MISS.get(mint_str, 0.0)
+    if _t.time() - last_miss < POOL_MISS_TTL_S:
+        return None
+    canonical = str(derive_canonical_pool(Pubkey.from_string(mint_str)))
+    if await fetch_pool_state(canonical):
+        _POOL_MISS.pop(mint_str, None)
+        return canonical
+    if canonical_only:
+        _POOL_MISS[mint_str] = _t.time()
+        return None
+    found = await _find_pool_gpa(mint_str)
+    if found is None:
+        _POOL_MISS[mint_str] = _t.time()
+    return found
+
+
+async def _find_pool_gpa(mint_str: str) -> Optional[str]:
     wsol_str = "So11111111111111111111111111111111111111112"
     candidates: list[str] = []
     for base_off, quote_off, base_b58, quote_b58 in (
@@ -485,14 +571,21 @@ def build_create_ata_ix(payer: Pubkey, owner: Pubkey, mint: Pubkey,
 async def get_token_balance(ata: Pubkey) -> int:
     """Read the raw token amount currently held in an ATA. Returns 0 if account
     doesn't exist. Used before selling to size the trade by actual balance."""
-    res = await rpc_call(
-        "getTokenAccountBalance",
-        [str(ata), {"commitment": "confirmed"}],
-    )
-    try:
-        return int(res["result"]["value"]["amount"])
-    except (KeyError, TypeError, ValueError):
-        return 0
+    return (await get_token_balances([ata]))[0]
+
+
+async def get_token_balances(atas: list[Pubkey]) -> list[int]:
+    """Raw amounts for many ATAs in ⌈n/100⌉ getMultipleAccounts calls (0 for missing accounts)."""
+    if not atas:
+        return []
+    vals = await _get_multiple([str(a) for a in atas], "jsonParsed")
+    out = []
+    for v in vals:
+        try:
+            out.append(int(v["data"]["parsed"]["info"]["tokenAmount"]["amount"]))
+        except (KeyError, TypeError, ValueError):
+            out.append(0)
+    return out
 
 
 async def calibrate_buy(kp, user, state: dict, user_token_ata, wsol_acc, base_token_program, sol_in_lamports: int,

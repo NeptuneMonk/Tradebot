@@ -97,11 +97,21 @@ def _maybe_persist_sync():
         pass  # no event loop yet (import-time)
 
 
-def record_rpc_call():
-    """Count a successful Helius JSON-RPC call (1 credit)."""
+_BY_METHOD: dict[str, int] = {}          # process-lifetime per-method tally (which call is burning the budget?)
+_METHOD_CREDITS = {"getProgramAccounts": 10, "getTransaction": 1}   # Helius weights; everything else 1
+
+
+def record_rpc_call(method: str = ""):
+    """Count a successful JSON-RPC call (1 credit, getProgramAccounts 10)."""
     _counts["rpc_calls"] += 1
-    _counts["estimated_credits"] += 1
+    _counts["estimated_credits"] += _METHOD_CREDITS.get(method, 1)
+    if method:
+        _BY_METHOD[method] = _BY_METHOD.get(method, 0) + 1
     _maybe_persist_sync()
+
+
+def by_method() -> dict[str, int]:
+    return dict(sorted(_BY_METHOD.items(), key=lambda kv: -kv[1]))
 
 
 def record_ws_message(byte_size: int):
@@ -168,7 +178,17 @@ def snapshot(monthly_limit: int = 10_000_000) -> dict:
         "pct_of_monthly_consumed": round(pct_consumed * 100, 2),
         "pct_of_monthly_projected": round(pct_of_limit * 100, 1) if pct_of_limit is not None else None,
         "severity": severity,
+        "by_method": by_method(),
+        "rpc_provider": _provider(),
     }
+
+
+def _provider() -> str:
+    try:
+        from solana_client import rpc_provider
+        return rpc_provider()
+    except Exception:
+        return "unknown"
 
 
 async def reset_period():

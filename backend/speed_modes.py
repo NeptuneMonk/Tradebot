@@ -117,6 +117,10 @@ class PriorityFeeAutoTuner:
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._loop())
 
+    def stop(self):
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+
     async def _loop(self):
         # Brief stagger so the listener subscribes first
         await asyncio.sleep(8.0)

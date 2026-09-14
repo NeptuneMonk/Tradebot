@@ -193,6 +193,9 @@ LAUNCH_BASELINE_PRICE_SOL = (
 
 
 # ---------- Token program detection ----------
+_MINT_TP_CACHE: dict[str, Pubkey] = {}   # a mint's owning program never changes — read once per process
+
+
 async def get_mint_token_program(mint_str: str) -> Pubkey:
     """Return the token program (classic SPL or Token-2022) that owns the mint.
 
@@ -200,18 +203,28 @@ async def get_mint_token_program(mint_str: str) -> Pubkey:
     the right one as the `token_program` account or the inner ATA CPI fails
     with `IncorrectProgramId`.
     """
+    hit = _MINT_TP_CACHE.get(mint_str)
+    if hit is not None:
+        return hit
+    tp = await _read_mint_token_program(mint_str)
+    if tp is not None:
+        _MINT_TP_CACHE[mint_str] = tp
+    return tp or TOKEN_PROGRAM
+
+
+async def _read_mint_token_program(mint_str: str) -> Pubkey | None:
     res = await rpc_call(
         "getAccountInfo",
         [mint_str, {"encoding": "base64", "commitment": "confirmed"}],
     )
     val = (res.get("result") or {}).get("value")
     if not val:
-        return TOKEN_PROGRAM
+        return None   # mint account unreadable (RPC blip) — do not cache a guess
     owner = val.get("owner") or ""
     try:
         return Pubkey.from_string(owner)
     except Exception:
-        return TOKEN_PROGRAM
+        return None
 
 
 def derive_associated_token_for_program(owner: Pubkey, mint: Pubkey, token_program: Pubkey) -> Pubkey:
@@ -300,8 +313,12 @@ async def fetch_bonding_curve_state(mint_str: str) -> dict | None:
     val = res.get("result", {}).get("value")
     if not val:
         return None
-    data_b64 = val["data"][0]
-    data = base64.b64decode(data_b64)
+    return decode_bonding_curve(base64.b64decode(val["data"][0]))
+
+
+def decode_bonding_curve(data: bytes) -> dict | None:
+    """Decode raw bonding-curve account bytes (same layout as above). Used for RPC reads AND for the account
+    data that arrives on the accountSubscribe push, so a push never needs a follow-up getAccountInfo."""
     if len(data) < 49:
         return None
     vtr, vsr, rtr, rsr, tts = struct.unpack_from("<QQQQQ", data, 8)

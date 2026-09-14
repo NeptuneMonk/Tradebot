@@ -13,10 +13,9 @@ import logging
 import websockets
 
 from pumpfun import PUMP_PROGRAM_ID, CREATE_DISCRIMINATOR
+from solana_client import WSS_URL
 
 logger = logging.getLogger("listener")
-
-WSS_URL = os.environ["HELIUS_WSS_URL"]
 
 
 def _anchor_event_disc(name: str) -> bytes:
@@ -161,7 +160,7 @@ class PumpFunListener:
             except Exception:
                 pass
             if not WSS_URL:
-                self.last_error = "no HELIUS_WSS_URL configured"
+                self.last_error = "no SOLANA_WSS_URL configured"
                 await asyncio.sleep(5)
                 continue
             try:

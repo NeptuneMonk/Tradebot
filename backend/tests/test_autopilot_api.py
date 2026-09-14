@@ -68,9 +68,9 @@ def test_autopilot_bogus_action_returns_400():
 
 # ---------- Config clamps ----------
 def test_config_clamps_risk_and_kill_switch():
-    r = _put("/api/bot/config", {"risk_per_trade_pct": 50})
+    r = _put("/api/bot/config", {"risk_per_trade_pct": 80})
     assert r.status_code == 200, r.text
-    assert r.json()["risk_per_trade_pct"] == 10.0
+    assert r.json()["risk_per_trade_pct"] == 50.0   # cap raised 10 → 50 on 2026-09-13 (small live wallets)
 
     r = _put("/api/bot/config", {"risk_per_trade_pct": 0.01})
     assert r.status_code == 200

@@ -32,9 +32,9 @@ Operator notes:
     exponential-backoff pattern, capped at 30s.
 """
 import asyncio
+import base64
 import json
 import logging
-import os
 import time
 from typing import Optional
 
@@ -42,7 +42,7 @@ import websockets
 
 logger = logging.getLogger("account_event_bus")
 
-WSS_URL = os.environ["HELIUS_WSS_URL"]
+from solana_client import WSS_URL
 
 
 class AccountEventBus:
@@ -55,6 +55,7 @@ class AccountEventBus:
         self._wss_sub_ids: dict[str, int] = {}
         # rpc_request_id -> account_pubkey_str (resolves the async subscribe ACK)
         self._pending_acks: dict[int, str] = {}
+        self._latest: dict[str, tuple[bytes, float]] = {}
         self._task: Optional[asyncio.Task] = None
         self._ws = None
         self._next_id = 10_000
@@ -104,6 +105,7 @@ class AccountEventBus:
         eagerly because the ACK may be in flight — let reconnect cleanup
         handle drift if it happens."""
         self._events.pop(account, None)
+        self._latest.pop(account, None)
         sub_id = self._wss_sub_ids.pop(account, None)
         if sub_id is not None and self._ws is not None and self._connected.is_set():
             req_id = self._next_id
@@ -268,9 +270,27 @@ class AccountEventBus:
             return
         self.stats["events_received"] += 1
         self.stats["last_event_ts"] = time.time()
+        # Keep the pushed account bytes: the monitor decodes them locally instead of re-reading the account
+        # over HTTP (one getAccountInfo saved per trade that lands on a watched curve).
+        try:
+            data = ((params.get("result") or {}).get("value") or {}).get("data")
+            self._latest[account] = (base64.b64decode(data[0]) if data and data[0] else b"", time.time())
+        except Exception:
+            self._latest.pop(account, None)
         event.set()
 
     # ---------------- Helpers for callers ----------------
+
+    def take_latest(self, account: str) -> bytes | None:
+        """Account bytes from the most recent push, consumed once (None = nothing new since the last take).
+        b"" means the account was closed."""
+        hit = self._latest.pop(account, None)
+        return hit[0] if hit else None
+
+    def is_live(self, account: str) -> bool:
+        """True when the WSS is up and this account's subscription has been ACKed — i.e. 'no push' really means
+        'no on-chain change', so callers may stretch their safety-net poll."""
+        return self._connected.is_set() and account in self._wss_sub_ids
 
     async def wait_for_change(self, account: str, timeout: float) -> bool:
         """Convenience: wait for the next push on `account` OR `timeout`

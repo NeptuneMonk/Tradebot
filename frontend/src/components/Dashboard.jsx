@@ -391,7 +391,6 @@ export default function Dashboard() {
                   ? `Bot is RUNNING but the live-doctor breaker has benched: ${Object.keys(status.books_paused).join(", ")} — no new entries for those books (see the amber strip below to LIFT). Click to stop.`
                   : "Bot is RUNNING — click to stop")
                 : "Bot is STOPPED — click to start"}
-              data-testid="bot-status-pill"
             >
               <span className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 ${status.enabled ? (Object.keys(status.books_paused || {}).length > 0 ? "bg-amber-400 animate-pulse" : "bg-emerald-500 animate-pulse") : "bg-rose-500"}`} />
               {status.enabled

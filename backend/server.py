@@ -916,12 +916,17 @@ async def account_bus_diagnostics():
     indicates the WSS path is silently broken and the safety-net polling is
     doing all the work."""
     from account_event_bus import account_event_bus
+    from helius_budget import by_method
+    from solana_client import rpc_provider
     return {
         "connected": account_event_bus._connected.is_set(),
         "active_subscriptions": len(account_event_bus._events),
         "active_wss_sub_ids": len(account_event_bus._wss_sub_ids),
         "stats": dict(account_event_bus.stats),
         "tracked_accounts_preview": list(account_event_bus._events.keys())[:5],
+        "rpc_provider": rpc_provider(),
+        "monitor_rpc_reads_saved_by_push": int(getattr(bot_state, "rpc_saved_by_push", 0)),
+        "rpc_calls_by_method": by_method(),
     }
 
 
@@ -1591,9 +1596,13 @@ async def wallet_recover_mints(req: RecoverMintsReq):
     }
 
 
+_STUCK_CACHE: dict = {}
+STUCK_CACHE_TTL_S = 60.0
+
+
 @api.get("/trades/stuck")
-async def list_stuck_trades():
-    """List stuck positions enriched with current wallet token balance + USD value."""
+async def list_stuck_trades(fresh: bool = False):
+    """List stuck positions enriched with current wallet token balance + USD value (cached 60 s; `?fresh=1` bypasses)."""
     from solders.pubkey import Pubkey
     from wallet import get_pubkey
     import pumpfun
@@ -1608,33 +1617,32 @@ async def list_stuck_trades():
          "held_watch_done": 1, "held_done_reason": 1, "held_parked_at": 1},
     )
     rows = [t async for t in cursor]
+    cache_key = tuple(sorted(t["id"] for t in rows))
+    hit = _STUCK_CACHE.get("v")
+    if hit and hit[0] == cache_key and time.time() - hit[1] < STUCK_CACHE_TTL_S and not fresh:
+        return hit[2]     # the dashboard polls this every 30 s per tab — 17 rows × 3-5 RPC reads each was ~1M credits/week
     user = get_pubkey()
     sol_price = await get_sol_usd_price() or 100.0
-    out = []
+    # One batched read for every row's primary + alternate ATA (was 1-2 getTokenAccountBalance per row).
+    TOKEN_2022 = Pubkey.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+    atas: list[Pubkey] = []
     for t in rows:
-        mint = t["mint"]
-        mint_pk = Pubkey.from_string(mint)
-        protocol = t.get("protocol") or "pumpfun"
-        # ALWAYS derive ATA from the mint's real token program — most
-        # Pump.fun mints are Token-2022. Hardcoding classic SPL for the
-        # "pumpswap" branch caused stuck Token-2022 mints (e.g. GRIT) to
-        # show wallet_token_balance=0 → current_usd=$0 → user couldn't
-        # see they had recoverable tokens.
+        mint_pk = Pubkey.from_string(t["mint"])
         try:
-            tp = await pumpfun.get_mint_token_program(mint)
-            ata = _ps.get_associated_token_address(user, mint_pk, tp)
-            balance = await _ps.get_token_balance(ata)
-            # Belt-and-suspenders: try alt program if primary is empty
-            if balance <= 0:
-                from solders.pubkey import Pubkey as _Pk
-                TOKEN_2022 = _Pk.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
-                alt_tp = TOKEN_2022 if str(tp) != str(TOKEN_2022) else _ps.TOKEN_PROGRAM
-                ata_alt = _ps.get_associated_token_address(user, mint_pk, alt_tp)
-                bal_alt = await _ps.get_token_balance(ata_alt)
-                if bal_alt > 0:
-                    balance = bal_alt
+            tp = await pumpfun.get_mint_token_program(t["mint"])
         except Exception:
-            balance = 0
+            tp = _ps.TOKEN_PROGRAM
+        alt_tp = TOKEN_2022 if str(tp) != str(TOKEN_2022) else _ps.TOKEN_PROGRAM
+        atas += [_ps.get_associated_token_address(user, mint_pk, tp), _ps.get_associated_token_address(user, mint_pk, alt_tp)]
+    try:
+        bals = await _ps.get_token_balances(atas)
+    except Exception:
+        bals = [0] * len(atas)
+    out = []
+    for i, t in enumerate(rows):
+        mint = t["mint"]
+        protocol = t.get("protocol") or "pumpfun"
+        balance = bals[2 * i] if bals[2 * i] > 0 else bals[2 * i + 1]
         current_sol = 0.0
         graduated = False
         pumpswap_pool = None
@@ -1679,7 +1687,9 @@ async def list_stuck_trades():
             "pumpswap_pool": pumpswap_pool,
         })
     out.sort(key=lambda x: -x.get("current_usd", 0))
-    return {"stuck": out, "sol_price_usd": sol_price}
+    payload = {"stuck": out, "sol_price_usd": sol_price}
+    _STUCK_CACHE["v"] = (cache_key, time.time(), payload)
+    return payload
 
 
 @api.post("/trades/recover/{trade_id}")

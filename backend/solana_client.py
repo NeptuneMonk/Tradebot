@@ -1,43 +1,90 @@
 """
-Solana RPC helpers (Helius).
+Solana RPC helpers — provider-agnostic JSON-RPC (QuickNode, Helius, Triton, …).
+
+`SOLANA_RPC_URL` is the primary endpoint (falls back to the legacy `HELIUS_RPC_URL` key);
+`SOLANA_RPC_FALLBACK_URL` (optional) gets one attempt when the primary has exhausted its retries.
 """
 import os
+import time
 import httpx
 import asyncio
 from solders.pubkey import Pubkey
 
-RPC_URL = os.environ["HELIUS_RPC_URL"]
+RPC_URL = os.environ.get("SOLANA_RPC_URL") or os.environ["HELIUS_RPC_URL"]
+RPC_FALLBACK_URL = os.environ.get("SOLANA_RPC_FALLBACK_URL") or ""
+WSS_URL = os.environ.get("SOLANA_WSS_URL") or os.environ.get("HELIUS_WSS_URL") or ""
+RPC_MAX_RPS = float(os.environ.get("SOLANA_RPC_MAX_RPS") or 0)   # 0 = unpaced; QuickNode Discover allows 15 req/s
 LAMPORTS_PER_SOL = 1_000_000_000
+QUOTA_DEAD_S = 300.0          # after a plan-quota 429 the primary is skipped this long (fallback serves directly)
+_primary_dead_until = 0.0
+
+_pace_next = 0.0
+
+
+async def _pace():
+    """Client-side request pacing so bulk readers (discovery batches) cannot trip the provider's per-second
+    limit and 429 the position monitors. Evenly spaces calls at 1/RPC_MAX_RPS."""
+    global _pace_next
+    if RPC_MAX_RPS <= 0:
+        return
+    loop = asyncio.get_event_loop()
+    now = loop.time()
+    slot = max(now, _pace_next)
+    _pace_next = slot + 1.0 / RPC_MAX_RPS
+    if slot > now:
+        await asyncio.sleep(slot - now)
+
+
+def rpc_provider() -> str:
+    host = RPC_URL.split("//", 1)[-1].split("/", 1)[0].lower()
+    for name in ("helius", "quiknode", "triton", "alchemy", "ankr", "shyft"):
+        if name in host:
+            return "quicknode" if name == "quiknode" else name
+    return host
 
 
 async def rpc_call(method: str, params: list, timeout: float = 10.0,
                    max_retries: int = 3) -> dict:
-    """JSON-RPC call to Helius with transient-failure retry.
+    """JSON-RPC call with transient-failure retry.
 
     Retries on ConnectTimeout / ReadTimeout / 5xx / 429 (the only failure
-    modes that are safe to retry — Helius rate-limits and edge-node
-    cold-starts produce these intermittently). Backoff: 0.25s, 0.5s, 1.0s.
-
-    Without retries, a single transient ConnectTimeout to Helius bubbles up
-    to FastAPI as a 500, which the cluster ingress surfaces as a 502 to the
-    browser — breaking user-facing actions like wallet token-scan, recovery
-    sales, and stuck-position lookups."""
+    modes that are safe to retry — rate-limits and edge-node cold-starts
+    produce these intermittently). Backoff: 0.25s, 0.5s, 1.0s. After the
+    primary's retries are spent, `SOLANA_RPC_FALLBACK_URL` gets one attempt."""
     payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
     last_exc: Exception | None = None
-    for attempt in range(max_retries):
+    global _primary_dead_until
+    primary_dead = RPC_FALLBACK_URL and time.time() < _primary_dead_until
+    urls = ([RPC_FALLBACK_URL] * max_retries) if primary_dead else ([RPC_URL] * max_retries + ([RPC_FALLBACK_URL] if RPC_FALLBACK_URL else []))
+    for attempt, url in enumerate(urls):
         try:
+            await _pace()
             async with httpx.AsyncClient(timeout=timeout) as client:
-                r = await client.post(RPC_URL, json=payload)
+                r = await client.post(url, json=payload)
                 if r.status_code == 429 or 500 <= r.status_code < 600:
                     # transient — retry
                     last_exc = httpx.HTTPStatusError(
-                        f"helius {r.status_code}", request=r.request, response=r
+                        f"rpc {r.status_code}", request=r.request, response=r
                     )
+                    if r.status_code == 429:
+                        body = r.text[:200].lower()
+                        if url == RPC_URL and RPC_FALLBACK_URL and ("limit reached" in body or "max usage" in body or "quota" in body):
+                            # plan quota exhausted (not a per-second limit): skip the primary for a while, go straight to the fallback
+                            _primary_dead_until = time.time() + QUOTA_DEAD_S
+                            urls[attempt + 1:] = [RPC_FALLBACK_URL] * max_retries
+                            continue
+                        try:
+                            retry_after = float(r.headers.get("retry-after") or 0)
+                        except ValueError:
+                            retry_after = 0.0
+                        await asyncio.sleep(min(3.0, max(0.5 * (2 ** attempt), retry_after)))
+                elif r.status_code == 413:
+                    return r.json()      # plan-limit JSON-RPC error (e.g. QuickNode batch cap) — let the caller adapt
                 else:
                     r.raise_for_status()
                     try:
                         from helius_budget import record_rpc_call
-                        record_rpc_call()
+                        record_rpc_call(method)
                     except Exception:
                         pass
                     return r.json()
@@ -45,8 +92,8 @@ async def rpc_call(method: str, params: list, timeout: float = 10.0,
                 httpx.ConnectError, httpx.RemoteProtocolError) as e:
             last_exc = e
         # Backoff before next attempt (skip on last iteration)
-        if attempt < max_retries - 1:
-            await asyncio.sleep(0.25 * (2 ** attempt))
+        if attempt < len(urls) - 1:
+            await asyncio.sleep(0.25 * (2 ** min(attempt, 2)))
     # All retries exhausted
     assert last_exc is not None
     raise last_exc

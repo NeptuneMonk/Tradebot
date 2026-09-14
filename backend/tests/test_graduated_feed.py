@@ -26,10 +26,14 @@ def _feed(coins):
         return coins
     d.fetch_recent_graduated = fake_fetch
 
-    async def fake_seed(coin, created_s, is_pumpswap=False):
+    async def fake_seed(coin, created_s, is_pumpswap=False, **_kw):
         d.state.tracking[coin["mint"]] = {"start": created_s, "protocol": "pumpswap" if is_pumpswap else "pumpfun",
                                           "graduated_at": time.time() if is_pumpswap else None, "discovered": True}
     d._seed_token = fake_seed
+
+    async def fake_batch(pools):
+        return {}
+    disc.pumpswap.fetch_pool_states_batch = fake_batch
     return d
 
 

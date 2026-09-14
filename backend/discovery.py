@@ -35,6 +35,7 @@ logger = logging.getLogger("discovery")
 PUMPFUN_API = "https://frontend-api-v3.pump.fun"
 DISCOVERY_INTERVAL_S = 120
 REFRESH_INTERVAL_S = 60      # how often to re-poll MC for already-tracked discovered tokens
+COLD_POOL_REFRESH_S = 300    # graduated pools far below the seasoned MC gate: reserves re-read every 5 min, not every cycle
 MC_SAMPLE_KEEP = 12          # 12 × 60s = 12min of MC samples for velocity calc
 COINS_PER_CYCLE = 50
 HTTP_TIMEOUT = 12.0
@@ -114,8 +115,9 @@ class PumpfunDiscovery:
             st.tracking.pop(mint, None)
         max_created_age_s = band_max_s + 6 * 3600.0
         seeded = 0
+        todo: list[tuple[dict, float]] = []
         for c in coins:
-            if seeded >= GRADUATED_PER_CYCLE:
+            if len(todo) >= GRADUATED_PER_CYCLE:
                 break
             mint = c["mint"]
             if not c.get("complete"):
@@ -129,8 +131,17 @@ class PumpfunDiscovery:
                 continue
             if not (c.get("pool_address") or c.get("pump_swap_pool")):
                 continue
+            todo.append((c, created_s))
+        # one batched reserves read for the whole cycle (was 2 RPC calls per seeded token)
+        try:
+            states = await pumpswap.fetch_pool_states_batch([c.get("pump_swap_pool") or c.get("pool_address") for c, _ in todo])
+        except Exception as e:
+            logger.debug(f"graduated batch pool read failed: {e}")
+            states = {}
+        for c, created_s in todo:
+            mint = c["mint"]
             try:
-                await self._seed_token(c, created_s or now, True)
+                await self._seed_token(c, created_s or now, True, pool_state=states.get(c.get("pump_swap_pool") or c.get("pool_address")))
                 st.tracking[mint]["graduated_feed"] = True
                 self._graduated_seen.add(mint)
                 seeded += 1
@@ -209,6 +220,24 @@ class PumpfunDiscovery:
             sol_usd = await get_sol_usd_price()
         except Exception:
             sol_usd = 0.0
+        # One batched reserves read for every graduated pool we already know (was 2 RPC calls per token per
+        # minute — the single largest getAccountInfo consumer). Pools resolved mid-loop fall back to a single read.
+        pool_states: dict[str, dict] = {}
+        cold_pools: set[str] = set()     # far below the seasoned MC gate → reserves re-read every COLD_POOL_REFRESH_S only
+        mc_floor = float(getattr(st.config, "scanner_min_mc_usd_seasoned", 30000.0) or 0) * 0.8
+        hot: list[str] = []
+        for _, b in targets:
+            pool = b.get("pumpswap_pool")
+            if b.get("protocol") != "pumpswap" or not pool:
+                continue
+            cold = 0 < float(b.get("usd_market_cap") or 0) < mc_floor and now - float(b.get("_pool_read_ts") or 0) < COLD_POOL_REFRESH_S
+            (cold_pools.add if cold else hot.append)(pool)
+        try:
+            from helius_gate import is_helius_paused
+            if not is_helius_paused() and hot:
+                pool_states = await pumpswap.fetch_pool_states_batch(hot)
+        except Exception as e:
+            logger.debug(f"discovery batched pool read failed: {e}")
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             for mint, bucket in targets:
                 # Pump.fun's per-mint coin endpoint returns HTTP 200 with an
@@ -253,9 +282,10 @@ class PumpfunDiscovery:
                     pass
                 if is_graduated and helius_ok:
                     pool = bucket.get("pumpswap_pool") or c.get("pump_swap_pool") or ""
-                    if pool:
+                    if pool and pool not in cold_pools:
                         try:
-                            ps_state = await pumpswap.fetch_pool_state(pool)
+                            ps_state = pool_states.get(pool) or await pumpswap.fetch_pool_state(pool)
+                            bucket["_pool_read_ts"] = now
                             if ps_state:
                                 cur_price = pumpswap.price_sol_per_raw_token(ps_state)
                                 # PumpSwap quote_reserves IS the actual WSOL
@@ -488,7 +518,7 @@ class PumpfunDiscovery:
                     await asyncio.sleep(0.25)
         return out
 
-    async def _seed_token(self, coin: dict, created_s: float, is_pumpswap: bool = False):
+    async def _seed_token(self, coin: dict, created_s: float, is_pumpswap: bool = False, pool_state: dict | None = None):
         st = self.state
         mint = coin["mint"]
         vsr = int(coin.get("virtual_sol_reserves") or 0)
@@ -512,7 +542,7 @@ class PumpfunDiscovery:
             real_sol_lamports = 0
             if pool_address:
                 try:
-                    ps_state = await pumpswap.fetch_pool_state(pool_address)
+                    ps_state = pool_state or await pumpswap.fetch_pool_state(pool_address)
                     if ps_state:
                         cur_price = pumpswap.price_sol_per_raw_token(ps_state)
                         real_sol_lamports = ps_state["quote_reserves"]
