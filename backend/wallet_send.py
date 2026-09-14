@@ -29,7 +29,7 @@ async def send_sol(to_address: str, amount_sol: float, priority_fee_microlamport
     if to_pk == from_pk:
         raise ValueError("cannot send to self")
 
-    bal_sol = await get_sol_balance(str(from_pk))
+    bal_sol = await get_sol_balance(str(from_pk), fresh=True)
     bal_lamports = int(bal_sol * LAMPORTS_PER_SOL)
     amount_lamports = int(amount_sol * LAMPORTS_PER_SOL)
     if amount_lamports + FEE_BUFFER_LAMPORTS > bal_lamports:

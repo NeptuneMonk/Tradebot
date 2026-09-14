@@ -160,7 +160,7 @@ class ProfitSweeper:
         if not price or price <= 0:
             raise RuntimeError("SOL/USD price unavailable")
         amount_sol = amount_usd / price
-        bal = await get_sol_balance(wallet.get_pubkey_str())
+        bal = await get_sol_balance(wallet.get_pubkey_str(), fresh=True)
         reserve = float(cfg.sweep_reserve_sol)
         if bal - amount_sol < reserve:
             amount_sol = max(0.0, bal - reserve)

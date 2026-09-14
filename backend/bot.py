@@ -2783,6 +2783,16 @@ class BotState:
                 "project_score": b.get("project_score", 0),
                 "creator_prior_launches": int(b.get("creator_prior_launches") or 0), "creator_graduated_before": int(b.get("creator_tokens_graduated") or 0) >= 1,
             }
+            try:
+                from creator_history import ensure_backfill
+                cdoc = await ensure_backfill(self.db, launch.creator) if launch.creator else None
+                if cdoc:
+                    b["creator_prior_launches"] = int(cdoc.get("tokens_created") or 0)
+                    b["creator_tokens_graduated"] = int(cdoc.get("tokens_graduated") or 0)
+                    metrics["creator_prior_launches"] = b["creator_prior_launches"]
+                    metrics["creator_graduated_before"] = b["creator_tokens_graduated"] >= 1
+            except Exception as e:
+                logger.debug(f"creator backfill skipped: {e}")
             verdict = classify(metrics, self._rules_for_classify())
             # scalp needs a scalp verdict: "skip" (late chase / dead / rug history) and "hunt" (patterned
             # creator — belongs to the greylist sniper, not a momentum scalp) both refuse the entry

@@ -93,8 +93,10 @@ async def record_new_launch(db, creator: str, mint: str) -> dict:
     now_iso = datetime.now(timezone.utc).isoformat()
     existing = await db.creators.find_one({"_id": creator}, {"_id": 0})
     if existing is None:
-        # First time seeing this creator — try Helius backfill
-        backfill = await _helius_backfill(creator)
+        # First time seeing this creator. The Helius Enhanced backfill costs 100 credits per call and used to fire here
+        # for EVERY first-seen creator on the firehose (~6.5k/day ≈ 4.5M credits/week). It is now lazy: ensure_backfill()
+        # runs it once, only when a launch by this creator actually reaches an entry decision.
+        backfill = {"backfill_attempted": False}
         base = {
             "_id": creator,
             "tokens_created": 0,
@@ -140,4 +142,16 @@ def derive_rug_count(creator_doc: dict | None) -> int:
 
 
 async def get_creator(db, creator: str) -> dict | None:
+    return await db.creators.find_one({"_id": creator}, {"_id": 0})
+
+
+async def ensure_backfill(db, creator: str) -> dict | None:
+    """Entry-time creator backfill (once per creator, persisted). Returns the refreshed creator doc."""
+    doc = await db.creators.find_one({"_id": creator}, {"_id": 0})
+    if doc is None or doc.get("backfill_attempted"):
+        return doc
+    backfill = await _helius_backfill(creator)
+    if backfill.get("backfill_attempted") is None:
+        backfill["backfill_attempted"] = True
+    await db.creators.update_one({"_id": creator}, {"$set": backfill})
     return await db.creators.find_one({"_id": creator}, {"_id": 0})

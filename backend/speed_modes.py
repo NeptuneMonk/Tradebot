@@ -106,7 +106,7 @@ class PriorityFeeAutoTuner:
     Falls back to the NORMAL preset on errors so trading never stalls.
     """
 
-    POLL_S = 30.0
+    POLL_S = 60.0   # was 30 s; both estimators ran each tick on two pods → ~70k calls/week
 
     def __init__(self):
         self.current_value: Optional[int] = None
@@ -125,9 +125,10 @@ class PriorityFeeAutoTuner:
                 # Prefer Helius's own recommendation API (context-aware for
                 # our Pump.fun + PumpSwap workload); fall back to the
                 # network-wide p75 if Helius errors or returns no value.
-                v = await self._fetch_helius_priority_estimate()
+                # provider-agnostic first (standard getRecentPrioritizationFees); the Helius-only estimator is the fallback
+                v = await self._fetch_p75_priority_fee()
                 if v is None:
-                    v = await self._fetch_p75_priority_fee()
+                    v = await self._fetch_helius_priority_estimate()
                 if v is not None:
                     # Clamp into the same range as the presets so users don't
                     # get surprised by extreme network outliers.

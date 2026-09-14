@@ -344,7 +344,7 @@ async def wallet_rotate(req: _RotateReq):
     swept = {"lamports": 0, "signature": None, "error": None}
     if req.sweep:
         try:
-            bal = int((await get_sol_balance(old_pk)) * 1_000_000_000)
+            bal = int((await get_sol_balance(old_pk, fresh=True)) * 1_000_000_000)
             amount = bal - 15_000
             if amount > 0:
                 ix = transfer(TransferParams(from_pubkey=old_kp.pubkey(), to_pubkey=new_kp.pubkey(), lamports=amount))

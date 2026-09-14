@@ -52,12 +52,23 @@ async def rpc_call(method: str, params: list, timeout: float = 10.0,
     raise last_exc
 
 
-async def get_sol_balance(pubkey_str: str) -> float:
+_BAL_CACHE: dict[str, tuple[float, float]] = {}
+BAL_TTL_S = 20.0
+
+
+async def get_sol_balance(pubkey_str: str, fresh: bool = False) -> float:
+    """Wallet SOL balance, cached 20 s (UI card + bankroll sizing polled it ~every 2 s → 300k getBalance/week).
+    `fresh=True` bypasses the cache (pre-trade checks, rotation)."""
+    import time as _t
+    hit = _BAL_CACHE.get(pubkey_str)
+    if not fresh and hit and _t.time() - hit[1] < BAL_TTL_S:
+        return hit[0]
     res = await rpc_call("getBalance", [pubkey_str, {"commitment": "confirmed"}])
     if "result" in res and res["result"]:
-        lamports = res["result"]["value"]
-        return lamports / LAMPORTS_PER_SOL
-    return 0.0
+        bal = res["result"]["value"] / LAMPORTS_PER_SOL
+        _BAL_CACHE[pubkey_str] = (bal, _t.time())
+        return bal
+    return hit[0] if hit else 0.0
 
 
 async def get_account_info(pubkey_str: str) -> dict | None:
