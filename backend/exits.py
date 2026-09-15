@@ -35,7 +35,27 @@ def levels(cfg, slot: dict) -> dict:
     p["one_r_pct"] = one_r
     p["target_pct"] = p["target_r"] * one_r if p["target_r"] > 0 else 0.0
     p["book"] = book
+    ep = float(t.get("entry_price_sol") or 0)
+    peak_pct = (float(slot.get("peak_price_sol") or ep) - ep) / ep * 100 if ep > 0 else 0.0
+    p["trailing_stop_pct"] = ratchet_trail(p["trailing_stop_pct"], peak_pct)
+    if p["trailing_stop_pct"] > 0 and p["trailing_arm_pct"] > RATCHET_TIERS[0][0]:
+        p["trailing_arm_pct"] = RATCHET_TIERS[0][0]     # a ratcheted trail must be armed once the first tier is reached
     return p
+
+
+# Hardwired (no knob): once a trade is up 15 % the trail can be at most 6 %, at 30 % at most 4 % — winners used to give
+# back 50-60 % of their peak under a flat 10 % trail. Tiers are (peak_pct, max_trail_pct).
+RATCHET_TIERS = ((15.0, 6.0), (30.0, 4.0))
+
+
+def ratchet_trail(configured_trail_pct: float, peak_pct: float) -> float:
+    if configured_trail_pct <= 0:
+        return configured_trail_pct
+    trail = configured_trail_pct
+    for tier_peak, cap in RATCHET_TIERS:
+        if peak_pct >= tier_peak:
+            trail = min(trail, cap)
+    return trail
 
 
 def _drop_from_peak(slot: dict, cur: float) -> tuple[float, float]:

@@ -1871,3 +1871,8 @@ Patterns the Doctor cannot see (it scores per book, not across exit reasons):
 - PumpSwap drains dominate Sol losses (hunt/scalp pumpswap avg −124%): size mult 0.25 kept; MC floor $87k (user) kept.
 - RH take_profit is the proven edge (17 trades, 88% win, +28.8% avg) but user gates (growth 35%, 16 buyers, $909 inflow) starved it → growth 20 / buyers 10 / inflow $400; rh_max_curve 110 → 92 (ride-through to v4 pool now supported).
 - Applied via PUT /api/bot/config (paper). 888 "ghost" rows are live-mode buy-tx artifacts, excluded from conclusions.
+
+## 2026-09-15 — Hardwired (no knob): Fast-Fail Sizing + Ratchet Trail
+- **Ratchet trail** (`exits.ratchet_trail`, tiers `RATCHET_TIERS=((15,6),(30,4))`): once peak ≥ +15 % the trail is capped at 6 %, at ≥ +30 % at 4 %; arm level pulled down to 15 %. Applied in `exits.levels()` (every Sol book: scalp/hunt/momentum/runner via decide_*) and in `rh_paper._decide_exit`. Never loosens a tighter configured trail.
+- **Fast-fail sizing**: entries buy HALF the planned size (floor `min_trade_usd`); the other half is bought the first time the position prints **+5 %** (`FAST_FAIL_ADD_AT_PCT`). Sol: `slot["_ff_remaining_usd"]` → `BotState._fast_fail_add` from the monitor tick (paper books the quote; live sends via the new shared `_live_buy` helper). RH: `doc["ff_remaining_usd"]` → `RhPaper._maybe_fast_fail_add/_fast_fail_add` from `on_trade` (live via `_live_buy`). Entry price/tokens/usd are re-averaged and persisted (`fast_fail_add` record on the trade doc). Failures leave the position at half size.
+- Tests: `tests/test_fast_fail_ratchet.py`; `test_rh_paper` expectations updated to half-size entries.

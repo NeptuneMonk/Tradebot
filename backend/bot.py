@@ -54,6 +54,7 @@ SCANNER_TRACK_HOURS = 4       # how long we keep light tracking for the scanner
 PERSIST_INTERVAL_S = 2.0      # how often to flush tracker metrics to DB
 MAX_TRACKED_MINTS = 500       # cap memory
 MONITOR_SAFETY_POLL_S = 3.0   # HTTP re-read cadence per open position while its WSS subscription is live (was every 0.8 s tick)
+FAST_FAIL_ADD_AT_PCT = 5.0    # hardwired: second half of the planned size is bought once the position first prints this
 
 
 # Set of greylist patterns recognised as "tradeable" — i.e. patterns the
@@ -2561,6 +2562,67 @@ class BotState:
         finally:
             self._pending_entry_mints.discard(launch.mint)
 
+    async def _live_buy(self, mint: str, protocol: str, pumpswap_state, tokens_out: int, max_sol: int,
+                        creator: str | None, priority_fee: int) -> str:
+        """Build + send the buy tx for either venue (shared by the entry and the fast-fail add-on)."""
+        kp = get_keypair()
+        user = get_pubkey()
+        mint_pk = Pubkey.from_string(mint)
+        if protocol == "pumpswap":
+            # PumpSwap pools can hold Token-2022 base mints (like ETB) — thread the right token program through.
+            base_tp = await pumpfun.get_mint_token_program(mint)
+            user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
+            wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, max_sol)
+            ixs = [
+                pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp),
+                *wsol_ixs,
+                pumpswap.build_buy_ix(user, pumpswap_state, user_token_ata, wsol_acc, base_amount_out=tokens_out,
+                                      max_quote_amount_in=max_sol, base_token_program=base_tp),
+                pumpswap.build_close_wsol_ix(user, wsol_acc),
+            ]
+            return await pumpfun.send_versioned_tx(kp, ixs, priority_fee, compute_unit_limit=400_000)
+        if not creator:
+            raise RuntimeError("missing creator (required for creator_vault PDA)")
+        tp = await pumpfun.get_mint_token_program(mint)
+        ixs = [
+            pumpfun.build_create_ata_ix(user, user, mint_pk, tp),
+            await pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol, Pubkey.from_string(creator), tp),
+        ]
+        return await pumpfun.send_versioned_tx(kp, ixs, priority_fee)
+
+    async def _fast_fail_add(self, mint: str, slot: dict, protocol: str, state: dict, cur_price_sol: float) -> None:
+        """Hardwired fast-fail sizing, leg 2: the entry bought HALF the planned size; the other half is added the first
+        time the position prints +5 %. A −100 % drain before that costs half; a winner ends up at full size."""
+        usd = float(slot.pop("_ff_remaining_usd", 0) or 0)
+        if usd <= 0:
+            return
+        t = slot["trade"]
+        try:
+            sol_price = await get_sol_usd_price()
+            priority, slip, _ = self._resolve_fees()
+            sol_in = int(usd / sol_price * LAMPORTS_PER_SOL) if sol_price > 0 else 0
+            if sol_in <= 0:
+                return
+            tokens_out, max_sol = (pumpswap.quote_buy_tokens(state, sol_in, slip) if protocol == "pumpswap"
+                                   else pumpfun.quote_buy_tokens(state, sol_in, slip))
+            if tokens_out <= 0:
+                return
+            sig = None
+            if t.get("mode") == "live":
+                sig = await self._live_buy(mint, protocol, state, tokens_out, max_sol, t.get("creator"), priority)
+            old_lamports = float(t.get("entry_sol") or 0) * LAMPORTS_PER_SOL
+            new_tokens = int(t.get("entry_tokens") or 0) + tokens_out
+            t["entry_tokens"] = new_tokens
+            t["entry_sol"] = (old_lamports + sol_in) / LAMPORTS_PER_SOL
+            t["entry_usd"] = float(t.get("entry_usd") or 0) + usd
+            t["entry_price_sol"] = (old_lamports + sol_in) / new_tokens / LAMPORTS_PER_SOL
+            t["fast_fail_add"] = {"at": now_utc().isoformat(), "price_sol": cur_price_sol, "usd": usd, "sig": sig}
+            await self.db.trades.update_one({"_id": t["id"]}, {"$set": {k: t[k] for k in ("entry_tokens", "entry_sol", "entry_usd", "entry_price_sol", "fast_fail_add")}})
+            logger.info(f"FAST-FAIL ADD {t.get('symbol')} {mint[:8]}… +${usd:.2f} at {cur_price_sol:.3e} → full size ${t['entry_usd']:.2f}")
+            await hub.broadcast("trade_update", {"id": t["id"], "mint": mint, "entry_usd": t["entry_usd"], "entry_price_sol": t["entry_price_sol"], "fast_fail_add": t["fast_fail_add"]})
+        except Exception as e:
+            logger.warning(f"fast-fail add failed for {mint[:8]}… (position stays at half size): {e}")
+
     async def _enter_impl(self, launch: Launch, risk_score: int, action: str):
         """The actual entry pipeline. Called from `_enter` after the
         position-count reservation has been taken atomically."""
@@ -2916,7 +2978,10 @@ class BotState:
         if not plan:
             return
         size_mult = plan["size_mult"]
-        trade_usd = plan["size_usd"]
+        planned_usd = plan["size_usd"]
+        # Hardwired fast-fail sizing: buy half now, the other half after the first +5 % (see _fast_fail_add)
+        trade_usd = max(float(self.config.min_trade_usd), planned_usd * 0.5)
+        ff_remaining_usd = max(0.0, planned_usd - trade_usd)
         trade_sol = trade_usd / sol_price if sol_price > 0 else 0
         sol_in_lamports = int(trade_sol * LAMPORTS_PER_SOL)
         if sol_in_lamports <= 0:
@@ -3029,44 +3094,7 @@ class BotState:
             return
         if mode == "live":
             try:
-                kp = get_keypair()
-                user = get_pubkey()
-                mint_pk = Pubkey.from_string(launch.mint)
-                if protocol == "pumpswap":
-                    # PumpSwap pools can hold Token-2022 base mints (like ETB).
-                    # Failing to thread the correct token program through the
-                    # ATA + buy IX produces IncorrectProgramId reverts.
-                    base_tp = await pumpfun.get_mint_token_program(launch.mint)
-                    user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
-                    wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, max_sol)
-                    ixs = [
-                        pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp),
-                        *wsol_ixs,
-                        pumpswap.build_buy_ix(
-                            user, pumpswap_state, user_token_ata, wsol_acc,
-                            base_amount_out=tokens_out,
-                            max_quote_amount_in=max_sol,
-                            base_token_program=base_tp,
-                        ),
-                        pumpswap.build_close_wsol_ix(user, wsol_acc),
-                    ]
-                    sig = await pumpfun.send_versioned_tx(
-                        kp, ixs, eff_priority,
-                        compute_unit_limit=400_000,
-                    )
-                else:
-                    # Use curve creator (already fetched into trade.creator)
-                    if not trade_creator:
-                        raise RuntimeError("missing creator (required for creator_vault PDA)")
-                    creator_pk = Pubkey.from_string(trade_creator)
-                    tp = await pumpfun.get_mint_token_program(launch.mint)
-                    ixs = [
-                        pumpfun.build_create_ata_ix(user, user, mint_pk, tp),
-                        await pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol, creator_pk, tp),
-                    ]
-                    sig = await pumpfun.send_versioned_tx(
-                        kp, ixs, eff_priority
-                    )
+                sig = await self._live_buy(launch.mint, protocol, pumpswap_state, tokens_out, max_sol, trade_creator, eff_priority)
                 trade.entry_sig = sig
             except Exception as e:
                 logger.exception(f"Live buy failed for {launch.mint}: {e}")
@@ -3114,6 +3142,7 @@ class BotState:
             "trade": trade.model_dump(),
             "launch": launch.model_dump(),
             "_entry_ts_mono": time.time(),  # for greylist_snipe stale-exit gate
+            "_ff_remaining_usd": ff_remaining_usd,
             **trade_extras,
         }
         await hub.broadcast("trade_enter", trade.model_dump())
@@ -3731,6 +3760,9 @@ class BotState:
                 # can surface live PnL% to the UI without re-fetching curve
                 # state on every poll.
                 slot["_last_price_sol"] = cur_price_sol
+                _ep0 = float(trade_doc.get("entry_price_sol") or 0.0)
+                if slot.get("_ff_remaining_usd") and _ep0 > 0 and (cur_price_sol - _ep0) / _ep0 * 100.0 >= FAST_FAIL_ADD_AT_PCT:
+                    await self._fast_fail_add(mint, slot, protocol, pool_state if protocol == "pumpswap" else state, cur_price_sol)
 
                 # Track running peak — mirrors `_check_fast_exit` so that
                 # trailing-stop works whether the peak was set by an on_trade

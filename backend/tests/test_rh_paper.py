@@ -152,8 +152,9 @@ def test_enter_then_take_profit_exit_math():
     assert TOKEN in st.rh_paper.positions
     t = st.rh_paper.positions[TOKEN]["trade"]
     assert t["chain"] == "rh" and t["mode"] == "paper" and t["classifier_action"] == "rh_pons_paper"
-    assert abs(t["entry_usd"] - 10.0) < 1e-9
-    stake_quote = 10.0 / 2500.0
+    assert abs(t["entry_usd"] - 5.0) < 1e-9          # hardwired fast-fail sizing: half now, half at the first +5 %
+    assert abs(t["ff_remaining_usd"] - 5.0) < 1e-9
+    stake_quote = 5.0 / 2500.0
     assert abs(t["entry_tokens"] - stake_quote * 0.99 / 2e-9) < 1e-6
     assert TOKEN not in st.active_trades, "RH paper positions must never enter BotState.active_trades"
     # +30% move → TP
@@ -164,7 +165,7 @@ def test_enter_then_take_profit_exit_math():
     assert doc["status"] == "closed" and doc["exit_reason"] == "take_profit"
     expected_exit = t["entry_tokens"] * 2.6e-9 * 0.99 * 2500.0 - rp.RH_GAS_USD
     assert abs(doc["exit_usd"] - expected_exit) < 1e-6
-    assert doc["pnl_usd"] > 0 and abs(doc["pnl_pct"] - (doc["pnl_usd"] / 10.0 * 100)) < 1e-6
+    assert doc["pnl_usd"] > 0 and abs(doc["pnl_pct"] - (doc["pnl_usd"] / 5.0 * 100)) < 1e-6
     assert TOKEN not in st.rh_paper.positions
 
 

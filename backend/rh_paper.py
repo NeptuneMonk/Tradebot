@@ -43,6 +43,7 @@ CHAIN = "rh"
 PROTOCOL = "pons"
 ENTRY_ACTION = "rh_pons_paper"
 CURVE_FEE_BPS = 100
+FAST_FAIL_ADD_AT_PCT = 5.0   # hardwired: the second half of the planned size is bought at the first +5 %
 POOL_FEE_FRACTION = rh_dex.POOL_FEE_BPS / 10_000.0  # hook take on the post-graduation v4 pool (paper fallback)
 SNIPE_TAX_START_BPS = 9900
 SNIPE_TAX_SECONDS = 3
@@ -516,9 +517,11 @@ class RHPaperTrader:
                 self.stats["cost_gate_skips"] = self.stats.get("cost_gate_skips", 0) + 1
                 logger.info(f"rh_paper skip {b['symbol']}: cost-gate — {q['cost_gate_reason']}" + (f" (pool round trip {measured_rt:.2f}%)" if measured_rt is not None else ""))
                 return
-            stake_usd = sz["size_usd"]
+            # Hardwired fast-fail sizing: half now, the other half after the first +5 % (see _fast_fail_add)
+            stake_usd = max(float(getattr(cfg, "min_trade_usd", 1.5) or 0), sz["size_usd"] * 0.5)
             stake_quote = stake_usd / quote_usd
             ctx = {"reentry": reentry, "reentry_ctx": reentry_ctx, "manual": manual, "seasoned": bool(b.get("graduated")),
+                   "ff_remaining_usd": max(0.0, sz["size_usd"] - stake_usd),
                    "plan": {"r_usd": sz["r_usd"], "r_usd_nominal": sz["r_usd_nominal"], "size_usd": sz["size_usd"], "size_clamped": sz["size_clamped"],
                             "sl_pct": bx0["stop_loss_pct"], "sl_pct_with_slip": sz["sl_pct_with_slip"], "target_r": bx0["target_r"] or None,
                             "expected_cost_pct": q["expected_cost_pct"], "expected_cost_usd": q["expected_cost_usd"],
@@ -655,6 +658,7 @@ class RHPaperTrader:
             if b.get("graduated"):
                 doc["venue"], doc["graduated_during_hold"] = "pool", False   # entered post-sweep: priced & exited on the v4 pool
             first = float(b.get("first_price_quote") or 0.0)
+            doc["ff_remaining_usd"] = float((ctx or {}).get("ff_remaining_usd") or 0.0)
             doc["entry_ctx"] = {
                 "growth_pct": ((price / first) - 1.0) * 100.0 if first > 0 else None,
                 "inflow_usd": float(b.get("net_quote") or 0.0) * quote_usd,
@@ -746,6 +750,48 @@ class RHPaperTrader:
                                                   "exit_time": {"$gte": since}}, {"_id": 0, "pnl_usd": 1}):
             total += float(d.get("pnl_usd") or 0.0)
         return total
+
+    def _maybe_fast_fail_add(self, token: str, pos: dict, b: dict, price: float, now: float) -> None:
+        t = pos["trade"]
+        rem = float(t.get("ff_remaining_usd") or 0)
+        entry = float(t.get("entry_price_quote") or 0)
+        if rem <= 0 or entry <= 0 or price <= 0 or pos.get("_ff_adding") or pos.get("_exiting") \
+                or (price - entry) / entry * 100.0 < FAST_FAIL_ADD_AT_PCT:
+            return
+        pos["_ff_adding"] = True
+        asyncio.create_task(self._fast_fail_add(token, pos, b, price, rem, now))
+
+    async def _fast_fail_add(self, token: str, pos: dict, b: dict, price: float, usd: float, now: float) -> None:
+        """Leg 2 of the hardwired fast-fail sizing: buy the other half once the position first prints +5 %."""
+        t = pos["trade"]
+        try:
+            quote_usd = self._quote_usd(b["quote_symbol"])
+            if quote_usd <= 0:
+                return
+            stake_quote = usd / quote_usd
+            fee = POOL_FEE_FRACTION if t.get("venue") == "pool" else fee_fraction(now - b["start"])
+            tokens = stake_quote * (1.0 - fee) / price
+            live_fill = None
+            if t.get("mode") == "live":
+                live_fill = await self._live_buy(token, b, stake_quote, price)
+                if not live_fill:
+                    return
+                stake_quote = live_fill["quote_wei"] / self._qscale(b)
+                tokens = live_fill["tokens_raw"] / 1e18
+                price = stake_quote / tokens if tokens > 0 else price
+            old_tokens = float(t.get("entry_tokens") or 0)
+            old_quote = float(t.get("entry_price_quote") or 0) * old_tokens
+            t["entry_tokens"] = old_tokens + tokens
+            t["entry_price_quote"] = (old_quote + stake_quote) / (old_tokens + tokens)
+            t["entry_usd"] = float(t.get("entry_usd") or 0) + stake_quote * quote_usd
+            t["ff_remaining_usd"] = 0.0
+            t["fast_fail_add"] = {"at": now, "price_quote": price, "usd": stake_quote * quote_usd, "tx": (live_fill or {}).get("tx_hash")}
+            await self.state.db.trades.update_one({"_id": t["id"]}, {"$set": {k: t[k] for k in ("entry_tokens", "entry_price_quote", "entry_usd", "ff_remaining_usd", "fast_fail_add")}})
+            logger.info(f"rh_paper FAST-FAIL ADD {b.get('symbol')} +${stake_quote * quote_usd:.2f} at {price:.3e} → full size ${t['entry_usd']:.2f}")
+        except Exception as e:
+            logger.warning(f"rh fast-fail add failed for {b.get('symbol')} (stays at half size): {e}")
+        finally:
+            pos.pop("_ff_adding", None)
 
     async def _live_buy(self, token: str, b: dict, stake_quote: float, price: float) -> dict | None:
         cfg = self.state.config
@@ -947,7 +993,10 @@ class RHPaperTrader:
             return "take_profit"
         if pnl_pct <= -bx["stop_loss_pct"]:
             return None if self._flush_holds(pos, b, now, "sl", pnl_pct, bx) else "stop_loss"
-        if peak_pct >= bx["trailing_arm_pct"] and dd_from_peak >= bx["trailing_stop_pct"]:
+        from exits import ratchet_trail, RATCHET_TIERS
+        trail = ratchet_trail(bx["trailing_stop_pct"], peak_pct)
+        arm = min(bx["trailing_arm_pct"], RATCHET_TIERS[0][0]) if trail > 0 else bx["trailing_arm_pct"]
+        if peak_pct >= arm and trail > 0 and dd_from_peak >= trail:
             return None if self._flush_holds(pos, b, now, "trail", pnl_pct, bx) else "trailing_stop"
         held = now - pos["opened"]
         if bx["hold_max_seconds"] > 0 and held >= bx["hold_max_seconds"]:
@@ -1139,6 +1188,7 @@ class RHPaperTrader:
         pos = self.positions.get(token)
         if not pos or pos.get("_exiting"):
             return
+        self._maybe_fast_fail_add(token, pos, b, tr["price"] or b["last_price_quote"], now)
         reason = self._decide_exit(pos, b, now)
         if not reason:
             return
