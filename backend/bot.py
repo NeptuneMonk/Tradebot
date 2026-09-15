@@ -4126,13 +4126,9 @@ class BotState:
         # driven force-closes — releases the WSS slot cleanly.
         try:
             from account_event_bus import account_event_bus
-            watch_account = (
-                slot.get("pumpswap_pool")
-                if slot.get("protocol") == "pumpswap"
-                else slot.get("bonding_curve")
-            )
-            if watch_account:
-                account_event_bus.unsubscribe(watch_account)
+            for acct in {slot.get("watch_account"), slot.get("pumpswap_pool"), slot.get("bonding_curve")}:
+                if acct:
+                    account_event_bus.unsubscribe(acct)
         except Exception:
             pass
         # Reserve the mint while the exit is in flight so the scanner can't
@@ -4296,11 +4292,7 @@ class BotState:
                     await self.db.trades.update_one(
                         {"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
                     )
-                    await hub.broadcast("trade_exit", {
-                        "id": trade_doc["id"], "mint": mint,
-                        "symbol": trade_doc.get("symbol"),
-                        "reason": trade_doc["exit_reason"],
-                    })
+                    await hub.broadcast("trade_exit", trade_doc)
                     self.recent_exit_until[mint] = time.time() + 90.0
                     return
                 # Post-partial exits need a WIDER shave to absorb RPC
@@ -4379,11 +4371,7 @@ class BotState:
                 await self.db.trades.update_one(
                     {"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
                 )
-                await hub.broadcast("trade_exit", {
-                    "id": trade_doc["id"], "mint": mint,
-                    "symbol": trade_doc.get("symbol"),
-                    "reason": trade_doc["exit_reason"],
-                })
+                await hub.broadcast("trade_exit", trade_doc)
                 self.recent_exit_until[mint] = time.time() + 90.0
                 return
             try:

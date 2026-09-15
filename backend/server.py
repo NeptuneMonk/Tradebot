@@ -20,7 +20,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 import wallet  # noqa: triggers key load
-from models import BotConfig, ClassifierRules, WalletInfo, BotStatus
+from models import BotConfig, ClassifierRules, WalletInfo, BotStatus, now_utc
 from bot import BotState
 from listener import PumpFunListener
 from solana_client import get_sol_balance, get_sol_usd_price
@@ -1993,7 +1993,10 @@ HISTORY_OMIT = {"_id": 0, "entry_ctx": 0, "dip_forensics": 0, "snipe_pattern_ctx
 
 @api.get("/trades/history")
 async def trades_history(limit: int = 100):
-    return await db.trades.find({"status": {"$ne": "active"}}, HISTORY_OMIT).sort("entry_time", -1).to_list(min(limit, 200))
+    """Most recently CLOSED first. Sorting by entry_time hid long-held positions the moment they closed (any 50
+    newer entries — e.g. RH paper churn — pushed them off the visible list right after the WS row appeared)."""
+    return await db.trades.find({"status": {"$ne": "active"}}, HISTORY_OMIT).sort(
+        [("exit_time", -1), ("entry_time", -1)]).to_list(min(limit, 200))
 
 
 @api.post("/trades/{trade_id}/exit")
@@ -2006,7 +2009,26 @@ async def trades_manual_exit(trade_id: str):
     if trade.get("chain") == "rh":
         await bot_state.rh_paper.exit(trade["mint"], reason="manual exit")
         return {"ok": True}
-    await bot_state._exit(trade["mint"], reason="manual exit")
+    mint = trade["mint"]
+    slot = bot_state.active_trades.get(mint)
+    if slot is not None and (slot.get("trade") or {}).get("id") not in (None, trade_id):
+        # the monitor tracks a different row for this mint — never close the wrong one; retire this duplicate honestly
+        await db.trades.update_one({"_id": trade_id}, {"$set": {
+            "status": "zombie_duplicate", "exit_time": now_utc().isoformat(), "pnl_sol": 0.0, "pnl_usd": 0.0, "pnl_pct": 0.0,
+            "exit_reason": f"manual exit: duplicate active row — the monitored position for this mint is trade {slot['trade'].get('id', '')[:8]}"}})
+        await hub.broadcast("trade_exit", {**trade, "id": trade_id, "status": "zombie_duplicate"})
+        return {"ok": True, "note": "duplicate row retired; the monitored position is still open"}
+    if slot is None:
+        # DB says active but no monitor holds it (ghost after a restart/reconcile gap): rebuild the slot so the exit
+        # really sells / books the paper fill instead of returning 200 and doing nothing
+        logger.warning(f"manual exit for untracked active row {trade.get('symbol')} {mint[:8]}… — rebuilding slot from the doc")
+        bot_state.active_trades[mint] = bot_state._slot_from_doc({**trade, "id": trade_id})
+    await bot_state._exit(mint, reason="manual exit")
+    still = await db.trades.find_one({"_id": trade_id}, {"status": 1})
+    if still and still.get("status") == "active":
+        if slot is None:
+            bot_state.active_trades.pop(mint, None)
+        raise HTTPException(503, "exit could not be executed right now (price/pool read failed) — the position stays open; try again in a few seconds")
     return {"ok": True}
 
 
