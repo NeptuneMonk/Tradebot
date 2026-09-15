@@ -1862,3 +1862,12 @@ Audit of the running preview (sign-on → feeds → gates → trading → Doctor
 ## 2026-09-15 — Seasoned/RH card data frozen for held / graduated tokens
 - Sol: `discovery._refresh_once` skipped every mint in `active_trades`, so the Seasoned card froze the moment a position opened. Now held tokens stay in the refresh and reuse the monitor's `_pool_cache` (zero extra RPC). Test: `tests/test_seasoned_held_refresh.py`.
 - RH: graduated tokens' MC / last-trade / velocity come only from v4 pool Swap logs, which were only watched for held tokens (same root cause as "NO Pool", fixed earlier today). BIKE MJ (NVDA-quoted, graduated 05:40) was observed frozen before that fix; the bucket was later lost on restart (RH tracking is in-memory, backfill 600 blocks).
+
+## 2026-09-15 — Trade review (1,658 closed) + preview settings for "30% quickly"
+Patterns the Doctor cannot see (it scores per book, not across exit reasons):
+- Winners are FAST: take_profit exits median 8 s, trailing wins 10–60 s; losers linger (stop-loss median 151 s, timeouts 400–800 s). → no-momentum exit 805 s → **120 s / +5% MFE**.
+- Trailing gave back ~50–60% of peak: peaks +30…+80% closed at +2…+20% (peak +128.9% → −3%). → hard **take_profit 30%** on scalp/hunt/momentum/rh_pons (the user's goal), trail 10% (RH 8%), runner trail 15% for outliers.
+- Stop fills overshoot ~2× the trigger (rh stop_loss avg −31.5%, "[fast]" stops −20…−50%): a 6% SL just converts noise into −15% fills. → SL 12% Sol / 10% RH.
+- PumpSwap drains dominate Sol losses (hunt/scalp pumpswap avg −124%): size mult 0.25 kept; MC floor $87k (user) kept.
+- RH take_profit is the proven edge (17 trades, 88% win, +28.8% avg) but user gates (growth 35%, 16 buyers, $909 inflow) starved it → growth 20 / buyers 10 / inflow $400; rh_max_curve 110 → 92 (ride-through to v4 pool now supported).
+- Applied via PUT /api/bot/config (paper). 888 "ghost" rows are live-mode buy-tx artifacts, excluded from conclusions.
