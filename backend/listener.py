@@ -17,6 +17,8 @@ from solana_client import WSS_URL
 
 logger = logging.getLogger("listener")
 
+QUOTA_BACKOFF_S = 300.0   # provider plan exhausted: retry the WSS every 5 min, not 6×/s
+
 
 def _anchor_event_disc(name: str) -> bytes:
     return hashlib.sha256(f"event:{name}".encode()).digest()[:8]
@@ -200,7 +202,20 @@ class PumpFunListener:
                                 break
                         except Exception:
                             pass
+                        if self._is_quota_error(raw):
+                            # provider plan exhausted (QuickNode: -32003 "request limit reached") — it will keep
+                            # accepting and dropping the socket; reconnecting 6×/s only burns more requests
+                            self.last_error = "RPC plan quota exhausted — feed idle, retrying every 5 min"
+                            logger.error(f"WSS provider quota exhausted: {raw[:160]} — listener sleeping {QUOTA_BACKOFF_S:.0f}s")
+                            self.connected = False
+                            await self._sleep_gated(int(QUOTA_BACKOFF_S))
+                            break
                         await self._handle_message(raw)
+                # clean close (server hung up) — back off like an error instead of reconnecting instantly
+                self.connected = False
+                if not self._stop and not self._kick:
+                    await self._sleep_gated(backoff)
+                    backoff = min(backoff * 2, 30)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -211,18 +226,27 @@ class PumpFunListener:
                 # reconnect backoff. Without this, an OFF toggle issued
                 # while the listener is in a 30s backoff would take up to
                 # 30s to take effect; with chunking it bites within ~1s.
-                for _ in range(backoff):
-                    await asyncio.sleep(1)
-                    if self._kick:
-                        break
-                    try:
-                        from helius_gate import is_helius_paused
-                        if is_helius_paused():
-                            break
-                    except Exception:
-                        pass
+                await self._sleep_gated(backoff)
                 backoff = 1 if self._kick else min(backoff * 2, 30)
         self.connected = False
+
+    @staticmethod
+    def _is_quota_error(raw) -> bool:
+        from account_event_bus import _is_quota_error
+        return _is_quota_error(raw)
+
+    async def _sleep_gated(self, seconds: int) -> None:
+        """Sleep in 1 s steps, waking early on a kick or when the operator flips the feed OFF."""
+        for _ in range(max(1, seconds)):
+            await asyncio.sleep(1)
+            if self._kick or self._stop:
+                break
+            try:
+                from helius_gate import is_helius_paused
+                if is_helius_paused():
+                    break
+            except Exception:
+                pass
 
     async def _handle_message(self, raw):
         # Track Helius credit consumption per inbound bytes

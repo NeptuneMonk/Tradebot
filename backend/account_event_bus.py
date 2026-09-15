@@ -45,6 +45,18 @@ logger = logging.getLogger("account_event_bus")
 from solana_client import WSS_URL
 
 
+def _is_quota_error(raw) -> bool:
+    """Provider plan exhausted on the WSS (QuickNode -32003 'request limit reached', Helius 'max usage')."""
+    if not isinstance(raw, (str, bytes)) or '"error"' not in (raw.decode(errors="ignore") if isinstance(raw, bytes) else raw):
+        return False
+    try:
+        err = json.loads(raw).get("error") or {}
+    except Exception:
+        return False
+    msg = str(err.get("message") or "").lower()
+    return err.get("code") == -32003 or "limit reached" in msg or "max usage" in msg or "quota" in msg
+
+
 class AccountEventBus:
     """Singleton-style bus. Use `account_event_bus` global below."""
 
@@ -202,6 +214,10 @@ class AccountEventBus:
                                 break
                         except Exception:
                             pass
+                        if _is_quota_error(raw):
+                            logger.error(f"AccountEventBus: WSS provider quota exhausted ({raw[:120]}) — idle for 5 min")
+                            backoff = 300
+                            break
                         await self._handle_message(raw)
             except asyncio.CancelledError:
                 break
@@ -227,7 +243,7 @@ class AccountEventBus:
                         break
                 except Exception:
                     pass
-            backoff = min(backoff * 2, 30)
+            backoff = min(backoff * 2, 30) if backoff < 300 else 1
 
     async def _handle_message(self, raw):
         # Bill the inbound message before any parsing — even if it's something
