@@ -146,7 +146,7 @@ async def get_eth_usd_price() -> float:
     ]
     for url, params, parser in sources:
         try:
-            async with httpx.AsyncClient(timeout=6.0) as client:
+            async with httpx.AsyncClient(timeout=4.0) as client:
                 r = await client.get(url, params=params)
                 if r.status_code == 200:
                     price = parser(r.json())
@@ -220,6 +220,10 @@ class RateLimited(Exception):
     pass
 
 
+class RpcUnsupported(Exception):
+    """This provider does not serve this method on its plan (dRPC free tier: eth_call)."""
+
+
 class RpcShed(Exception):
     """The provider's edge answered but its node timed out (-32000 'context deadline exceeded')."""
 
@@ -235,6 +239,7 @@ class RHDiscovery:
         self._curve_to_token: dict[str, str] = {}
         self._rpc_pref: str | None = None
         self._rpc_pref_until = 0.0
+        self._rpc_unsupported: dict[str, set[str]] = {}
         self._task: asyncio.Task | None = None
         self._next_from = 0
         self._wake = asyncio.Event()          # sequencer feed saw factory calldata → poll now, don't wait out the 2 s
@@ -262,6 +267,26 @@ class RHDiscovery:
             return
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._loop())
+        if getattr(self, "_meta_task", None) is None or self._meta_task.done():
+            self._meta_task = asyncio.create_task(self._meta_loop())
+
+    async def _meta_loop(self):
+        """name()/symbol() lookups run OFF the poll path: with the public RPC at ~1 s per call (429 cool-offs) they
+        were stretching every poll to 7-9 s, so the head stopped advancing and the feed pill went 'offline'."""
+        while True:
+            try:
+                await asyncio.sleep(1.0)
+                if not self._enabled() or not self._meta_pending:
+                    continue
+                tokens, self._meta_pending = self._meta_pending[:META_PER_POLL], self._meta_pending[META_PER_POLL:]
+                await self._fetch_metadata(tokens)
+                for t in tokens:
+                    if self.tracking.get(t):
+                        await self._publish_launch(t)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"rh meta loop: {e}")
 
     def doctor_paused(self) -> str | None:
         """Reason string when the poller is idled by the live-doctor (RH_PONS breaker, nothing open), else None."""
@@ -302,7 +327,7 @@ class RHDiscovery:
                 # is far behind head; resync (re-backfill from a fresh head)
                 # rather than keep asking for an ever-growing range.
                 self._consec_429 = getattr(self, "_consec_429", 0) + 1
-                backoff = min(30.0, backoff * 1.5 + 2.0)
+                backoff = min(6.0, backoff + 1.0)      # every provider 429'd this poll — gentle, the next poll resumes the cursor
                 self.stats["rate_limited"] += 1
                 self.stats["last_error"] = "429 rate limited"
                 if self._consec_429 >= 4 and self._next_from:
@@ -342,16 +367,25 @@ class RHDiscovery:
         async def one(client: httpx.AsyncClient, i: int, m: str, p: list):
             last_exc: Exception | None = None
             for url in self._rpc_urls():
+                if m in self._rpc_unsupported.get(url, set()):
+                    continue
                 try:
                     return await self._one_on(client, url, sem, i, m, p)
+                except RpcUnsupported as e:
+                    self._rpc_unsupported.setdefault(url, set()).add(m)     # e.g. dRPC free tier: eth_call is paid-only
+                    last_exc = e
+                    continue
                 except (RateLimited, httpx.TimeoutException, httpx.HTTPStatusError, httpx.TransportError, RpcShed) as e:
                     last_exc = e
                     self.stats["rpc_failovers"] = self.stats.get("rpc_failovers", 0) + 1
                     continue
+            if m == "eth_call":
+                return None          # token name/symbol metadata is cosmetic — never fail the whole poll over it
             assert last_exc is not None
             raise last_exc
 
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        # 6 s not 20: the public edge holds a doomed request ~10 s before "context deadline" — fail over sooner
+        async with httpx.AsyncClient(timeout=6.0) as client:
             return list(await asyncio.gather(*(one(client, i, m, p) for i, (m, p) in enumerate(calls))))
 
     def _rpc_urls(self) -> list[str]:
@@ -366,7 +400,9 @@ class RHDiscovery:
         # The edge limiter is bursty: once tripped it sheds everything for
         # a second or two, then recovers. Cool off and retry rather than
         # failing the whole poll (which used to snowball into resyncs).
-        for attempt, cool in enumerate((0.6, 1.2, 0.0)):
+        # one shot per provider: a 429 fails over to the next URL immediately (the old 0.6 s + 1.2 s cool-offs
+        # per call stretched a 3-call poll to 6-9 s and made the feed look offline)
+        for attempt, cool in enumerate((0.0,)):
             async with sem:
                 self.stats["rpc_requests"] += 1
                 r = await client.post(url, json={"jsonrpc": "2.0", "id": i, "method": m, "params": p},
@@ -378,20 +414,23 @@ class RHDiscovery:
                 await asyncio.sleep(cool)
         if r.status_code == 429:
             raise RateLimited()
+        if r.status_code == 400 and url != RH_RPC_URL:
+            raise RpcShed(f"{url} rejected {m} with 400")     # provider-specific request-shape limits — try the next one
         r.raise_for_status()
         x = r.json()
         if isinstance(x, dict) and "error" in x:
             err = x["error"] or {}
             if err.get("code") == 429:
                 raise RateLimited()
-            if err.get("code") == -32000 and "deadline" in str(err.get("message", "")).lower():
+            msg = str(err.get("message", "")).lower()
+            if err.get("code") == -32000 and "deadline" in msg:
                 raise RpcShed(f"rpc {m}: {err}")      # the node behind the public edge timed out — try another provider
+            if err.get("code") == -16401 or "paid plan" in msg or "not supported" in msg or "not available" in msg:
+                raise RpcUnsupported(f"rpc {m} on {url}: {err}")
             raise RuntimeError(f"rpc {m}: {err}")
         if url != RH_RPC_URL:
-            self._rpc_pref, self._rpc_pref_until = url, time.time() + RH_RPC_STICKY_S
-            self.stats["rpc_active_url"] = url
-        elif self._rpc_pref:
-            self._rpc_pref, self.stats["rpc_active_url"] = None, url
+            self._rpc_pref, self._rpc_pref_until = url, time.time() + RH_RPC_STICKY_S   # stays preferred until it fails or the window lapses
+        self.stats["rpc_active_url"] = url
         return x.get("result") if isinstance(x, dict) else None
 
     async def poll_once(self):
@@ -426,7 +465,7 @@ class RHDiscovery:
         trade_filter = {"fromBlock": hex(fr), "toBlock": to_hex, "topics": [[T_BUY, T_SELL]]}
         if curves:
             trade_filter["address"] = curves
-        meta_tokens = self._meta_pending[:META_PER_POLL]
+        meta_tokens: list[str] = []      # metadata is fetched by _meta_loop, never inside the poll
         # Post-graduation prices for tokens we still HOLD: PoolManager Swap logs for their v4 pools.
         pool_tokens = self._pool_watch_tokens()
         calls: list[tuple[str, list]] = [
@@ -442,7 +481,9 @@ class RHDiscovery:
         for t in meta_tokens:
             calls.append(("eth_call", [{"to": t, "data": SEL_NAME}, "latest"]))
             calls.append(("eth_call", [{"to": t, "data": SEL_SYMBOL}, "latest"]))
+        _t0 = time.time()
         res = await self._rpc(calls)
+        _t_rpc = time.time() - _t0
         # Refresh ETH/USD (60s cache, Binance/Coinbase — not the RH RPC) so MC
         # is priced on the very first trade we see.
         await get_eth_usd_price()
@@ -450,6 +491,10 @@ class RHDiscovery:
             await quote_prices.refresh(b.get("quote_symbol") for b in self.tracking.values())
         except Exception as e:
             logger.debug(f"rh quote price refresh failed: {e}")
+        _t_px = time.time() - _t0 - _t_rpc
+        self.stats["last_poll_ms"] = {"rpc": int(_t_rpc * 1000), "prices": int(_t_px * 1000), "calls": len(calls)}
+        if _t_rpc + _t_px > 5.0:
+            logger.warning(f"rh poll slow: rpc={_t_rpc:.1f}s ({len(calls)} calls) prices={_t_px:.1f}s")
         head = int(res[0], 16)
         factory_logs, trade_logs = res[1] or [], res[2] or []
         pool_logs = (res[3] or []) if pool_tokens else []
@@ -470,7 +515,7 @@ class RHDiscovery:
                 b["name"] = _dec_str(res[n_fixed + i * 2]) or None
                 b["symbol"] = _dec_str(res[n_fixed + 1 + i * 2]) or None
                 await self._publish_launch(t)
-        self._meta_pending = self._meta_pending[len(meta_tokens):] + new_tokens
+        self._meta_pending = self._meta_pending + new_tokens
         self._next_from = max_block + 1
         self.stats["last_poll_ts"] = now
         paper = getattr(self.state, "rh_paper", None)
@@ -887,7 +932,7 @@ class RHDiscovery:
         self.stats["last_wake_reason"] = reason
         self._wake.set()
 
-    def alive(self, window_s: float = 15.0) -> bool:
+    def alive(self, window_s: float = 30.0) -> bool:
         """The poll loop is really moving: the chain head advanced within `window_s`."""
         return time.time() - float(self.stats.get("head_advanced_ts") or 0.0) < window_s
 

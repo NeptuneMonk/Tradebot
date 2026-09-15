@@ -264,7 +264,7 @@ class BotState:
         for svc in (self.discovery, self.rh_discovery, self.rh_paper, self.pnl_reconciler, getattr(self, "rh_feed", None)):
             if svc is None:
                 continue
-            for attr in ("_task", "_refresh_task", "_graduated_task"):
+            for attr in ("_task", "_refresh_task", "_graduated_task", "_meta_task"):
                 t = getattr(svc, attr, None)
                 if isinstance(t, asyncio.Task):
                     tasks.append(t)
