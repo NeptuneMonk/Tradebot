@@ -188,7 +188,7 @@ class AccountEventBus:
             except Exception:
                 pass
             try:
-                logger.info("AccountEventBus connecting to Helius WSS…")
+                logger.info("AccountEventBus connecting to Solana WSS…")
                 async with websockets.connect(
                     WSS_URL,
                     ping_interval=20,

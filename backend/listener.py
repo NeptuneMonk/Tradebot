@@ -168,7 +168,7 @@ class PumpFunListener:
             try:
                 self._kick = False
                 self.last_attempt_ts = time.time()
-                logger.info("Connecting to Helius WSS for logsSubscribe...")
+                logger.info("Connecting to Solana WSS for logsSubscribe...")
                 async with websockets.connect(
                     WSS_URL, ping_interval=20, ping_timeout=20, max_size=4 * 1024 * 1024
                 ) as ws:
