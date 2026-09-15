@@ -47,6 +47,7 @@ MAX_TRACKED = 800
 LAUNCH_TTL_H = 24
 WS_THROTTLE_S = 5.0
 MC_SAMPLE_KEEP = 60
+POOL_WATCH_MAX = 60             # graduated (v4 pool) tokens whose Swap logs ride along in the poll's getLogs filter
 TOKEN_SUPPLY = 1_000_000_000
 # PONS V2 curve = exact constant product with a VIRTUAL quote reserve:
 #   (net_quote + V) · token_reserve = V · TOKEN_SUPPLY      spot price = (net_quote + V) / token_reserve
@@ -519,11 +520,18 @@ class RHDiscovery:
         self._score_feed_projections()
 
     def _pool_watch_tokens(self) -> list[str]:
-        """Graduated tokens with an open RH position — the only pools whose price we need."""
+        """Pools whose Swap logs we ingest: every graduated token still inside the seasoned entry window (so
+        `pool_live` / `last_pool_swap_ts` exist BEFORE we hold it — otherwise the seasoned gate is stuck on
+        'rh-grad-no-pool' forever) plus anything we hold. Newest graduations first, capped."""
         paper = getattr(self.state, "rh_paper", None)
-        if paper is None:
-            return []
-        return [t for t in list(paper.positions.keys()) if (self.tracking.get(t) or {}).get("graduated")]
+        held = [t for t in list(paper.positions.keys()) if (self.tracking.get(t) or {}).get("graduated")] if paper is not None else []
+        now = time.time()
+        max_age_s = float(getattr(self.state.config, "rh_seasoned_max_age_min", 60.0) or 60.0) * 60 + 120
+        fresh = sorted(
+            (t for t, b in self.tracking.items() if b.get("graduated") and t not in held
+             and now - float(b.get("graduated_at") or b["start"]) <= max_age_s),
+            key=lambda t: -float(self.tracking[t].get("graduated_at") or 0))
+        return held + fresh[:POOL_WATCH_MAX]
 
     def _ingest_pool_swaps(self, logs: list[dict], now: float):
         """PoolManager Swap events on pools we hold: same price/momentum bookkeeping the

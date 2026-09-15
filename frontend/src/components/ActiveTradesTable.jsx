@@ -55,6 +55,10 @@ function ActiveTradesTable({ trades, onExit }) {
                       pumpfun → pumpswap
                     </span>
                   )}
+                  {t.chain !== "rh" && t.protocol === "pumpswap" && !t.venue_stage && (
+                    <span data-testid={`grad-badge-${t.mint}`} title="Graduated token — bought on its PumpSwap pool (seasoned band); priced from the pool vaults"
+                      className="mr-1.5 px-1 py-0 border border-fuchsia-700 text-fuchsia-300 bg-fuchsia-950/40 text-[9px] font-mono align-middle">GRAD · pumpswap</span>
+                  )}
                   <span className="mr-1.5 align-middle inline-flex"><ChainBadge chain={t.chain} mint={t.mint} /></span>
                   {t.symbol ? <span className="text-neutral-200">{t.symbol}</span> : <span className="text-neutral-500">—</span>}
                   <span className="text-neutral-600 ml-2 text-[10px]">{short(t.mint)}</span>
