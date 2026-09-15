@@ -199,8 +199,8 @@ class PumpfunDiscovery:
         # indefinitely and never appears in the Seasoned band).
         targets = []
         for mint, b in st.tracking.items():
-            if mint in st.active_trades:
-                continue
+            # held tokens stay in the refresh (their Seasoned card used to freeze the moment we bought) — the
+            # monitor's per-tick pool read is reused below instead of a second RPC read
             if b.get("discovered"):
                 targets.append((mint, b))
             elif (
@@ -226,16 +226,20 @@ class PumpfunDiscovery:
         cold_pools: set[str] = set()     # far below the seasoned MC gate → reserves re-read every COLD_POOL_REFRESH_S only
         mc_floor = float(getattr(st.config, "scanner_min_mc_usd_seasoned", 30000.0) or 0) * 0.8
         hot: list[str] = []
-        for _, b in targets:
+        for mint, b in targets:
             pool = b.get("pumpswap_pool")
             if b.get("protocol") != "pumpswap" or not pool:
+                continue
+            slot_cache = (st.active_trades.get(mint) or {}).get("_pool_cache")
+            if slot_cache and slot_cache.get("pool") == pool:
+                pool_states[pool] = slot_cache      # open position: the monitor already read this pool this tick
                 continue
             cold = 0 < float(b.get("usd_market_cap") or 0) < mc_floor and now - float(b.get("_pool_read_ts") or 0) < COLD_POOL_REFRESH_S
             (cold_pools.add if cold else hot.append)(pool)
         try:
             from helius_gate import is_helius_paused
             if not is_helius_paused() and hot:
-                pool_states = await pumpswap.fetch_pool_states_batch(hot)
+                pool_states.update(await pumpswap.fetch_pool_states_batch(hot))
         except Exception as e:
             logger.debug(f"discovery batched pool read failed: {e}")
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
