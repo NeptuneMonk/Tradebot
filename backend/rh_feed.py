@@ -14,6 +14,7 @@ import base64
 import json
 import logging
 import os
+import random
 import time
 
 import rlp
@@ -31,6 +32,8 @@ SELL_SEL = bytes.fromhex("d04c6983")
 BUY_SEL = bytes.fromhex("59a87bc1")
 L2_SIGNED_TX = 4
 L2_BATCH = 3
+REJECT_BACKOFF_S = 45.0       # after a 403/429 from the feed: first retry no sooner than this
+REJECT_BACKOFF_MAX_S = 180.0
 FEED_EST_TTL_S = 8.0  # poll cadence ~2s: a projected tx that hasn't landed in 8s almost certainly reverted
 
 
@@ -100,24 +103,47 @@ class RHSequencerFeed:
             if not self._enabled():
                 await asyncio.sleep(5.0)
                 continue
+            opened = 0.0
             try:
-                async with websockets.connect(FEED_URL, open_timeout=10, ping_interval=20,
+                async with websockets.connect(FEED_URL, open_timeout=10, ping_interval=20, ping_timeout=30, max_size=None,
                                               additional_headers={"User-Agent": "Mozilla/5.0"}) as ws:
                     self.stats["connected"] = True
+                    self.stats["last_error"] = None
+                    opened = time.time()
                     backoff = 1.0
                     async for raw in ws:
                         self._on_message(raw)
                         if not self._enabled():
                             break
+                    cc = getattr(ws, "close_code", None)
+                    self.stats["last_error"] = f"server closed ({cc}) after {time.time() - opened:.0f}s"
+                    logger.warning(f"rh_feed closed by server code={cc} reason={getattr(ws, 'close_reason', '')!r} after {time.time() - opened:.0f}s")
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 self.stats["last_error"] = str(e)[:160]
                 logger.warning(f"rh_feed disconnected: {e}")
+                if "403" in str(e) or "429" in str(e):
+                    # Cloudflare in front of the feed caps connections per IP and, after "sustained connection
+                    # rejections", BLOCKS THE IP FOR AN HOUR (retry-after: ~3400 s). Retrying every 1-2 s is exactly
+                    # what earns that block — honour Retry-After and never poke it faster than REJECT_BACKOFF_S.
+                    ra = 0.0
+                    try:
+                        resp = getattr(e, "response", None)
+                        ra = float((resp.headers.get("retry-after") if resp is not None else 0) or 0)
+                        body = bytes(getattr(resp, "body", b"") or b"")[:160].decode(errors="ignore")
+                        if body:
+                            self.stats["last_error"] = body
+                    except Exception:
+                        pass
+                    backoff = max(backoff, REJECT_BACKOFF_S, min(ra, 3600.0))
+                    if ra:
+                        self.stats["blocked_until"] = time.time() + ra
+                        logger.warning(f"rh_feed: provider asked us to wait {ra:.0f}s (IP block) — sleeping it out")
             self.stats["connected"] = False
             self.stats["reconnects"] += 1
-            await asyncio.sleep(backoff)
-            backoff = min(30.0, backoff * 2)
+            await asyncio.sleep(backoff * (0.8 + 0.4 * random.random()))
+            backoff = min(REJECT_BACKOFF_MAX_S, backoff * 2) if backoff < REJECT_BACKOFF_MAX_S else REJECT_BACKOFF_S
 
     def _on_message(self, raw: str):
         now = time.time()

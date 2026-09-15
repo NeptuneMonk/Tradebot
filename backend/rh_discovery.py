@@ -34,13 +34,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger("rh_discovery")
 
 RH_RPC_URL = os.environ.get("RH_RPC_URL", "")
+RH_RPC_FALLBACK_URLS = [u.strip() for u in os.environ.get("RH_RPC_FALLBACK_URLS", "https://robinhood.drpc.org,https://robinhood-mainnet.gateway.tatum.io").split(",") if u.strip()]
+RH_RPC_STICKY_S = 120.0         # after a failover keep using the healthy fallback this long before re-trying the primary
 CHAIN = "rh"
 PROTOCOL = "pons"
 POLL_INTERVAL_S = 2.0
 RPC_CONCURRENCY = 1             # single requests only — the public RPC 429s JSON-RPC batches
 META_PER_POLL = 6               # name()+symbol() lookups per poll (2 requests each)
 BACKFILL_BLOCKS = 600           # ~1 min at ~100ms blocks
-MAX_BLOCK_SPAN = 600
+MAX_BLOCK_SPAN = 99             # public fallbacks (dRPC/Tatum) cap eth_getLogs at 100 blocks; ~2 s polls need ~20
 BLOCK_TIME_S = 0.1
 TRACK_MAX_AGE_S = 3600
 MAX_TRACKED = 800
@@ -218,6 +220,10 @@ class RateLimited(Exception):
     pass
 
 
+class RpcShed(Exception):
+    """The provider's edge answered but its node timed out (-32000 'context deadline exceeded')."""
+
+
 def launch_rate_per_h(starts, now: float) -> float:
     return float(sum(1 for t in starts if now - float(t or 0) <= 3600.0))
 
@@ -227,6 +233,8 @@ class RHDiscovery:
         self.state = state
         self.tracking: dict[str, dict] = {}
         self._curve_to_token: dict[str, str] = {}
+        self._rpc_pref: str | None = None
+        self._rpc_pref_until = 0.0
         self._task: asyncio.Task | None = None
         self._next_from = 0
         self._wake = asyncio.Event()          # sequencer feed saw factory calldata → poll now, don't wait out the 2 s
@@ -326,35 +334,65 @@ class RHDiscovery:
     async def _rpc(self, calls: list[tuple[str, list]]) -> list:
         """One HTTP request PER call. The public RPC now 429s every JSON-RPC
         *batch* (even two eth_blockNumber in one body) while single requests
-        sail through at ~80ms — the old single-batch poll was the 429 source."""
+        sail through at ~80ms — the old single-batch poll was the 429 source.
+        When the primary is shedding (429 / 5xx / -32000 'context deadline' / timeout) the call is retried on the
+        next `RH_RPC_FALLBACK_URLS` endpoint, and that endpoint stays preferred for RH_RPC_STICKY_S."""
         sem = asyncio.Semaphore(RPC_CONCURRENCY)
 
         async def one(client: httpx.AsyncClient, i: int, m: str, p: list):
-            # The edge limiter is bursty: once tripped it sheds everything for
-            # a second or two, then recovers. Cool off and retry rather than
-            # failing the whole poll (which used to snowball into resyncs).
-            for attempt, cool in enumerate((0.6, 1.2, 2.0, 3.0, 0.0)):
-                async with sem:
-                    self.stats["rpc_requests"] += 1
-                    r = await client.post(RH_RPC_URL, json={"jsonrpc": "2.0", "id": i, "method": m, "params": p},
-                                          headers={"User-Agent": "Mozilla/5.0"})
-                if r.status_code != 429:
-                    break
-                self.stats["rate_limited_calls"] = self.stats.get("rate_limited_calls", 0) + 1
-                if cool:
-                    await asyncio.sleep(cool)
-            if r.status_code == 429:
-                raise RateLimited()
-            r.raise_for_status()
-            x = r.json()
-            if isinstance(x, dict) and "error" in x:
-                if (x["error"] or {}).get("code") == 429:
-                    raise RateLimited()
-                raise RuntimeError(f"rpc {m}: {x['error']}")
-            return x.get("result") if isinstance(x, dict) else None
+            last_exc: Exception | None = None
+            for url in self._rpc_urls():
+                try:
+                    return await self._one_on(client, url, sem, i, m, p)
+                except (RateLimited, httpx.TimeoutException, httpx.HTTPStatusError, httpx.TransportError, RpcShed) as e:
+                    last_exc = e
+                    self.stats["rpc_failovers"] = self.stats.get("rpc_failovers", 0) + 1
+                    continue
+            assert last_exc is not None
+            raise last_exc
 
         async with httpx.AsyncClient(timeout=20.0) as client:
             return list(await asyncio.gather(*(one(client, i, m, p) for i, (m, p) in enumerate(calls))))
+
+    def _rpc_urls(self) -> list[str]:
+        urls = [RH_RPC_URL] + [u for u in RH_RPC_FALLBACK_URLS if u and u != RH_RPC_URL]
+        pref = self._rpc_pref
+        if pref and pref in urls and time.time() < self._rpc_pref_until:
+            urls.remove(pref)
+            urls.insert(0, pref)
+        return urls
+
+    async def _one_on(self, client: httpx.AsyncClient, url: str, sem: asyncio.Semaphore, i: int, m: str, p: list):
+        # The edge limiter is bursty: once tripped it sheds everything for
+        # a second or two, then recovers. Cool off and retry rather than
+        # failing the whole poll (which used to snowball into resyncs).
+        for attempt, cool in enumerate((0.6, 1.2, 0.0)):
+            async with sem:
+                self.stats["rpc_requests"] += 1
+                r = await client.post(url, json={"jsonrpc": "2.0", "id": i, "method": m, "params": p},
+                                      headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code != 429:
+                break
+            self.stats["rate_limited_calls"] = self.stats.get("rate_limited_calls", 0) + 1
+            if cool:
+                await asyncio.sleep(cool)
+        if r.status_code == 429:
+            raise RateLimited()
+        r.raise_for_status()
+        x = r.json()
+        if isinstance(x, dict) and "error" in x:
+            err = x["error"] or {}
+            if err.get("code") == 429:
+                raise RateLimited()
+            if err.get("code") == -32000 and "deadline" in str(err.get("message", "")).lower():
+                raise RpcShed(f"rpc {m}: {err}")      # the node behind the public edge timed out — try another provider
+            raise RuntimeError(f"rpc {m}: {err}")
+        if url != RH_RPC_URL:
+            self._rpc_pref, self._rpc_pref_until = url, time.time() + RH_RPC_STICKY_S
+            self.stats["rpc_active_url"] = url
+        elif self._rpc_pref:
+            self._rpc_pref, self.stats["rpc_active_url"] = None, url
+        return x.get("result") if isinstance(x, dict) else None
 
     async def poll_once(self):
         """Exactly ONE batched HTTP request per poll (the public RPC 429s on
@@ -376,12 +414,12 @@ class RHDiscovery:
             (head_hex,) = await self._rpc([("eth_blockNumber", [])])
             self.stats["head"] = int(head_hex, 16)
             self.stats["last_poll_ts"] = time.time()
-            if self.stats["head"] - fr > 10 * MAX_BLOCK_SPAN:
+            if self.stats["head"] - fr > BACKFILL_BLOCKS * 10:
                 logger.warning(f"RH cursor {self.stats['head'] - fr} blocks behind head — resyncing to head")
                 fr = max(1, self.stats["head"] - BACKFILL_BLOCKS)
                 self._next_from = fr
         est_head = self.stats["head"] + int(max(0.0, time.time() - (self.stats["last_poll_ts"] or time.time())) / BLOCK_TIME_S)
-        to_hex = hex(fr + MAX_BLOCK_SPAN) if est_head - fr > MAX_BLOCK_SPAN else "latest"
+        to_hex = hex(fr + MAX_BLOCK_SPAN) if est_head - fr > MAX_BLOCK_SPAN - 10 else "latest"   # margin: est_head lags the true head a little
         # Trade logs only for curves we track (≤300 addresses) — far lighter
         # than every CurveBuy/CurveSell on the chain.
         curves = list(self._curve_to_token.keys())[-300:]

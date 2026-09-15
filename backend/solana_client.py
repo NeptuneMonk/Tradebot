@@ -11,7 +11,7 @@ import asyncio
 from solders.pubkey import Pubkey
 
 RPC_URL = os.environ.get("SOLANA_RPC_URL") or os.environ["HELIUS_RPC_URL"]
-RPC_FALLBACK_URL = os.environ.get("SOLANA_RPC_FALLBACK_URL") or ""
+RPC_FALLBACK_URL = os.environ.get("SOLANA_RPC_FALLBACK_URL") or "https://api.mainnet-beta.solana.com"   # published env may lack the key: public node is the default fallback
 WSS_URL = os.environ.get("SOLANA_WSS_URL") or "wss://api.mainnet-beta.solana.com"   # subscriptions default to the free public WSS; paid keys are for HTTP reads/sends only
 RPC_MAX_RPS = float(os.environ.get("SOLANA_RPC_MAX_RPS") or 0)   # 0 = unpaced; QuickNode Discover allows 15 req/s
 LAMPORTS_PER_SOL = 1_000_000_000
