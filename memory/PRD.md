@@ -1932,3 +1932,4 @@ Patterns the Doctor cannot see (it scores per book, not across exit reasons):
 - Bug: `RHDiscovery.candidates_snapshot` filtered by the Sol New-band window (`band_new_min/max_age_min`) and judged "passing" by Sol growth/buyer thresholds.
 - ✅ Now: curve tokens shown only inside `rh_min_age_s … rh_max_age_min` (graduated tokens exempt, they're seasoned); `passes` = `rh_paper._gates()` is None, and each row carries `gate_reason` (shown as a small badge on non-passing RH rows in ScannerCandidatesCard).
 - Test: `test_rh_gate_verdicts.py::test_tracked_tokens_band_uses_rh_age_window_and_gates`.
+- ✅ (follow-up from video) Card header for the RH band now prints the RH window (`rh_min_age_s`–`rh_max_age_min`) instead of the Sol New-band range; `RHDiscovery._gc` keeps curve tokens for `max(60 min, rh_max_age_min)` (≤ 24 h) so a wide RH max-age window isn't silently cut at the 60-min tracker TTL.

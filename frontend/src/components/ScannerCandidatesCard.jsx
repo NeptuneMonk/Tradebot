@@ -70,6 +70,9 @@ function ScannerCandidatesCard({ candidates, config }) {
   const seasonedMax = config?.band_seasoned_max_age_min ?? 60;
   const fmt = (m) => (m >= 60 ? `${(m / 60).toFixed(m % 60 ? 1 : 0)}h` : `${m % 1 ? m.toFixed(2) : m}m`);
   const newRange = newMin > 0 ? `${fmt(newMin)}–${fmt(newMax)}` : `< ${fmt(newMax)}`;
+  const rhMinM = (config?.rh_min_age_s ?? 0) / 60;
+  const rhMaxM = config?.rh_max_age_min ?? 15;
+  const rhRange = rhMinM > 0 ? `${fmt(rhMinM)}–${fmt(rhMaxM)}` : `< ${fmt(rhMaxM)}`;
   const seasonedRange = seasonedMin > 0 ? `${fmt(seasonedMin)}–${fmt(seasonedMax)}` : `< ${fmt(seasonedMax)}`;
   const newBand = candidates.filter((c) => c.band === "new");
   const seasonedBand = candidates.filter((c) => c.band === "seasoned");
@@ -106,7 +109,7 @@ function ScannerCandidatesCard({ candidates, config }) {
           emptyText="no seasoned tokens meeting momentum criteria"
         />
         <Band
-          title={`Robinhood (PONS · ${newRange})`}
+          title={`Robinhood (PONS · ${rhRange})`}
           testId="scanner-band-robinhood"
           Icon={Eye}
           accentClass="text-lime-300"

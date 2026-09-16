@@ -871,7 +871,9 @@ class RHDiscovery:
     def _gc(self, now: float):
         paper = getattr(self.state, "rh_paper", None)
         held = set(paper.positions.keys()) if paper is not None else set()   # never evict a token we hold
-        stale = [t for t, b in self.tracking.items() if now - b["start"] > TRACK_MAX_AGE_S and t not in held]
+        # keep curve tokens at least as long as the RH max-age window says they are still eligible (≤ 24 h)
+        ttl = min(86400.0, max(float(TRACK_MAX_AGE_S), float(getattr(self.state.config, "rh_max_age_min", 15.0) or 0) * 60.0))
+        stale = [t for t, b in self.tracking.items() if now - b["start"] > ttl and t not in held]
         if len(self.tracking) - len(stale) > MAX_TRACKED:
             extra = sorted(
                 (t for t in self.tracking if t not in stale and t not in held),
