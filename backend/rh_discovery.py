@@ -349,6 +349,10 @@ class RHDiscovery:
                     backoff = 1.0
             # sleep `backoff`, but a sequencer wake cuts it short (min 0.5 s spacing so a burst can't 429 us)
             try:
+                await self._flush_updates(time.time())   # gate verdicts reach the feed even while the poll is failing
+            except Exception:
+                pass
+            try:
                 await asyncio.wait_for(self._wake.wait(), timeout=backoff)
                 spacing = 0.5 - (time.time() - self._last_poll_ts)
                 if spacing > 0:
@@ -775,6 +779,7 @@ class RHDiscovery:
             # backend gate verdict travels with the row so the candidate-only WS feed can pass RH tokens that
             # cleared (or are close to clearing) the PONS entry gates — "tracking" alone never reaches the UI
             "rh_gate": gate,
+            "rh_gate_detail": b.get("gate_detail") if gate not in (None, "pass") else None,
             "creator_eth": b.get("creator_eth"),
             "creator_sold_pct": b.get("creator_sold_pct"),
             "classifier_action": "rh_pons" if gate == "pass" else "tracking",

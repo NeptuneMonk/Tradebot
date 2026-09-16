@@ -1904,3 +1904,11 @@ Patterns the Doctor cannot see (it scores per book, not across exit reasons):
 - ✅ Feed badge tooltips explain each verdict (`RH_GATE_HINT` in RecentLaunchesFeed.jsx).
 - Chain filter chips (ALL / SOL / RH) are display-only (localStorage); they cannot affect trading.
 - Tests: `tests/test_rh_gate_verdicts.py` (2) + `test_rh_paper.py` (16) green.
+- ✅ (follow-up) Every remaining silent path in `RHPaperTrader._enter` now labels the row: `not-leader` (fence), `entry-lock`, `already-entered` (active row in DB), `head-stalled` (RH poll head not advancing → a paper fill can never land; only after the head has advanced at least once so the test harness is unaffected). `fill-expired` holds 30 s. A persistent "gate ✓" with no trade is no longer possible after redeploy — the badge names the blocker.
+
+## 2026-09-16 — RH starved by the cost gate + frozen verdicts (from the published `/api/scanner/skips`)
+- Data: RH curve `pass: 49` vs `cost-gate: ~1220 ticks` (≈40 blocks of 30 s) → nearly every RH pass died at the cost gate. Also `unpriced-quote: 1481`.
+- ✅ `cost_gate.MAX_ROUND_TRIP_PCT_RH = 12 %` — RH curve friction is a deterministic toll (1 %+1 % protocol take, fixed gas, FIFO sequencer), so it gets the same ceiling as a quoter-measured pool trip; Sol keeps 8 %. The 2× first-target rule still applies (30 % TP ≥ 2× cost).
+- ✅ Frozen "gate ✓": `_flush_updates` only ran at the end of a *successful* poll, so when the RH RPC was shedding the feed kept showing the last flushed verdict. It now also flushes after every failed poll iteration.
+- ✅ `rh_gate_detail` (cost-gate/r-size detail: reason, size, slip/fee/proto %) travels with the row → badge tooltip.
+- Tests: `test_rh_gate_verdicts.py` (+ceiling test), `test_profitability_refactor.py` (stub gained `reentry` ledger), `test_rh_paper.py`, `test_audit_fixes.py` green.

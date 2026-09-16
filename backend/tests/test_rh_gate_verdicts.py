@@ -49,3 +49,19 @@ def test_post_gate_skip_is_visible_and_sticky():
     assert tr._gates("0x1", b, now + 1) == "cost-gate"
     assert tr._gates("0x1", b, now + 31) is None            # 30 s later the momentum gates decide again
     assert tr.stats["skip_reasons"]["curve:cost-gate"] == 1
+
+
+def test_rh_curve_cost_ceiling_is_the_deterministic_one():
+    import cost_gate as cg
+    # $10 stake on a $2.7k-deep RH curve with $0.60 measured gas: 11.2% friction — a known toll under the 30% first target
+    q = cg.quote(size_usd=10.0, r_usd=1.15, first_target_r=2.62, protocol="rh", entry_slip_bps=800, exit_slip_bps=800,
+                 fee_usd_round_trip=0.6, ladder=False, depth_usd=2756.0)
+    assert q["cost_gate_pass"] is True and 11.0 < q["expected_cost_pct"] < 11.5
+    # Sol keeps the 8% ceiling
+    q2 = cg.quote(size_usd=10.0, r_usd=1.15, first_target_r=2.62, protocol="pumpfun", entry_slip_bps=800, exit_slip_bps=800,
+                  fee_usd_round_trip=0.6, ladder=False, depth_usd=2756.0)
+    assert q2["cost_gate_pass"] is False and "8%" in q2["cost_gate_reason"]
+    # RH still sits out when the toll passes 12%
+    q3 = cg.quote(size_usd=1.5, r_usd=0.2, first_target_r=2.6, protocol="rh", entry_slip_bps=800, exit_slip_bps=800,
+                  fee_usd_round_trip=0.18, ladder=False, depth_usd=2756.0)
+    assert q3["cost_gate_pass"] is False and "12%" in q3["cost_gate_reason"]

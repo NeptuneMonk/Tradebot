@@ -28,7 +28,12 @@ const RH_GATE_HINT = {
   "cost-gate": "passed the momentum gates but the expected round-trip cost (fees + slippage) eats the first target — entry skipped",
   "r-size": "passed the momentum gates but R-sizing found no tradable size at the current bankroll / stop",
   "fill-rejected": "paper fill rejected — price ran past the live slippage tolerance before the fill block",
-  "fill-expired": "queued paper fill never landed (head stalled) — slot released",
+  "fill-expired": "queued paper fill never landed (chain head stalled for 2 min) — slot released",
+  "head-stalled": "RH poll loop is not advancing — a paper fill lands on a later block, so no entry until the head moves",
+  "not-leader": "this pod is not the trading leader — entries are fenced off here",
+  "entry-lock": "another pod holds the entry lock for this token",
+  "stake-zero": "RH stake is $0 — bankroll too small for the fee floor (see bankroll card)",
+  "no-price": "no curve / pool price yet",
   "doctor-breaker": "rh_pons is benched by the Live Doctor breaker",
   "live-buy-failed": "live buy did not land — see RH wallet card / logs",
   "max-positions": "RH max positions reached",
@@ -91,7 +96,7 @@ function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh
                     )}
                     {isRh && l.rh_gate && !l.entered && (
                       <span className={`text-[10px] font-mono px-1 py-0 border uppercase ${l.rh_gate === "pass" ? "border-emerald-700 text-emerald-300" : "border-neutral-700 text-neutral-500"}`}
-                        title={RH_GATE_HINT[l.rh_gate] || `backend gate verdict: ${l.rh_gate}`}
+                        title={(RH_GATE_HINT[l.rh_gate] || `backend gate verdict: ${l.rh_gate}`) + (l.rh_gate_detail ? `\n${l.rh_gate_detail}` : "")}
                         data-testid={`launch-rh-gate-${l.mint}`}>{l.rh_gate === "pass" ? "gate ✓" : `gate: ${l.rh_gate}`}</span>
                     )}
                     {(l.creator_eth != null || l.creator_sol != null) && (

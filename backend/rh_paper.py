@@ -240,10 +240,11 @@ class RHPaperTrader:
             return
         log.append((round(now, 1), reason, float(b.get("last_price_quote") or 0.0)))
 
-    def _block_entry(self, token: str, b: dict, reason: str, now: float, ttl_s: float = 30.0) -> None:
+    def _block_entry(self, token: str, b: dict, reason: str, now: float, ttl_s: float = 30.0, detail: str | None = None) -> None:
         """A skip that fires AFTER the momentum gates passed: show it on the feed instead of a stale 'gate ✓'
         and hold the verdict for `ttl_s` so the scan does not re-run the whole entry path every second."""
         b["gate_reason"] = reason
+        b["gate_detail"] = detail
         b["entry_block"] = (reason, now + ttl_s)
         tally = self.stats.setdefault("skip_reasons", {})
         key = ("seasoned:" if b.get("graduated") else "curve:") + reason
@@ -474,8 +475,14 @@ class RHPaperTrader:
         try:
             await asyncio.sleep(max(0, cfg.paper_entry_latency_ms) / 1000.0)
             if not await self._fence(f"rh entry {token[:10]}"):
+                b0 = self.state.rh_discovery.tracking.get(token)
+                if b0:
+                    self._block_entry(token, b0, "not-leader", time.time())
                 return
             if await self._active_row_exists(token):
+                b0 = self.state.rh_discovery.tracking.get(token)
+                if b0:
+                    self._block_entry(token, b0, "already-entered", time.time(), ttl_s=10.0)
                 return                                    # cross-pod idempotency: one active row per token
             b = self.state.rh_discovery.tracking.get(token)
             ld = getattr(self.state, "live_doctor", None)
@@ -537,7 +544,7 @@ class RHPaperTrader:
                                 max_trade_usd=min(base_stake, float(getattr(cfg, "rh_discovery_clip_usd", base_stake) or base_stake)))
             if sz["skip"]:
                 logger.info(f"rh_paper skip {b['symbol']}: r-size — {sz['reason']}")
-                self._block_entry(token, b, "r-size", now)
+                self._block_entry(token, b, "r-size", now, detail=str(sz["reason"]))
                 return
             first_r = float(bx0["target_r"]) if bx0["target_r"] else float(bx0["take_profit_pct"]) / sz["sl_pct_with_slip"]   # RH: TP% is the first cash-out
             q = _cg.quote(size_usd=sz["size_usd"], r_usd=sz["r_usd"], first_target_r=first_r, protocol="rh", entry_slip_bps=tol_bps,
@@ -546,7 +553,8 @@ class RHPaperTrader:
             if not q["cost_gate_pass"]:
                 self.stats["cost_gate_skips"] = self.stats.get("cost_gate_skips", 0) + 1
                 logger.info(f"rh_paper skip {b['symbol']}: cost-gate — {q['cost_gate_reason']}" + (f" (pool round trip {measured_rt:.2f}%)" if measured_rt is not None else ""))
-                self._block_entry(token, b, "cost-gate", now)
+                self._block_entry(token, b, "cost-gate", now,
+                                  detail=f"{q['cost_gate_reason']} · size ${sz['size_usd']:.2f} · slip {q['cost_breakdown']['slip_pct']:.1f}% fee {q['cost_breakdown']['fee_pct']:.1f}% proto {q['cost_breakdown']['protocol_pct']:.1f}%")
                 return
             # Hardwired fast-fail sizing: half now, the other half after the first +5 % (see _fast_fail_add)
             stake_usd = max(float(getattr(cfg, "min_trade_usd", 1.5) or 0), sz["size_usd"] * 0.5)
@@ -561,6 +569,7 @@ class RHPaperTrader:
             claim = getattr(self.state, "claim_entry_lock", None)
             if claim is not None and not await claim(token, CHAIN):
                 logger.warning(f"rh_paper {token[:10]}: another pod holds the entry lock — aborted before send")
+                self._block_entry(token, b, "entry-lock", now)
                 return
             if self.live_ok(b):
                 live_fill = await self._live_buy(token, b, stake_quote, price)
@@ -568,6 +577,10 @@ class RHPaperTrader:
                     self._block_entry(token, b, "live-buy-failed", now)
                     return
                 await self._open_position(token, b, price, stake_quote, quote_usd, now, live_fill, ctx)
+                return
+            rd = self.state.rh_discovery
+            if float(rd.stats.get("head_advanced_ts") or 0.0) > 0 and not rd.alive():
+                self._block_entry(token, b, "head-stalled", now, ttl_s=10.0)   # a paper fill lands on a later block: no head, no fill
                 return
             # PAPER: a real buy would land `latency_blocks` after the chain head we last saw, at THAT block's
             # price — not at the (possibly seconds-stale) last polled price. Queue it and fill from the poll.
@@ -601,7 +614,7 @@ class RHPaperTrader:
                 n += 1
                 b = self.state.rh_discovery.tracking.get(token)
                 if b:
-                    self._block_entry(token, b, "fill-expired", now, ttl_s=10.0)
+                    self._block_entry(token, b, "fill-expired", now, ttl_s=30.0)
                 logger.info(f"rh_paper pending buy EXPIRED {token[:10]}: fill block never landed within {self.PENDING_BUY_TTL_S:.0f}s")
         # a pending reservation with neither a position nor a queued buy behind it is a leak — release it
         for token in list(self._pending_entries):

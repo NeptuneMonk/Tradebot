@@ -300,6 +300,8 @@ def _bot_stub():
     st.active_trades = {}; st._pending_entry_mints = set(); st.sl_cooldown_until = {}
     st._entry_gate_lock = asyncio.Lock(); st.calls = []; st.recent_exit_until = {}; st.entered_mints = set(); st.tracking = {}
     st.reentry_watch = {}
+    from reentry_policy import ReentryLedger
+    st.reentry = ReentryLedger(); st._reentry_gate_mult = {}
     async def _skip(ev): st.calls.append(("skip", ev["reason"]))
     st._skip_event = _skip
     return st
