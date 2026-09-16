@@ -86,7 +86,10 @@ class RHPaperTrader:
         self._enter_inflight: set[str] = set()
         self._pending_since: dict[str, float] = {}
         self.pending_buys: dict[str, dict] = {}
+        self.last_exit_ts: dict[str, float] = {}   # closed tokens are back in play once the gates pass again (after a short cooldown)
         self.stats = {"entries": 0, "exits": 0, "skipped": 0, "last_scan_ts": 0.0}
+
+    REENTRY_COOLDOWN_S = 30.0
 
     def start(self):
         if self._task is None or self._task.done():
@@ -126,10 +129,15 @@ class RHPaperTrader:
     # ---------- entries ----------
     def _gates(self, token: str, b: dict, now: float) -> str | None:
         cfg = self.state.config
-        if token in self.entered or token in self._pending_entries:
+        if token in self.positions or token in self._pending_entries:
             return "already-entered"
+        if now - self.last_exit_ts.get(token, 0.0) < self.REENTRY_COOLDOWN_S:
+            return "exit-cooldown"                        # just sold it — let the tape print again before buying back
         if len(self.positions) + len(self._pending_entries) >= cfg.rh_max_positions:
             return "max-positions"
+        eb = b.get("entry_block")
+        if eb and now < eb[1]:
+            return eb[0]                                  # a post-gate skip (cost-gate, r-size, …) holds its verdict briefly
         cg = b.get("creator_gate")
         if cg and now - cg[1] < 300.0:
             return cg[0]                                  # deployer-solvency verdict cached for the balance TTL
@@ -219,7 +227,7 @@ class RHPaperTrader:
     def _ledger(b: dict, now: float, reason: str):
         """Decision ledger: record each gate verdict transition (ts, reason, price) so the replay can score
         every gate by what the token did afterwards. Only transitions are kept — ~12 per token max."""
-        if reason in ("already-entered", "max-positions", "unpriced-quote", "stale", "graduated", "doctor-breaker"):
+        if reason in ("already-entered", "exit-cooldown", "max-positions", "unpriced-quote", "stale", "graduated", "doctor-breaker"):
             return
         log = b.setdefault("decisions", [])
         if log and log[-1][1] == reason:
@@ -227,6 +235,16 @@ class RHPaperTrader:
         if len(log) >= 12:
             return
         log.append((round(now, 1), reason, float(b.get("last_price_quote") or 0.0)))
+
+    def _block_entry(self, token: str, b: dict, reason: str, now: float, ttl_s: float = 30.0) -> None:
+        """A skip that fires AFTER the momentum gates passed: show it on the feed instead of a stale 'gate ✓'
+        and hold the verdict for `ttl_s` so the scan does not re-run the whole entry path every second."""
+        b["gate_reason"] = reason
+        b["entry_block"] = (reason, now + ttl_s)
+        tally = self.stats.setdefault("skip_reasons", {})
+        key = ("seasoned:" if b.get("graduated") else "curve:") + reason
+        tally[key] = tally.get(key, 0) + 1
+        self.state.rh_discovery._dirty.add(token)
 
     def _quote_usd(self, sym: str) -> float:
         return self.state.rh_discovery._quote_usd(sym)
@@ -456,12 +474,15 @@ class RHPaperTrader:
             ld = getattr(self.state, "live_doctor", None)
             if not manual and ld is not None and ld.book_paused("rh_pons"):
                 logger.info(f"rh_paper skip {token[:10]}: rh_pons paused by live-doctor breaker")
+                if b:
+                    self._block_entry(token, b, "doctor-breaker", time.time())
                 return
-            if not b or token in self.entered or (b.get("graduated") and not b.get("pool_live")):
+            if not b or token in self.positions or (b.get("graduated") and not b.get("pool_live")):
                 return                                    # seasoned buckets trade on their live v4 pool; no pool → nothing to buy
             price = b["last_price_quote"]
             quote_usd = self._quote_usd(b["quote_symbol"])
             if price <= 0 or quote_usd <= 0:
+                self._block_entry(token, b, "unpriced-quote" if quote_usd <= 0 else "no-price", time.time(), ttl_s=5.0)
                 return
             now = time.time()
             if not manual and getattr(cfg, "creator_solvency_enabled", True) and b.get("creator"):
@@ -481,6 +502,7 @@ class RHPaperTrader:
             base_stake = float(getattr(cfg, "rh_max_trade_usd", 5.0))
             if base_stake <= 0:
                 logger.info(f"rh_paper skip {b['symbol']}: RH stake is 0 — bankroll too small for the fee floor")
+                self._block_entry(token, b, "stake-zero", now)
                 return
             # R sizing inside the RH operator cap + cost gate against the first target (1R)
             import cost_gate as _cg
@@ -508,6 +530,7 @@ class RHPaperTrader:
                                 max_trade_usd=min(base_stake, float(getattr(cfg, "rh_discovery_clip_usd", base_stake) or base_stake)))
             if sz["skip"]:
                 logger.info(f"rh_paper skip {b['symbol']}: r-size — {sz['reason']}")
+                self._block_entry(token, b, "r-size", now)
                 return
             first_r = float(bx0["target_r"]) if bx0["target_r"] else float(bx0["take_profit_pct"]) / sz["sl_pct_with_slip"]   # RH: TP% is the first cash-out
             q = _cg.quote(size_usd=sz["size_usd"], r_usd=sz["r_usd"], first_target_r=first_r, protocol="rh", entry_slip_bps=tol_bps,
@@ -516,6 +539,7 @@ class RHPaperTrader:
             if not q["cost_gate_pass"]:
                 self.stats["cost_gate_skips"] = self.stats.get("cost_gate_skips", 0) + 1
                 logger.info(f"rh_paper skip {b['symbol']}: cost-gate — {q['cost_gate_reason']}" + (f" (pool round trip {measured_rt:.2f}%)" if measured_rt is not None else ""))
+                self._block_entry(token, b, "cost-gate", now)
                 return
             # Hardwired fast-fail sizing: half now, the other half after the first +5 % (see _fast_fail_add)
             stake_usd = max(float(getattr(cfg, "min_trade_usd", 1.5) or 0), sz["size_usd"] * 0.5)
@@ -534,6 +558,7 @@ class RHPaperTrader:
             if self.live_ok(b):
                 live_fill = await self._live_buy(token, b, stake_quote, price)
                 if live_fill is None:
+                    self._block_entry(token, b, "live-buy-failed", now)
                     return
                 await self._open_position(token, b, price, stake_quote, quote_usd, now, live_fill, ctx)
                 return
@@ -567,6 +592,9 @@ class RHPaperTrader:
                 self._pending_entries.discard(token)
                 self.stats["entries_expired"] = self.stats.get("entries_expired", 0) + 1
                 n += 1
+                b = self.state.rh_discovery.tracking.get(token)
+                if b:
+                    self._block_entry(token, b, "fill-expired", now, ttl_s=10.0)
                 logger.info(f"rh_paper pending buy EXPIRED {token[:10]}: fill block never landed within {self.PENDING_BUY_TTL_S:.0f}s")
         # a pending reservation with neither a position nor a queued buy behind it is a leak — release it
         for token in list(self._pending_entries):
@@ -606,6 +634,8 @@ class RHPaperTrader:
             if reason:
                 self._pending_entries.discard(token)
                 self.stats["entries_rejected"] = self.stats.get("entries_rejected", 0) + 1
+                if b:
+                    self._block_entry(token, b, "fill-rejected", time.time(), ttl_s=0.0)   # label only — the next scan may re-decide at the new price
                 logger.info(f"rh_paper entry REJECTED {b['symbol'] if b else token[:10]}: {reason}")
                 continue
             asyncio.create_task(self._open_position(token, b, fill, pb["stake_quote"], self._quote_usd(b["quote_symbol"]),
@@ -616,7 +646,7 @@ class RHPaperTrader:
                              now: float, live_fill: dict | None, ctx: dict, fill_block: int | None = None,
                              decision_price: float | None = None):
         try:
-            if token in self.positions or token in self.entered:
+            if token in self.positions:
                 return
             fee = fee_fraction(now - b["start"])
             reentry, reentry_ctx, manual = ctx.get("reentry"), ctx.get("reentry_ctx"), ctx.get("manual")
@@ -1382,6 +1412,7 @@ class RHPaperTrader:
                 await self._check_live_kill()
             logger.info(f"rh_paper EXIT {t.get('symbol')} {token[:10]} {reason} pnl={pnl_pct:+.1f}% (${pnl_usd:+.3f})")
             self.positions.pop(token, None)
+            self.last_exit_ts[token] = time.time()
         except asyncio.CancelledError:
             pos.pop("_exiting", None)
             pos.pop("_fill_task", None)

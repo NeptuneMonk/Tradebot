@@ -19,6 +19,19 @@ const timeAgo = (iso) => {
 
 const CHAIN_FILTER_KEY = "ui.launches.chain";
 
+const RH_GATE_HINT = {
+  pass: "cleared every PONS entry gate",
+  "exit-cooldown": "just closed a trade on this token — back in play 30 s after the exit if the gates still pass",
+  "already-entered": "position open or a paper fill is queued for this token",
+  "cost-gate": "passed the momentum gates but the expected round-trip cost (fees + slippage) eats the first target — entry skipped",
+  "r-size": "passed the momentum gates but R-sizing found no tradable size at the current bankroll / stop",
+  "fill-rejected": "paper fill rejected — price ran past the live slippage tolerance before the fill block",
+  "fill-expired": "queued paper fill never landed (head stalled) — slot released",
+  "doctor-breaker": "rh_pons is benched by the Live Doctor breaker",
+  "live-buy-failed": "live buy did not land — see RH wallet card / logs",
+  "max-positions": "RH max positions reached",
+};
+
 function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh: false } }) {
   const [chainFilter, setChainFilter] = useState(() => localStorage.getItem(CHAIN_FILTER_KEY) || "all");
   const setFilter = (k) => { localStorage.setItem(CHAIN_FILTER_KEY, k); setChainFilter(k); };
@@ -76,7 +89,7 @@ function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh
                     )}
                     {isRh && l.rh_gate && !l.entered && (
                       <span className={`text-[10px] font-mono px-1 py-0 border uppercase ${l.rh_gate === "pass" ? "border-emerald-700 text-emerald-300" : "border-neutral-700 text-neutral-500"}`}
-                        title={l.rh_gate === "pass" ? "cleared every PONS entry gate" : `backend gate verdict: ${l.rh_gate}`}
+                        title={RH_GATE_HINT[l.rh_gate] || `backend gate verdict: ${l.rh_gate}`}
                         data-testid={`launch-rh-gate-${l.mint}`}>{l.rh_gate === "pass" ? "gate ✓" : `gate: ${l.rh_gate}`}</span>
                     )}
                     {(l.creator_eth != null || l.creator_sol != null) && (

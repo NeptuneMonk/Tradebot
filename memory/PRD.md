@@ -1889,3 +1889,11 @@ Patterns the Doctor cannot see (it scores per book, not across exit reasons):
 - ✅ `listener.py` + `account_event_bus.py` both route through the router; on quota → immediate switch (no 5-min sleep) unless every endpoint is exhausted.
 - ✅ Status: `listener_via` on `/api/bot/status`; pill reads `ON · FALLBACK: PUBLIC WSS` while a fallback carries the feed.
 - Tests: `tests/test_wss_fallback.py` (router order/sticky/reset, listener switches to public on quota). Needs a **redeploy** to reach the published app.
+
+## 2026-09-16 — RH feed gate labels tell the truth
+- User: RH rows show "gate ✓" with no trade; "already-entered" with no active trade; "feeds only trade when the filter is on ALL".
+- ✅ Post-gate skips (cost-gate, r-size, stake-zero, doctor-breaker, no-price/unpriced-quote, live-buy-failed, fill-rejected, fill-expired) now set `gate_reason` via `RHPaperTrader._block_entry` and hold the verdict 30 s (`b["entry_block"]`, honoured by `_gates`) — no more stale "gate ✓" while the entry path is refusing every second.
+- ✅ **One-shot-per-token block REMOVED** (user: "if it passes gates it should be in play for re-entry"). `already-entered` is now only an open position / queued fill; a closed token is eligible again once the gates pass, after a hardwired 30 s `exit-cooldown` (`REENTRY_COOLDOWN_S`) so a stop-out cannot buy itself straight back on the same tick. Sol side already behaved this way (`entered_mints` was never populated; scanner has its own 30 s attempt cooldown).
+- ✅ Feed badge tooltips explain each verdict (`RH_GATE_HINT` in RecentLaunchesFeed.jsx).
+- Chain filter chips (ALL / SOL / RH) are display-only (localStorage); they cannot affect trading.
+- Tests: `tests/test_rh_gate_verdicts.py` (2) + `test_rh_paper.py` (16) green.

@@ -80,12 +80,12 @@ def gate(cfg, chain: str, creator_balance: float | None, b: dict) -> str | None:
     if creator_balance is None:
         return "creator-balance-unknown" if str(getattr(cfg, "creator_balance_fail", "closed")) == "closed" else None
     if chain == "rh":
-        if creator_balance < float(getattr(cfg, "creator_eth_min", 0.05)):
+        if creator_balance < float(getattr(cfg, "creator_eth_min", 0.007)):
             return "rh-creator-eth"
     elif creator_balance < float(getattr(cfg, "creator_sol_min", 0.5)):
         return "pf-creator-sol"
     pct, proxy = creator_sold_pct(b, creator_balance)
     b["creator_sold_pct"], b["creator_sold_pct_proxy"] = round(pct, 2), proxy
-    if pct > float(getattr(cfg, "creator_sold_pct_max", 35.0)):
+    if pct > float(getattr(cfg, "creator_sold_pct_max", 25.0)):
         return "creator-dumped"
     return None
