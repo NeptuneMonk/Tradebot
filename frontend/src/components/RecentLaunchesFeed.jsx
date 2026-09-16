@@ -21,6 +21,7 @@ const CHAIN_FILTER_KEY = "ui.launches.chain";
 
 const RH_GATE_HINT = {
   pass: "cleared every PONS entry gate",
+  "sl-cooldown": "stopped out on this token — SL Cooldown (momentum scanner setting) blocks every re-entry until it lapses",
   "reentry-wait": "closed this token moments ago — re-entry waits `Min wait (s)` from the Re-entry settings",
   "reentry-max": "re-entry attempts on this token are used up for the current re-entry window",
   "reentry-off": "re-entry is switched OFF in settings — this token traded inside the re-entry window",

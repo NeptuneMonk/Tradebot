@@ -63,3 +63,21 @@ def test_attempts_reset_when_exit_lands_outside_window():
     led.record_attempt("0x1")
     led.record_exit("0x1", 1.0, cfg, now=t0 + 1000)
     assert led.attempts("0x1") == 0
+
+
+def test_sl_cooldown_overrides_every_reentry_path():
+    led, cfg, t0 = ReentryLedger(), _cfg(sl_cooldown_minutes=5.0, reentry_min_wait_s=0), 1000.0
+    led.record_exit("0x1", -12.0, cfg, was_sl=True, now=t0)
+    assert led.check("0x1", cfg, t0 + 60) == ("sl-cooldown", None)          # inside the window: SL wins over min-wait/attempts
+    assert led.check("0x1", cfg, t0 + 299) == ("sl-cooldown", None)
+    assert led.check("0x1", cfg, t0 + 300) == (None, 0.5)                    # cooldown lapsed → normal re-entry sizing
+    led2 = ReentryLedger()
+    cfg2 = _cfg(sl_cooldown_minutes=20.0, reentry_window_seconds=60)
+    led2.record_exit("0x2", -12.0, cfg2, was_sl=True, now=t0)
+    assert led2.check("0x2", cfg2, t0 + 600) == ("sl-cooldown", None)        # outlives the re-entry window
+    led2.prune(cfg2, t0 + 600)
+    assert "0x2" in led2.exits
+    assert led2.check("0x2", cfg2, t0 + 1201) == (None, None)               # fresh once the SL cooldown is over
+    led3 = ReentryLedger()
+    led3.record_exit("0x3", -12.0, _cfg(sl_cooldown_minutes=0), was_sl=True, now=t0)
+    assert led3.check("0x3", _cfg(sl_cooldown_minutes=0), t0 + 20) == (None, 0.5)   # cooldown 0 = disabled

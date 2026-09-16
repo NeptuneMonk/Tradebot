@@ -27,8 +27,10 @@ class ReentryLedger:
         prev = self.exits.get(token)
         carry = bool(prev) and now - prev["ts"] <= self._window_s(prev, cfg)
         hot = (carry and prev["hot"]) or float(pnl_pct or 0) >= float(getattr(cfg, "hot_token_pnl_pct", 25.0) or 25.0)
+        # SL cooldown (momentum-scanner setting) overrides every re-entry path: nothing buys this token back until it lapses
+        sl_until = now + float(getattr(cfg, "sl_cooldown_minutes", 0) or 0) * 60.0 if was_sl else 0.0
         e = {"ts": now, "attempts": int(prev["attempts"]) if carry else 0, "hot": hot, "was_sl": bool(was_sl),
-             "last_pnl_pct": float(pnl_pct or 0)}
+             "last_pnl_pct": float(pnl_pct or 0), "sl_until": max(sl_until, float(prev.get("sl_until") or 0.0) if prev else 0.0)}
         self.exits[token] = e
         return e
 
@@ -46,6 +48,8 @@ class ReentryLedger:
         e = self.exits.get(token)
         if e is None:
             return None, None
+        if now < float(e.get("sl_until") or 0.0):
+            return "sl-cooldown", None                    # stopped out: locked until the SL cooldown lapses, window or not
         since = now - e["ts"]
         if since > self._window_s(e, cfg):
             self.exits.pop(token, None)
@@ -68,5 +72,5 @@ class ReentryLedger:
     def prune(self, cfg, now: float | None = None) -> None:
         now = time.time() if now is None else now
         for token, e in list(self.exits.items()):
-            if now - e["ts"] > self._window_s(e, cfg):
+            if now - e["ts"] > self._window_s(e, cfg) and now >= float(e.get("sl_until") or 0.0):
                 self.exits.pop(token, None)

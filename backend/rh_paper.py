@@ -130,7 +130,7 @@ class RHPaperTrader:
         cfg = self.state.config
         if token in self.positions or token in self._pending_entries:
             return "already-entered"
-        blk, _ = self.reentry.check(token, cfg, now)      # traded inside the re-entry window → reentry_* controls decide
+        blk, _ = self.reentry.check(token, cfg, now)      # SL cooldown first, then the reentry_* controls inside the window
         if blk:
             return blk
         if len(self.positions) + len(self._pending_entries) >= cfg.rh_max_positions:
@@ -231,7 +231,7 @@ class RHPaperTrader:
     def _ledger(b: dict, now: float, reason: str):
         """Decision ledger: record each gate verdict transition (ts, reason, price) so the replay can score
         every gate by what the token did afterwards. Only transitions are kept — ~12 per token max."""
-        if reason in ("already-entered", "reentry-wait", "reentry-max", "reentry-off", "max-positions", "unpriced-quote", "stale", "graduated", "doctor-breaker"):
+        if reason in ("already-entered", "sl-cooldown", "reentry-wait", "reentry-max", "reentry-off", "max-positions", "unpriced-quote", "stale", "graduated", "doctor-breaker"):
             return
         log = b.setdefault("decisions", [])
         if log and log[-1][1] == reason:
@@ -412,8 +412,6 @@ class RHPaperTrader:
             price = b["last_price_quote"]
             if price <= 0:
                 continue
-            if self.reentry.check(token, cfg, now)[0] in ("reentry-wait", "reentry-off"):
-                continue                                  # the universal controls hold the watch trigger too
             if hot:
                 prev_trough = w.get("trough_after_peak")
                 update_watch_price(w, price)
@@ -426,6 +424,8 @@ class RHPaperTrader:
                     continue
             if token in self.positions or token in self._pending_entries:
                 continue
+            if self.reentry.check(token, cfg, now)[0] in ("sl-cooldown", "reentry-wait", "reentry-off"):
+                continue                                  # the universal controls (SL cooldown first) hold the watch trigger too
             window_s = float(getattr(cfg, "exit_momentum_window_s", 10))
             n_buyers, inflow_q = recent_buyers_and_inflow(b["buy_events"], now, window_s)
             quote_usd = self._quote_usd(b["quote_symbol"])

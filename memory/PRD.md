@@ -1912,3 +1912,8 @@ Patterns the Doctor cannot see (it scores per book, not across exit reasons):
 - ✅ Frozen "gate ✓": `_flush_updates` only ran at the end of a *successful* poll, so when the RH RPC was shedding the feed kept showing the last flushed verdict. It now also flushes after every failed poll iteration.
 - ✅ `rh_gate_detail` (cost-gate/r-size detail: reason, size, slip/fee/proto %) travels with the row → badge tooltip.
 - Tests: `test_rh_gate_verdicts.py` (+ceiling test), `test_profitability_refactor.py` (stub gained `reentry` ledger), `test_rh_paper.py`, `test_audit_fixes.py` green.
+
+## 2026-09-16 — SL cooldown is universal
+- User: "SL cooldown needs to be respected by all — it's a momentum-scanner setting and should override any re-entries."
+- ✅ `ReentryLedger.record_exit(was_sl=True)` stamps `sl_until = now + sl_cooldown_minutes`; `check()` returns `sl-cooldown` first, before the window / min-wait / attempts logic, and the memory survives past the re-entry window until the cooldown lapses. RH `_gates` (gates path) + RH `_scan_reentries` (watch trigger, after hot walk-away bookkeeping) + Sol `_enter` all read it; Sol's own `sl_cooldown_until` check in `_enter` / `_attempt_reentry` is unchanged. `0` minutes = disabled. Feed badge `sl-cooldown`.
+- Tests: `test_reentry_policy.py::test_sl_cooldown_overrides_every_reentry_path`, RH suites green (52).
