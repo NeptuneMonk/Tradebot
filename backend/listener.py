@@ -13,7 +13,7 @@ import logging
 import websockets
 
 from pumpfun import PUMP_PROGRAM_ID, CREATE_DISCRIMINATOR
-from solana_client import WSS_URL
+from solana_client import wss_router, wss_label
 
 logger = logging.getLogger("listener")
 
@@ -107,6 +107,7 @@ class PumpFunListener:
         self.last_ok_ts: float = 0.0            # last successful subscribe
         self.last_attempt_ts: float = 0.0       # last connect attempt
         self._kick = False                      # skip the remaining backoff and reconnect now
+        self.via: str | None = None             # "public WSS" etc. when the primary is exhausted and a fallback carries the feed
 
     def kick(self):
         """Reconnect immediately (feed toggled ON / bot started) instead of waiting out the backoff."""
@@ -115,7 +116,8 @@ class PumpFunListener:
 
     def health(self) -> dict:
         return {"connected": self.connected, "last_error": self.last_error, "last_ok_ts": self.last_ok_ts or None,
-                "last_attempt_ts": self.last_attempt_ts or None, "task_alive": bool(self._task and not self._task.done())}
+                "last_attempt_ts": self.last_attempt_ts or None, "task_alive": bool(self._task and not self._task.done()),
+                "via": self.via}
 
     def start(self):
         if self._task and not self._task.done():
@@ -161,19 +163,17 @@ class PumpFunListener:
                     continue
             except Exception:
                 pass
-            if not WSS_URL:
-                self.last_error = "no SOLANA_WSS_URL configured"
-                await asyncio.sleep(5)
-                continue
+            url = wss_router.current()
             try:
                 self._kick = False
                 self.last_attempt_ts = time.time()
-                logger.info("Connecting to Solana WSS for logsSubscribe...")
+                logger.info(f"Connecting to Solana WSS for logsSubscribe ({wss_label(url)})...")
                 async with websockets.connect(
-                    WSS_URL, ping_interval=20, ping_timeout=20, max_size=4 * 1024 * 1024
+                    url, ping_interval=20, ping_timeout=20, max_size=4 * 1024 * 1024
                 ) as ws:
                     self._ws = ws
                     self.connected = True
+                    self.via = wss_label(url) if wss_router.on_fallback() else None
                     backoff = 1
                     sub_req = {
                         "jsonrpc": "2.0",
@@ -203,12 +203,18 @@ class PumpFunListener:
                         except Exception:
                             pass
                         if self._is_quota_error(raw):
-                            # provider plan exhausted (QuickNode: -32003 "request limit reached") — it will keep
-                            # accepting and dropping the socket; reconnecting 6×/s only burns more requests
-                            self.last_error = "RPC plan quota exhausted — feed idle, retrying every 5 min"
-                            logger.error(f"WSS provider quota exhausted: {raw[:160]} — listener sleeping {QUOTA_BACKOFF_S:.0f}s")
+                            # provider plan exhausted (QuickNode: -32003 "request limit reached") — skip it until the
+                            # feed is toggled OFF→ON and carry the firehose on the next endpoint (public node last)
                             self.connected = False
-                            await self._sleep_gated(int(QUOTA_BACKOFF_S))
+                            if wss_router.mark_exhausted(url):
+                                nxt = wss_router.current()
+                                self.last_error = f"{wss_label(url)} quota exhausted — switching to {wss_label(nxt)}"
+                                logger.error(f"WSS provider quota exhausted ({wss_label(url)}): {raw[:160]} — switching to {wss_label(nxt)}")
+                                self._kick = True
+                            else:
+                                self.last_error = "RPC plan quota exhausted on every WSS — feed idle, retrying every 5 min"
+                                logger.error(f"WSS quota exhausted on all endpoints: {raw[:160]} — listener sleeping {QUOTA_BACKOFF_S:.0f}s")
+                                await self._sleep_gated(int(QUOTA_BACKOFF_S))
                             break
                         await self._handle_message(raw)
                 # clean close (server hung up) — back off like an error instead of reconnecting instantly

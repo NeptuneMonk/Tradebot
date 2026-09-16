@@ -42,7 +42,7 @@ import websockets
 
 logger = logging.getLogger("account_event_bus")
 
-from solana_client import WSS_URL
+from solana_client import wss_router, wss_label
 
 
 def _is_quota_error(raw) -> bool:
@@ -187,10 +187,11 @@ class AccountEventBus:
                     continue
             except Exception:
                 pass
+            url = wss_router.current()
             try:
-                logger.info("AccountEventBus connecting to Solana WSS…")
+                logger.info(f"AccountEventBus connecting to Solana WSS ({wss_label(url)})…")
                 async with websockets.connect(
-                    WSS_URL,
+                    url,
                     ping_interval=20,
                     ping_timeout=20,
                     max_size=4 * 1024 * 1024,
@@ -215,8 +216,12 @@ class AccountEventBus:
                         except Exception:
                             pass
                         if _is_quota_error(raw):
-                            logger.error(f"AccountEventBus: WSS provider quota exhausted ({raw[:120]}) — idle for 5 min")
-                            backoff = 300
+                            if wss_router.mark_exhausted(url):
+                                logger.error(f"AccountEventBus: {wss_label(url)} quota exhausted ({raw[:120]}) — switching to {wss_label(wss_router.current())}")
+                                backoff = 1
+                            else:
+                                logger.error(f"AccountEventBus: WSS quota exhausted on all endpoints ({raw[:120]}) — idle for 5 min")
+                                backoff = 300
                             break
                         await self._handle_message(raw)
             except asyncio.CancelledError:

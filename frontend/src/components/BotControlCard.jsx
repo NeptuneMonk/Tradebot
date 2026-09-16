@@ -12,6 +12,7 @@ import HelpHint from "./HelpHint";
 //   OFF (amber) · ON · CONNECTING/OFFLINE (red) · ON · LIVE (green)
 function feedHealth(desired, actual, extra = {}) {
   if (!desired) return { text: "OFF", dot: "bg-amber-500", cls: "text-amber-300", why: "operator switch OFF" };
+  if (actual && extra.via) return { text: `ON · FALLBACK: ${extra.via.toUpperCase()}`, dot: "bg-emerald-500", cls: "text-emerald-300", why: `primary WSS quota exhausted — feed carried by ${extra.via} until the feed is toggled OFF→ON` };
   if (actual) return { text: "ON · LIVE", dot: "bg-emerald-500", cls: "text-emerald-300", why: extra.okTs ? `subscribed ${Math.max(0, Math.round(Date.now() / 1000 - extra.okTs))}s ago` : "subscribed" };
   if (extra.paused?.auto) return { text: "ON · PAUSED · DOCTOR", dot: "bg-amber-500", cls: "text-amber-300", why: extra.paused.auto_reason || "auto-paused" };
   const connecting = extra.attemptTs && Date.now() / 1000 - extra.attemptTs < 15;
@@ -198,7 +199,7 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
         </span>
         <span className="flex items-center gap-1.5">
           {(() => { const h = feedHealth(local.helius_tracker_enabled ?? true, status?.listener_connected,
-              { paused: status?.helius_paused, lastError: status?.listener_last_error, okTs: status?.listener_last_ok_ts, attemptTs: status?.listener_last_attempt_ts }); return (
+              { paused: status?.helius_paused, lastError: status?.listener_last_error, okTs: status?.listener_last_ok_ts, attemptTs: status?.listener_last_attempt_ts, via: status?.listener_via }); return (
             <span className={`flex items-center gap-1 text-[9px] ${h.cls}`} data-testid="feed-pump-health" title={h.why}>
               <span className={`w-1.5 h-1.5 rounded-full ${h.dot}`} /> {h.text}
               {!status?.listener_connected && (local.helius_tracker_enabled ?? true) && (

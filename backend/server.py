@@ -655,9 +655,11 @@ async def sync_helius_feed(desired: bool, prev: bool | None = None) -> None:
     from helius_gate import set_paused as _set_helius_paused
     _set_helius_paused(not desired)
     if desired:
-        listener.kick()                     # start if the task is dead, else skip the backoff and reconnect now
         if prev is False:
-            logger.info("Pump.fun feed ON — listener (re)connecting")
+            from solana_client import wss_router
+            wss_router.reset()              # OFF→ON is the only thing that forgives a quota-exhausted WSS provider
+            logger.info("Pump.fun feed ON — listener (re)connecting, WSS providers reset")
+        listener.kick()                     # start if the task is dead, else skip the backoff and reconnect now
     else:
         await listener.disconnect()
         if prev is True:
@@ -866,6 +868,7 @@ async def bot_status():
         listener_last_error=listener.last_error,
         listener_last_ok_ts=listener.last_ok_ts or None,
         listener_last_attempt_ts=listener.last_attempt_ts or None,
+        listener_via=listener.via if listener.connected else None,
         helius_tracker_enabled=bot_state.config.helius_tracker_enabled,
         rh_feed_enabled=bot_state.config.rh_feed_enabled,
         rh_feed_alive=bot_state.rh_discovery.alive() if getattr(bot_state, "rh_discovery", None) else False,

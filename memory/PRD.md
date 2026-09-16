@@ -1881,3 +1881,11 @@ Patterns the Doctor cannot see (it scores per book, not across exit reasons):
 - The sequencer WSS was fine (0 reconnects); the pill = `rh_discovery.alive()` (head advanced within window). Polls took 7–13 s: (a) name()/symbol() `eth_call`s rode inside every poll, (b) each 429 slept 0.6+1.2 s before failing over, (c) httpx timeout 20 s while the public edge holds doomed requests ~10 s, (d) the sticky fallback preference was reset whenever the primary answered once, (e) dRPC free tier rejects `eth_call` (-16401) and some shapes with 400 → whole poll failed.
 - Fixes: metadata moved to `_meta_loop` (off the poll path, 6 tokens/s); one attempt per provider then immediate failover; timeout 4 s; sticky fallback for 120 s regardless of primary; per-provider unsupported-method memory (`_rpc_unsupported`), 400 on a fallback = try next; `eth_call` never fails a poll; `alive()` window 15→30 s; RateLimited backoff capped at 6 s. `stats.last_poll_ms` {rpc, prices, calls} + "rh poll slow" log for >5 s.
 - Result: polls 200–800 ms on the fallback, head advancing every poll, pill steady.
+
+
+## 2026-09-16 — WSS quota fallback (published app "Pump.fun OFFLINE — quota exhausted")
+- Root cause: published env still carries the paid QuickNode `SOLANA_WSS_URL`; on `-32003 request limit reached` the listener slept 5 min and retried the **same** URL forever. PumpSwap kept trading (HTTP RPC already had a public fallback); Pump.fun launch detection needs the WSS firehose so it died.
+- ✅ `solana_client.WssRouter` — ordered endpoints: `SOLANA_WSS_URL` → `SOLANA_WSS_FALLBACK_URLS` (optional, comma-sep) → public `wss://api.mainnet-beta.solana.com`. A provider that reports quota exhaustion is skipped **until the Pump.fun feed is toggled OFF→ON** (`wss_router.reset()` in `sync_helius_feed`), not on a timer (user's explicit choice).
+- ✅ `listener.py` + `account_event_bus.py` both route through the router; on quota → immediate switch (no 5-min sleep) unless every endpoint is exhausted.
+- ✅ Status: `listener_via` on `/api/bot/status`; pill reads `ON · FALLBACK: PUBLIC WSS` while a fallback carries the feed.
+- Tests: `tests/test_wss_fallback.py` (router order/sticky/reset, listener switches to public on quota). Needs a **redeploy** to reach the published app.

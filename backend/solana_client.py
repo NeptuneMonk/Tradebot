@@ -13,6 +13,44 @@ from solders.pubkey import Pubkey
 RPC_URL = os.environ.get("SOLANA_RPC_URL") or os.environ["HELIUS_RPC_URL"]
 RPC_FALLBACK_URL = os.environ.get("SOLANA_RPC_FALLBACK_URL") or "https://api.mainnet-beta.solana.com"   # published env may lack the key: public node is the default fallback
 WSS_URL = os.environ.get("SOLANA_WSS_URL") or "wss://api.mainnet-beta.solana.com"   # subscriptions default to the free public WSS; paid keys are for HTTP reads/sends only
+PUBLIC_WSS_URL = "wss://api.mainnet-beta.solana.com"
+WSS_FALLBACK_URLS = [u.strip() for u in (os.environ.get("SOLANA_WSS_FALLBACK_URLS") or "").split(",") if u.strip()]
+
+
+def wss_label(url: str) -> str:
+    return "public WSS" if url == PUBLIC_WSS_URL else url.split("://", 1)[-1].split("/", 1)[0]
+
+
+class WssRouter:
+    """Ordered WSS endpoints: configured primary → SOLANA_WSS_FALLBACK_URLS → public node.
+    A provider that reports plan-quota exhaustion is skipped until `reset()` (feed toggled OFF→ON) — not on a timer."""
+
+    def __init__(self, primary: str, fallbacks: list[str]):
+        self.urls: list[str] = []
+        for u in [primary, *fallbacks, PUBLIC_WSS_URL]:
+            if u and u not in self.urls:
+                self.urls.append(u)
+        self.exhausted: set[str] = set()
+
+    def current(self) -> str:
+        for u in self.urls:
+            if u not in self.exhausted:
+                return u
+        return self.urls[-1]   # everything exhausted: keep knocking on the last resort
+
+    def mark_exhausted(self, url: str) -> bool:
+        """Returns True when another (non-exhausted) endpoint remains to switch to."""
+        self.exhausted.add(url)
+        return any(u not in self.exhausted for u in self.urls)
+
+    def reset(self):
+        self.exhausted.clear()
+
+    def on_fallback(self) -> bool:
+        return self.current() != self.urls[0]
+
+
+wss_router = WssRouter(WSS_URL, WSS_FALLBACK_URLS)
 RPC_MAX_RPS = float(os.environ.get("SOLANA_RPC_MAX_RPS") or 0)   # 0 = unpaced; QuickNode Discover allows 15 req/s
 LAMPORTS_PER_SOL = 1_000_000_000
 QUOTA_DEAD_S = 300.0          # after a plan-quota 429 the primary is skipped this long (fallback serves directly)
