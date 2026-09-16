@@ -45,7 +45,7 @@ def decide_reentry(w: dict, price: float, now: float, buyers_recent: int,
     min_bounce = float(_cfg(cfg, "reentry_min_bounce_pct", 5.0))
     bounce_confirm = float(_cfg(cfg, "reentry_bounce_confirm_pct", 3.0))
     min_buyers = int(_cfg(cfg, "reentry_min_buyers", 2))
-    pullback_pct = float(w.get("pullback_pct") or _cfg(cfg, "reentry_pullback_pct", 25.0))
+    pullback_pct = float(_cfg(cfg, "reentry_pullback_pct", None) or w.get("pullback_pct") or 25.0)   # live setting wins over the watch snapshot
     ran_on = peak >= exit_price * (1.0 + min_bounce / 100.0)
     pulled_back = peak > 0 and (peak - trough) / peak * 100.0 >= pullback_pct
     bouncing = price >= trough * (1.0 + bounce_confirm / 100.0)
@@ -127,7 +127,7 @@ def hot_walk_away_reason(w: dict, b: dict, price: float, now: float, cfg) -> str
     if peak > 0 and price < peak * (1.0 - float(_cfg(cfg, "hot_breakdown_pct", 40.0)) / 100.0):
         return "broke_down"
     trough = float(w.get("trough_after_peak") or price)
-    pullback_pct = float(w.get("pullback_pct") or _cfg(cfg, "reentry_pullback_pct", 25.0))
+    pullback_pct = float(_cfg(cfg, "reentry_pullback_pct", None) or w.get("pullback_pct") or 25.0)   # live setting wins over the watch snapshot
     dipped = peak > 0 and (peak - trough) / peak * 100.0 >= pullback_pct / 2.0
     weak_s = float(_cfg(cfg, "hot_weak_bounce_s", 120))
     if (dipped and now - float(w.get("trough_ts") or now) >= weak_s

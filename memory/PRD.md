@@ -1922,3 +1922,8 @@ Patterns the Doctor cannot see (it scores per book, not across exit reasons):
 - `quote_prices.py`: Chainlink feed **on Robinhood Chain** first (`latestRoundData()` via the feed proxy, decimals read once, 3-day staleness guard — stock feeds hold over weekends), Yahoo/Coinbase second. Feed proxies seeded for every known stock/ETF + ETH/USDG/cbBTC/BTC and refreshed daily from Chainlink's reference directory (`feeds-robinhood-mainnet.json`, +13 tickers on first pull). Live check: NVDA 213.03, SPY 757.5, ETH 2394.9, USDG 0.99986 from chain; GLD (no feed) via Yahoo.
 - `rh_discovery._resolve_pair_token`: a launch quoted in an unknown ERC-20 ("?") now reads the pair token's `symbol()`/`decimals()` on-chain, registers it in `QUOTES`, re-labels its buckets (and fixes the graduation threshold scale) → priced via the matching Chainlink feed or the web fallback instead of dying as `unpriced-quote`.
 - Tests: `tests/test_quote_prices.py` (+3: feed-name parsing, chainlink-first/stale→web, unknown pair learned), RH suites green (27).
+
+## 2026-09-16 — Re-entry card shows the real breakout % (and live settings govern open watches)
+- Bug: `ReentryWatchCard` hardcoded "+5% breakout" (and only for RH rows). Backend already used `reentry_breakout_pct` live.
+- ✅ `/api/reentry/watchlist` rows now carry live `pullback_pct`, `breakout_pct`, `min_bounce_pct`, `breakout_min_buyers`; the card renders them (breakout hidden when the last exit was a stop-loss, since that path is disabled by design). `decide_reentry` / `hot_walk_away_reason` prefer the live `reentry_pullback_pct` over the watch snapshot, so setting edits apply to open watches immediately.
+- Tests: `test_reentry_logic.py` (CFG pinned to 22 % pullback), RH suites green (27).

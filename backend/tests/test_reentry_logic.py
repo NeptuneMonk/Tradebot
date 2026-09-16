@@ -8,7 +8,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 from reentry_logic import decide_reentry, recent_buyers_and_inflow, update_watch_price
 from models import BotConfig
 
-CFG = BotConfig()
+CFG = BotConfig(reentry_pullback_pct=22.0)   # live setting governs open watches (matches the 22% the watches below carry)
 
 
 def _w(exit_price=100.0, t0=1000.0, **kw):

@@ -55,7 +55,10 @@ function ReentryWatchCard({ watchlist, onRefresh }) {
                   exit <span className="text-emerald-400">+${(w.original_pnl_usd ?? 0).toFixed(2)}</span>
                 </div>
                 <div className="text-[10px] font-mono text-neutral-500 mt-0.5">
-                  awaiting <span className="text-amber-400">-{w.pullback_pct?.toFixed(0)}%</span> pullback{w.chain === "rh" && <> or <span className="text-lime-400">+5% breakout</span></>}
+                  awaiting <span className="text-amber-400" data-testid={`reentry-pullback-${w.mint}`}>-{(w.pullback_pct ?? 0).toFixed(0)}%</span> pullback
+                  {!w.last_exit_was_sl && (
+                    <> or <span className="text-lime-400" data-testid={`reentry-breakout-${w.mint}`} title={`price above exit by ${(w.breakout_pct ?? 0).toFixed(0)}% with ≥${w.breakout_min_buyers ?? 3} fresh buyers and inflow`}>+{(w.breakout_pct ?? 0).toFixed(0)}% breakout</span></>
+                  )}
                   <span className="mx-1.5">·</span>
                   attempts <span className="text-neutral-300">{w.attempts}/{w.hot ? "∞" : w.max_attempts}</span>
                   <span className="mx-1.5">·</span>

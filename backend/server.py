@@ -2376,13 +2376,16 @@ async def creator_info(creator: str):
 async def reentry_watchlist():
     out = []
     now = time.time()
+    cfg = bot_state.config
+    live = {"pullback_pct": float(cfg.reentry_pullback_pct), "breakout_pct": float(cfg.reentry_breakout_pct),
+            "min_bounce_pct": float(cfg.reentry_min_bounce_pct), "breakout_min_buyers": int(cfg.exit_momentum_min_buyers)}
     for w in bot_state.reentry_watch.values():
-        out.append({**w, "remaining_window_s": max(0.0, w["window_s"] - (now - w["exit_time"]))})
+        out.append({**w, **live, "remaining_window_s": max(0.0, w["window_s"] - (now - w["exit_time"]))})
     for w in bot_state.rh_paper.watch.values():
         if w.get("hot"):
-            out.append({**w, "remaining_window_s": None})   # hot: no clock / no cap — walks away when stale
+            out.append({**w, **live, "remaining_window_s": None})   # hot: no clock / no cap — walks away when stale
         else:
-            out.append({**w, "remaining_window_s": max(0.0, w["window_s"] - (now - w["exit_time"]))})
+            out.append({**w, **live, "remaining_window_s": max(0.0, w["window_s"] - (now - w["exit_time"]))})
     return out
 
 
