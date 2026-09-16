@@ -1927,3 +1927,8 @@ Patterns the Doctor cannot see (it scores per book, not across exit reasons):
 - Bug: `ReentryWatchCard` hardcoded "+5% breakout" (and only for RH rows). Backend already used `reentry_breakout_pct` live.
 - ✅ `/api/reentry/watchlist` rows now carry live `pullback_pct`, `breakout_pct`, `min_bounce_pct`, `breakout_min_buyers`; the card renders them (breakout hidden when the last exit was a stop-loss, since that path is disabled by design). `decide_reentry` / `hot_walk_away_reason` prefer the live `reentry_pullback_pct` over the watch snapshot, so setting edits apply to open watches immediately.
 - Tests: `test_reentry_logic.py` (CFG pinned to 22 % pullback), RH suites green (27).
+
+## 2026-09-16 — Tracked-tokens (rh_new band) respects RH age window + real gates
+- Bug: `RHDiscovery.candidates_snapshot` filtered by the Sol New-band window (`band_new_min/max_age_min`) and judged "passing" by Sol growth/buyer thresholds.
+- ✅ Now: curve tokens shown only inside `rh_min_age_s … rh_max_age_min` (graduated tokens exempt, they're seasoned); `passes` = `rh_paper._gates()` is None, and each row carries `gate_reason` (shown as a small badge on non-passing RH rows in ScannerCandidatesCard).
+- Test: `test_rh_gate_verdicts.py::test_tracked_tokens_band_uses_rh_age_window_and_gates`.

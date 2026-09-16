@@ -894,17 +894,18 @@ class RHDiscovery:
             logger.debug(f"rh launch gc failed: {e}")
 
     def candidates_snapshot(self) -> list[dict]:
-        """Third scanner band ("rh_new") — watch-only, mirrors the New band's
-        age window and growth/buyer gates. Never feeds the entry path."""
+        """Third scanner band ("rh_new") — watch-only view of the RH curve tracker. Age window and pass/fail
+        mirror the RH PONS entry gates (`rh_min_age_s` … `rh_max_age_min`, `rh_paper._gates`)."""
         from scanner import _mc_velocity
         cfg = self.state.config
         now = time.time()
-        lo = max(0.0, float(getattr(cfg, "band_new_min_age_min", 0.0))) * 60
-        hi = max(lo, float(getattr(cfg, "band_new_max_age_min", 15.0)) * 60)
+        paper = getattr(self.state, "rh_paper", None)
+        lo = max(0.0, float(getattr(cfg, "rh_min_age_s", 0.0)))
+        hi = max(lo, float(getattr(cfg, "rh_max_age_min", 15.0)) * 60)
         out: list[dict] = []
         for token, b in self.tracking.items():
             age_s = now - b["start"]
-            if not (lo <= age_s <= hi):
+            if not b["graduated"] and not (lo <= age_s <= hi):
                 continue
             cur = b["last_price_quote"]
             first = b["first_price_quote"]
@@ -951,11 +952,9 @@ class RHDiscovery:
                 "graduated": b["graduated"],
                 "watch_only": True,
             }
-            m["passes"] = (
-                not b["graduated"]
-                and growth_rolling >= cfg.scanner_min_growth_pct_new
-                and len(recent_buyers) >= cfg.scanner_min_new_buyers_new
-            )
+            gate = paper._gates(token, b, now) if paper is not None else "no-book"
+            m["gate_reason"] = gate or "pass"
+            m["passes"] = gate is None
             out.append(m)
         out.sort(key=lambda x: (x["passes"], x["growth_pct"], x["recent_inflow_quote"]), reverse=True)
         return out[:40]

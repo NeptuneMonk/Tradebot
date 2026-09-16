@@ -65,3 +65,26 @@ def test_rh_curve_cost_ceiling_is_the_deterministic_one():
     q3 = cg.quote(size_usd=1.5, r_usd=0.2, first_target_r=2.6, protocol="rh", entry_slip_bps=800, exit_slip_bps=800,
                   fee_usd_round_trip=0.18, ladder=False, depth_usd=2756.0)
     assert q3["cost_gate_pass"] is False and "12%" in q3["cost_gate_reason"]
+
+
+def test_tracked_tokens_band_uses_rh_age_window_and_gates():
+    import rh_discovery as rd
+    tr, now = _trader(), time.time()
+    cfg = tr.state.config
+    cfg.rh_min_age_s, cfg.rh_max_age_min = 5, 10
+    cfg.band_new_max_age_min, cfg.scanner_growth_lookback_s = 60, 60
+    cfg.scanner_min_growth_pct_new, cfg.scanner_min_new_buyers_new = 0, 0
+    disc = rd.RHDiscovery(tr.state)
+    disc._quote_usd = lambda s: 3000.0
+    tr.state.rh_discovery = disc
+    tr.state.rh_paper = tr
+    for tok, age in (("0xyoung", 2), ("0xok", 120), ("0xold", 11 * 60)):
+        b = _bucket(now); b["start"] = now - age
+        b.update(symbol=tok, name=tok, launch_id="rh:" + tok, curve="c" + tok, price_samples=[], mc_samples=[], buy_count=1, pool_live=False)
+        disc.tracking[tok] = b
+    rows = {r["mint"]: r for r in disc.candidates_snapshot()}
+    assert set(rows) == {"0xok"}                       # rh_min_age_s … rh_max_age_min, not the Sol New-band window
+    assert rows["0xok"]["passes"] is True and rows["0xok"]["gate_reason"] == "pass"
+    tr.positions["0xok"] = {}
+    rows = {r["mint"]: r for r in disc.candidates_snapshot()}
+    assert rows["0xok"]["passes"] is False and rows["0xok"]["gate_reason"] == "already-entered"

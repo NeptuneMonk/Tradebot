@@ -174,6 +174,15 @@ function CandidateRow({ c, passing }) {
             >
               {fmtAge(c.age_s)} old
             </span>
+            {isRh && !passing && c.gate_reason && (
+              <span
+                className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-neutral-700 text-neutral-400"
+                data-testid={`scanner-row-gate-${c.mint}`}
+                title="RH PONS entry gate holding this token back"
+              >
+                {c.gate_reason}
+              </span>
+            )}
             {discovered && (
               <span
                 className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-cyan-800 text-cyan-300 bg-cyan-950/40"
