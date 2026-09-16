@@ -544,6 +544,8 @@ class RHDiscovery:
                 self._curve_to_token[d["curve"]] = token
                 self.stats["launches_seen"] += 1
                 new_tokens.append(token)
+                if d["quote_symbol"] == "?":
+                    asyncio.create_task(self._resolve_pair_token(d["pair_token"]))
             elif t0 in (T_SWEPT, T_GRADUATED):
                 token = _addr(log["topics"][1])
                 b = self.tracking.get(token)
@@ -553,6 +555,35 @@ class RHDiscovery:
                     b["curve_fill_pct"] = 100.0
                     self._dirty.add(token)
         return new_tokens
+
+    _pair_lookups: set[str] = set()
+
+    async def _resolve_pair_token(self, pair: str) -> None:
+        """A launch quoted in an ERC-20 we don't know (a newly listed stock token): read its symbol()/decimals()
+        on-chain, register it in QUOTES, and re-label every bucket on it — pricing then comes from the Chainlink
+        feed of that symbol (or the web fallback) instead of the token dying as `unpriced-quote`."""
+        if pair in QUOTES or pair in self._pair_lookups:
+            return
+        self._pair_lookups.add(pair)
+        try:
+            sym_raw, dec_raw = await self._rpc([("eth_call", [{"to": pair, "data": SEL_SYMBOL}, "latest"]),
+                                                ("eth_call", [{"to": pair, "data": "0x313ce567"}, "latest"])])
+        except Exception as e:
+            logger.debug(f"rh pair token lookup failed {pair[:10]}: {e}")
+            self._pair_lookups.discard(pair)
+            return
+        sym = _dec_str(sym_raw)
+        if not sym:
+            return
+        dec = int(dec_raw, 16) if dec_raw and dec_raw != "0x" else 18
+        QUOTES[pair] = (sym, dec)
+        QUOTE_BY_SYMBOL[sym] = (pair, dec)
+        for token, b in self.tracking.items():
+            if b.get("pair_token") == pair and b.get("quote_symbol") == "?":
+                b["quote_symbol"], b["quote_decimals"] = sym, dec
+                b["graduation_threshold"] = b["graduation_threshold"] * 10 ** (18 - dec)
+                self._dirty.add(token)
+        logger.info(f"rh quote asset learned: {sym} ({dec} dec) at {pair[:10]} — priced via {'chainlink' if quote_prices.has_feed(sym) else 'web'}")
 
     def _new_bucket(self, d: dict, start: float) -> dict:
         return {
