@@ -15,7 +15,9 @@ def _trader():
     cfg = types.SimpleNamespace(rh_max_positions=5, rh_min_age_s=0, rh_max_age_min=60, rh_min_curve_pct=0, rh_max_curve_pct=100,
                                 rh_min_mc_usd=0, rh_max_mc_usd=1e12, rh_min_unique_buyers=0, rh_min_growth_pct=0,
                                 scanner_recent_inflow_window_s=300, scanner_holder_velocity_window_s=60,
-                                rh_min_new_buyers_1m=0, rh_min_inflow_usd=0, rh_max_last_trade_age_s=60)
+                                rh_min_new_buyers_1m=0, rh_min_inflow_usd=0, rh_max_last_trade_age_s=60,
+                                reentry_enabled=True, reentry_max_attempts=2, reentry_window_seconds=300,
+                                reentry_size_multiplier=0.5, reentry_min_wait_s=20, hot_token_pnl_pct=25.0, hot_reentry_size_mult=1.5)
     disc = types.SimpleNamespace(tracking={}, _dirty=set(), _quote_usd=lambda s: 3000.0)
     state = types.SimpleNamespace(config=cfg, rh_discovery=disc, search_regime_block=lambda: None)
     return RHPaperTrader(state)
@@ -26,12 +28,13 @@ def _bucket(now):
             "buyers": {"a"}, "last_price_quote": 2.0, "first_price_quote": 1.0, "buy_events": [], "last_trade_ms": int(now * 1000)}
 
 
-def test_closed_token_is_back_in_play_after_cooldown():
+def test_closed_token_follows_reentry_controls():
     tr, now = _trader(), time.time()
-    tr.entered.add("0xabc")                                   # traded before — no longer a block
-    tr.last_exit_ts["0xabc"] = now - 5
-    assert tr._gates("0xabc", _bucket(now), now) == "exit-cooldown"
-    assert tr._gates("0xabc", _bucket(now), now + 30) is None
+    tr.entered.add("0xabc")                                   # traded before — no longer a block by itself
+    tr.reentry.record_exit("0xabc", -5.0, tr.state.config, now=now - 5)
+    assert tr._gates("0xabc", _bucket(now), now) == "reentry-wait"
+    assert tr._gates("0xabc", _bucket(now), now + 20) is None          # gates decide again, sized × reentry multiplier
+    assert tr.reentry.check("0xabc", tr.state.config, now + 20) == (None, 0.5)
     tr.positions["0xdef"] = {}
     assert tr._gates("0xdef", _bucket(now), now) == "already-entered"
 

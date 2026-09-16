@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 
 from models import Trade, now_utc
 from ws_hub import hub
+from reentry_policy import ReentryLedger
 from reentry_logic import (decide_reentry, hot_walk_away_reason, recent_buyers_and_inflow, trigger_context,
                            update_swings, update_watch_price)
 import rh_dex
@@ -86,10 +87,8 @@ class RHPaperTrader:
         self._enter_inflight: set[str] = set()
         self._pending_since: dict[str, float] = {}
         self.pending_buys: dict[str, dict] = {}
-        self.last_exit_ts: dict[str, float] = {}   # closed tokens are back in play once the gates pass again (after a short cooldown)
+        self.reentry = ReentryLedger()   # closed tokens are back in play once the gates pass — under the reentry_* controls
         self.stats = {"entries": 0, "exits": 0, "skipped": 0, "last_scan_ts": 0.0}
-
-    REENTRY_COOLDOWN_S = 30.0
 
     def start(self):
         if self._task is None or self._task.done():
@@ -131,8 +130,9 @@ class RHPaperTrader:
         cfg = self.state.config
         if token in self.positions or token in self._pending_entries:
             return "already-entered"
-        if now - self.last_exit_ts.get(token, 0.0) < self.REENTRY_COOLDOWN_S:
-            return "exit-cooldown"                        # just sold it — let the tape print again before buying back
+        blk, _ = self.reentry.check(token, cfg, now)      # traded inside the re-entry window → reentry_* controls decide
+        if blk:
+            return blk
         if len(self.positions) + len(self._pending_entries) >= cfg.rh_max_positions:
             return "max-positions"
         eb = b.get("entry_block")
@@ -218,7 +218,11 @@ class RHPaperTrader:
                 self._last_fresh_entry_ts = now
                 focus_block = self._focus_blocks_fresh(now)   # one fresh entry per cooldown while focused
                 self._ledger(b, now, "entered")
-                asyncio.create_task(self._enter(token))
+                _, rmult = self.reentry.check(token, self.state.config, now)
+                if rmult is not None:
+                    asyncio.create_task(self._enter(token, size_mult=rmult, reentry="gates"))   # gates passed again inside the window
+                else:
+                    asyncio.create_task(self._enter(token))
             else:
                 self.stats["skipped"] += 1
                 self._ledger(b, now, reason)
@@ -227,7 +231,7 @@ class RHPaperTrader:
     def _ledger(b: dict, now: float, reason: str):
         """Decision ledger: record each gate verdict transition (ts, reason, price) so the replay can score
         every gate by what the token did afterwards. Only transitions are kept — ~12 per token max."""
-        if reason in ("already-entered", "exit-cooldown", "max-positions", "unpriced-quote", "stale", "graduated", "doctor-breaker"):
+        if reason in ("already-entered", "reentry-wait", "reentry-max", "reentry-off", "max-positions", "unpriced-quote", "stale", "graduated", "doctor-breaker"):
             return
         log = b.setdefault("decisions", [])
         if log and log[-1][1] == reason:
@@ -296,7 +300,7 @@ class RHPaperTrader:
                 else:
                     logger.info(f"rh_paper HOT {t.get('symbol')} losing leg — strike {prev['strikes']}/{n_lows}, still watching")
                 return
-            if flushed and getattr(cfg, "flush_reentry_enabled", True) and getattr(cfg, "reentry_enabled", True) and b and not b.get("graduated") and price > 0:
+            if flushed and getattr(cfg, "flush_reentry_enabled", True) and getattr(cfg, "reentry_enabled", True) and b and price > 0:
                 # we sold a flush: watch for the recovery (breakout path — price back ≥ breakout% above our exit with buyers)
                 self.stats["flush_reentry_watches"] = self.stats.get("flush_reentry_watches", 0) + 1
                 self.watch[token] = {
@@ -315,8 +319,8 @@ class RHPaperTrader:
             return
         if not getattr(cfg, "reentry_enabled", True) or price <= 0:
             return
-        if not b or b.get("graduated"):
-            return
+        if not b:
+            return                                        # v4-pool (graduated) buckets are watched too — priced from pool swaps
         hot = bool(prev and prev.get("hot")) or (t.get("pnl_pct") or 0) >= float(getattr(cfg, "hot_token_pnl_pct", 25.0))
         hot_mult = float(getattr(cfg, "hot_reentry_size_mult", 1.5)) if hot else 1.0
         if hot and not (prev and prev.get("hot")):
@@ -324,7 +328,7 @@ class RHPaperTrader:
             logger.info(f"rh_paper HOT {t.get('symbol')} (+{t.get('pnl_pct'):.0f}%) — no attempt cap, ×{hot_mult:g} size; walk away when it goes stale")
         self.watch[token] = {
             "hot": hot,
-            "attempts": int(prev.get("attempts") or 0) if prev else 0,
+            "attempts": max(int(prev.get("attempts") or 0) if prev else 0, self.reentry.attempts(token)),
             "strikes": 0,
             "swings": (prev or {}).get("swings") if hot else None,
             "hot_since": (prev or {}).get("hot_since") or now if hot else None,
@@ -398,15 +402,17 @@ class RHPaperTrader:
                 self.watch.pop(token, None)
                 continue
             b = self.state.rh_discovery.tracking.get(token)
-            if not b or b.get("graduated"):
+            if not b or (b.get("graduated") and not b.get("pool_live")):
                 if hot:
-                    self._drop_hot(token, w, "graduated" if b else "tracking_lost", now)
+                    self._drop_hot(token, w, "no_pool" if b else "tracking_lost", now)
                 else:
                     self.watch.pop(token, None)
                 continue
             price = b["last_price_quote"]
             if price <= 0:
                 continue
+            if self.reentry.check(token, cfg, now)[0] in ("reentry-wait", "reentry-off"):
+                continue                                  # the universal controls hold the watch trigger too
             if hot:
                 prev_trough = w.get("trough_after_peak")
                 update_watch_price(w, price)
@@ -428,6 +434,7 @@ class RHPaperTrader:
                 continue
             w["last_ctx"] = trigger_context(w, price, n_buyers, trigger)
             w["attempts"] += 1
+            self.reentry.record_attempt(token)
             w["last_trigger"] = trigger
             self.entered.discard(token)
             self._pending_entries.add(token)
@@ -734,6 +741,10 @@ class RHPaperTrader:
                 pass
             self.positions[token] = {"trade": doc, "peak_price": price, "_last_price": price, "opened": now}
             self.entered.add(token)
+            if reentry == "gates":
+                self.reentry.record_attempt(token)        # watch-triggered legs are counted by _scan_reentries
+                if token in self.watch:
+                    self.watch[token]["attempts"] += 1
             self.stats["entries"] += 1
             launch_update = {"entered": True, "entry_action": ENTRY_ACTION}
             await self.state.db.launches.update_one({"_id": b["launch_id"]}, {"$set": launch_update})
@@ -1412,7 +1423,7 @@ class RHPaperTrader:
                 await self._check_live_kill()
             logger.info(f"rh_paper EXIT {t.get('symbol')} {token[:10]} {reason} pnl={pnl_pct:+.1f}% (${pnl_usd:+.3f})")
             self.positions.pop(token, None)
-            self.last_exit_ts[token] = time.time()
+            self.reentry.record_exit(token, pnl_pct, cfg, was_sl=reason == "stop_loss")
         except asyncio.CancelledError:
             pos.pop("_exiting", None)
             pos.pop("_fill_task", None)

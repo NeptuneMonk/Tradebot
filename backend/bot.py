@@ -38,6 +38,7 @@ import runner
 from scorecard import Scorecard
 from inventory import InventoryHalt, HUNT_SLOT_CAP
 from reentry_logic import decide_reentry, recent_buyers_and_inflow, trigger_context
+from reentry_policy import ReentryLedger
 from speed_modes import (
     speed_mode_resolve, estimate_tx_fee_sol, auto_tuner,
     CU_PUMPFUN, CU_PUMPSWAP,
@@ -143,6 +144,10 @@ class BotState:
         # the bleed pattern where the bot opened 4 positions for the same
         # mint in 3 minutes, each one's monitor racing the others' sells.
         self.recent_exit_until: dict[str, float] = {}
+        # Universal re-entry policy — every book/venue: a token bought again inside the re-entry window is a
+        # re-entry (attempt cap, min wait, size multiplier from the reentry_* controls), watch- or gate-triggered.
+        self.reentry = ReentryLedger()
+        self._reentry_gate_mult: dict[str, float] = {}
         # Greylist Sniper rate cap — rolling per-hour fire counter so a wave
         # of greylist launches can't blow through the wallet. Cleared by
         # `_gc_greylist_snipe_counter` every minute.
@@ -985,6 +990,9 @@ class BotState:
         try:
             if (w.get("protocol") or "pumpfun") == "pumpswap":
                 pool = w.get("pumpswap_pool") or b.get("pumpswap_pool") or ""
+                if not pool:
+                    pool = await pumpswap.find_pool_for_mint(mint) or ""   # curve swept mid-hold: the pool is new
+                    w["pumpswap_pool"] = pool
                 st = await pumpswap.fetch_pool_state(pool) if pool else None
                 if not st:
                     return None
@@ -1134,6 +1142,7 @@ class BotState:
                 return
         await self._persist_trade(trade)
         w["attempts"] += 1
+        self.reentry.record_attempt(mint)
         self.active_trades[mint] = {
             "trade": trade.model_dump(),
             "launch": {"creator": w.get("creator"), "mint": mint},
@@ -2546,14 +2555,18 @@ class BotState:
             rx_until = self.recent_exit_until.get(launch.mint, 0.0)
             if rx_until and time.time() < rx_until and not is_manual:
                 return
-            # Re-entry watchlist lockout: if this mint just exited profitably
-            # and is being watched for a pullback re-entry, the regular scanner
-            # must NOT re-buy it from the front-running side. The re-entry
-            # watcher owns this mint until the window expires (or `_attempt_reentry`
-            # fires, which routes through this same gate and is allowed because
-            # the watcher removes the mint from `reentry_watch` before calling).
-            if launch.mint in self.reentry_watch and not is_manual:
-                return
+            # Universal re-entry policy: a mint that exited inside the re-entry window may be bought again
+            # when the gates pass — under the reentry_* controls (enabled / attempts / min wait / size mult).
+            # The pullback-breakout watcher shares the same ledger, so both paths count toward one cap.
+            self._reentry_gate_mult.pop(launch.mint, None)
+            if not is_manual:
+                blk, rmult = self.reentry.check(launch.mint, self.config)
+                if blk:
+                    await self._skip_event({"mint": launch.mint, "band": action, "reason": blk,
+                                            "details": [f"re-entry window: {self.reentry.attempts(launch.mint)} attempt(s) so far"]})
+                    return
+                if rmult is not None:
+                    self._reentry_gate_mult[launch.mint] = rmult
             # Reserve a slot — released in the finally below
             self._pending_entry_mints.add(launch.mint)
 
@@ -2971,10 +2984,12 @@ class BotState:
         # in the same slot and move price >3% before our tx confirms.
         eff_slip = entry_slip_bps(protocol, pool_depth_sol(pumpswap_state if protocol == "pumpswap" else state, protocol), eff_slip)
 
+        reentry_mult = self._reentry_gate_mult.pop(launch.mint, None)
         plan = await self._plan_entry(launch.mint, book, protocol, eff_slip, eff_priority, sol_price,
                                       depth_sol=pool_depth_sol(pumpswap_state if protocol == "pumpswap" else state, protocol),
                                       use_doctor=action != "manual", pattern=greylist_ctx.get("pattern"),
-                                      band="new" if is_new_band else "seasoned")
+                                      band="new" if is_new_band else "seasoned",
+                                      book_mult_override=(book_size_mult(self.config, book) * reentry_mult) if reentry_mult is not None else None)
         if not plan:
             return
         size_mult = plan["size_mult"]
@@ -3040,6 +3055,8 @@ class BotState:
             speed_mode_at_entry=self.config.speed_mode,
             risk_score=risk_score,
             classifier_action=action,
+            reentry_trigger="gates" if reentry_mult is not None else None,
+            reentry_ctx={"size_multiplier": reentry_mult, "attempt": self.reentry.attempts(launch.mint) + 1} if reentry_mult is not None else None,
             protocol=protocol,
             pumpswap_pool=bucket.get("pumpswap_pool") or None,
             greylist_strategy_at_entry=greylist_ctx.get("strategy"),
@@ -3120,6 +3137,11 @@ class BotState:
         await self._persist_trade(trade)
         if trade.status != "active":
             return
+        if reentry_mult is not None:
+            self.reentry.record_attempt(launch.mint)
+            w_live = self.reentry_watch.get(launch.mint)
+            if w_live:
+                w_live["attempts"] += 1
         try:
             b0 = self.tracking.get(launch.mint) or {}
             exp_px = float(getattr(launch, "price_sol", 0) or trade.entry_price_sol or 0)
@@ -4719,7 +4741,8 @@ class BotState:
         # sold, orphaning the monitor task on the prior slot. The cooldown
         # gives the in-memory state (and the prior monitor) time to fully
         # tear down before any new entry can race a stale exit.
-        self.recent_exit_until[mint] = time.time() + 90.0
+        self.recent_exit_until[mint] = time.time() + max(10.0, float(getattr(self.config, "reentry_min_wait_s", 20) or 0))
+        self.reentry.record_exit(mint, pnl_pct, self.config, was_sl=reason.lower().startswith("stop-loss hit"))
         # SL cooldown — if this exit was triggered by stop-loss, lock the
         # mint out of new entries for `sl_cooldown_minutes`. The check applies
         # to fresh scanner entries AND the re-entry watcher. Buying back a
@@ -4802,13 +4825,13 @@ class BotState:
             self.reentry_watch.pop(mint, None)
             await hub.broadcast("reentry_watch_remove", {"mint": mint})
         graduated_curve = protocol != "pumpswap" and bool(state.get("complete", False))
+        watch_protocol = "pumpswap" if graduated_curve else protocol      # curve swept mid-hold: keep watching on the PumpSwap pool
         if (
             self.config.reentry_enabled
             and not self.stopping_gracefully
             and not is_snipe_trade
             and total_pnl_sol > 0
             and exit_price_sol > 0
-            and not graduated_curve
         ):
             self.reentry_watch[mint] = {
                 "mint": mint,
@@ -4818,7 +4841,7 @@ class BotState:
                 "exit_time": time.time(),
                 "last_exit_time": time.time(),
                 "last_exit_was_sl": False,
-                "attempts": int(prev_watch.get("attempts") or 0) if prev_watch else 0,
+                "attempts": max(int(prev_watch.get("attempts") or 0) if prev_watch else 0, self.reentry.attempts(mint)),
                 "hot": pnl_pct >= self.config.hot_token_pnl_pct,
                 "max_attempts": self.config.reentry_max_attempts + (2 if pnl_pct >= self.config.hot_token_pnl_pct else 0),
                 "window_s": self.config.reentry_window_seconds * (2 if pnl_pct >= self.config.hot_token_pnl_pct else 1),
@@ -4827,7 +4850,7 @@ class BotState:
                 "original_pnl_usd": total_pnl_usd,
                 "peak_price_after_exit": exit_price_sol,
                 "trough_after_peak": exit_price_sol,
-                "protocol": protocol,
+                "protocol": watch_protocol,
                 "pumpswap_pool": slot.get("pumpswap_pool") or "",
                 "creator": (slot.get("launch") or {}).get("creator"),
             }

@@ -87,7 +87,7 @@ def test_listener_switches_to_public_on_quota(monkeypatch):
         li.stop()
         return snap
 
-    connected, via, health = asyncio.get_event_loop().run_until_complete(run())
+    connected, via, health = asyncio.run(run())
     assert connects[:2] == [PAID, PUBLIC_WSS_URL]
     assert connected and via == "public WSS"
     assert PAID in router.exhausted

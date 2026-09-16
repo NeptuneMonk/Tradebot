@@ -21,7 +21,9 @@ const CHAIN_FILTER_KEY = "ui.launches.chain";
 
 const RH_GATE_HINT = {
   pass: "cleared every PONS entry gate",
-  "exit-cooldown": "just closed a trade on this token — back in play 30 s after the exit if the gates still pass",
+  "reentry-wait": "closed this token moments ago — re-entry waits `Min wait (s)` from the Re-entry settings",
+  "reentry-max": "re-entry attempts on this token are used up for the current re-entry window",
+  "reentry-off": "re-entry is switched OFF in settings — this token traded inside the re-entry window",
   "already-entered": "position open or a paper fill is queued for this token",
   "cost-gate": "passed the momentum gates but the expected round-trip cost (fees + slippage) eats the first target — entry skipped",
   "r-size": "passed the momentum gates but R-sizing found no tradable size at the current bankroll / stop",

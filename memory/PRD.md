@@ -1893,7 +1893,14 @@ Patterns the Doctor cannot see (it scores per book, not across exit reasons):
 ## 2026-09-16 — RH feed gate labels tell the truth
 - User: RH rows show "gate ✓" with no trade; "already-entered" with no active trade; "feeds only trade when the filter is on ALL".
 - ✅ Post-gate skips (cost-gate, r-size, stake-zero, doctor-breaker, no-price/unpriced-quote, live-buy-failed, fill-rejected, fill-expired) now set `gate_reason` via `RHPaperTrader._block_entry` and hold the verdict 30 s (`b["entry_block"]`, honoured by `_gates`) — no more stale "gate ✓" while the entry path is refusing every second.
-- ✅ **One-shot-per-token block REMOVED** (user: "if it passes gates it should be in play for re-entry"). `already-entered` is now only an open position / queued fill; a closed token is eligible again once the gates pass, after a hardwired 30 s `exit-cooldown` (`REENTRY_COOLDOWN_S`) so a stop-out cannot buy itself straight back on the same tick. Sol side already behaved this way (`entered_mints` was never populated; scanner has its own 30 s attempt cooldown).
+- ✅ **One-shot-per-token block REMOVED** (user: "if it passes gates it should be in play for re-entry"). `already-entered` is now only an open position / queued fill.
+
+## 2026-09-16 — Universal re-entry policy (`reentry_policy.py`)
+- User: "re-entry needs to respect the re-entry settings that already exist for Pump.fun; apply to PumpSwap and v4 graduated tokens across all books; use the existing controls universally."
+- ✅ `ReentryLedger` (one per chain: `BotState.reentry`, `RHPaperTrader.reentry`) records every exit. Any buy of a token inside `reentry_window_seconds` of its last exit — watch-triggered (pullback/breakout) **or** gates passing again — is a re-entry: needs `reentry_enabled`, `< reentry_max_attempts` (hot: +2, window ×2, × `hot_reentry_size_mult`), `≥ reentry_min_wait_s` since exit, sized × `reentry_size_multiplier`. Outside the window the token is fresh again. Attempts are one counter shared by both paths.
+- ✅ Sol: `_enter` gate applies the ledger (skip events `reentry-wait` / `reentry-max` / `reentry-off`), `_enter_impl` passes the multiplier into `_plan_entry` and stamps `reentry_trigger="gates"`; the "watched mint is locked from the scanner" rule is gone; `recent_exit_until` now = `max(10 s, reentry_min_wait_s)` instead of a fixed 90 s. Watch is created for curve-graduated exits too (protocol → pumpswap, lazy `find_pool_for_mint`).
+- ✅ RH: graduated (v4-pool) buckets get the re-entry watch and flush watch too; `_gates` returns the ledger verdict; gates-path re-entries call `_enter(size_mult=×, reentry="gates")` → `rh_pons_reentry` rows.
+- Tests: `tests/test_reentry_policy.py` (5), `test_rh_gate_verdicts.py`, `test_rh_paper.py`, `test_reentry_*`, `test_flush.py`, `test_graduation_not_exit.py` all green.
 - ✅ Feed badge tooltips explain each verdict (`RH_GATE_HINT` in RecentLaunchesFeed.jsx).
 - Chain filter chips (ALL / SOL / RH) are display-only (localStorage); they cannot affect trading.
 - Tests: `tests/test_rh_gate_verdicts.py` (2) + `test_rh_paper.py` (16) green.
