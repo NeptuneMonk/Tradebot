@@ -1957,3 +1957,9 @@ Patterns the Doctor cannot see (it scores per book, not across exit reasons):
 
 ## 2026-09-17 — Ladder live mode
 - `LadderBook.live_ready(chain)` = ≥ `LIVE_AFTER_PAPER_LEGS` (15) closed paper ladder legs in `trades` (count refreshed each minute) AND that chain's live switch armed (`live_trading` / `rh_live_trading`). When true, `_open_leg` routes through the venue's live executor instead of writing a paper row: Sol → `BotState.manual_enter(mint, as_runner=True)` (runner book: no clock, giveback trail from promotion, +3R chip, rip-cords), RH → `rh_paper.manual_enter(token)` (now allowed on graduated tokens with a live v4 pool; rh_pons live exits). The engine owns those legs' exits; the ladder keeps its structure stop (closes via `_exit` / `rh_paper.exit`) and drops a leg when the engine has already closed it. Card shows `paper n/15` or `LIVE sol+rh`. Test: `test_live_routing_needs_15_paper_legs_and_armed_chain`.
+
+## 2026-09-17 — FOMO post-mortem → hunt "spike bank"
+- FOMO (hunt, paper): $10 in, +1R/+2R partials banked $1.32, remainder peaked +218 % then fell to −14 % between two 1-second reads (single dump tx) → ladder stop; trade +5.45 %. Not a missed exit — no intermediate price existed.
+- ✅ `exits.decide_hunt`: **spike bank** — once the remainder is up ≥ `SPIKE_BANK_PCT` (100 %) or 5R (whichever is higher), sell 50 % of what's left, once per trade (`slot["spike_banked"]`, persisted on the trade doc and restored in `_slot_from_doc`). Reason string "spike bank: sell 50% of the remainder (+X%)". Hardwired, no knob.
+- ✅ Ladder: restored docs without `base` no longer raise ('base' KeyError fixed via setdefault).
+- Test: `test_hunt_spike_bank_sells_half_once_above_100pct`.

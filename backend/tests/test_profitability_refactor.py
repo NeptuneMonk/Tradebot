@@ -406,3 +406,20 @@ def test_feed_late_chase_skip_is_final_at_3s_and_scalp_overwrites_pending():
     assert asyncio.run(st._reclassify("M" * 44, source="tape")) == "scalp"
     assert st.calls[-1] == ("launch", "scalp")
     assert "pending" not in ACTIONS   # feed-only label, never an entry verdict
+
+
+def test_hunt_spike_bank_sells_half_once_above_100pct():
+    cfg = BotConfig()
+    one_r = 21.0
+    s = _slot("hunt", pct_peak=one_r + 1)
+    exits.after_partial(s, 2.0); exits.after_partial(s, 2.0)                      # both ladder legs banked
+    s["peak_price_sol"] = 3.2
+    d = exits.decide_hunt(cfg, s, 218.0, 3.18, 300, _fire, lambda c: False)       # +218%, trail not firing yet
+    assert d.kind == "partial" and d.fraction == 0.5 and d.reason.startswith("spike bank")
+    s["spike_banked"] = True
+    d2 = exits.decide_hunt(cfg, s, 230.0, 3.3, 310, _fire, lambda c: False)
+    assert d2.kind is None                                                           # once per trade
+    d3 = exits.decide_hunt(cfg, s, 95.0, 1.95, 200, _fire, lambda c: False)
+    assert d3.kind is None                                                           # below the +100% / 5R line nothing fires
+    s2 = _slot("hunt", pct_peak=50); exits.after_partial(s2, 2.0); exits.after_partial(s2, 2.0)
+    assert exits.decide_hunt(cfg, s2, 99.0, 1.99, 200, _fire, lambda c: False).kind is None

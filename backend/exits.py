@@ -46,6 +46,8 @@ def levels(cfg, slot: dict) -> dict:
 # Hardwired (no knob): once a trade is up 15 % the trail can be at most 6 %, at 30 % at most 4 % — winners used to give
 # back 50-60 % of their peak under a flat 10 % trail. Tiers are (peak_pct, max_trail_pct).
 RATCHET_TIERS = ((15.0, 6.0), (30.0, 4.0))
+SPIKE_BANK_PCT = 100.0   # hunt: bank half of the remainder once the trade is up this much (or 5R, whichever is higher)
+SPIKE_BANK_R = 5.0
 
 
 def ratchet_trail(configured_trail_pct: float, peak_pct: float) -> float:
@@ -93,6 +95,10 @@ def decide_hunt(cfg, slot: dict, pct: float, cur: float, elapsed: float, sl_fire
         return ExitDecision("partial", f"ladder +1R: sell {lv['ladder_1r_sell_pct']:.0f}% (+{pct:.1f}%)", lv["ladder_1r_sell_pct"] / 100.0)
     if legs == 1 and lv["ladder_2r_sell_pct"] > 0 and pct >= 2 * one_r:
         return ExitDecision("partial", f"ladder +2R: sell {lv['ladder_2r_sell_pct']:.0f}% (+{pct:.1f}%)", lv["ladder_2r_sell_pct"] / 100.0)
+    # spike bank: a vertical print on a fresh graduate dies vertically far more often than it fades (FOMO: +218 % → −14 %
+    # inside one block) — once the remainder is up ≥ SPIKE_BANK_PCT (or 5R) sell half of it right there, once per trade
+    if not slot.get("spike_banked") and pct >= max(SPIKE_BANK_PCT, SPIKE_BANK_R * one_r) and lv["ladder_1r_sell_pct"] > 0:
+        return ExitDecision("partial", f"spike bank: sell 50% of the remainder (+{pct:.1f}%)", 0.5)
     peak_pct, drop = _drop_from_peak(slot, cur)
     armed = legs >= 1 or (lv["trailing_arm_pct"] > 0 and peak_pct >= lv["trailing_arm_pct"])
     if lv["trailing_stop_pct"] > 0 and peak_pct > 0 and armed and ts_fire(drop >= lv["trailing_stop_pct"]):

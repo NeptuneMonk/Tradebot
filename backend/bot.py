@@ -1574,7 +1574,11 @@ class BotState:
         try:
             if d.kind == "partial":
                 did = await self._partial_exit(mint, d.fraction, reason=d.reason + tag)
-                if did:
+                if did and d.reason.startswith("spike bank"):
+                    slot["spike_banked"] = True
+                    trade_doc["spike_banked"] = True
+                    await self.db.trades.update_one({"_id": trade_doc["id"]}, {"$set": {"spike_banked": True}})
+                elif did:
                     exits.after_partial(slot, float(trade_doc.get("expected_cost_pct") or 4.0) / 2.0)
                     trade_doc["ladder_legs_done"] = slot["ladder_legs_done"]
                     await self.db.trades.update_one({"_id": trade_doc["id"]}, {"$set": {"ladder_legs_done": slot["ladder_legs_done"],
@@ -3310,6 +3314,7 @@ class BotState:
             "pumpswap_pool": t.get("pumpswap_pool") or "",
             **({"_runner_pool_missing_since": float(t["graduating_since"]), "_curve_complete": True} if t.get("graduating_since") and t.get("venue_stage") in ("graduating", "pool-missing") else {}),
             "peak_price_sol": t.get("peak_price_sol") or t.get("entry_price_sol") or 0,
+            "spike_banked": bool(t.get("spike_banked")),
             "first_seen_price_sol": t.get("first_seen_price_sol") or 0,
             "partial_done": bool(t.get("partial_done", False)),
             "ladder_legs_done": int(t.get("ladder_legs_done") or 0),
