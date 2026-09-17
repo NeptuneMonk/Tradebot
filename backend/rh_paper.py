@@ -448,8 +448,8 @@ class RHPaperTrader:
         b = self.state.rh_discovery.tracking.get(token)
         if not b:
             return {"ok": False, "reason": "token not tracked"}
-        if b.get("graduated"):
-            return {"ok": False, "reason": "graduated — curve closed"}
+        if b.get("graduated") and not b.get("pool_live"):
+            return {"ok": False, "reason": "graduated — curve closed, v4 pool not live yet"}
         if token in self.positions or token in self._pending_entries:
             return {"ok": False, "reason": "already in an active position"}
         if len(self.positions) + len(self._pending_entries) >= cfg.rh_max_positions:

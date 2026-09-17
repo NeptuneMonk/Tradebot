@@ -122,3 +122,31 @@ def test_sources_pick_graduated_tokens_on_both_chains_only():
                                 "0xn": {"graduated": True, "pool_live": False, "usd_market_cap": 90_000, "buyers": set()}}
     keys = [k for k, _ in L.LadderBook(st)._sources()]
     assert keys == ["sol:A", "rh:0xg"]
+
+
+def test_live_routing_needs_15_paper_legs_and_armed_chain():
+    st = _state(live_trading=True, rh_live_trading=False)
+    calls = []
+
+    async def manual_enter(mint, as_runner=False):
+        calls.append(("sol", mint, as_runner)); return {"ok": True, "book": "runner"}
+    st.manual_enter = manual_enter
+    st.active_trades = {}
+    st.rh_paper = types.SimpleNamespace(positions={}, manual_enter=None, exit=None)
+    book = L.LadderBook(st)
+    k = "sol:" + "M" * 44
+    assert book.live_ready("sol") is False                             # 0 paper legs closed → paper
+    _feed(book, k, [(0, 100_000, 50), (5 * H, 125_000, 55), (10 * H, 155_000, 60), (15 * H, 190_000, 64)])
+    assert book.tokens[k]["legs"][0].get("live") is None and calls == []
+    book.tokens.clear(); book.reentry = L.ReentryLedger(); st.db.trades.rows.clear()
+    book.stats["paper_legs_closed"] = 15
+    assert book.live_ready("sol") is True and book.live_ready("rh") is False    # RH live switch not armed
+    st.active_trades["M" * 44] = {"trade": {}}
+    _feed(book, k, [(0, 100_000, 50), (5 * H, 125_000, 55), (10 * H, 155_000, 60), (15 * H, 190_000, 64)])
+    d = book.tokens[k]
+    assert calls == [("sol", "M" * 44, True)] and d["legs"][0]["live"] is True and d["state"] == "holding"
+    assert not st.db.trades.rows                                                 # no paper row for a live leg
+    # the engine closes it → ladder notices and drops the leg
+    st.active_trades.clear()
+    _feed(book, k, [(15 * H + 60, 195_000, 64)])
+    assert d["legs"] == [] and d["state"] == "watching"

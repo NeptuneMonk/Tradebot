@@ -61,6 +61,10 @@ function GraduateLadderCard({ ladder, config, onConfigPatch, onRefresh }) {
         </span>
         <span className="flex items-center gap-3">
           <span>{tokens.length} tracked · {holding.length} holding · {ladder?.stats?.legs_opened ?? 0} legs</span>
+          <span data-testid="ladder-live-status" title="Ladder legs route through the live executor (Sol → runner book, RH → rh_pons live) once 15 paper legs have closed AND that chain's LIVE switch is armed"
+            className={`px-1.5 py-0.5 border ${(ladder?.live?.sol || ladder?.live?.rh) ? "border-red-700 text-red-300" : "border-neutral-800 text-neutral-500"}`}>
+            {(ladder?.live?.sol || ladder?.live?.rh) ? `LIVE ${[ladder.live.sol && "sol", ladder.live.rh && "rh"].filter(Boolean).join("+")}` : `paper ${ladder?.live?.paper_legs_closed ?? 0}/${ladder?.live?.needed ?? 15}`}
+          </span>
           <button data-testid="ladder-toggle" onClick={() => onConfigPatch?.({ ladder_enabled: !enabled })}
             className={`px-2 py-0.5 border uppercase tracking-[0.15em] ${enabled ? "border-emerald-700 text-emerald-300" : "border-neutral-700 text-neutral-500"}`}>{enabled ? "on" : "off"}</button>
         </span>

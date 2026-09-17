@@ -2423,8 +2423,11 @@ async def token_detail(chain: str, mint: str):
 
 @api.get("/ladder")
 async def ladder_snapshot():
+    import ladder as ladder_mod
     return {"tokens": bot_state.ladder.snapshot(), "stats": bot_state.ladder.stats,
-            "enabled": bool(bot_state.config.ladder_enabled), "size_mult": float(bot_state.config.ladder_size_mult)}
+            "enabled": bool(bot_state.config.ladder_enabled), "size_mult": float(bot_state.config.ladder_size_mult),
+            "live": {"sol": bot_state.ladder.live_ready("sol"), "rh": bot_state.ladder.live_ready("rh"),
+                     "paper_legs_closed": int(bot_state.ladder.stats.get("paper_legs_closed") or 0), "needed": ladder_mod.LIVE_AFTER_PAPER_LEGS}}
 
 
 @api.delete("/ladder/{key}")

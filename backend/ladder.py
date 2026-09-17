@@ -26,6 +26,7 @@ STRUCTURE_STOP_PCT = 25.0  # MC below last confirmed high by this much closes th
 STEPS_TO_QUALIFY = 3
 MAX_LEGS = 4
 MIN_MC_USD = 50_000.0
+LIVE_AFTER_PAPER_LEGS = 15   # ladder legs go through the live executor only once this many paper legs have closed
 SAMPLE_EVERY_S = 900.0
 PAPER_SLIP_PCT = 1.0
 TRAIL = ((60.0, 8.0), (30.0, 12.0), (0.0, 20.0))   # (leg gain ≥ x % → trail y % from the leg peak)
@@ -50,7 +51,8 @@ class LadderBook:
         self._task = None
         self._dirty: set[str] = set()
         self._last_persist: dict[str, float] = {}
-        self.stats = {"ticks": 0, "legs_opened": 0, "legs_closed": 0}
+        self.stats = {"ticks": 0, "legs_opened": 0, "legs_closed": 0, "paper_legs_closed": 0, "live_legs": 0}
+        self._paper_closed_ts = 0.0
 
     # ------------------------------------------------------------------ lifecycle
     def start(self):
@@ -73,6 +75,7 @@ class LadderBook:
                 if not getattr(self.state.config, "ladder_enabled", True) or not self.state.config.enabled:
                     continue
                 now = time.time()
+                await self._refresh_paper_count(now)
                 for key, src in self._sources():
                     await self.observe(key, src, now)
                 await self._persist(now)
@@ -154,6 +157,54 @@ class LadderBook:
             await self._manage_legs(key, d, src, now)
         self._dirty.add(key)
 
+    # ------------------------------------------------------------------ live routing
+    async def _refresh_paper_count(self, now: float):
+        if now - self._paper_closed_ts < 60.0:
+            return
+        self._paper_closed_ts = now
+        try:
+            self.stats["paper_legs_closed"] = await self.state.db.trades.count_documents({"book": "ladder", "mode": "paper", "status": "closed"})
+        except Exception:
+            pass
+
+    def live_ready(self, chain: str) -> bool:
+        """Live executor only after the paper book proved the ladder AND that chain's live switch is armed."""
+        cfg = self.state.config
+        armed = bool(getattr(cfg, "rh_live_trading", False)) if chain == "rh" else bool(getattr(cfg, "live_trading", False))
+        return armed and int(self.stats.get("paper_legs_closed") or 0) >= LIVE_AFTER_PAPER_LEGS
+
+    async def _open_live_leg(self, d: dict, src: dict, now: float, kind: str) -> bool:
+        """Route through the venue's live executor: Sol → runner book (no clock, trails from promotion); RH → rh_pons live.
+        The engine owns that leg's exits (SL / ratchet trail / rip-cords); the ladder only adds its structure stop."""
+        try:
+            if d["chain"] == "rh":
+                res = await self.state.rh_paper.manual_enter(d["mint"])
+            else:
+                res = await self.state.manual_enter(d["mint"], as_runner=True)
+        except Exception as e:
+            res = {"ok": False, "reason": str(e)[:120]}
+        if not res.get("ok"):
+            d["gate"] = f"live: {res.get('reason', 'refused')}"[:60]
+            logger.info(f"LADDER live {kind} refused for {d.get('symbol')}: {res.get('reason')}")
+            return False
+        d["legs"].append({"id": None, "kind": kind, "usd": None, "entry_mc": src["mc"], "peak_mc": src["mc"], "ts": now, "live": True})
+        self.stats["legs_opened"] += 1
+        self.stats["live_legs"] += 1
+        logger.info(f"LADDER LIVE {kind.upper()} {d.get('symbol')} [{d['chain']}] via {res.get('book') or 'rh_pons'} @ MC ${src['mc']:,.0f}")
+        return True
+
+    async def _close_live_leg(self, d: dict, leg: dict, reason: str):
+        try:
+            if d["chain"] == "rh":
+                await self.state.rh_paper.exit(d["mint"], f"ladder {reason}")
+            else:
+                await self.state._exit(d["mint"], reason=f"ladder {reason}")
+        except Exception as e:
+            logger.warning(f"ladder live exit failed {d.get('symbol')}: {e}")
+        d["legs"] = [x for x in d["legs"] if x is not leg]
+        d["closed_legs"] += 1
+        self.stats["legs_closed"] += 1
+
     # ------------------------------------------------------------------ legs
     def _base_usd(self, d: dict) -> float:
         cfg = self.state.config
@@ -187,6 +238,9 @@ class LadderBook:
         await self._open_leg(key, d, src, now, self._base_usd(d), "add")
 
     async def _open_leg(self, key: str, d: dict, src: dict, now: float, usd: float, kind: str):
+        if self.live_ready(d["chain"]):
+            await self._open_live_leg(d, src, now, kind)
+            return
         mc_fill = src["mc"] * (1 + PAPER_SLIP_PCT / 100.0)
         trade = Trade(mint=d["mint"], name=d.get("name"), symbol=d.get("symbol"), mode="paper", entry_usd=usd, book="ladder",
                       protocol=d["protocol"], chain=d["chain"], classifier_action="ladder", risk_score=40,
@@ -204,6 +258,9 @@ class LadderBook:
         logger.info(f"LADDER {kind.upper()} {d.get('symbol')} [{d['chain']}] ${usd:.2f} @ MC ${mc_fill:,.0f} (step {len(d['steps'])})")
 
     async def _close_leg(self, key: str, d: dict, leg: dict, src: dict, now: float, reason: str):
+        if leg.get("live"):
+            await self._close_live_leg(d, leg, reason)
+            return (src["mc"] / leg["entry_mc"] - 1.0) * 100.0
         mc_fill = src["mc"] * (1 - PAPER_SLIP_PCT / 100.0)
         pnl_pct = (mc_fill / leg["entry_mc"] - 1.0) * 100.0
         pnl_usd = leg["usd"] * pnl_pct / 100.0
@@ -233,11 +290,21 @@ class LadderBook:
             return
         for leg in list(d["legs"]):
             leg["peak_mc"] = max(leg["peak_mc"], mc)
+            if leg.get("live"):
+                if not self._live_leg_open(d):            # the engine closed it (its own SL / trail / rip-cord)
+                    d["legs"] = [x for x in d["legs"] if x is not leg]
+                    d["closed_legs"] += 1
+                continue
             gain = (leg["peak_mc"] / leg["entry_mc"] - 1.0) * 100.0
             if mc <= leg["peak_mc"] * (1 - _trail_pct(gain) / 100.0) and gain > 0:
                 await self._close_leg(key, d, leg, src, now, f"ratchet trail ({_trail_pct(gain):g}% from peak +{gain:.0f}%)")
         if not d["legs"]:
             self._after_full_exit(key, d, now, "all legs trailed out", 0.0, was_sl=False)
+
+    def _live_leg_open(self, d: dict) -> bool:
+        if d["chain"] == "rh":
+            return d["mint"] in getattr(self.state.rh_paper, "positions", {})
+        return d["mint"] in getattr(self.state, "active_trades", {})
 
     def _after_full_exit(self, key: str, d: dict, now: float, reason: str, pnl_pct: float, was_sl: bool):
         d["state"] = "watching"
