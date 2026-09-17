@@ -122,6 +122,7 @@ class LadderBook:
                                     "closed_legs": 0, "realized_usd": 0.0, "reentry": {"attempts": 0, "last_exit_ts": None, "last_exit_reason": None,
                                                                                         "peak_after_exit": None, "trough_after_exit": None}}
         mc = src["mc"]
+        d.setdefault("base", {"ts": float(d.get("first_seen") or now), "mc": float(d.get("high") or mc)})   # docs persisted before `base` existed
         d["mc"], d["holders"], d["last_seen"] = mc, src["holders"], now
         d["symbol"], d["name"] = src.get("symbol") or d.get("symbol"), src.get("name") or d.get("name")
         if not d["samples"] or now - d["samples"][-1][0] >= SAMPLE_EVERY_S or mc > d["high"]:
