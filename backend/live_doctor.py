@@ -215,12 +215,75 @@ class LiveDoctor:
         return self.book_paused(book) if live else self.breakers_fail_closed()
 
     def book_adjust(self, book: str, live: bool) -> tuple[float, float]:
-        """(size_mult, gate_mult) for this book right now: paper-mode breaker tightening × hour-of-day profile."""
+        """(size_mult, gate_mult) right now = paper-breaker tightening × peak-hour size boost × market-tempo gate scaling.
+        Tempo replaces pausing: a slow tape lowers what we expect of a token's momentum, a hot tape raises it."""
         size, gates = 1.0, 1.0
         if not live and self.book_paused(book):
             size, gates = self.PAPER_ADJUST_SIZE, self.PAPER_ADJUST_GATES
-        hs, hg = self.hour_mult()
-        return size * hs, gates * hg
+        hs, _ = self.hour_mult()
+        return size * hs, gates * self.tempo_gate_mult("rh" if book == "rh_pons" else "sol")
+
+    # ---- market tempo: aggregate buy flow across everything we track vs its own rolling baseline ----
+    TEMPO_WINDOW_S = 120.0
+    TEMPO_BASELINE_TAU_S = 6 * 3600.0     # EMA horizon for "normal" flow
+    TEMPO_EXP = 0.5                       # gates scale with sqrt(tempo): tempo 2× → ×1.41, 0.5× → ×0.71
+    TEMPO_CLAMP = (0.5, 2.0)
+
+    def _flow_now(self, chain: str, now: float) -> tuple[int, float]:
+        """(buys in the window, launches/h) across every bucket of that chain — one pass, cheap."""
+        st = self.bot_state
+        if st is None:
+            return 0, 0.0
+        if chain == "rh":
+            buckets = (getattr(getattr(st, "rh_discovery", None), "tracking", None) or {}).values()
+            from rh_discovery import launch_rate_per_h
+            rate = launch_rate_per_h((b.get("start") for b in buckets), now) if buckets else 0.0
+            buckets = (getattr(getattr(st, "rh_discovery", None), "tracking", None) or {}).values()
+        else:
+            buckets = (getattr(st, "tracking", None) or {}).values()
+            rate = float(st._launch_rate()) if hasattr(st, "_launch_rate") else 0.0
+        cutoff = now - self.TEMPO_WINDOW_S
+        buys = sum(1 for b in buckets for ev in (b.get("buy_events") or ()) if ev and float(ev[0]) >= cutoff)
+        return buys, rate
+
+    def update_tempo(self, now: float | None = None) -> dict:
+        """Called from the entry paths (≤ 1×/30 s per chain): refresh flow, blend into the EMA baseline, return the snapshot."""
+        now = time.time() if now is None else now
+        ts = self.__dict__.setdefault("tempo_state", {})
+        out = {}
+        for chain in ("sol", "rh"):
+            cs = ts.setdefault(chain, {"ema_buys": None, "ema_rate": None, "ts": 0.0, "buys": 0, "rate": 0.0, "tempo": 1.0})
+            if now - cs["ts"] < 30.0:
+                out[chain] = cs
+                continue
+            try:
+                buys, rate = self._flow_now(chain, now)
+            except Exception:
+                buys, rate = 0, 0.0
+            dt = max(1.0, now - cs["ts"]) if cs["ts"] else self.TEMPO_BASELINE_TAU_S
+            a = min(1.0, dt / self.TEMPO_BASELINE_TAU_S)
+            cs["ema_buys"] = buys if cs["ema_buys"] is None else (1 - a) * cs["ema_buys"] + a * buys
+            cs["ema_rate"] = rate if cs["ema_rate"] is None else (1 - a) * cs["ema_rate"] + a * rate
+            parts = []
+            if cs["ema_buys"] and cs["ema_buys"] >= 3:
+                parts.append(buys / cs["ema_buys"])
+            if cs["ema_rate"] and cs["ema_rate"] >= 1:
+                parts.append(rate / cs["ema_rate"])
+            raw = (parts[0] * parts[-1]) ** 0.5 if parts else 1.0      # geometric mean of what we have
+            cs.update(ts=now, buys=buys, rate=rate, tempo=max(self.TEMPO_CLAMP[0], min(self.TEMPO_CLAMP[1], raw)))
+            out[chain] = cs
+        return out
+
+    def tempo_gate_mult(self, chain: str) -> float:
+        cs = self.update_tempo().get(chain) or {}
+        return float(cs.get("tempo") or 1.0) ** self.TEMPO_EXP
+
+    def tempo_snapshot(self) -> dict:
+        ts = self.update_tempo()          # throttled to 30 s per chain internally — keeps the status live even between entries
+        return {c: {"tempo": round(float(v.get("tempo") or 1.0), 2), "gate_mult": round(float(v.get("tempo") or 1.0) ** self.TEMPO_EXP, 2),
+                    "buys_2m": v.get("buys"), "baseline_buys_2m": round(float(v.get("ema_buys") or 0), 1),
+                    "launch_rate_h": round(float(v.get("rate") or 0), 1), "baseline_rate_h": round(float(v.get("ema_rate") or 0), 1)}
+                for c, v in ts.items()}
 
     # ---- hour-of-day profile: trade more in the hours the tape (and our own P&L) say are the busy ones ----
     PEAK_SIZE, PEAK_GATES = 1.25, 0.85

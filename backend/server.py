@@ -869,6 +869,8 @@ async def bot_status():
         listener_last_ok_ts=listener.last_ok_ts or None,
         listener_last_attempt_ts=listener.last_attempt_ts or None,
         listener_via=listener.via if listener.connected else None,
+        market_tempo=(bot_state.live_doctor.tempo_snapshot() | {"peak_hours": (getattr(bot_state.live_doctor, "hour_profile", None) or {}).get("peak_hours")})
+        if getattr(bot_state, "live_doctor", None) is not None else None,
         helius_tracker_enabled=bot_state.config.helius_tracker_enabled,
         rh_feed_enabled=bot_state.config.rh_feed_enabled,
         rh_feed_alive=bot_state.rh_discovery.alive() if getattr(bot_state, "rh_discovery", None) else False,

@@ -680,6 +680,7 @@ class BotStatus(BaseModel):
     listener_last_ok_ts: Optional[float] = None
     listener_last_attempt_ts: Optional[float] = None
     listener_via: Optional[str] = None   # fallback WSS carrying the feed (primary quota-exhausted), None when on primary
+    market_tempo: Optional[dict] = None  # Doctor: per-chain buy-flow tempo vs baseline, gate multiplier, peak hours
     helius_tracker_enabled: bool = True # DESIRED Pump.fun WS
     rh_feed_enabled: bool = True        # DESIRED RH poll
     rh_feed_alive: bool = False         # ACTUAL RH loop (head moved in the last 15 s)

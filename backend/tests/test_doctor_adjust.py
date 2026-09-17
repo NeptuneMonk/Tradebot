@@ -55,7 +55,32 @@ def test_hour_profile_boosts_only_busy_profitable_hours():
     assert ld.hour_mult(now.timestamp()) == (1.25, 0.85)               # current hour is a peak hour
     off = now.replace(hour=(now.hour + 12) % 24)
     assert ld.hour_mult(off.timestamp()) == (1.0, 1.0)
-    assert ld.book_adjust("scalp", live=False) == (1.25, 0.85)
+    ld.bot_state = None
+    assert ld.book_adjust("scalp", live=False) == (1.25, 1.0)     # peak hour boosts size; gates are the tempo's job now
     ld2 = _doctor()
     ld2.db = types.SimpleNamespace(launches=types.SimpleNamespace(find=lambda *a, **k: _Cur([])), trades=types.SimpleNamespace(find=lambda *a, **k: _Cur([])))
     assert asyncio.run(ld2.build_hour_profile())["peak_hours"] == []  # not enough data → no profile
+
+
+def test_market_tempo_scales_gates_continuously():
+    ld = _doctor()
+    now = time.time()
+    st = types.SimpleNamespace(tracking={}, rh_discovery=types.SimpleNamespace(tracking={}), _launch_rate=lambda: 40.0)
+    ld.bot_state = st
+    # baseline: 40 buys / 2 min, 40 launches/h
+    st.tracking = {f"m{i}": {"buy_events": [(now - 10, 1, "w")] * 4} for i in range(10)}
+    ld.update_tempo(now)
+    assert ld.tempo_gate_mult("sol") == 1.0                           # first sample defines the baseline → tempo 1
+    # hot tape: 160 buys / 2 min and 160 launches/h → tempo clamps at 2 → gates × sqrt(2)
+    st.tracking = {f"m{i}": {"buy_events": [(now + 40 - 10, 1, "w")] * 16} for i in range(10)}
+    st._launch_rate = lambda: 160.0
+    ld.update_tempo(now + 40)
+    assert abs(ld.tempo_gate_mult("sol") - 2 ** 0.5) < 0.05
+    # dead tape: 10 buys, 10 launches/h → tempo 0.25 → clamped 0.5 → gates × 0.71 (expectations lowered, no pause)
+    st.tracking = {"m0": {"buy_events": [(now + 80 - 10, 1, "w")] * 10}}
+    st._launch_rate = lambda: 10.0
+    ld.update_tempo(now + 80)
+    assert abs(ld.tempo_gate_mult("sol") - 0.5 ** 0.5) < 0.05
+    snap = ld.tempo_snapshot()["sol"]
+    assert snap["tempo"] == 0.5 and snap["buys_2m"] == 10
+    assert ld.book_adjust("scalp", live=False)[1] == ld.tempo_gate_mult("sol")   # hour profile no longer touches gates

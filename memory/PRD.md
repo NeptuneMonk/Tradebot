@@ -1973,3 +1973,9 @@ Patterns the Doctor cannot see (it scores per book, not across exit reasons):
 - ✅ **Peak-hour profile** (`LiveDoctor.build_hour_profile`, rebuilt every Doctor cycle): peak UTC hours = top-8 hours by launch count over 7 days (needs ≥200 launches), minus hours where ≥10 of our closed trades show negative expectancy. In peak hours: size ×1.25, gates ×0.85 (both chains). Quiet hours stay with the launch-rate regime multiplier (no double tightening). Exposed via `hour_mult()`; profile stored on `live_doctor.hour_profile`.
 - ✅ **Live MC for held graduated tokens**: the Sol monitor now writes `last_price_sol` and `usd_market_cap` (price × SOL/USD × 1 B supply) into the tracking bucket on every pool read; the detail dialog prefers DexScreener MC/price and flags a >25 % mismatch with our feed (META showed $625K frozen at graduation vs $5K real).
 - Tests: `tests/test_doctor_adjust.py` (2), `_FakeDoctor` stub gained `book_adjust`.
+
+## 2026-09-17 — Market tempo: momentum expectations scale with aggregate flow
+- User: scale our momentum gates with overall market volume — expect more when the tape is hot, less when it's slow; a multiplier instead of pausing.
+- ✅ `LiveDoctor.update_tempo()` (≤1×/30 s per chain): flow = buys in the last 2 min across every tracked bucket + launches/h; baseline = 6 h EMA of the same; tempo = geometric mean of the ratios, clamped 0.5–2.0. `tempo_gate_mult(chain) = tempo ** 0.5` (0.71 … 1.41) multiplies the momentum gates on both chains via `book_adjust`. The peak-hour profile now only boosts **size** (×1.25); gates are the tempo's job (no double counting). Exposed as `market_tempo` on `/api/bot/status` (per chain: tempo, gate_mult, buys_2m vs baseline, launch rate vs baseline, peak_hours).
+- Hour profile live in preview: peak UTC hours [0,1,4,5,6,7,14,19] from 22 152 launches / 7 d.
+- Tests: `tests/test_doctor_adjust.py` (3).
