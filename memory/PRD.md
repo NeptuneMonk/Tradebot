@@ -1963,3 +1963,7 @@ Patterns the Doctor cannot see (it scores per book, not across exit reasons):
 - ✅ `exits.decide_hunt`: **spike bank** — once the remainder is up ≥ `SPIKE_BANK_PCT` (100 %) or 5R (whichever is higher), sell 50 % of what's left, once per trade (`slot["spike_banked"]`, persisted on the trade doc and restored in `_slot_from_doc`). Reason string "spike bank: sell 50% of the remainder (+X%)". Hardwired, no knob.
 - ✅ Ladder: restored docs without `base` no longer raise ('base' KeyError fixed via setdefault).
 - Test: `test_hunt_spike_bank_sells_half_once_above_100pct`.
+
+## 2026-09-17 — Token age on the feed = real launch time
+- Bug: Pump.fun-API-discovered (seasoned/graduated) tokens got a synthetic Launch whose `detected_at` defaulted to *now*, so the launch feed showed "just now" for tokens hours old ("age resets"). The scanner's `age_s` (from `bucket["start"]` = `created_timestamp`) was already right; RH already derives `start`/`detected_at` from the launch block.
+- ✅ `discovery.py`: synthetic `detected_at = fromtimestamp(bucket["start"])`. WSS-detected launches keep detection time (real-time create event ≈ launch time). Known remaining approximation: manual buys of untracked PumpSwap mints seed `start = now`.

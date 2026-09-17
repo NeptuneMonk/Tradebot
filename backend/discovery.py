@@ -17,6 +17,7 @@ import asyncio
 import logging
 import time
 from collections import deque
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 import httpx
@@ -635,6 +636,8 @@ class PumpfunDiscovery:
         )
         synthetic.id = bucket["launch_id"]
         synthetic.classifier_action = "discovered"
+        if bucket.get("start"):
+            synthetic.detected_at = datetime.fromtimestamp(float(bucket["start"]), timezone.utc)   # real launch time, not when we noticed it
         doc = synthetic.model_dump()
         doc["detected_at"] = doc["detected_at"].isoformat()
         doc["discovered"] = True
