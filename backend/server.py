@@ -2372,6 +2372,69 @@ async def creator_info(creator: str):
 
 
 # ---------- Re-entry watchlist ----------
+@api.get("/token/{chain}/{mint}")
+async def token_detail(chain: str, mint: str):
+    """Everything the operator needs to judge a re-entry: live bucket metrics (if still tracked), our trade record
+    on the token, re-entry state, and DexScreener market data for Sol tokens we no longer track."""
+    import httpx
+    out: dict = {"chain": chain, "mint": mint, "tracked": False, "live": None, "market": None, "trades": [], "reentry": None}
+    if chain == "rh":
+        b = bot_state.rh_discovery.tracking.get(mint)
+        if b:
+            out["tracked"] = True
+            out["live"] = {"symbol": b.get("symbol"), "name": b.get("name"), "mc_usd": b.get("usd_market_cap"), "price": b.get("last_price_quote"),
+                           "price_unit": b.get("quote_symbol"), "holders": len(b.get("buyers") or ()), "curve_fill_pct": b.get("curve_fill_pct"),
+                           "graduated": b.get("graduated"), "pool_live": b.get("pool_live"), "gate": b.get("gate_reason"), "age_s": time.time() - float(b.get("start") or time.time()),
+                           "last_trade_age_s": (time.time() - b["last_trade_ms"] / 1000.0) if b.get("last_trade_ms") else None}
+        out["reentry"] = bot_state.rh_paper.reentry.exits.get(mint)
+        out["watch"] = bot_state.rh_paper.watch.get(mint)
+    else:
+        b = bot_state.tracking.get(mint)
+        if b:
+            out["tracked"] = True
+            out["live"] = {"symbol": b.get("symbol"), "name": b.get("name"), "mc_usd": b.get("usd_market_cap"), "price": b.get("last_price_sol"),
+                           "price_unit": "SOL", "holders": len(b.get("buyers") or ()), "curve_fill_pct": b.get("curve_fill_pct"),
+                           "protocol": b.get("protocol") or "pumpfun", "pool": b.get("pumpswap_pool"), "gate": b.get("gate_reason"),
+                           "gate_detail": b.get("gate_detail"), "age_s": time.time() - float(b.get("start") or time.time())}
+        out["reentry"] = bot_state.reentry.exits.get(mint)
+        out["watch"] = bot_state.reentry_watch.get(mint)
+        try:
+            async with httpx.AsyncClient(timeout=6.0) as c:
+                r = await c.get(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
+                pairs = (r.json() or {}).get("pairs") or []
+            if pairs:
+                p = max(pairs, key=lambda x: float((x.get("liquidity") or {}).get("usd") or 0))
+                out["market"] = {"dex": p.get("dexId"), "pair": p.get("pairAddress"), "price_usd": p.get("priceUsd"), "mc_usd": p.get("marketCap") or p.get("fdv"),
+                                 "liquidity_usd": (p.get("liquidity") or {}).get("usd"), "vol_24h": (p.get("volume") or {}).get("h24"),
+                                 "vol_1h": (p.get("volume") or {}).get("h1"), "chg_1h": (p.get("priceChange") or {}).get("h1"),
+                                 "chg_24h": (p.get("priceChange") or {}).get("h24"), "txns_1h": (p.get("txns") or {}).get("h1"),
+                                 "url": p.get("url"), "embed": f"https://dexscreener.com/solana/{p.get('pairAddress')}?embed=1&theme=dark&trades=0&info=0",
+                                 "socials": ((p.get("info") or {}).get("socials") or []), "websites": ((p.get("info") or {}).get("websites") or []),
+                                 "image": (p.get("info") or {}).get("imageUrl")}
+        except Exception as e:
+            out["market_error"] = str(e)[:120]
+    rows = await db.trades.find({"mint": mint}, {"_id": 0}).sort("entry_time", -1).limit(20).to_list(20)
+    out["trades"] = [{k: t.get(k) for k in ("id", "book", "mode", "status", "entry_time", "exit_time", "entry_usd", "pnl_usd", "pnl_pct", "exit_reason",
+                                             "reentry_trigger", "classifier_action", "peak_pnl_pct")} for t in rows]
+    out["summary"] = {"n": len(rows), "pnl_usd": round(sum(float(t.get("pnl_usd") or 0) for t in rows), 2),
+                      "active": any(t.get("status") == "active" for t in rows)}
+    return out
+
+
+@api.get("/ladder")
+async def ladder_snapshot():
+    return {"tokens": bot_state.ladder.snapshot(), "stats": bot_state.ladder.stats,
+            "enabled": bool(bot_state.config.ladder_enabled), "size_mult": float(bot_state.config.ladder_size_mult)}
+
+
+@api.delete("/ladder/{key}")
+async def ladder_remove(key: str):
+    d = bot_state.ladder.tokens.pop(key, None)
+    if d is not None:
+        await db.ladder_tokens.update_one({"key": key}, {"$set": {"state": "dead"}})
+    return {"removed": d is not None}
+
+
 @api.get("/reentry/watchlist")
 async def reentry_watchlist():
     out = []

@@ -156,6 +156,8 @@ class BotState:
         self.discovery = PumpfunDiscovery(self)
         self.rh_discovery = RHDiscovery(self)
         self.rh_paper = RHPaperTrader(self)
+        from ladder import LadderBook
+        self.ladder = LadderBook(self)
         self.pnl_reconciler = PnLReconciler(self)
         self.scorecard = Scorecard(db)
         self.inventory = InventoryHalt()
@@ -390,6 +392,7 @@ class BotState:
         # Robinhood Chain watch-only feed (no Helius, no entries)
         self.rh_discovery.start()
         self.rh_paper.start()
+        self.ladder.start()
         # Start priority-fee auto-tuner (only consulted when speed_mode='auto')
         auto_tuner.start()
         # Start the account-event bus: one persistent Helius WSS that

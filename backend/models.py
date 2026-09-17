@@ -302,6 +302,9 @@ class BotConfig(BaseModel):
     creator_sol_min: float = 0.5
     creator_eth_min: float = 0.0        # retired: RH has no deployer balance floor (kept so stored configs still load)
     creator_sol_gate_new_band: bool = False
+    # Graduate Ladder — age-less watch of graduated tokens making higher MC highs; paper legs (book="ladder")
+    ladder_enabled: bool = True
+    ladder_size_mult: float = 0.5
     creator_dump_window_s: float = 60.0
     creator_sold_pct_max: float = 35.0
     creator_balance_fail: str = "closed"

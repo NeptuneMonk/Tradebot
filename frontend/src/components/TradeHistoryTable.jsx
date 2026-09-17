@@ -1,8 +1,9 @@
-import { memo } from "react";
+import { memo, useState } from "react";
 import { History, CircleDot, Search } from "lucide-react";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { ChainBadge } from "./ChainBadge";
 import { TradeTicket } from "./TradeTicket";
+import { TokenDetailDialog } from "./TokenDetailDialog";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const fmtTime = (iso) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—");
@@ -55,6 +56,7 @@ const reentryTitle = (t) => {
 };
 
 function TradeHistoryTable({ history }) {
+  const [detail, setDetail] = useState(null);
   const partialCount = history.filter((t) => t.partial_done).length;
   const partialBanked = history.reduce((sum, t) => sum + (t.partial_realized_usd || 0), 0);
 
@@ -98,7 +100,9 @@ function TradeHistoryTable({ history }) {
               const banked = Number(t.partial_realized_usd || 0);
               const exitSummary = summarizeExit(t);
               return (
-                <tr key={t.id} className="border-b border-neutral-900" data-testid={`history-row-${t.id}`}>
+                <tr key={t.id} className="border-b border-neutral-900 hover:bg-neutral-900/60 cursor-pointer" data-testid={`history-row-${t.id}`}
+                    onClick={(e) => { if (!e.target.closest("button, a")) setDetail({ chain: t.chain || "sol", mint: t.mint, symbol: t.symbol, name: t.name }); }}
+                    title="Click for live market data, our record on this token and a manual re-entry">
                   <td className="py-1.5 pl-0.5">
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -209,6 +213,7 @@ function TradeHistoryTable({ history }) {
           </tbody>
         </table>
       </div>
+      <TokenDetailDialog token={detail} onClose={() => setDetail(null)} />
     </div>
   );
 }

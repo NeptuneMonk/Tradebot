@@ -17,6 +17,7 @@ import RecentLaunchesFeed from "@/components/RecentLaunchesFeed";
 import TradeHistoryTable from "@/components/TradeHistoryTable";
 import ClassifierRulesEditor from "@/components/ClassifierRulesEditor";
 import ReentryWatchCard from "@/components/ReentryWatchCard";
+import GraduateLadderCard from "@/components/GraduateLadderCard";
 import ScannerCandidatesCard from "@/components/ScannerCandidatesCard";
 import StrategyDoctorPanel from "@/components/StrategyDoctorPanel";
 import CreatorGreylistPanel from "@/components/CreatorGreylistPanel";
@@ -44,12 +45,13 @@ export default function Dashboard() {
   const [pl, setPl] = useState({ series: [], daily_pnl_usd: 0, cumulative_usd: 0 });
   const [reentry, setReentry] = useState([]);
   const [scanner, setScanner] = useState([]);
+  const [ladder, setLadder] = useState(null);
   const [plSourceRefresh, setPlSourceRefresh] = useState(0);
 
   // Initial full pull + slow polling fallback (every 20s)
   const refreshAll = useCallback(async () => {
     try {
-      const [w, s, c, r, l, a, h, p, re, sc] = await Promise.all([
+      const [w, s, c, r, l, a, h, p, re, sc, ld] = await Promise.all([
         api.wallet().catch(() => null),
         api.status().catch(() => null),
         api.config().catch(() => null),
@@ -60,6 +62,7 @@ export default function Dashboard() {
         api.plSummary(7).catch(() => ({ series: [], daily_pnl_usd: 0, cumulative_usd: 0 })),
         api.reentryWatchlist().catch(() => []),
         api.scannerCandidates().catch(() => []),
+        api.ladder().catch(() => null),
       ]);
       if (w) setWallet(w);
       if (s) setStatus(s);
@@ -71,6 +74,7 @@ export default function Dashboard() {
       setPl(p);
       setReentry(re || []);
       setScanner(sc || []);
+      if (ld) setLadder(ld);
     } catch (e) { /* swallow */ }
   }, []);
 
@@ -321,6 +325,7 @@ export default function Dashboard() {
   const onRulesSave = useCallback(async (r) => { setRules(await api.updateRules(r)); }, []);
   const onDoctorApplied = useCallback(() => api.config().then(setConfig).catch(() => {}), []);
   const onReentryRefresh = useCallback(() => api.reentryWatchlist().then(setReentry).catch(() => {}), []);
+  const onLadderRefresh = useCallback(() => api.ladder().then(setLadder).catch(() => {}), []);
   const onStop = useCallback(async () => { await api.stop(); refreshAll(); }, [refreshAll]);
 
   return (
@@ -540,6 +545,16 @@ export default function Dashboard() {
           badge={reentry?.length ? String(reentry.length) : null}
         >
           <ReentryWatchCard watchlist={reentry} onRefresh={onReentryRefresh} />
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Graduate Ladder"
+          description={`${ladder?.tokens?.length || 0} graduated tokens watched · ${(ladder?.tokens || []).filter((t) => t.state === "holding").length} holding`}
+          storageKey="ui.section.ladder"
+          testId="section-ladder"
+          badge={ladder?.tokens?.some((t) => t.state === "holding") ? "holding" : null}
+        >
+          <GraduateLadderCard ladder={ladder} config={config} onConfigPatch={onConfigPatch} onRefresh={onLadderRefresh} />
         </CollapsibleSection>
 
         <CollapsibleSection
