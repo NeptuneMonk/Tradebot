@@ -121,7 +121,10 @@ def test_classifier_closed_set_and_creator_routing():
     patterned = classify({**base, "creator_rugs": 3, "creator_pattern": "slow_rug_tradeable"}, rules)
     assert patterned["action"] == "hunt"                                    # not aborted — routed
     untradeable = classify({**base, "creator_rugs": 2, "creator_pattern": "unpredictable_rug"}, rules)
-    assert untradeable["action"] == "skip"                                  # still blocked from scalp
+    assert untradeable["action"] == "scalp" and untradeable["risk"] == 45   # prior non-graduated launches = risk bump, not a kill
+    serial = classify({**base, "creator_rugs": 2, "creator_prior_launches": 5, "creator_graduated_before": False},
+                      {**rules, "serial_creator_min_launches": 3})
+    assert serial["action"] == "skip" and "serial creator" in serial["reasons"][0]   # the operator's creator gate still bites
     assert classify({**base, "creator_rugs": 0}, rules)["action"] == "scalp"
     late = classify({**base, "creator_rugs": 0, "curve_fill_pct": 45}, rules)
     assert late["action"] == "skip" and "late chase" in late["reasons"][0]
@@ -284,6 +287,9 @@ def test_plan_entry_respects_disabled_scorecard_cell():
     ok = asyncio.run(st._plan_entry("M" * 44, "scalp", "pumpfun", 1000, 200_000, 150.0, depth_sol=40.0, band="new"))
     cell = ok["trade_fields"]["scorecard_cell"]
     st2 = _planner("full", disabled_cells=(cell,))
+    # paper keeps filling a disabled cell (that is how `paper_since_disable` reopens it) — only LIVE money is benched
+    assert asyncio.run(st2._plan_entry("M" * 44, "scalp", "pumpfun", 1000, 200_000, 150.0, depth_sol=40.0, band="new")) is not None
+    st2.config.live_trading = True
     assert asyncio.run(st2._plan_entry("M" * 44, "scalp", "pumpfun", 1000, 200_000, 150.0, depth_sol=40.0, band="new")) is None
     assert st2.skips[-1]["reason"] == "scorecard cell disabled"
 

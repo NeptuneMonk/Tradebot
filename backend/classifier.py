@@ -40,9 +40,10 @@ def classify(metrics: dict, rules: dict) -> dict:
     if pattern in HUNT_PATTERNS:
         reasons.append(f"creator pattern {pattern} → hunt book")
         return out("hunt", 40)
-    if rugs > 0:
-        reasons.append(f"creator has {rugs} prior failed launches without a tradeable pattern — not a scalp")
-        return out("skip", 90)
+    # Prior non-graduated launches are the Pump.fun norm (93 % of creators in our DB have ≥1) — they are NOT a kill
+    # on their own; the serial-creator gate below is the operator's creator-history control. Retired 2026-09-17:
+    # `rugs > 0 → skip` had silently vetoed ~93 % of New-band passes (0 Sol trades / 24 h while RH kept trading).
+    rug_risk = 10 if rugs > 0 else 0
     ser_min = int(rules.get("serial_creator_min_launches") or 0)
     prior = int(metrics.get("creator_prior_launches") or 0)
     if rules.get("serial_creator_gate_enabled", True) and ser_min and prior >= ser_min \
@@ -66,6 +67,9 @@ def classify(metrics: dict, rules: dict) -> dict:
     else:
         reasons.append("no strong signal — no buyers surge, no inflow")
         return out("skip", 60)
+    if rug_risk:
+        reasons.append(f"creator has {rugs} prior non-graduated launches (+{rug_risk} risk)")
+        risk += rug_risk
     if int(metrics.get("project_score", 0) or 0) >= 4:
         risk = max(15, risk - 10)   # weak tie-break only, on an already-scalp verdict
     return out("scalp", risk)

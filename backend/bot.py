@@ -1634,7 +1634,9 @@ class BotState:
             return None
         from scorecard import cell_key
         cell = cell_key(book=book, pattern=pattern, band=band, entry_time=now_utc().isoformat(), cost_pct=q["expected_cost_pct"])
-        if cfg.scorecard_enabled and self.scorecard.is_disabled(cell):
+        # a disabled cell benches LIVE money only — paper keeps filling it so `paper_since_disable` can reopen the cell
+        # (blocking paper too froze scalp|new|h04/h16 for good: 0 paper fills → never reopened → 0 Sol trades all night)
+        if cfg.scorecard_enabled and cfg.live_trading and self.scorecard.is_disabled(cell):
             await skip("scorecard cell disabled", {"cell": cell})
             return None
         return {"size_usd": sz["size_usd"], "trade_fields": {

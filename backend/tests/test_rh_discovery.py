@@ -177,9 +177,12 @@ def test_rh_tokens_never_touch_bot_tracking():
 
 
 def test_candidates_snapshot_band_and_watch_only():
-    st = make_state(band_new_min_age_min=0.0, band_new_max_age_min=15.0,
-                    scanner_min_growth_pct_new=50.0, scanner_min_new_buyers_new=2)
+    st = make_state(rh_min_age_s=0, rh_max_age_min=15.0, rh_min_unique_buyers=2, rh_min_growth_pct=50.0, rh_min_mc_usd=0,
+                    rh_min_new_buyers_1m=0, rh_min_inflow_usd=0, rh_min_curve_pct=0, rh_max_curve_pct=100)
     disc = rh.RHDiscovery(st)
+    st.rh_discovery = disc
+    from rh_paper import RHPaperTrader
+    st.rh_paper = RHPaperTrader(st)
     rh._eth_usd_cache.update(price=3000.0, ts=time.time())
     now = time.time()
     asyncio.run(disc._ingest_factory_logs([launched_log()], head=105, now=now))
@@ -194,8 +197,8 @@ def test_candidates_snapshot_band_and_watch_only():
     assert c["band"] == "rh_new" and c["chain"] == "rh" and c["watch_only"] is True
     assert c["unique_buyers_total"] == 2 and c["new_buyers_recent"] == 2
     assert abs(c["growth_pct"] - 100.0) < 1e-6
-    assert c["passes"] is True
-    # Outside the New age window → dropped
+    assert c["passes"] is True and c["gate_reason"] == "pass"           # verdict = the real RH PONS gates
+    # Outside the RH age window (rh_max_age_min) → dropped
     b["start"] = now - 3600
     assert disc.candidates_snapshot() == []
 
@@ -214,7 +217,7 @@ def test_launch_fields_payload():
     b = disc.tracking[TOKEN]
     f = disc._launch_fields(b)
     assert set(f) == {"unique_buyers", "buy_count", "curve_fill_pct", "quote_inflow",
-                      "quote_symbol", "price_quote", "usd_market_cap", "graduated", "classifier_action", "rh_gate",
+                      "quote_symbol", "price_quote", "usd_market_cap", "graduated", "classifier_action", "rh_gate", "rh_gate_detail",
                       "creator_eth", "creator_sold_pct"}
 
 
