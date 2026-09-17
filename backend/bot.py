@@ -2011,6 +2011,8 @@ class BotState:
                 "creator_prior_launches": int(b.get("creator_prior_launches") or 0), "creator_graduated_before": int(b.get("creator_tokens_graduated") or 0) >= 1,
             "project_flags": b.get("project_flags", {}),
             "peak_mc_usd": b.get("peak_mc_usd", 0.0),
+            "gate": b.get("gate_reason"),
+            "gate_detail": b.get("gate_detail") if b.get("gate_reason") not in (None, "pass") else None,
         }
         if b.get("peak_mc_usd_at"):
             update["peak_mc_usd_at"] = b["peak_mc_usd_at"]
@@ -2044,6 +2046,11 @@ class BotState:
 
     async def _skip_event(self, payload: dict):
         self._ledger_sol(payload.get("mint", ""), payload.get("reason") or "skip")
+        b = self.tracking.get(payload.get("mint", ""))
+        if b is not None:                                  # entry-path refusals show on the feed like scanner gates
+            b["gate_reason"] = str(payload.get("reason") or "skip").split(" (")[0][:32]
+            d = payload.get("details")
+            b["gate_detail"] = "; ".join(str(x) for x in d) if isinstance(d, (list, tuple)) else (str(d) if d else None)
         tally = self._skip_counts = getattr(self, "_skip_counts", {})
         key = f"{payload.get('band') or 'new'}:{payload.get('reason') or 'skip'}"
         tally[key] = tally.get(key, 0) + 1

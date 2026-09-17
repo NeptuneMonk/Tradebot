@@ -67,6 +67,19 @@ def velocity_pct_strict(samples, now: float, window_s: int) -> float | None:
     return (cur - base) / base * 100.0
 
 
+class _Verdict:
+    """Stamp the scanner's per-token gate verdict on the bucket (shown on the launch feed like the RH badge)."""
+    __slots__ = ("b",)
+
+    def __init__(self, b: dict):
+        self.b = b
+
+    def __call__(self, reason: str, detail: str | None = None) -> str:
+        self.b["gate_reason"] = reason
+        self.b["gate_detail"] = detail
+        return reason
+
+
 class MomentumScanner:
     """Owns the scanner loop and snapshot logic. Reads/writes `state.tracking`,
     delegates entry to `state._enter`."""
@@ -373,37 +386,39 @@ class MomentumScanner:
                         continue
                     band = self.classify_band(b, cfg, now)
                     if band is None:
+                        b["gate_reason"] = "age"          # outside the New / Seasoned age window (or off-protocol)
                         continue
                     tally = st.prerank_skip
+                    verdict = _Verdict(b)
                     # For NEW band we need mempool buy events as a proxy for activity.
                     # SEASONED band uses Pump.fun-API signals (MC + MC velocity)
                     # and can't observe events via Helius (esp. graduated tokens).
                     if band == "new" and not b.get("buy_events"):
-                        tally(band, "no-buy-events")
+                        tally(band, verdict("no-buy-events"))
                         continue
                     m = self.score(b, None, now)
                     g = self._gates(cfg, band)
                     if m["growth_pct_rolling"] < g["min_growth_pct"]:
-                        tally(band, "growth")
+                        tally(band, verdict("growth", f"{m['growth_pct_rolling']:+.1f}% rolling < {g['min_growth_pct']:g}%"))
                         continue
                     if m["real_sol_reserves"] < g["min_liquidity_sol"]:
-                        tally(band, "liquidity")
+                        tally(band, verdict("liquidity", f"{m['real_sol_reserves']:.2f} SOL < {g['min_liquidity_sol']:g}"))
                         continue
                     if band == "seasoned":
                         mc = float(b.get("usd_market_cap") or 0.0)
                         if mc < cfg.scanner_min_mc_usd_seasoned:
-                            tally(band, "mc")
+                            tally(band, verdict("mc", f"${mc:,.0f} < ${cfg.scanner_min_mc_usd_seasoned:,.0f}"))
                             continue
                         v = _mc_velocity(b.get("mc_samples") or (), now)
                         if v < cfg.scanner_min_mc_velocity_5m_pct_seasoned:
-                            tally(band, "mc-velocity")
+                            tally(band, verdict("mc-velocity", f"{v:+.1f}%/5m < {cfg.scanner_min_mc_velocity_5m_pct_seasoned:g}%"))
                             continue
                     else:
                         if m["recent_inflow_sol"] < g["min_inflow_sol"]:
-                            tally(band, "inflow")
+                            tally(band, verdict("inflow", f"{m['recent_inflow_sol']:.2f} SOL < {g['min_inflow_sol']:g}"))
                             continue
                         if m["new_buyers_recent"] < g["min_new_buyers"]:
-                            tally(band, "new-buyers")
+                            tally(band, verdict("new-buyers", f"{m['new_buyers_recent']} < {g['min_new_buyers']}"))
                             continue
                     # Distribution-vacuum gate — applies to both bands. If
                     # every tracked holder appeared inside the velocity window
@@ -423,7 +438,7 @@ class MomentumScanner:
                                 f"vacuum-skip {mint[:8]}… [{band}]: all "
                                 f"{total} holders in last {win_s}s (no organic flow)"
                             )
-                            tally(band, "distribution-vacuum")
+                            tally(band, verdict("distribution-vacuum", f"all {total} holders inside {win_s}s"))
                             continue
                     rank_score = (
                         m["growth_pct_rolling"]
@@ -435,7 +450,7 @@ class MomentumScanner:
                 if not scored:
                     continue
                 for _m, _b, _mm, _r, _band in scored:
-                    st.prerank_skip(_band, "pass")
+                    st.prerank_skip(_band, _Verdict(_b)("pass"))
 
                 scored.sort(key=lambda x: x[3], reverse=True)
                 remaining = max(0, cfg.max_concurrent_positions - len(st.active_trades))
@@ -467,9 +482,11 @@ class MomentumScanner:
                             await pumpswap.find_pool_for_mint(mint)
                         )
                         if not pool:
+                            _Verdict(b)("no-pool")
                             continue
                         pool_state = await pumpswap.fetch_pool_state(pool)
                         if not pool_state:
+                            _Verdict(b)("pool-state")
                             continue
                         # Refresh bucket's pool address if we just resolved it
                         b["pumpswap_pool"] = pool
@@ -483,24 +500,32 @@ class MomentumScanner:
                     else:
                         curve_state = await pumpfun.fetch_bonding_curve_state(mint)
                         if not curve_state or curve_state["complete"]:
+                            _Verdict(b)("curve-complete" if curve_state else "curve-state")
                             continue
                     m = self.score(b, curve_state, now)
                     g = self._gates(cfg, band)
+                    verdict = _Verdict(b)
                     if m["real_sol_reserves"] < g["min_liquidity_sol"]:
+                        verdict("liquidity", f"on-chain {m['real_sol_reserves']:.2f} SOL < {g['min_liquidity_sol']:g}")
                         continue
                     if m["growth_pct_rolling"] < g["min_growth_pct"]:
+                        verdict("growth", f"{m['growth_pct_rolling']:+.1f}% rolling < {g['min_growth_pct']:g}%")
                         continue
                     if band == "seasoned":
                         mc = float(b.get("usd_market_cap") or 0.0)
                         if mc < cfg.scanner_min_mc_usd_seasoned:
+                            verdict("mc")
                             continue
                         v = _mc_velocity(b.get("mc_samples") or (), now)
                         if v < cfg.scanner_min_mc_velocity_5m_pct_seasoned:
+                            verdict("mc-velocity")
                             continue
                     else:
                         if m["recent_inflow_sol"] < g["min_inflow_sol"]:
+                            verdict("inflow")
                             continue
                         if m["new_buyers_recent"] < g["min_new_buyers"]:
+                            verdict("new-buyers")
                             continue
 
                     action = "scanner_momentum" if band == "seasoned" else "momentum_new"

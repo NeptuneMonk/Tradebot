@@ -300,7 +300,7 @@ class BotConfig(BaseModel):
     # creator-solvency + dump gate (hunt / seasoned / rh_pons only — never the new-band scalp tape by default)
     creator_solvency_enabled: bool = True
     creator_sol_min: float = 0.5
-    creator_eth_min: float = 0.05
+    creator_eth_min: float = 0.0        # retired: RH has no deployer balance floor (kept so stored configs still load)
     creator_sol_gate_new_band: bool = False
     creator_dump_window_s: float = 60.0
     creator_sold_pct_max: float = 35.0

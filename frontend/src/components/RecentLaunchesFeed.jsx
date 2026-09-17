@@ -19,6 +19,33 @@ const timeAgo = (iso) => {
 
 const CHAIN_FILTER_KEY = "ui.launches.chain";
 
+const SOL_GATE_HINT = {
+  pass: "cleared the momentum pre-rank — queued for the on-chain check and entry",
+  age: "outside the New (Pump.fun) / Seasoned (PumpSwap) age window",
+  "no-buy-events": "no buys seen on the tape yet — nothing to score",
+  growth: "rolling growth below the band's Min growth %",
+  liquidity: "curve / pool SOL below Min liquidity",
+  mc: "market cap below the Seasoned Min MC",
+  "mc-velocity": "5-minute MC velocity below the Seasoned minimum",
+  inflow: "recent SOL inflow below Min inflow",
+  "new-buyers": "fresh buyers in the velocity window below Min new buyers",
+  "distribution-vacuum": "every holder appeared inside the velocity window — insider pre-distribution pattern",
+  "no-pool": "graduated but no PumpSwap pool found yet",
+  "pool-state": "PumpSwap pool state could not be read",
+  "curve-complete": "bonding curve completed — token has left Pump.fun (waiting for the pool)",
+  "curve-state": "bonding curve state could not be read",
+  "runner-cap": "runner book is at its position cap",
+  "hunt-cap": "hunt book is at its position cap",
+  "seasoned-no-pool": "seasoned entry needs a live PumpSwap pool",
+  "stale-tape": "seasoned tape is stale — no recent trades",
+  "buyers-since-grad": "not enough distinct buyers since graduation",
+  "pf-creator-sol": "deployer wallet holds less SOL than the creator-solvency floor",
+  "creator-dumped": "deployer sold more than the allowed share of their stake in the dump window",
+  "creator-balance-unknown": "deployer balance RPC failed (fail-closed)",
+  "classifier skip": "risk classifier declined this launch",
+  entry_velocity: "entry velocity cap — too many entries in the last minute",
+};
+
 const RH_GATE_HINT = {
   pass: "cleared every PONS entry gate",
   "sl-cooldown": "stopped out on this token — SL Cooldown (momentum scanner setting) blocks every re-entry until it lapses",
@@ -99,6 +126,11 @@ function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh
                       <span className={`text-[10px] font-mono px-1 py-0 border uppercase ${l.rh_gate === "pass" ? "border-emerald-700 text-emerald-300" : "border-neutral-700 text-neutral-500"}`}
                         title={(RH_GATE_HINT[l.rh_gate] || `backend gate verdict: ${l.rh_gate}`) + (l.rh_gate_detail ? `\n${l.rh_gate_detail}` : "")}
                         data-testid={`launch-rh-gate-${l.mint}`}>{l.rh_gate === "pass" ? "gate ✓" : `gate: ${l.rh_gate}`}</span>
+                    )}
+                    {!isRh && l.gate && !l.entered && (
+                      <span className={`text-[10px] font-mono px-1 py-0 border uppercase ${l.gate === "pass" ? "border-emerald-700 text-emerald-300" : "border-neutral-700 text-neutral-500"}`}
+                        title={(SOL_GATE_HINT[l.gate] || RH_GATE_HINT[l.gate] || `scanner verdict: ${l.gate}`) + (l.gate_detail ? `\n${l.gate_detail}` : "")}
+                        data-testid={`launch-gate-${l.mint}`}>{l.gate === "pass" ? "gate ✓" : `gate: ${l.gate}`}</span>
                     )}
                     {(l.creator_eth != null || l.creator_sol != null) && (
                       <span className="text-[10px] font-mono px-1 py-0 border border-neutral-800 text-neutral-500 lowercase"

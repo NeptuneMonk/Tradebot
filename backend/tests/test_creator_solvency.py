@@ -43,7 +43,8 @@ def test_hunt_low_sol_skips_and_healthy_creator_passes():
     cfg = BotConfig()
     assert cs.gate(cfg, "sol", 0.1, {}) == "pf-creator-sol"
     assert cs.gate(cfg, "sol", 2.0, {}) is None
-    assert cs.gate(cfg, "rh", 0.01, {}) == "rh-creator-eth"
+    assert cs.gate(cfg, "rh", 0.01, {}) is None                 # RH: no deployer balance floor (retired)
+    assert cs.gate(cfg, "rh", 0.0, {}) is None and cs.gate(cfg, "rh", None, {}) is None
     assert cs.gate(cfg, "rh", 0.2, {}) is None
 
 
@@ -85,16 +86,22 @@ def test_dump_window_50pct_blocks_10pct_passes_and_window_closes():
     assert proxy is True and abs(pct - 60.0) < 1e-9 and cs.gate(cfg, "sol", 2.0, b4) == "creator-dumped"
 
 
-def test_rh_entry_skips_broke_deployer_and_manual_bypasses():
+def test_rh_entry_ignores_broke_deployer_but_still_catches_dump():
     st = make_state(creator_solvency_enabled=True)
     now = time.time()
     b = hot_bucket(st.rh_discovery, now)
     b["creator"] = "0x" + "d" * 40
-    with patch.object(rp.rh_wallet, "balance_wei", new=AsyncMock(return_value=int(0.01e18))) as bw:
+    with patch.object(rp.rh_wallet, "balance_wei", new=AsyncMock(return_value=0)) as bw:
         asyncio.run(st.rh_paper._enter(TOKEN))
-    assert TOKEN not in st.rh_paper.pending_buys and b["gate_reason"] == "rh-creator-eth" and b["creator_eth"] == 0.01
-    assert st.rh_paper.stats["skip_reasons"]["curve:rh-creator-eth"] == 1 and bw.await_count == 1
+    assert TOKEN in st.rh_paper.pending_buys and b["creator_eth"] == 0.0      # 0 ETH deployer: no longer a block
+    st.rh_paper.pending_buys.clear(); st.rh_paper._pending_entries.clear()
+    b["creator_sold_quote"], b["creator_start_tokens"], b["creator_sold_tokens"] = 5.0, 1000.0, 800.0
+    with patch.object(rp.rh_wallet, "balance_wei", new=AsyncMock(return_value=0)):
+        asyncio.run(st.rh_paper._enter(TOKEN))
+    assert TOKEN not in st.rh_paper.pending_buys and b["gate_reason"] == "creator-dumped"
     st.rh_paper._pending_entries.clear()
+    for k in ("creator_sold_quote", "creator_start_tokens", "creator_sold_tokens", "creator_gate"):
+        b.pop(k, None)
     with patch.object(rp.rh_wallet, "balance_wei", new=AsyncMock(return_value=int(0.01e18))) as bw:
         asyncio.run(st.rh_paper._enter(TOKEN, manual=True))
     assert TOKEN in st.rh_paper.pending_buys and bw.await_count == 0    # manual bypass: no balance call at all

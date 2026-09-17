@@ -5,7 +5,8 @@ Two cheap, read-only checks on the DEPLOYER — never token holdings, never hold
      create firehose and the RH 2 s poller never pay for it;
   2. how much the creator sold inside the first `creator_dump_window_s` of the launch, accumulated from the trade
      streams we already ingest (Pump on_trade, RH trade logs) — no extra subscribe.
-Reason codes are stable for the Doctor: pf-creator-sol, rh-creator-eth, creator-dumped, creator-balance-unknown.
+Reason codes are stable for the Doctor: pf-creator-sol, creator-dumped, creator-balance-unknown (Sol only).
+RH has no deployer wallet-balance floor (rh-creator-eth retired 2026-09-16).
 """
 from __future__ import annotations
 
@@ -76,13 +77,16 @@ def creator_sold_pct(b: dict, creator_balance: float | None) -> tuple[float, boo
 
 
 def gate(cfg, chain: str, creator_balance: float | None, b: dict) -> str | None:
-    """Reason code or None. `creator_balance` None = RPC failed."""
+    """Reason code or None. `creator_balance` None = RPC failed.
+    RH: no balance minimum — PONS deployers routinely sit at 0 ETH, so the wallet-floor gate only starved good
+    launches (removed 2026-09-16). The creator-dump check still applies; an unknown balance is not a block on RH."""
+    if chain == "rh":
+        pct, proxy = creator_sold_pct(b, creator_balance)
+        b["creator_sold_pct"], b["creator_sold_pct_proxy"] = round(pct, 2), proxy
+        return "creator-dumped" if pct > float(getattr(cfg, "creator_sold_pct_max", 25.0)) else None
     if creator_balance is None:
         return "creator-balance-unknown" if str(getattr(cfg, "creator_balance_fail", "closed")) == "closed" else None
-    if chain == "rh":
-        if creator_balance < float(getattr(cfg, "creator_eth_min", 0.007)):
-            return "rh-creator-eth"
-    elif creator_balance < float(getattr(cfg, "creator_sol_min", 0.5)):
+    if creator_balance < float(getattr(cfg, "creator_sol_min", 0.5)):
         return "pf-creator-sol"
     pct, proxy = creator_sold_pct(b, creator_balance)
     b["creator_sold_pct"], b["creator_sold_pct_proxy"] = round(pct, 2), proxy
