@@ -206,6 +206,68 @@ class LiveDoctor:
             return True                       # state unknown after a bad restart → no entries until the Doctor has looked
         return book in self.book_paused_until
 
+    # ---- paper mode: a breaker ADJUSTS instead of benching (the paper book must keep printing data) ----
+    PAPER_ADJUST_SIZE = 0.5     # armed breaker → half size on paper
+    PAPER_ADJUST_GATES = 1.25   # …and 25 % tighter momentum gates
+
+    def book_benched(self, book: str, live: bool) -> bool:
+        """Entries blocked only when LIVE money is on the line. On paper an armed breaker never stops the flow."""
+        return self.book_paused(book) if live else self.breakers_fail_closed()
+
+    def book_adjust(self, book: str, live: bool) -> tuple[float, float]:
+        """(size_mult, gate_mult) for this book right now: paper-mode breaker tightening × hour-of-day profile."""
+        size, gates = 1.0, 1.0
+        if not live and self.book_paused(book):
+            size, gates = self.PAPER_ADJUST_SIZE, self.PAPER_ADJUST_GATES
+        hs, hg = self.hour_mult()
+        return size * hs, gates * hg
+
+    # ---- hour-of-day profile: trade more in the hours the tape (and our own P&L) say are the busy ones ----
+    PEAK_SIZE, PEAK_GATES = 1.25, 0.85
+    HOUR_PROFILE_MIN_LAUNCHES = 200
+    HOUR_PROFILE_MIN_TRADES = 10
+
+    def hour_mult(self, now: float | None = None) -> tuple[float, float]:
+        prof = getattr(self, "hour_profile", None) or {}
+        h = datetime.fromtimestamp(now or time.time(), timezone.utc).hour
+        return (self.PEAK_SIZE, self.PEAK_GATES) if h in set(prof.get("peak_hours") or ()) else (1.0, 1.0)
+
+    async def build_hour_profile(self) -> dict:
+        """Peak hours = the 8 UTC hours with the most launches over the last 7 days (both chains), minus any hour where
+        our own closed trades (≥10) show negative expectancy. Quiet hours are left to the launch-rate regime multiplier."""
+        since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        launches_by_h = [0] * 24
+        pnl_by_h: dict[int, list[float]] = {}
+        try:
+            async for d in self.db.launches.find({"detected_at": {"$gte": since}}, {"detected_at": 1, "_id": 0}):
+                try:
+                    launches_by_h[datetime.fromisoformat(str(d["detected_at"]).replace("Z", "+00:00")).hour] += 1
+                except Exception:
+                    pass
+            async for t in self.db.trades.find({"status": "closed", "entry_time": {"$gte": since}}, {"entry_time": 1, "pnl_pct": 1, "_id": 0}):
+                try:
+                    et = t["entry_time"]
+                    h = (et if isinstance(et, datetime) else datetime.fromisoformat(str(et).replace("Z", "+00:00"))).hour
+                    pnl_by_h.setdefault(h, []).append(float(t.get("pnl_pct") or 0.0))
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug(f"hour profile query failed: {e}")
+        total = sum(launches_by_h)
+        peak: list[int] = []
+        if total >= self.HOUR_PROFILE_MIN_LAUNCHES:
+            ranked = sorted(range(24), key=lambda h: launches_by_h[h], reverse=True)[:8]
+            for h in ranked:
+                rows = pnl_by_h.get(h) or []
+                if len(rows) >= self.HOUR_PROFILE_MIN_TRADES and sum(rows) / len(rows) < 0:
+                    continue                                       # busy hour but we lose there → no boost
+                peak.append(h)
+        self.hour_profile = {"peak_hours": sorted(peak), "launches_by_hour": launches_by_h,
+                             "expectancy_by_hour": {h: round(sum(v) / len(v), 2) for h, v in pnl_by_h.items() if v},
+                             "total_launches_7d": total, "built_at": time.time()}
+        logger.info(f"live-doctor hour profile: peak UTC hours {self.hour_profile['peak_hours']} ({total} launches / 7 d)")
+        return self.hour_profile
+
     async def hydrate(self) -> int:
         """Load persisted breakers on startup; keep the ones still inside their window (and TTL)."""
         try:
@@ -308,6 +370,7 @@ class LiveDoctor:
         await asyncio.sleep(120)  # let initial backfill settle
         while True:
             try:
+                await self.build_hour_profile()
                 await self.run_once()
             except asyncio.CancelledError:
                 raise

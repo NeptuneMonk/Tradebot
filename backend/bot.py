@@ -19,6 +19,7 @@ from classifier import classify
 import pumpfun
 import pumpswap
 from solana_client import get_sol_usd_price, LAMPORTS_PER_SOL
+import solana_client
 from wallet import get_keypair, get_pubkey
 from ws_hub import hub
 from pymongo.errors import DuplicateKeyError
@@ -1625,7 +1626,8 @@ class BotState:
                 pass
         sz = r_sizer.size_trade(bankroll_usd=bankroll_usd, risk_per_trade_pct=cfg.risk_per_trade_pct, sl_pct=sl_pct, exit_slip_pct=exit_slip_pct,
                                 book_mult=book_mult_override if book_mult_override is not None else book_size_mult(cfg, book),
-                                doctor_mult=doctor["doctor_size_mult"], governor_mult=gov,
+                                doctor_mult=doctor["doctor_size_mult"] * (self.live_doctor.book_adjust(book, bool(cfg.live_trading))[0] if self.live_doctor is not None else 1.0),
+                                governor_mult=gov,
                                 min_trade_usd=cfg.min_trade_usd,
                                 max_trade_usd=min(cfg.max_trade_usd, float(getattr(cfg, "discovery_clip_usd", cfg.max_trade_usd) or cfg.max_trade_usd)))
         if sz["skip"]:
@@ -2538,7 +2540,7 @@ class BotState:
         if not is_manual and self.inventory.active():
             logger.info(f"inventory halt: skipping {launch.mint[:8]}… ({self.inventory.snapshot()})")
             return
-        if not is_manual and self.live_doctor is not None and self.live_doctor.book_paused(book):
+        if not is_manual and self.live_doctor is not None and self.live_doctor.book_benched(book, bool(self.config.live_trading)):
             logger.info(f"book {book} paused by live-doctor breaker: skipping {launch.mint[:8]}…")
             _band = "seasoned" if (self.tracking.get(launch.mint) or {}).get("protocol") == "pumpswap" else "new"
             await self._skip_event({"mint": launch.mint, "symbol": launch.symbol, "band": _band, "reason": f"doctor-breaker:{book}",
@@ -2804,6 +2806,8 @@ class BotState:
         min_liq = self.config.min_curve_liquidity_sol_new if is_new_band else self.config.min_curve_liquidity_sol
         from book_params import regime_gate_mult
         _rm = regime_gate_mult(self.config, "momentum", self._launch_rate())
+        if self.live_doctor is not None:
+            _rm *= self.live_doctor.book_adjust("momentum", bool(self.config.live_trading))[1]   # paper-breaker tightening × peak-hour loosening
         min_buyers = (self.config.min_buyers_for_entry_new if is_new_band else self.config.min_buyers_for_entry) * _rm
         min_liq = min_liq * _rm
 
@@ -3799,6 +3803,14 @@ class BotState:
                 # can surface live PnL% to the UI without re-fetching curve
                 # state on every poll.
                 slot["_last_price_sol"] = cur_price_sol
+                _tb = self.tracking.get(mint)
+                if _tb is not None and cur_price_sol > 0:
+                    # keep the bucket's price / MC live from the pool read — graduated tokens no longer get MC from the
+                    # Pump.fun API, so without this the feed / detail dialog showed the MC frozen at graduation
+                    _tb["last_price_sol"] = cur_price_sol
+                    _sp = float(solana_client._sol_price_cache.get("price") or 0.0)
+                    if _sp > 0:
+                        _tb["usd_market_cap"] = cur_price_sol * _sp * 1_000_000_000
                 _ep0 = float(trade_doc.get("entry_price_sol") or 0.0)
                 if slot.get("_ff_remaining_usd") and _ep0 > 0 and (cur_price_sol - _ep0) / _ep0 * 100.0 >= FAST_FAIL_ADD_AT_PCT:
                     await self._fast_fail_add(mint, slot, protocol, pool_state if protocol == "pumpswap" else state, cur_price_sol)

@@ -68,8 +68,11 @@ export function TokenDetailDialog({ token, onClose }) {
         <div className="px-4 py-3 grid grid-cols-1 lg:grid-cols-5 gap-3">
           <div className="lg:col-span-2 space-y-3">
             <div className="grid grid-cols-2 gap-1.5" data-testid="token-detail-stats">
-              <Stat label="market cap" value={fmtUsd(live?.mc_usd ?? m?.mc_usd)} />
+              <Stat label={m?.mc_usd ? "market cap · dexscreener" : "market cap · our feed"} value={fmtUsd(m?.mc_usd ?? live?.mc_usd)} />
               <Stat label="price" value={m?.price_usd ? `$${Number(m.price_usd).toPrecision(4)}` : live?.price ? `${Number(live.price).toPrecision(4)} ${live.price_unit}` : "—"} />
+              {m?.mc_usd && live?.mc_usd && Math.abs(live.mc_usd / m.mc_usd - 1) > 0.25 && (
+                <div className="col-span-2 text-[10px] font-mono text-amber-300" data-testid="token-detail-mc-mismatch">our feed last saw MC {fmtUsd(live.mc_usd)} — stale vs DexScreener; pool reads refresh it while a position is open</div>
+              )}
               <Stat label="liquidity" value={fmtUsd(m?.liquidity_usd)} />
               <Stat label="vol 1h / 24h" value={`${fmtUsd(m?.vol_1h)} / ${fmtUsd(m?.vol_24h)}`} />
               <Stat label="Δ 1h / 24h" value={`${pct(m?.chg_1h)} / ${pct(m?.chg_24h)}`} tone={Number(m?.chg_1h) >= 0 ? "text-emerald-400" : "text-red-400"} />

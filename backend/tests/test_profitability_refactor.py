@@ -242,6 +242,7 @@ def test_config_has_no_global_exit_keys():
 # ---------------- entry planner end-to-end (BotState._plan_entry) ----------------
 class _FakeDoctor:
     def __init__(self, decision): self.decision = decision
+    def book_adjust(self, book, live): return (1.0, 1.0)
     async def score_launch(self, mint, book="scalp"):
         return {"winner_likeness_pct": 70.0, "exit_liquidity_likeness_pct": 20.0, "doctor_decision": self.decision,
                 "doctor_size_mult": {"skip": 0.0, "half": 0.5, "full": 1.0}[self.decision], "reason": "test"}

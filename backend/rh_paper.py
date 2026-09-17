@@ -163,6 +163,9 @@ class RHPaperTrader:
             return "age"
         from book_params import regime_gate_mult
         rm = regime_gate_mult(cfg, "rh_pons", self._launch_rate(now))   # quiet/busy hours scale the gates
+        ld = getattr(self.state, "live_doctor", None)
+        if ld is not None:
+            rm *= ld.book_adjust("rh_pons", bool(getattr(cfg, "rh_live_trading", False)))[1]
         if not seasoned and not (cfg.rh_min_curve_pct <= b["curve_fill_pct"] <= cfg.rh_max_curve_pct):
             return "curve"
         mc = b["usd_market_cap"]
@@ -198,7 +201,7 @@ class RHPaperTrader:
         self.stats["last_scan_ts"] = now
         focus_block = self._focus_blocks_fresh(now)
         ld = getattr(self.state, "live_doctor", None)
-        benched = bool(ld is not None and ld.book_paused("rh_pons"))
+        benched = bool(ld is not None and ld.book_benched("rh_pons", bool(getattr(self.state.config, "rh_live_trading", False))))
         for token, b in list(self.state.rh_discovery.tracking.items()):
             reason = self._gates(token, b, now)
             if reason is None and benched:
@@ -486,7 +489,7 @@ class RHPaperTrader:
                 return                                    # cross-pod idempotency: one active row per token
             b = self.state.rh_discovery.tracking.get(token)
             ld = getattr(self.state, "live_doctor", None)
-            if not manual and ld is not None and ld.book_paused("rh_pons"):
+            if not manual and ld is not None and ld.book_benched("rh_pons", bool(getattr(cfg, "rh_live_trading", False))):
                 logger.info(f"rh_paper skip {token[:10]}: rh_pons paused by live-doctor breaker")
                 if b:
                     self._block_entry(token, b, "doctor-breaker", time.time())
@@ -539,7 +542,8 @@ class RHPaperTrader:
                 exit_slip_pct = measured_rt / 2.0
             sz = _rs.size_trade(bankroll_usd=bank_usd, risk_per_trade_pct=float(cfg.risk_per_trade_pct), sl_pct=bx0["stop_loss_pct"],
                                 exit_slip_pct=exit_slip_pct, book_mult=max(0.0, float(getattr(cfg, "book_rh_size_mult", 1.0) or 1.0)) * max(0.1, float(size_mult)),
-                                doctor_mult=1.0, governor_mult=(_gov.size_mult("rh") if _gov else 1.0),
+                                doctor_mult=(ld.book_adjust("rh_pons", bool(getattr(cfg, "rh_live_trading", False)))[0] if ld is not None else 1.0),
+                                governor_mult=(_gov.size_mult("rh") if _gov else 1.0),
                                 min_trade_usd=min(base_stake, float(getattr(cfg, "min_trade_usd", 0.5))),
                                 max_trade_usd=min(base_stake, float(getattr(cfg, "rh_discovery_clip_usd", base_stake) or base_stake)))
             if sz["skip"]:
