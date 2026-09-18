@@ -237,12 +237,18 @@ def test_rh_graduated_flips_venue_to_pool_stays_active_and_exits_on_pool_proceed
 
 
 def test_rh_exit_flips_to_pool_even_if_decide_exit_never_saw_the_sweep():
+    """Operator rule: graduation never exits. A curve-raised reason arriving after the sweep flips the venue and is
+    dropped; the NEXT decision (now on pool prices) sells on the v4 pool."""
     st, b, TOKEN, rp = _rh()
-    t = st.rh_paper.positions[TOKEN]["trade"]
+    pos = st.rh_paper.positions[TOKEN]
+    t = pos["trade"]
     b["graduated"] = True                                                # swept between two ticks; venue still 'curve'
     pool_out = int(t["entry_tokens"] * 2.2e-9 * 1e18)
     with patch.object(rp.rh_dex, "quote_sell", new=AsyncMock(return_value=pool_out)):
         asyncio.run(st.rh_paper.exit(TOKEN, "max_hold"))
+        assert TOKEN in st.rh_paper.positions and t["venue"] == "pool" and pos.get("_exiting") is None
+        assert st.db.trades.docs.get(t["id"], {}).get("status") != "closed"
+        asyncio.run(st.rh_paper.exit(TOKEN, "max_hold"))                # gates re-fired on the pool → real pool fill
     doc = st.db.trades.docs[t["id"]]
     assert doc["venue"] == "pool" and doc["exit_venue"] == "pool" and abs(doc["exit_quote"] - pool_out / 1e18) < 1e-15
 
@@ -252,6 +258,7 @@ def test_rh_zero_quote_after_graduation_never_books_minus_100():
     pos = st.rh_paper.positions[TOKEN]
     t = pos["trade"]
     b["graduated"] = True
+    st.rh_paper._switch_to_pool(pos, b, time.time())                   # venue already flipped by the monitor
     st.rh_paper._paper_pool_proceeds = AsyncMock(return_value=(0.0, rp.POOL_FEE_FRACTION))
     asyncio.run(st.rh_paper.exit(TOKEN, "stop_loss"))
     assert TOKEN in st.rh_paper.positions and t.get("status") != "closed" and not t.get("exit_time")

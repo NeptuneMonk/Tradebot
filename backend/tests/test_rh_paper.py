@@ -552,3 +552,41 @@ def test_exit_failure_keeps_position_active():
     asyncio.run(tr.exit(TOKEN, "take_profit"))
     assert TOKEN in tr.positions and not pos.get("_exiting")
     assert pos["_zero_quote_retry_after"] > time.time()
+
+
+def test_graduation_mid_exit_drops_curve_trigger_and_keeps_position():
+    """Operator rule: graduation never exits. A curve-priced TP/SL in flight is void once the curve is swept —
+    venue flips to the pool, the position stays, gates re-evaluate on pool prices."""
+    st = make_state()
+    tr = st.rh_paper
+    now = time.time()
+    b = hot_bucket(st.rh_discovery, now)
+    b["graduated"] = True
+    st.rh_discovery.tracking[TOKEN] = b
+    pos = {"trade": {"id": "t3", "mint": TOKEN, "entry_price_quote": 1e-9, "entry_tokens": 1000.0, "entry_usd": 5.0, "entry_quote": 0.002,
+                     "symbol": "X", "mode": "paper", "quote_symbol": "ETH"}, "_last_price": 1.75e-9, "opened": now - 30, "peak_price": 1.75e-9,
+           "exit_trigger": {"reason": "take_profit", "block": 1, "price": 1.2e-9, "fill_block": 3}, "_fill_task": True, "_exiting": True}
+    tr.positions[TOKEN] = pos
+    asyncio.run(tr.exit(TOKEN, "take_profit", fill_price=1.2e-9, trigger=pos["exit_trigger"]))
+    assert TOKEN in tr.positions
+    assert pos["trade"]["venue"] == "pool" and pos["trade"]["graduated_during_hold"] is True
+    assert "exit_trigger" not in pos and not pos.get("_exiting") and not pos.get("_fill_task")
+    assert tr.stats["grad_triggers_dropped"] == 1
+
+
+def test_graduation_mid_manual_exit_still_sells():
+    st = make_state()
+    tr = st.rh_paper
+    now = time.time()
+    b = hot_bucket(st.rh_discovery, now)
+    b["graduated"] = True
+    st.rh_discovery.tracking[TOKEN] = b
+    pos = {"trade": {"id": "t4", "mint": TOKEN, "entry_price_quote": 1e-9, "entry_tokens": 1000.0, "entry_usd": 5.0, "entry_quote": 0.002,
+                     "symbol": "X", "mode": "paper", "quote_symbol": "ETH"}, "_last_price": 1.75e-9, "opened": now - 30, "peak_price": 1.75e-9}
+    tr.positions[TOKEN] = pos
+
+    async def proceeds(token, t, price):
+        return t["entry_tokens"] * price * 0.99, 0.01
+    tr._paper_pool_proceeds = proceeds
+    asyncio.run(tr.exit(TOKEN, "manual exit", fill_price=1.75e-9))
+    assert TOKEN not in tr.positions

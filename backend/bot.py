@@ -115,6 +115,7 @@ class BotState:
         self.active_trades: dict[str, dict] = {}
         self.recent_launches: list[dict] = []
         self.kill_switch_tripped = False
+        self.stats: dict = {}                      # counters (flush_holds, …) — was missing: _flush_holds_sol crashed the fast exit path
         self.listener_connected = False
         self.tracking: dict[str, dict] = {}
         # Re-entry watchlist: mint -> {exit_price_sol, exit_time, attempts, ...}

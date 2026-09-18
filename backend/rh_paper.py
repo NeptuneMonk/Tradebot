@@ -968,6 +968,10 @@ class RHPaperTrader:
         t = pos["trade"]
         t["venue"] = "pool"
         t["graduated_during_hold"] = True
+        # a curve-priced exit in flight is void: the venue changed under it — gates re-evaluate on pool prices next tick
+        if pos.pop("exit_trigger", None) is not None:
+            self.stats["grad_triggers_dropped"] = self.stats.get("grad_triggers_dropped", 0) + 1
+        pos.pop("_fill_task", None)
         t["graduated_at_pnl_pct"] = round(((pos["_last_price"] or 0) / t["entry_price_quote"] - 1.0) * 100.0, 2) if t.get("entry_price_quote") else None
         t["graduated_hold_s"] = round(now - pos["opened"], 1)
         pos["pool_since"] = now
@@ -1366,8 +1370,15 @@ class RHPaperTrader:
             if not t.get("symbol") and bk.get("symbol"):
                 t["symbol"], t["name"] = bk.get("symbol"), bk.get("name")
             if bk.get("graduated") and t.get("venue") != "pool":
-                # the curve was swept while we hold: PONS → v4 is a venue change, price/sell on the pool
+                # the curve was swept while we hold: PONS → v4 is a venue change. Any exit reason raised on curve
+                # prices no longer applies — switch venue, keep the position, let SL/TP/trail re-evaluate on the pool
+                # (only an operator sell goes through regardless).
                 self._switch_to_pool(pos, bk, time.time())
+                if not str(reason).startswith("manual"):
+                    pos.pop("_exiting", None)
+                    pos.pop("_fill_task", None)
+                    logger.warning(f"rh_paper {t.get('symbol')} {token[:10]} graduated mid-exit ({reason}) — trigger dropped, gates re-evaluate on pool prices")
+                    return
             live_fill = None
             if t.get("mode") == "live":
                 if pos.get("_live_sell_inflight"):
