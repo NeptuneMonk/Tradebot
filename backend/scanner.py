@@ -268,6 +268,8 @@ class MomentumScanner:
             m["name"] = b.get("name")
             m["launch_id"] = b.get("launch_id")
             m["band"] = band
+            m["gate_reason"] = b.get("gate_reason")
+            m["gate_detail"] = b.get("gate_detail") if b.get("gate_reason") not in (None, "pass") else None
             m["discovered"] = bool(b.get("discovered"))
             m["graduated_feed"] = bool(b.get("graduated_feed"))
             m["protocol"] = b.get("protocol") or "pumpfun"

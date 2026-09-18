@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ExternalLink, RefreshCw, ShoppingCart } from "lucide-react";
 import { toast } from "sonner";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { ChainBadge } from "./ChainBadge";
 import { api } from "@/lib/api";
 
@@ -48,10 +48,10 @@ export function TokenDetailDialog({ token, onClose }) {
     : [["pump.fun", `https://pump.fun/coin/${mint}`], ["DexScreener", m?.url || `https://dexscreener.com/solana/${mint}`], ["Solscan", `https://solscan.io/token/${mint}`]];
 
   return (
-    <Dialog open={!!token} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-4xl bg-neutral-950 border-neutral-800 text-neutral-100 p-0 overflow-hidden" data-testid="token-detail-dialog">
-        <DialogHeader className="px-4 pt-4 pb-2 border-b border-neutral-800">
-          <DialogTitle className="flex items-center gap-2 font-mono text-base">
+    <Sheet open={!!token} onOpenChange={(o) => !o && onClose()}>
+      <SheetContent side="right" className="w-full sm:max-w-2xl lg:max-w-3xl bg-neutral-950 border-l border-neutral-800 text-neutral-100 p-0 overflow-y-auto" data-testid="token-detail-dialog">
+        <SheetHeader className="px-4 pt-4 pb-2 border-b border-neutral-800 pr-12">
+          <SheetTitle className="flex items-center gap-2 font-mono text-base">
             <ChainBadge chain={chain} protocol={live?.protocol} mint={mint} />
             {token?.symbol || live?.symbol || "?"}
             <span className="text-neutral-500 text-xs font-normal truncate">{token?.name || live?.name}</span>
@@ -61,12 +61,12 @@ export function TokenDetailDialog({ token, onClose }) {
               ))}
               <button onClick={load} className="p-1 border border-neutral-800 hover:bg-neutral-800" title="refresh" data-testid="token-detail-refresh"><RefreshCw className="w-3 h-3" /></button>
             </span>
-          </DialogTitle>
-          <DialogDescription className="font-mono text-[10px] text-neutral-500 break-all">{mint}</DialogDescription>
-        </DialogHeader>
+          </SheetTitle>
+          <SheetDescription className="font-mono text-[10px] text-neutral-500 break-all">{mint}</SheetDescription>
+        </SheetHeader>
 
-        <div className="px-4 py-3 grid grid-cols-1 lg:grid-cols-5 gap-3">
-          <div className="lg:col-span-2 space-y-3">
+        <div className="px-4 py-3 grid grid-cols-1 gap-3">
+          <div className="w-full space-y-3">
             <div className="grid grid-cols-2 gap-1.5" data-testid="token-detail-stats">
               <Stat label={m?.mc_usd ? "market cap · dexscreener" : "market cap · our feed"} value={fmtUsd(m?.mc_usd ?? live?.mc_usd)} />
               <Stat label="price" value={m?.price_usd ? `$${Number(m.price_usd).toPrecision(4)}` : live?.price ? `${Number(live.price).toPrecision(4)} ${live.price_unit}` : "—"} />
@@ -105,7 +105,7 @@ export function TokenDetailDialog({ token, onClose }) {
             <div className="text-[9px] font-mono text-neutral-600">Manual entry bypasses the momentum gates; max positions, kill switches and the live/paper mode still apply.</div>
           </div>
 
-          <div className="lg:col-span-3 min-h-[420px] border border-neutral-800 bg-black" data-testid="token-detail-widget">
+          <div className="min-h-[420px] border border-neutral-800 bg-black" data-testid="token-detail-widget">
             {chain === "sol" && m?.embed ? (
               <iframe title="DexScreener" src={m.embed} className="w-full h-[460px]" allow="clipboard-write" loading="lazy" />
             ) : chain === "sol" ? (
@@ -118,7 +118,7 @@ export function TokenDetailDialog({ token, onClose }) {
             )}
           </div>
         </div>
-      </DialogContent>
-    </Dialog>
+      </SheetContent>
+    </Sheet>
   );
 }

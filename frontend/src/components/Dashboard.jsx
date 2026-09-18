@@ -12,7 +12,6 @@ import WalletCard from "@/components/WalletCard";
 import BotControlCard from "@/components/BotControlCard";
 import PLSummaryCard from "@/components/PLSummaryCard";
 import DailyLossMeter from "@/components/DailyLossMeter";
-import ActiveTradesTable from "@/components/ActiveTradesTable";
 import RecentLaunchesFeed from "@/components/RecentLaunchesFeed";
 import TradeHistoryTable from "@/components/TradeHistoryTable";
 import ClassifierRulesEditor from "@/components/ClassifierRulesEditor";
@@ -28,11 +27,13 @@ import AutopilotCard, { AutopilotSwitch } from "@/components/AutopilotCard";
 import RhWalletCard from "@/components/RhWalletCard";
 import MinimizableCard, { setAllMinimized } from "@/components/MinimizableCard";
 import DoctorStrip from "@/components/cockpit/DoctorStrip";
-import KpiRow from "@/components/cockpit/KpiRow";
+import KpiStrip from "@/components/cockpit/KpiStrip";
+import ActiveTradesCockpit from "@/components/cockpit/ActiveTradesCockpit";
+import EquityPanel from "@/components/cockpit/EquityPanel";
 import CompactCandidates from "@/components/cockpit/CompactCandidates";
 import CompactLadder from "@/components/cockpit/CompactLadder";
 import SkipTicker from "@/components/cockpit/SkipTicker";
-import ViewTabs from "@/components/cockpit/ViewTabs";
+import NavBar from "@/components/cockpit/NavBar";
 import { useSkipFeed } from "@/lib/useSkipFeed";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Activity, LogOut } from "lucide-react";
@@ -53,6 +54,17 @@ export default function Dashboard() {
   const [ladder, setLadder] = useState(null);
   const [plSourceRefresh, setPlSourceRefresh] = useState(0);
   const [view, setView] = useState(() => localStorage.getItem("ui.view") || "live");
+  const [auto, setAuto] = useState(null);           // /api/autopilot/status — bankroll, search ledger, canary
+  const [pendingDoc, setPendingDoc] = useState(0);
+  useEffect(() => {
+    const tick = () => {
+      api.autopilotStatus().then(setAuto).catch(() => {});
+      api.doctorSuggestions().then((d) => setPendingDoc((d?.items || []).filter((x) => x.status === "pending").length)).catch(() => {});
+    };
+    tick();
+    const id = setInterval(tick, 30000);
+    return () => clearInterval(id);
+  }, [plSourceRefresh]);
   const pickView = useCallback((v) => { setView(v); localStorage.setItem("ui.view", v); }, []);
 
   // Footer skip ticker — resolves launch ids / mints to symbol + chain from whatever the UI already holds.
@@ -375,7 +387,7 @@ export default function Dashboard() {
     <div className="min-h-screen bg-neutral-950 text-neutral-50" data-testid="dashboard">
       <header className="border-b border-neutral-800 px-6 py-3 flex items-center justify-between bg-neutral-950 sticky top-0 z-20">
         <div className="flex items-center gap-3">
-          <Activity className="w-5 h-5 text-blue-500" />
+          <Activity className="w-5 h-5 text-emerald-400" />
           <div>
             <h1 className="text-base font-mono font-bold tracking-tight" data-testid="app-title">PUMP.BOT // micro-stake</h1>
             <p className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">preview-only · solana mainnet</p>
@@ -390,20 +402,8 @@ export default function Dashboard() {
           )}
           <PodPill />
           <span className="flex items-center gap-2" data-testid="ws-status">
-            <span className={`w-2 h-2 rounded-full ${wsConnected ? "bg-blue-500 animate-pulse" : "bg-neutral-600"}`}></span>
+            <span className={`w-2 h-2 rounded-full ${wsConnected ? "bg-emerald-400 animate-pulse" : "bg-neutral-600"}`}></span>
             <span className="text-neutral-400">{wsConnected ? "WS LIVE" : "WS OFFLINE"}</span>
-          </span>
-          <span className="flex items-center gap-2">
-            {(() => {
-              const desired = status?.helius_tracker_enabled ?? config?.helius_tracker_enabled ?? true;
-              const live = !!status?.listener_connected;
-              const paused = status?.helius_paused?.auto;
-              const connecting = status?.listener_last_attempt_ts && Date.now() / 1000 - status.listener_last_attempt_ts < 15;
-              const dot = !desired || (!live && paused) ? "bg-amber-500" : live ? "bg-emerald-500" : "bg-red-500";
-              const text = !desired ? "PUMP.FUN FEED OFF" : live ? "PUMP.FUN FEED ON · LIVE" : paused ? "PUMP.FUN FEED ON · PAUSED · DOCTOR" : connecting ? "PUMP.FUN FEED ON · CONNECTING" : "PUMP.FUN FEED ON · OFFLINE";
-              const why = !desired ? "operator switch OFF" : live ? "" : (status?.listener_last_error || (connecting ? "connecting…" : ""));
-              return (<><span className={`w-2 h-2 rounded-full ${dot}`}></span><span className="text-neutral-400" data-testid="listener-status" title={why}>{text}</span></>);
-            })()}
           </span>
           {me && (
             <span className="hidden md:flex items-center gap-2 text-neutral-500" data-testid="auth-user">
@@ -467,7 +467,11 @@ export default function Dashboard() {
       <StatusBanner status={status} onResetKill={async () => { await api.resetKillSwitch(); refreshAll(); }} />
       <HaltBanner />
       <ReadinessBanner onChanged={refreshAll} />
-      <DoctorStrip status={status} config={config} />
+      <NavBar value={view} onChange={pickView} status={status} onStart={onStart} onStop={onStop} badges={{
+        live: activeTrades.length || null, scan: launches.length || null,
+        ladder: (ladder?.tokens || []).filter((t) => t.state === "holding").length || null,
+        doctor: pendingDoc || null,
+      }} />
 
       <main className="max-w-[1600px] mx-auto p-4 md:p-6 space-y-4 md:space-y-6 pb-16">
         {config?.autopilot_enabled && (
@@ -477,31 +481,16 @@ export default function Dashboard() {
           </div>
         )}
 
-        <ViewTabs value={view} onChange={pickView} badges={{
-          live: activeTrades.length || null,
-          scan: launches.length || null,
-          doctor: Object.keys(status?.books_paused || {}).length ? "benched" : null,
-          control: status?.enabled ? "running" : "stopped",
-        }} />
-
         {view === "live" && (
-          <div key="live" className="space-y-4 md:space-y-6" data-testid="view-live">
-            {/* 2×2 cockpit — positions + equity on top, candidates + ladder below */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 items-stretch" data-testid="cockpit-grid">
-              <div className="tile-in h-full [&>div]:h-full" style={{ animationDelay: "0ms" }}>
-                <ActiveTradesTable trades={activeTrades} onExit={onExitTrade} />
-              </div>
-              <div className="tile-in" style={{ animationDelay: "80ms" }}>
-                <KpiRow wallet={wallet} status={status} />
-                <PLSummaryCard pl={pl} status={status} onReset={refreshAll} />
-              </div>
-              <div className="tile-in h-full" style={{ animationDelay: "160ms" }}>
-                <CompactCandidates candidates={scanner} />
-              </div>
-              <div className="tile-in h-full" style={{ animationDelay: "240ms" }}>
-                <CompactLadder ladder={ladder} />
-              </div>
+          <div key="live" className="space-y-4" data-testid="view-live">
+            <div className="tile-in"><KpiStrip wallet={wallet} status={status} config={config} auto={auto} pl={pl} /></div>
+            <div className="grid grid-cols-1 lg:grid-cols-[1.15fr_1fr] gap-4 items-stretch" data-testid="cockpit-grid">
+              <div className="tile-in" style={{ animationDelay: "60ms" }}><ActiveTradesCockpit trades={activeTrades} onExit={onExitTrade} /></div>
+              <div className="tile-in" style={{ animationDelay: "120ms" }}><EquityPanel refreshKey={pl?.cumulative_usd} /></div>
+              <div className="tile-in" style={{ animationDelay: "180ms" }}><CompactCandidates candidates={scanner} /></div>
+              <div className="tile-in" style={{ animationDelay: "240ms" }}><CompactLadder ladder={ladder} /></div>
             </div>
+            <div className="tile-in" style={{ animationDelay: "300ms" }}><DoctorStrip status={status} auto={auto} pending={pendingDoc} onOpenDoctor={() => pickView("doctor")} /></div>
 
             <MinimizableCard id="trade-history" title="Trade history" stat={`${history.length} trades`}>
               <TradeHistoryTable history={history} />
@@ -515,6 +504,48 @@ export default function Dashboard() {
             >
               <ReentryWatchCard watchlist={reentry} onRefresh={onReentryRefresh} />
             </CollapsibleSection>
+          </div>
+        )}
+
+        {view === "ladder" && (
+          <div key="ladder" className="space-y-4 md:space-y-6 tile-in" data-testid="view-ladder">
+            <div className="control-card">
+              <GraduateLadderCard ladder={ladder} config={config} onConfigPatch={onConfigPatch} onRefresh={onLadderRefresh} />
+            </div>
+          </div>
+        )}
+
+        {view === "books" && (
+          <div key="books" className="space-y-4 md:space-y-6" data-testid="view-books">
+            <div className="tile-in">
+              <CollapsibleSection
+                title="P/L by Source"
+                description="harvest vs search — momentum_new · momentum_seasoned · greylist_snipe · reentry"
+                storageKey="ui.section.pl-by-source"
+                testId="section-pl-by-source"
+                defaultOpen
+              >
+                <PLBySourceCard refreshSignal={plSourceRefresh} />
+              </CollapsibleSection>
+            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 items-start tile-in" style={{ animationDelay: "80ms" }}>
+              <CollapsibleSection
+                title="Scorecard"
+                description="situation cells — book × pattern × band × hour × cost · disabled cells skip"
+                storageKey="ui.section.scorecard"
+                testId="section-scorecard"
+              >
+                <ScorecardPanel />
+              </CollapsibleSection>
+              <CollapsibleSection
+                title="Classifier Rules"
+                description="book router — scalp / hunt / skip"
+                storageKey="ui.section.classifier"
+                testId="section-classifier"
+              >
+                <ClassifierRulesEditor rules={rules} onSave={onRulesSave} />
+              </CollapsibleSection>
+            </div>
           </div>
         )}
 
@@ -538,33 +569,6 @@ export default function Dashboard() {
                   <ScannerCandidatesCard candidates={scanner} config={config} />
                 </CollapsibleSection>
               </div>
-            </div>
-            <CollapsibleSection
-              title="Graduate Ladder"
-              description={`${ladder?.tokens?.length || 0} graduated tokens watched · ${(ladder?.tokens || []).filter((t) => t.state === "holding").length} holding`}
-              storageKey="ui.section.ladder"
-              testId="section-ladder"
-              badge={ladder?.tokens?.some((t) => t.state === "holding") ? "holding" : null}
-            >
-              <GraduateLadderCard ladder={ladder} config={config} onConfigPatch={onConfigPatch} onRefresh={onLadderRefresh} />
-            </CollapsibleSection>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 items-start">
-              <CollapsibleSection
-                title="Scorecard"
-                description="situation cells — book × pattern × band × hour × cost · disabled cells skip"
-                storageKey="ui.section.scorecard"
-                testId="section-scorecard"
-              >
-                <ScorecardPanel />
-              </CollapsibleSection>
-              <CollapsibleSection
-                title="Classifier Rules"
-                description="book router — scalp / hunt / skip"
-                storageKey="ui.section.classifier"
-                testId="section-classifier"
-              >
-                <ClassifierRulesEditor rules={rules} onSave={onRulesSave} />
-              </CollapsibleSection>
             </div>
             <CollapsibleSection
               title="Creator Greylist"
@@ -596,24 +600,14 @@ export default function Dashboard() {
                 <StrategyDoctorPanel tempo={status?.market_tempo} config={config} onConfigUpdate={setConfig} onApplied={onDoctorApplied} />
               </CollapsibleSection>
             </div>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 items-start">
-              <CollapsibleSection
-                title="P/L by Source"
-                description="momentum_new · momentum_seasoned · greylist_snipe · reentry"
-                storageKey="ui.section.pl-by-source"
-                testId="section-pl-by-source"
-              >
-                <PLBySourceCard refreshSignal={plSourceRefresh} />
-              </CollapsibleSection>
-              <CollapsibleSection
-                title="Cost Tracker"
-                description="Helius credit burn · monthly cap"
-                storageKey="ui.section.cost"
-                testId="section-cost"
-              >
-                <CostTrackerCard apiBase={process.env.REACT_APP_BACKEND_URL || ""} />
-              </CollapsibleSection>
-            </div>
+            <CollapsibleSection
+              title="Cost Tracker"
+              description="Helius credit burn · monthly cap"
+              storageKey="ui.section.cost"
+              testId="section-cost"
+            >
+              <CostTrackerCard apiBase={process.env.REACT_APP_BACKEND_URL || ""} />
+            </CollapsibleSection>
           </div>
         )}
 
@@ -636,6 +630,9 @@ export default function Dashboard() {
                 </MinimizableCard>
               </div>
             </div>
+            <MinimizableCard id="pl" title="P/L today · paper reset" stat={`${(pl?.daily_pnl_usd ?? 0) >= 0 ? "+" : "-"}$${Math.abs(pl?.daily_pnl_usd ?? 0).toFixed(2)}`}>
+              <PLSummaryCard pl={pl} status={status} onReset={refreshAll} />
+            </MinimizableCard>
             <CollapsibleSection
               title="Bot Control"
               description="Start/Stop · bands · gates · greylist sniper config"

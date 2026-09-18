@@ -46,6 +46,8 @@ export const api = {
   removeLadder: (key) => client.delete(`/ladder/${key}`).then(r => r.data),
   removeReentry: (mint) => client.delete(`/reentry/watchlist/${mint}`).then(r => r.data),
   scannerCandidates: () => client.get("/scanner/candidates").then(r => r.data),
+  scannerSkips: () => client.get("/scanner/skips").then(r => r.data),
+  doctorSuggestions: () => client.get("/doctor/suggestions").then(r => r.data),
   paperReset: () => client.post("/paper/reset").then(r => r.data),
   resetLivePnl: () => client.post("/pnl/reset-live").then(r => r.data),
   resetConfig: () => client.post("/bot/reset-config").then(r => r.data),
