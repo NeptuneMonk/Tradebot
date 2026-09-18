@@ -2071,3 +2071,12 @@ Current state (07:04): bot RUNNING, RH paper ON, RH feed ON, Pump.fun feed ON (o
 ## 2026-09-18 — Manual pin fixes (testing agent iteration_29: 7/7 pass)
 - **Unknown quote (CHILLZ/NFLX)**: `pin_manual` now consults DexScreener (operator view only, never gating) when the quote is unknown: takes the top-liquidity Robinhood pair, learns the quote token's symbol/decimals on-chain (`_register_quote` → QUOTES/QUOTE_BY_SYMBOL), and when our quoter can't read that pool or the quote has no oracle it prices MC from DexScreener USD marks (`dex_price_usd`, refreshed every 60 s in `refresh_manual_spot`). CHILLZ pinned: $187K MC vs NFLX.
 - **"Added but not visible" (biketyson)**: it was on the board but buried under 30 graduates; full ladder card + cockpit tile now sort holding → MANUAL → steps.
+
+
+## 2026-06 (iteration 30) — Manual holds + SOL scanner fix
+- ROOT CAUSE of "SOL plays not firing": `bot_config.scanner_enabled` was False in DB and the Control-card scanner checkbox was dead (wrote local state that `diff()` stripped). Fixed: checkbox → `flipKey` (immediate PUT), scanner re-enabled, amber `scanner-off-banner` + "turn on" button in Candidates when off. Auto-entries confirmed firing again (testing agent saw HUNT/SCALP auto-entries).
+- MANUAL HOLDS (`classifier_action` in {manual, rh_pons_manual}, or tracking `pinned`): `exits.is_manual_hold()`; exempt from no_momentum, snipe rip-cords/velocity, runner exhausted, scalp hold clock, search-dead-tape (SOL + RH). Only SL/TP/trail/manual sell.
+- Manual holds do NOT count toward max_concurrent_positions / rh_max_positions (`BotState.counted_open()`, `RHPaperTrader.counted_open()`); manual_enter never refused for cap. `/api/bot/status.manual_hold_count` added.
+- UI: Active Trades = auto rows on top, `manual-holds-divider`, manual rows (HOLD badge) at bottom. KPI slots = counted/max (+N holds). Candidates "gate ✓ · buy" toast updated.
+- Moved DexScreener pair lookup to `rh_pairs.py` (operator-only), tests: `tests/test_manual_hold.py`; full suite 683 passed. Report: /app/test_reports/iteration_30.json.
+- Backlog: P2 port RH flush-hold to SOL; P2 slippage-aware fast SL on SOL; P3 execution learning / counterfactual replay / shadow book.
