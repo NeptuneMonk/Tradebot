@@ -502,3 +502,19 @@ def test_rh_positions_push_unrealized_pnl_over_ws(monkeypatch):
     assert len(pushed) == 1 and pushed[0][0] == "trade_update"
     d = pushed[0][1]
     assert d["id"] == "t-rh-1" and d["chain"] == "rh" and abs(d["unrealized_pnl_pct"] - 50.0) < 0.01
+
+
+def test_graceful_stop_blocks_new_rh_entries_but_keeps_monitoring(monkeypatch):
+    """Log-proven bug: RH kept opening paper positions during a graceful stop, so the stop never drained."""
+    st = make_state()
+    calls = {"scan": 0, "mon": 0}
+    monkeypatch.setattr(st.rh_paper, "_scan_entries", lambda now: calls.__setitem__("scan", calls["scan"] + 1))
+    monkeypatch.setattr(st.rh_paper, "_scan_reentries", lambda now: None)
+    async def mon(now): calls["mon"] += 1
+    monkeypatch.setattr(st.rh_paper, "_monitor", mon)
+    st.stopping_gracefully = True
+    asyncio.run(st.rh_paper.tick(time.time()))
+    assert calls == {"scan": 0, "mon": 1}
+    st.stopping_gracefully = False
+    asyncio.run(st.rh_paper.tick(time.time()))
+    assert calls == {"scan": 1, "mon": 2}

@@ -37,7 +37,7 @@ def test_stopped_after_restart_names_the_restart_and_the_flag():
 
 def test_feed_off_not_armed_env_wallet_breaker_kill_each_get_a_reason(tmp_path):
     st = _state(rh_feed_enabled=False, rh_paper_enabled=False, rh_live_trading=True)
-    st.live_doctor = SimpleNamespace(book_paused=lambda b: b == "rh_pons")
+    st.live_doctor = SimpleNamespace(book_paused=lambda b: b == "rh_pons", book_benched=lambda b, live: live and b == "rh_pons")
     st.rh_paper.live_kill_tripped = True
     with patch.object(readiness.rh_discovery, "RH_RPC_URL", ""), \
          patch.object(readiness.rh_wallet, "WALLET_PATH", tmp_path / "missing.json"), \
@@ -82,3 +82,12 @@ def test_empty_rpc_url_sets_boot_error_on_discovery_stats():
     with patch.object(rh_discovery, "RH_RPC_URL", ""):
         disc.start()
     assert "RH_RPC_URL is empty" in disc.stats["boot_error"] and disc._task is None
+
+
+def test_paper_breaker_is_an_adjustment_not_a_block():
+    """Armed rh_pons breaker on PAPER: readiness must not claim the book is benched (paper trades at ×0.5)."""
+    st = _state(rh_feed_enabled=True, rh_paper_enabled=True, rh_live_trading=False)
+    st.live_doctor = SimpleNamespace(book_paused=lambda b: b == "rh_pons", book_benched=lambda b, live: live and b == "rh_pons")
+    r = readiness.rh_readiness(st)
+    assert r["checks"]["rh_book_open"] is True and r["checks"]["rh_breaker_armed"] is True
+    assert "benched" not in " | ".join(r["reasons"])

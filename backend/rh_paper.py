@@ -99,16 +99,22 @@ class RHPaperTrader:
         return bool(getattr(cfg, "enabled", False)) and (
             bool(getattr(cfg, "rh_paper_enabled", False)) or bool(getattr(cfg, "rh_live_trading", False)))
 
+    def _may_open(self) -> bool:
+        """New RH entries need the RH book armed AND no graceful stop in flight (a stop must drain, not keep re-filling)."""
+        return self._active() and not getattr(self.state, "stopping_gracefully", False)
+
+    async def tick(self, now: float):
+        if self._may_open():
+            self._scan_entries(now)
+            self._scan_reentries(now)
+        await self._monitor(now)
+
     async def _loop(self):
         await asyncio.sleep(4.0)
         await self._restore()
         while True:
             try:
-                now = time.time()
-                if self._active():
-                    self._scan_entries(now)
-                    self._scan_reentries(now)
-                await self._monitor(now)
+                await self.tick(time.time())
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -947,7 +953,7 @@ class RHPaperTrader:
         if pnl <= -abs(float(cfg.rh_daily_kill_switch_usd)):
             self.live_kill_tripped = True
             cfg.rh_live_trading = False
-            await self.state.save_config()
+            await self.state.save_config(include_switches=True)      # safety switch flip must persist
             logger.critical(f"RH LIVE KILL SWITCH: today's live RH P/L {pnl:+.2f} $ ≤ -{cfg.rh_daily_kill_switch_usd:g} — rh_live_trading OFF")
             await hub.broadcast("rh_live_kill", {"pnl_today_usd": pnl, "limit": cfg.rh_daily_kill_switch_usd})
 

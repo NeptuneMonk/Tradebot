@@ -639,8 +639,12 @@ async def update_config(body: dict = Body(...)):
     # Doctor trail-stop's peak so it doesn't immediately slam a pause based
     # on historical regime drift. Fresh baseline = fresh decisions.
     prev_helius = bot_state.config.helius_tracker_enabled
+    flips = {k: (getattr(bot_state.config, k, None), getattr(cfg, k, None)) for k in bot_state.SWITCH_KEYS
+             if k in body and getattr(bot_state.config, k, None) != getattr(cfg, k, None)}
+    if flips:
+        logger.warning(f"CONFIG SWITCHES CHANGED via PUT /bot/config: {flips}")
     bot_state.config = cfg
-    await bot_state.save_config()
+    await bot_state.save_config(include_switches=True)
     if "helius_tracker_enabled" in body:
         await sync_helius_feed(cfg.helius_tracker_enabled, prev_helius)
     return cfg
@@ -718,11 +722,9 @@ async def reset_kill_switch():
 @api.post("/bot/reset-config")
 async def reset_config_to_defaults():
     """Reset all bot config fields to coded defaults (preserves enabled + live_trading)."""
-    keep_enabled = bot_state.config.enabled
-    keep_live = bot_state.config.live_trading
     new_cfg = BotConfig()
-    new_cfg.enabled = keep_enabled
-    new_cfg.live_trading = keep_live
+    for k in bot_state.SWITCH_KEYS:                       # feeds / RH arming / live / enabled are operator switches, never reset
+        setattr(new_cfg, k, getattr(bot_state.config, k))
     bot_state.config = new_cfg
     await bot_state.save_config()
     try:
@@ -760,8 +762,6 @@ async def restore_user_default_config():
     """Restore the previously-snapshotted user defaults from
     `bot_config_defaults`. Falls back to the coded BotConfig() defaults
     when no user snapshot exists. Preserves `enabled` + `live_trading`."""
-    keep_enabled = bot_state.config.enabled
-    keep_live = bot_state.config.live_trading
     snap = await db.bot_config_defaults.find_one(
         {"_id": "singleton"}, {"_id": 0, "saved_at": 0},
     )
@@ -774,8 +774,8 @@ async def restore_user_default_config():
             raise HTTPException(400, f"saved defaults invalid: {e}")
     else:
         new_cfg = BotConfig()
-    new_cfg.enabled = keep_enabled
-    new_cfg.live_trading = keep_live
+    for k in bot_state.SWITCH_KEYS:                       # restoring a snapshot must not flip feeds / RH arming / live / enabled
+        setattr(new_cfg, k, getattr(bot_state.config, k))
     bot_state.config = new_cfg
     await bot_state.save_config()
     try:
@@ -2979,9 +2979,9 @@ async def doctor_apply_suggestion(sid: str):
     actions = s.get("actions") or {}
     before = {}
     if actions:
-        cfg_before = await db.bot_config.find_one({}, {"_id": 0}) or {}
+        cfg_before = await db.bot_config.find_one({"_id": "current"}, {"_id": 0}) or {}
         before = {k: cfg_before.get(k) for k in actions.keys()}
-        await db.bot_config.update_one({}, {"$set": actions})
+        await db.bot_config.update_one({"_id": "current"}, {"$set": actions})
         await bot_state.load()  # reload config into the running bot
     await db.strategy_suggestions.update_one(
         {"id": sid},
@@ -3052,7 +3052,7 @@ async def doctor_revert_applied(sid: str):
         raise HTTPException(404, "applied suggestion not found")
     before = s.get("applied_before") or {}
     if before:
-        await db.bot_config.update_one({}, {"$set": before})
+        await db.bot_config.update_one({"_id": "current"}, {"$set": before})
         await bot_state.load()
     await db.strategy_suggestions.update_one(
         {"id": sid},

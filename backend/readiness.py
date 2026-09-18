@@ -41,9 +41,11 @@ def rh_readiness(state) -> dict:
                            "the funded key is not in this container; import it (RH wallet card → import private key)")
 
     ld = getattr(state, "live_doctor", None)
-    checks["rh_book_open"] = not (ld is not None and ld.book_paused("rh_pons"))
+    rh_live = bool(getattr(cfg, "rh_live_trading", False))
+    checks["rh_book_open"] = not (ld is not None and ld.book_benched("rh_pons", rh_live))
     if not checks["rh_book_open"]:
         reasons.append("rh_pons benched by the live-doctor breaker (LIFT to override)")
+    checks["rh_breaker_armed"] = bool(ld is not None and ld.book_paused("rh_pons"))   # paper: adjust ×0.5, never a block
 
     rh = getattr(state, "rh_paper", None)
     checks["rh_kill_ok"] = not bool(getattr(rh, "live_kill_tripped", False))

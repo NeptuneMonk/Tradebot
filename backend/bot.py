@@ -168,10 +168,17 @@ class BotState:
         self.leader_ok = True     # False on follower pods: load() refreshes config only, no loops
         self._bg_tasks: list = []
 
+    SWITCH_KEYS = ("enabled", "helius_tracker_enabled", "rh_feed_enabled", "rh_paper_enabled", "rh_live_trading", "live_trading", "scanner_enabled", "ladder_enabled")
+
     async def load(self):
         cfg = await self.db.bot_config.find_one({"_id": "current"}, {"_id": 0})
         if cfg:
-            self.config = BotConfig(**cfg)
+            new = BotConfig(**cfg)
+            flips = {k: (getattr(self.config, k, None), getattr(new, k, None)) for k in self.SWITCH_KEYS if getattr(self.config, k, None) != getattr(new, k, None)}
+            if flips and getattr(self, "_loaded_once", False):
+                logger.warning(f"CONFIG SWITCHES CHANGED on reload from Mongo: {flips}")   # audit trail — who flipped RH / feeds / live
+            self._loaded_once = True
+            self.config = new
         # Sync the Helius gate with the loaded config on every reload.
         # `helius_tracker_enabled=True` → gate NOT paused (Helius traffic
         # flows). False → gate paused (listener / scanner RPC / new entries
@@ -673,12 +680,15 @@ class BotState:
         """Start/stop persist ONLY {enabled}. Feed toggles are never rewritten by the master switch."""
         await self.db.bot_config.update_one({"_id": "current"}, {"$set": {"enabled": bool(self.config.enabled)}}, upsert=True)
 
-    async def save_config(self):
-        await self.db.bot_config.update_one(
-            {"_id": "current"},
-            {"$set": {**self.config.model_dump(), "_id": "current"}},
-            upsert=True,
-        )
+    async def save_config(self, include_switches: bool = False):
+        """Background writers (bankroll governor, profit sweep, RH kill switch, migrations) persist the in-memory config.
+        They must NEVER carry the operator switches (feeds / RH paper / live / enabled) — a stale in-memory snapshot
+        would silently flip them back. Only the config PUT (`include_switches=True`) writes those."""
+        doc = self.config.model_dump()
+        if not include_switches:
+            for k in self.SWITCH_KEYS:
+                doc.pop(k, None)
+        await self.db.bot_config.update_one({"_id": "current"}, {"$set": {**doc, "_id": "current"}}, upsert=True)
 
     async def save_rules(self):
         await self.db.classifier_rules.update_one(

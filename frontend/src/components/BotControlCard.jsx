@@ -1,4 +1,4 @@
-import { useState, useEffect, memo } from "react";
+import { useState, useEffect, useRef, memo } from "react";
 import { PauseCircle, Power, Zap, Settings2, ChevronDown, ChevronRight, Radio, Pause, Eye } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
@@ -30,6 +30,7 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
   const [baseline, setBaseline] = useState(null);
   const [showAdvancedFees, setShowAdvancedFees] = useState(false);
   const [savedDefaults, setSavedDefaults] = useState({ exists: false, saved_at: null });
+  const inflight = useRef(new Set());
 
   // Probe whether the user has previously saved their own defaults so we
   // can render the "Restore my defaults" button + the "saved on …" hint.
@@ -62,7 +63,9 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
 
   // Only the keys the user actually changed go over the wire. Sending the whole form snapshot re-wrote
   // stale values (a feed toggle flipped by another click / the Doctor) — that's why feeds "switched themselves off".
-  const diff = (a, b) => Object.fromEntries(Object.entries(a || {}).filter(([k, v]) => JSON.stringify(v) !== JSON.stringify((b || {})[k])));
+  // Operator switches only ever travel through their own toggle (flipKey) — never inside a form save.
+  const SWITCH_KEYS = new Set(["enabled", "helius_tracker_enabled", "rh_feed_enabled", "rh_paper_enabled", "rh_live_trading", "live_trading", "scanner_enabled", "ladder_enabled"]);
+  const diff = (a, b) => Object.fromEntries(Object.entries(a || {}).filter(([k, v]) => !SWITCH_KEYS.has(k) && JSON.stringify(v) !== JSON.stringify((b || {})[k])));
   const save = async () => {
     try {
       const patch = diff(local, baseline);
@@ -78,6 +81,8 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
   // Optimistic single-key toggle: flip instantly, persist in the background,
   // revert on failure. Merged into the edit-in-progress so unsaved edits survive.
   const flipKey = async (key, next, onOk, onErr) => {
+    if (inflight.current.has(key)) return;                 // double-click guard: one PUT per switch at a time
+    inflight.current.add(key);
     setLocal((cur) => ({ ...cur, [key]: next }));
     setBaseline((b) => (b ? { ...b, [key]: next } : b));
     try {
@@ -87,6 +92,8 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
       setLocal((cur) => ({ ...cur, [key]: !next }));
       setBaseline((b) => (b ? { ...b, [key]: !next } : b));
       toast.error(onErr?.(e) || "Toggle failed");
+    } finally {
+      inflight.current.delete(key);
     }
   };
 
@@ -1094,7 +1101,7 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
           onClick={async () => {
             if (dirty) {
               if (!window.confirm("You have unsaved edits. Save them first, then snapshot as your new defaults?")) return;
-              try { await onUpdate(local); setBaseline(local); }
+              try { const patch = diff(local, baseline); if (Object.keys(patch).length) await onUpdate(patch); setBaseline(local); }
               catch { toast.error("Save failed"); return; }
             }
             try {
