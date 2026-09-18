@@ -307,3 +307,12 @@ def test_sol_dust_pools_are_not_graduates_and_unknown_holders_do_not_block():
     assert d["state"] == "holding" and d["holders_at_first_step"] is None
     asyncio.run(book.observe("sol:UNKN", {**_src(191_000), "mint": "UNKN", "holders": 812}, t0 + 15 * H + 60))
     assert d["holders"] == 812
+
+
+def test_manual_pin_snapshot_flags_survive_and_sort_inputs_present():
+    st = _state(); st.rh_discovery = _Disc()
+    book = L.LadderBook(st)
+    _feed(book, "sol:grad", [(0, 100_000, 50)])
+    asyncio.run(book.add_manual(ADDR))
+    rows = {r["key"]: r for r in book.snapshot()}
+    assert rows[f"rh:{ADDR}"]["manual"] is True and rows["sol:grad"]["manual"] is False

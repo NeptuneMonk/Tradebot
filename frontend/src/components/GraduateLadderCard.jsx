@@ -54,7 +54,8 @@ function LadderRow({ t, onRemove, onOpen }) {
 
 function GraduateLadderCard({ ladder, config, onConfigPatch, onRefresh }) {
   const [detail, setDetail] = useState(null);
-  const tokens = ladder?.tokens || [];
+  // holding first, then operator pins (so a fresh pin is never buried under 30 graduates), then by steps
+  const tokens = [...(ladder?.tokens || [])].sort((a, b) => (b.state === "holding") - (a.state === "holding") || (b.manual === true) - (a.manual === true) || (b.steps ?? 0) - (a.steps ?? 0));
   const holding = tokens.filter((t) => t.state === "holding");
   const remove = async (key) => {
     try { await api.removeLadder(key); toast.success("Dropped from the ladder"); onRefresh?.(); } catch (e) { toast.error(e?.response?.data?.detail || "Could not remove"); }

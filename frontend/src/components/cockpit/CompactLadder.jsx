@@ -39,7 +39,7 @@ function Row({ t, onOpen }) {
 
 function CompactLadder({ ladder, limit = 10 }) {
   const [detail, setDetail] = useState(null);
-  const tokens = [...(ladder?.tokens || [])].sort((a, b) => (b.state === "holding") - (a.state === "holding") || (b.steps ?? 0) - (a.steps ?? 0));
+  const tokens = [...(ladder?.tokens || [])].sort((a, b) => (b.state === "holding") - (a.state === "holding") || (b.manual === true) - (a.manual === true) || (b.steps ?? 0) - (a.steps ?? 0));
   const holding = tokens.filter((t) => t.state === "holding").length;
   const live = ladder?.live?.sol || ladder?.live?.rh;
   return (

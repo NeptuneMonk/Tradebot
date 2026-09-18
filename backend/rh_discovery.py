@@ -822,6 +822,39 @@ class RHDiscovery:
         out += [(sym, pair, dec) for sym, (pair, dec) in QUOTE_BY_SYMBOL.items() if sym != "ETH"]
         return out
 
+    async def _dex_pair(self, token: str) -> dict | None:
+        """DexScreener (operator views only, never gating): best Robinhood-chain pair → quote token, pair, USD price, liquidity."""
+        try:
+            async with httpx.AsyncClient(timeout=6.0) as c:
+                pairs = ((await c.get(f"https://api.dexscreener.com/latest/dex/tokens/{token}")).json() or {}).get("pairs") or []
+        except Exception as e:
+            logger.debug(f"dexscreener {token[:8]}: {e}")
+            return None
+        pairs = [p for p in pairs if str(p.get("chainId", "")).lower() in ("robinhood", "robinhoodchain", "rh")
+                 and str(p.get("baseToken", {}).get("address", "")).lower() == token]
+        if not pairs:
+            return None
+        pairs.sort(key=lambda p: float((p.get("liquidity") or {}).get("usd") or 0), reverse=True)
+        return pairs[0]
+
+    async def _register_quote(self, addr: str, sym: str) -> tuple[str, str, int]:
+        """Unknown quote (e.g. NFLX stock token): learn symbol + decimals on-chain and add it to the quote tables."""
+        addr = addr.lower()
+        if addr in QUOTES:
+            known = QUOTES[addr]
+            return known[0], addr, known[1]
+        dec = 18
+        try:
+            (dec_raw,) = await self._rpc([("eth_call", [{"to": addr, "data": "0x313ce567"}, "latest"])])
+            if dec_raw and dec_raw != "0x":
+                dec = int(dec_raw, 16)
+        except Exception as e:
+            logger.debug(f"quote decimals {addr[:8]}: {e}")
+        sym = (sym or addr[:6]).upper()
+        QUOTES[addr] = (sym, dec)
+        QUOTE_BY_SYMBOL[sym] = (addr, dec)
+        return sym, addr, dec
+
     async def pin_manual(self, token: str, quote: str | None = None) -> dict:
         """Operator adds an established RH token for the Graduate Ladder: locate its v4 pool, build a pinned bucket that
         the swap ingest prices like any graduated token, is exempt from every age/TTL rule and is never scalped by RH PONS."""
@@ -830,6 +863,16 @@ class RHDiscovery:
             raise ValueError("not an EVM address")
         now = time.time()
         pool = None
+        dex = None
+        if not quote or (quote.strip().lower().startswith("0x") and quote.strip().lower() not in QUOTES):
+            dex = await self._dex_pair(token)                      # find the real pair + learn an unknown quote (NFLX, …)
+            if dex and dex.get("quoteToken", {}).get("address"):
+                qaddr = dex["quoteToken"]["address"].lower()
+                if not quote or quote.strip().lower() == qaddr:
+                    await self._register_quote(qaddr, dex["quoteToken"].get("symbol"))
+                    quote = qaddr
+        elif quote and quote.strip().lower().startswith("0x"):
+            pass
         for sym, pair, dec in self._resolve_quote(quote):
             try:
                 spot = await rh_dex.spot_price(token, pair, dec)
@@ -839,8 +882,12 @@ class RHDiscovery:
             if spot > 0:
                 pool = (sym, pair, dec, spot)
                 break
+        if pool is None and dex and float(dex.get("priceUsd") or 0) > 0:
+            qaddr = dex["quoteToken"]["address"].lower()
+            sym, dec = QUOTES.get(qaddr, (dex["quoteToken"].get("symbol", "?").upper(), 18))
+            pool = (sym, qaddr, dec, float(dex.get("priceNative") or 0.0))   # pool not readable via our quoter → DexScreener marks
         if pool is None:
-            raise ValueError("no initialised v4 pool for this token" + (f" against {quote}" if quote else " (tried ETH + every stock quote)"))
+            raise ValueError("no initialised v4 pool for this token" + (f" against {quote}" if quote else " (tried ETH + every stock quote, and DexScreener has no Robinhood pair)"))
         sym, pair, dec, spot = pool
         b = self.tracking.get(token)
         if b is None:
@@ -848,11 +895,16 @@ class RHDiscovery:
                                                           "quote_decimals": dec, "graduation_threshold": 0.0}, now)
         b.update(pair_token=pair, quote_symbol=sym, quote_decimals=dec, graduated=True, graduated_at=b.get("graduated_at") or now,
                  pool_live=True, manual=True, pinned=True, pinned_at=b.get("pinned_at") or now)
+        if dex:
+            b["dex_price_usd"], b["dex_pair"], b["dex_ts"] = float(dex.get("priceUsd") or 0.0), dex.get("pairAddress"), now
+            if not b.get("symbol"):
+                b["symbol"], b["name"] = dex["baseToken"].get("symbol"), dex["baseToken"].get("name")
         self._mark_spot(b, spot, now)
         if not b.get("symbol"):
             await self._fetch_metadata([token])
         return {"token": token, "symbol": b.get("symbol"), "name": b.get("name"), "quote_symbol": sym, "pair_token": pair,
-                "price_quote": spot, "usd_market_cap": b.get("usd_market_cap") or 0.0, "quote_priced": self._quote_usd(sym) > 0}
+                "price_quote": spot, "usd_market_cap": b.get("usd_market_cap") or 0.0,
+                "quote_priced": self._quote_usd(sym) > 0 or float(b.get("dex_price_usd") or 0) > 0}
 
     def unpin_manual(self, token: str) -> bool:
         b = self.tracking.get(token.lower())
@@ -868,8 +920,11 @@ class RHDiscovery:
             b["price_samples"].append((now, spot))
             b["last_price_sample_ts"] = now
         usd = self._quote_usd(b["quote_symbol"])
-        if usd > 0:
+        if usd > 0 and spot > 0:
             b["usd_market_cap"] = spot * TOKEN_SUPPLY * usd
+            b["mc_samples"].append((now, b["usd_market_cap"]))
+        elif float(b.get("dex_price_usd") or 0) > 0:                 # quote has no oracle (NFLX…): DexScreener USD marks
+            b["usd_market_cap"] = float(b["dex_price_usd"]) * TOKEN_SUPPLY
             b["mc_samples"].append((now, b["usd_market_cap"]))
 
     async def refresh_manual_spot(self, token: str, now: float) -> bool:
@@ -877,12 +932,16 @@ class RHDiscovery:
         b = self.tracking.get(token)
         if not b or not b.get("pinned"):
             return False
+        if b.get("dex_pair") and now - float(b.get("dex_ts") or 0) >= 60.0:      # DexScreener marks for oracle-less quotes
+            dex = await self._dex_pair(token)
+            if dex:
+                b["dex_price_usd"], b["dex_ts"] = float(dex.get("priceUsd") or 0.0), now
         try:
             spot = await rh_dex.spot_price(token, b["pair_token"], int(b.get("quote_decimals") or 18))
         except Exception as e:
             logger.debug(f"manual spot {token}: {e}")
-            return False
-        if spot <= 0:
+            spot = 0.0
+        if spot <= 0 and float(b.get("dex_price_usd") or 0) <= 0:
             return False
         self._mark_spot(b, spot, now)
         return True
