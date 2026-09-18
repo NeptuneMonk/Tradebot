@@ -43,7 +43,49 @@ code, .font-mono, .mono {
     100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
 }
 
-/* Cockpit: staggered tile entrance + footer ticker */
+/* Cockpit: staggered tile entrance + LED footer tape */
+@font-face {
+    font-family: 'DSEG14-Classic';
+    src: url('https://cdn.jsdelivr.net/npm/dseg@0.46.0/fonts/DSEG14-Classic/DSEG14Classic-Regular.woff2') format('woff2');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+}
+.led {
+    font-family: 'DSEG14-Classic', 'IBM Plex Mono', monospace;
+    font-size: 15px;
+    letter-spacing: 0.08em;
+    line-height: 1;
+}
+.led-bright {
+    color: #ff3b30;
+    text-shadow: 0 0 6px rgba(255, 59, 48, 0.85), 0 0 14px rgba(255, 59, 48, 0.35);
+}
+.led-dim {
+    color: rgba(255, 90, 80, 0.72);
+    text-shadow: 0 0 5px rgba(255, 59, 48, 0.4);
+}
+.led-idle {
+    color: rgba(255, 59, 48, 0.28);
+    animation: led-blink 2.4s ease-in-out infinite;
+}
+.led-sep {
+    display: inline-block;
+    width: 2px;
+    height: 14px;
+    margin: 0 10px;
+    background: rgba(255, 59, 48, 0.7);
+    box-shadow: 0 0 6px rgba(255, 59, 48, 0.6);
+}
+.led-tape {
+    background:
+        radial-gradient(circle, rgba(255, 60, 48, 0.06) 0.6px, transparent 0.8px) 0 0 / 3px 3px,
+        #050505;
+}
+@keyframes led-blink {
+    0%, 100% { opacity: 0.35; }
+    50% { opacity: 1; }
+}
 .tile-in {
     opacity: 0;
     transform: translateY(8px);
@@ -52,18 +94,6 @@ code, .font-mono, .mono {
 @keyframes tile-in {
     to { opacity: 1; transform: translateY(0); }
 }
-.ticker-track {
-    animation-name: ticker-scroll;
-    animation-timing-function: linear;
-    animation-iteration-count: infinite;
-    will-change: transform;
-}
-.ticker:hover .ticker-track { animation-play-state: paused; }
-@keyframes ticker-scroll {
-    from { transform: translateX(0); }
-    to { transform: translateX(-50%); }
-}
-
 /* No-radius helpers */
 .no-radius, .no-radius * {
     border-radius: 2px !important;
