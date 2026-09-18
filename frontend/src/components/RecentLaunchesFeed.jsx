@@ -20,7 +20,7 @@ const timeAgo = (iso) => {
 
 const CHAIN_FILTER_KEY = "ui.launches.chain";
 
-const SOL_GATE_HINT = {
+export const SOL_GATE_HINT = {
   pass: "cleared the momentum pre-rank — queued for the on-chain check and entry",
   age: "outside the New (Pump.fun) / Seasoned (PumpSwap) age window",
   "no-buy-events": "no buys seen on the tape yet — nothing to score",
@@ -47,7 +47,7 @@ const SOL_GATE_HINT = {
   entry_velocity: "entry velocity cap — too many entries in the last minute",
 };
 
-const RH_GATE_HINT = {
+export const RH_GATE_HINT = {
   pass: "cleared every PONS entry gate",
   "sl-cooldown": "stopped out on this token — SL Cooldown (momentum scanner setting) blocks every re-entry until it lapses",
   "reentry-wait": "closed this token moments ago — re-entry waits `Min wait (s)` from the Re-entry settings",

@@ -27,10 +27,15 @@ import CollapsibleSection from "@/components/CollapsibleSection";
 import AutopilotCard, { AutopilotSwitch } from "@/components/AutopilotCard";
 import RhWalletCard from "@/components/RhWalletCard";
 import MinimizableCard, { setAllMinimized } from "@/components/MinimizableCard";
+import DoctorStrip from "@/components/cockpit/DoctorStrip";
+import KpiRow from "@/components/cockpit/KpiRow";
+import CompactCandidates from "@/components/cockpit/CompactCandidates";
+import CompactLadder from "@/components/cockpit/CompactLadder";
+import SkipTicker from "@/components/cockpit/SkipTicker";
+import ViewTabs from "@/components/cockpit/ViewTabs";
+import { useSkipFeed } from "@/lib/useSkipFeed";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Activity, LogOut } from "lucide-react";
-
-const fmtUsd = (v) => (v == null ? "—" : `${v >= 0 ? "+" : "-"}$${Math.abs(v).toFixed(2)}`);
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -47,6 +52,23 @@ export default function Dashboard() {
   const [scanner, setScanner] = useState([]);
   const [ladder, setLadder] = useState(null);
   const [plSourceRefresh, setPlSourceRefresh] = useState(0);
+  const [view, setView] = useState(() => localStorage.getItem("ui.view") || "live");
+  const pickView = useCallback((v) => { setView(v); localStorage.setItem("ui.view", v); }, []);
+
+  // Footer skip ticker — resolves launch ids / mints to symbol + chain from whatever the UI already holds.
+  const skipFeed = useSkipFeed();
+  const skipFeedRef = useRef(skipFeed.onEvent);
+  skipFeedRef.current = skipFeed.onEvent;
+  const lookupRef = useRef({ launches: [], scanner: [] });
+  useEffect(() => { lookupRef.current = { launches, scanner }; skipFeed.seed(launches); }, [launches, scanner, skipFeed.seed]);
+  const resolveToken = useCallback((idOrMint) => {
+    if (!idOrMint) return null;
+    const { launches: ls, scanner: sc } = lookupRef.current;
+    const l = ls.find((x) => x.id === idOrMint || x.mint === idOrMint);
+    if (l) return { mint: l.mint, symbol: l.symbol, chain: l.chain || "sol" };
+    const c = sc.find((x) => x.mint === idOrMint);
+    return c ? { mint: c.mint, symbol: c.symbol, chain: c.chain || "sol" } : null;
+  }, []);
 
   // Initial full pull + slow polling fallback (every 20s)
   const refreshAll = useCallback(async () => {
@@ -233,10 +255,15 @@ export default function Dashboard() {
         // Buffered for the 400 ms coalesced flush (see scheduleLaunchFlush).
         launchUpdateNewBufRef.current.push(data);
         scheduleLaunchFlush();
+        skipFeedRef.current(type, data, resolveToken);
         break;
       case "candidate_update":
         launchUpdateBufRef.current.set(data.id, data);
         scheduleLaunchFlush();
+        skipFeedRef.current(type, data, resolveToken);
+        break;
+      case "scanner_skip":
+        skipFeedRef.current(type, data, resolveToken);
         break;
       case "trade_enter":
         setActiveTrades((prev) => [data, ...prev.filter((t) => t.id !== data.id)]);
@@ -440,171 +467,200 @@ export default function Dashboard() {
       <StatusBanner status={status} onResetKill={async () => { await api.resetKillSwitch(); refreshAll(); }} />
       <HaltBanner />
       <ReadinessBanner onChanged={refreshAll} />
+      <DoctorStrip status={status} config={config} />
 
-      <main className="max-w-[1600px] mx-auto p-4 md:p-6 space-y-4 md:space-y-6">
-        {/* TOP KPI STRIP — always visible. Wallet + PnL + DailyLoss.
-            Bot Control moved to a collapsible below; the StatusBanner at
-            the top of the page already shows running/stopped state. */}
+      <main className="max-w-[1600px] mx-auto p-4 md:p-6 space-y-4 md:space-y-6 pb-16">
         {config?.autopilot_enabled && (
           <div className="border border-lime-800/60 bg-lime-950/20 px-4 py-2 text-[11px] font-mono text-lime-200 flex items-center gap-2" data-testid="autopilot-banner">
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-lime-400 animate-pulse" />
             AUTOPILOT — the Doctor is driving: sizing from bankroll, tuning on expectancy in R, one canary at a time. You keep Start/Stop and live/paper.
           </div>
         )}
-        <MinimizableCard id="autopilot" title="Autopilot" stat={config?.autopilot_enabled ? "doctor is driving" : "manual"}>
-          <AutopilotCard config={config} onConfigUpdate={setConfig} />
-        </MinimizableCard>
-        <MinimizableCard id="rh-wallet" title="Robinhood wallet" stat={config?.rh_live_trading ? "LIVE" : config?.rh_paper_enabled ? "paper" : "off"}>
-          <RhWalletCard config={config} />
-        </MinimizableCard>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 items-start">
-          <MinimizableCard id="wallet" title="Wallet" stat={wallet ? `${wallet.sol_balance.toFixed(4)} SOL` : "—"}>
-            <WalletCard wallet={wallet} />
-          </MinimizableCard>
-          <MinimizableCard id="pl" title="P/L today" stat={fmtUsd(pl?.daily_pnl_usd)}>
-            <PLSummaryCard pl={pl} status={status} onReset={refreshAll} />
-          </MinimizableCard>
-          <MinimizableCard id="daily-loss" title="Daily loss" stat={`$${Number(status?.daily_loss_usd ?? 0).toFixed(2)} / $${Number(status?.daily_kill_switch_usd ?? 0).toFixed(0)}`}>
-            <DailyLossMeter status={status} onReset={refreshAll} />
-          </MinimizableCard>
-        </div>
+        <ViewTabs value={view} onChange={pickView} badges={{
+          live: activeTrades.length || null,
+          scan: launches.length || null,
+          doctor: Object.keys(status?.books_paused || {}).length ? "benched" : null,
+          control: status?.enabled ? "running" : "stopped",
+        }} />
 
-        {/* PRIMARY — Active Trades + Recent Launches always visible. */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 items-start">
-          <MinimizableCard id="active-trades" title="Active trades" stat={`${activeTrades.length} open`}>
-          <ActiveTradesTable trades={activeTrades} onExit={onExitTrade} />
-          </MinimizableCard>
-          <MinimizableCard id="launch-feed" title="Live launch feed" stat={`${launches.length} tracked`}>
-          <RecentLaunchesFeed launches={launches} feedLive={{ sol: !!status?.listener_connected, rh: !!status?.rh_feed_alive }} />
-          </MinimizableCard>
-        </div>
+        {view === "live" && (
+          <div key="live" className="space-y-4 md:space-y-6" data-testid="view-live">
+            {/* 2×2 cockpit — positions + equity on top, candidates + ladder below */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 items-stretch" data-testid="cockpit-grid">
+              <div className="tile-in h-full [&>div]:h-full" style={{ animationDelay: "0ms" }}>
+                <ActiveTradesTable trades={activeTrades} onExit={onExitTrade} />
+              </div>
+              <div className="tile-in" style={{ animationDelay: "80ms" }}>
+                <KpiRow wallet={wallet} status={status} />
+                <PLSummaryCard pl={pl} status={status} onReset={refreshAll} />
+              </div>
+              <div className="tile-in h-full" style={{ animationDelay: "160ms" }}>
+                <CompactCandidates candidates={scanner} />
+              </div>
+              <div className="tile-in h-full" style={{ animationDelay: "240ms" }}>
+                <CompactLadder ladder={ladder} />
+              </div>
+            </div>
 
-        {/* Trade History — always visible (collapsed cards above feed flow).
-            Co-mounted with Classifier Rules so the second column on wide
-            screens stays useful. */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 items-start">
-          <MinimizableCard id="trade-history" title="Trade history" stat={`${history.length} trades`}>
-            <TradeHistoryTable history={history} />
-          </MinimizableCard>
-          <CollapsibleSection
-            title="Scorecard"
-            description="situation cells — book × pattern × band × hour × cost · disabled cells skip"
-            storageKey="ui.section.scorecard"
-            testId="section-scorecard"
-          >
-            <ScorecardPanel />
-          </CollapsibleSection>
-          <CollapsibleSection
-            title="Classifier Rules"
-            description="book router — scalp / hunt / skip"
-            storageKey="ui.section.classifier"
-            testId="section-classifier"
-          >
-            <ClassifierRulesEditor rules={rules} onSave={onRulesSave} />
-          </CollapsibleSection>
-        </div>
+            <MinimizableCard id="trade-history" title="Trade history" stat={`${history.length} trades`}>
+              <TradeHistoryTable history={history} />
+            </MinimizableCard>
+            <CollapsibleSection
+              title="Re-entry Watchlist"
+              description={`${reentry?.length || 0} winners eligible to re-buy`}
+              storageKey="ui.section.reentry"
+              testId="section-reentry"
+              badge={reentry?.length ? String(reentry.length) : null}
+            >
+              <ReentryWatchCard watchlist={reentry} onRefresh={onReentryRefresh} />
+            </CollapsibleSection>
+          </div>
+        )}
 
-        {/* COLLAPSIBLE — everything below is lazy-mounted on first expand
-            and persists per-user via localStorage. Closed by default
-            because the bot runs fine without them being on-screen. */}
+        {view === "scan" && (
+          <div key="scan" className="space-y-4 md:space-y-6" data-testid="view-scan">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 items-start">
+              <div className="tile-in">
+                <MinimizableCard id="launch-feed" title="Live launch feed" stat={`${launches.length} tracked`}>
+                  <RecentLaunchesFeed launches={launches} feedLive={{ sol: !!status?.listener_connected, rh: !!status?.rh_feed_alive }} />
+                </MinimizableCard>
+              </div>
+              <div className="tile-in" style={{ animationDelay: "80ms" }}>
+                <CollapsibleSection
+                  title="Scanner Candidates"
+                  description="live tokens being tracked towards entry"
+                  storageKey="ui.section.scanner"
+                  testId="section-scanner"
+                  defaultOpen
+                  badge={scanner?.length ? String(scanner.length) : null}
+                >
+                  <ScannerCandidatesCard candidates={scanner} config={config} />
+                </CollapsibleSection>
+              </div>
+            </div>
+            <CollapsibleSection
+              title="Graduate Ladder"
+              description={`${ladder?.tokens?.length || 0} graduated tokens watched · ${(ladder?.tokens || []).filter((t) => t.state === "holding").length} holding`}
+              storageKey="ui.section.ladder"
+              testId="section-ladder"
+              badge={ladder?.tokens?.some((t) => t.state === "holding") ? "holding" : null}
+            >
+              <GraduateLadderCard ladder={ladder} config={config} onConfigPatch={onConfigPatch} onRefresh={onLadderRefresh} />
+            </CollapsibleSection>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 items-start">
+              <CollapsibleSection
+                title="Scorecard"
+                description="situation cells — book × pattern × band × hour × cost · disabled cells skip"
+                storageKey="ui.section.scorecard"
+                testId="section-scorecard"
+              >
+                <ScorecardPanel />
+              </CollapsibleSection>
+              <CollapsibleSection
+                title="Classifier Rules"
+                description="book router — scalp / hunt / skip"
+                storageKey="ui.section.classifier"
+                testId="section-classifier"
+              >
+                <ClassifierRulesEditor rules={rules} onSave={onRulesSave} />
+              </CollapsibleSection>
+            </div>
+            <CollapsibleSection
+              title="Creator Greylist"
+              description="creator scoring · pattern analytics · sniper targets"
+              storageKey="ui.section.greylist"
+              testId="section-greylist"
+            >
+              <CreatorGreylistPanel config={config} onConfigUpdate={setConfig} />
+            </CollapsibleSection>
+          </div>
+        )}
 
-        <CollapsibleSection
-          title="Bot Control"
-          description="Start/Stop · bands · gates · greylist sniper config"
-          storageKey="ui.section.bot-control"
-          testId="section-bot-control"
-          badge={status?.enabled ? "RUNNING" : "STOPPED"}
-        >
-          <BotControlCard
-            status={controlStatus}
-            config={config}
-            onUpdate={onConfigPatch}
-            onConfigLoaded={setConfig}
-            onStart={onStart}
-            onStop={onStop}
-          />
-        </CollapsibleSection>
+        {view === "doctor" && (
+          <div key="doctor" className="space-y-4 md:space-y-6" data-testid="view-doctor">
+            <div className="tile-in">
+              <MinimizableCard id="autopilot" title="Autopilot" stat={config?.autopilot_enabled ? "doctor is driving" : "manual"}>
+                <AutopilotCard config={config} onConfigUpdate={setConfig} />
+              </MinimizableCard>
+            </div>
+            <div className="tile-in" style={{ animationDelay: "80ms" }}>
+              <CollapsibleSection
+                title="Strategy Doctor"
+                description="advisory toggle · pending suggestions · live panels"
+                storageKey="ui.section.doctor"
+                testId="section-doctor"
+                defaultOpen
+                badge={config?.autopilot_enabled ? "autopilot" : null}
+              >
+                <StrategyDoctorPanel tempo={status?.market_tempo} config={config} onConfigUpdate={setConfig} onApplied={onDoctorApplied} />
+              </CollapsibleSection>
+            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 items-start">
+              <CollapsibleSection
+                title="P/L by Source"
+                description="momentum_new · momentum_seasoned · greylist_snipe · reentry"
+                storageKey="ui.section.pl-by-source"
+                testId="section-pl-by-source"
+              >
+                <PLBySourceCard refreshSignal={plSourceRefresh} />
+              </CollapsibleSection>
+              <CollapsibleSection
+                title="Cost Tracker"
+                description="Helius credit burn · monthly cap"
+                storageKey="ui.section.cost"
+                testId="section-cost"
+              >
+                <CostTrackerCard apiBase={process.env.REACT_APP_BACKEND_URL || ""} />
+              </CollapsibleSection>
+            </div>
+          </div>
+        )}
 
-        <CollapsibleSection
-          title="Strategy Doctor"
-          description="advisory toggle · pending suggestions · live panels"
-          storageKey="ui.section.doctor"
-          testId="section-doctor"
-          badge={config?.autopilot_enabled ? "autopilot" : null}
-        >
-          <StrategyDoctorPanel
-            tempo={status?.market_tempo}
-            config={config}
-            onConfigUpdate={setConfig}
-            onApplied={onDoctorApplied}
-          />
-        </CollapsibleSection>
-
-        <CollapsibleSection
-          title="Creator Greylist"
-          description="creator scoring · pattern analytics · sniper targets"
-          storageKey="ui.section.greylist"
-          testId="section-greylist"
-        >
-          <CreatorGreylistPanel
-            config={config}
-            onConfigUpdate={setConfig}
-          />
-        </CollapsibleSection>
-
-        <CollapsibleSection
-          title="Re-entry Watchlist"
-          description={`${reentry?.length || 0} winners eligible to re-buy`}
-          storageKey="ui.section.reentry"
-          testId="section-reentry"
-          badge={reentry?.length ? String(reentry.length) : null}
-        >
-          <ReentryWatchCard watchlist={reentry} onRefresh={onReentryRefresh} />
-        </CollapsibleSection>
-
-        <CollapsibleSection
-          title="Graduate Ladder"
-          description={`${ladder?.tokens?.length || 0} graduated tokens watched · ${(ladder?.tokens || []).filter((t) => t.state === "holding").length} holding`}
-          storageKey="ui.section.ladder"
-          testId="section-ladder"
-          badge={ladder?.tokens?.some((t) => t.state === "holding") ? "holding" : null}
-        >
-          <GraduateLadderCard ladder={ladder} config={config} onConfigPatch={onConfigPatch} onRefresh={onLadderRefresh} />
-        </CollapsibleSection>
-
-        <CollapsibleSection
-          title="P/L by Source"
-          description="momentum_new · momentum_seasoned · greylist_snipe · reentry"
-          storageKey="ui.section.pl-by-source"
-          testId="section-pl-by-source"
-        >
-          <PLBySourceCard refreshSignal={plSourceRefresh} />
-        </CollapsibleSection>
-
-        <CollapsibleSection
-          title="Cost Tracker"
-          description="Helius credit burn · monthly cap"
-          storageKey="ui.section.cost"
-          testId="section-cost"
-        >
-          <CostTrackerCard apiBase={process.env.REACT_APP_BACKEND_URL || ""} />
-        </CollapsibleSection>
-
-        <CollapsibleSection
-          title="Scanner Candidates"
-          description="live tokens being tracked towards entry"
-          storageKey="ui.section.scanner"
-          testId="section-scanner"
-          badge={scanner?.length ? String(scanner.length) : null}
-        >
-          <ScannerCandidatesCard candidates={scanner} config={config} />
-        </CollapsibleSection>
+        {view === "control" && (
+          <div key="control" className="space-y-4 md:space-y-6" data-testid="view-control">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 items-start">
+              <div className="tile-in">
+                <MinimizableCard id="wallet" title="Wallet" stat={wallet ? `${wallet.sol_balance.toFixed(4)} SOL` : "—"}>
+                  <WalletCard wallet={wallet} />
+                </MinimizableCard>
+              </div>
+              <div className="tile-in" style={{ animationDelay: "80ms" }}>
+                <MinimizableCard id="rh-wallet" title="Robinhood wallet" stat={config?.rh_live_trading ? "LIVE" : config?.rh_paper_enabled ? "paper" : "off"}>
+                  <RhWalletCard config={config} />
+                </MinimizableCard>
+              </div>
+              <div className="tile-in" style={{ animationDelay: "160ms" }}>
+                <MinimizableCard id="daily-loss" title="Daily loss" stat={`$${Number(status?.daily_loss_usd ?? 0).toFixed(2)} / $${Number(status?.daily_kill_switch_usd ?? 0).toFixed(0)}`}>
+                  <DailyLossMeter status={status} onReset={refreshAll} />
+                </MinimizableCard>
+              </div>
+            </div>
+            <CollapsibleSection
+              title="Bot Control"
+              description="Start/Stop · bands · gates · greylist sniper config"
+              storageKey="ui.section.bot-control"
+              testId="section-bot-control"
+              defaultOpen
+              badge={status?.enabled ? "RUNNING" : "STOPPED"}
+            >
+              <BotControlCard
+                status={controlStatus}
+                config={config}
+                onUpdate={onConfigPatch}
+                onConfigLoaded={setConfig}
+                onStart={onStart}
+                onStop={onStop}
+              />
+            </CollapsibleSection>
+          </div>
+        )}
 
         <footer className="text-[10px] text-neutral-600 font-mono text-center pt-4 pb-8 tracking-wider uppercase">
           // Preview-only. Real funds at risk. Never deploy this outside Emergent preview.
         </footer>
       </main>
+      <SkipTicker items={skipFeed.items} count10m={skipFeed.count10m} live={wsConnected && !!status?.enabled} />
     </div>
     </TooltipProvider>
   );

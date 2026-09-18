@@ -2059,6 +2059,8 @@ class BotState:
         self._ledger_sol(payload.get("mint", ""), payload.get("reason") or "skip")
         b = self.tracking.get(payload.get("mint", ""))
         if b is not None:                                  # entry-path refusals show on the feed like scanner gates
+            if not payload.get("symbol") and b.get("symbol"):
+                payload["symbol"] = b["symbol"]
             b["gate_reason"] = str(payload.get("reason") or "skip").split(" (")[0][:32]
             d = payload.get("details")
             b["gate_detail"] = "; ".join(str(x) for x in d) if isinstance(d, (list, tuple)) else (str(d) if d else None)
