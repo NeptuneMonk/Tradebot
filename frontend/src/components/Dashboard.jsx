@@ -10,6 +10,7 @@ import PodPill from "@/components/PodPill";
 import ScorecardPanel from "@/components/ScorecardPanel";
 import WalletCard from "@/components/WalletCard";
 import BotControlCard from "@/components/BotControlCard";
+import Wiki from "@/components/wiki/Wiki";
 import PLSummaryCard from "@/components/PLSummaryCard";
 import DailyLossMeter from "@/components/DailyLossMeter";
 import RecentLaunchesFeed from "@/components/RecentLaunchesFeed";
@@ -52,7 +53,7 @@ export default function Dashboard() {
   const [scanner, setScanner] = useState([]);
   const [ladder, setLadder] = useState(null);
   const [plSourceRefresh, setPlSourceRefresh] = useState(0);
-  const [view, setView] = useState(() => localStorage.getItem("ui.view") || "live");
+  const [view, setView] = useState(() => (window.location.hash.startsWith("#wiki") ? "wiki" : localStorage.getItem("ui.view") || "live"));
   const [auto, setAuto] = useState(null);           // /api/autopilot/status — bankroll, search ledger, canary
   const [pendingDoc, setPendingDoc] = useState(0);
   useEffect(() => {
@@ -590,6 +591,8 @@ export default function Dashboard() {
               onReloadAuto={() => api.autopilotStatus().then(setAuto).catch(() => {})} />
           </div>
         )}
+
+        {view === "wiki" && <div key="wiki" className="tile-in"><Wiki /></div>}
 
         {view === "control" && (
           <div key="control" className="space-y-4" data-testid="view-control">

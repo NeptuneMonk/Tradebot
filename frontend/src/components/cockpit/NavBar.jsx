@@ -7,6 +7,7 @@ export const VIEWS = [
   { id: "doctor", label: "DOCTOR", hint: "strategy doctor, autopilot, costs" },
   { id: "books", label: "BOOKS", hint: "P/L by source, scorecard, classifier, book exits" },
   { id: "control", label: "CONTROL", hint: "bot control, wallets, gates" },
+  { id: "wiki", label: "WIKI", hint: "manual — terminology, screens, how to read and adjust gates and exits" },
 ];
 
 export default function NavBar({ value, onChange, badges = {}, status, onStart, onStop }) {
