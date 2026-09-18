@@ -15,6 +15,10 @@ RPC_FALLBACK_URL = os.environ.get("SOLANA_RPC_FALLBACK_URL") or "https://api.mai
 WSS_URL = os.environ.get("SOLANA_WSS_URL") or "wss://api.mainnet-beta.solana.com"   # subscriptions default to the free public WSS; paid keys are for HTTP reads/sends only
 PUBLIC_WSS_URL = "wss://api.mainnet-beta.solana.com"
 WSS_FALLBACK_URLS = [u.strip() for u in (os.environ.get("SOLANA_WSS_FALLBACK_URLS") or "").split(",") if u.strip()]
+_HELIUS_WSS = (os.environ.get("HELIUS_WSS_URL") or "").strip()
+if _HELIUS_WSS and _HELIUS_WSS not in WSS_FALLBACK_URLS:
+    WSS_FALLBACK_URLS.append(_HELIUS_WSS)      # public node rejecting handshakes (HTTP 413 per-IP cap) → fall over to the paid WSS
+REJECT_SKIP_S = 300.0                           # a handshake-rejecting endpoint is skipped this long, then retried
 
 
 def wss_label(url: str) -> str:
@@ -31,12 +35,35 @@ class WssRouter:
             if u and u not in self.urls:
                 self.urls.append(u)
         self.exhausted: set[str] = set()
+        self.rejected_until: dict[str, float] = {}
+        self._rejects: dict[str, int] = {}
+
+    def _usable(self, u: str, now: float) -> bool:
+        return u not in self.exhausted and self.rejected_until.get(u, 0.0) <= now
 
     def current(self) -> str:
+        now = time.time()
         for u in self.urls:
-            if u not in self.exhausted:
+            if self._usable(u, now):
                 return u
-        return self.urls[-1]   # everything exhausted: keep knocking on the last resort
+        # everything down: the least-recently rejected non-exhausted one, else the last resort
+        live = [u for u in self.urls if u not in self.exhausted]
+        return min(live, key=lambda u: self.rejected_until.get(u, 0.0)) if live else self.urls[-1]
+
+    def mark_rejected(self, url: str, *, after: int = 2) -> str | None:
+        """Handshake rejected (HTTP 4xx before subscribe). After `after` consecutive rejections the endpoint is skipped
+        for REJECT_SKIP_S. Returns the endpoint to switch to, or None while still retrying the same one."""
+        self._rejects[url] = self._rejects.get(url, 0) + 1
+        if self._rejects[url] < after:
+            return None
+        self._rejects[url] = 0
+        self.rejected_until[url] = time.time() + REJECT_SKIP_S
+        nxt = self.current()
+        return nxt if nxt != url else None
+
+    def mark_connected(self, url: str):
+        self._rejects.pop(url, None)
+        self.rejected_until.pop(url, None)
 
     def mark_exhausted(self, url: str) -> bool:
         """Returns True when another (non-exhausted) endpoint remains to switch to."""
@@ -45,6 +72,8 @@ class WssRouter:
 
     def reset(self):
         self.exhausted.clear()
+        self.rejected_until.clear()
+        self._rejects.clear()
 
     def on_fallback(self) -> bool:
         return self.current() != self.urls[0]

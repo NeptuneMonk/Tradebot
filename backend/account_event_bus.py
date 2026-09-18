@@ -232,6 +232,10 @@ class AccountEventBus:
                     f"reconnecting in {backoff}s"
                 )
                 self.stats["reconnects"] += 1
+                if "rejected WebSocket connection" in str(e):
+                    nxt = wss_router.mark_rejected(url)
+                    if nxt:
+                        logger.error(f"AccountEventBus: {wss_label(url)} rejected the handshake — switching to {wss_label(nxt)}")
             finally:
                 self._ws = None
                 self._connected.clear()

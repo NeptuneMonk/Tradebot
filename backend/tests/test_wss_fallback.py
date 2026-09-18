@@ -1,5 +1,6 @@
 """WSS quota fallback: exhausted primary → public node, sticky until reset (feed OFF→ON)."""
 import asyncio
+import time
 import json
 import sys
 import os
@@ -92,3 +93,25 @@ def test_listener_switches_to_public_on_quota(monkeypatch):
     assert connected and via == "public WSS"
     assert PAID in router.exhausted
     assert health["via"] == "public WSS"
+
+
+def test_router_handshake_rejection_fails_over_then_recovers(monkeypatch):
+    import solana_client as sc
+    r = WssRouter(PUBLIC_WSS_URL, ["wss://helius.example/ws"])
+    assert r.current() == PUBLIC_WSS_URL
+    assert r.mark_rejected(PUBLIC_WSS_URL) is None                 # first 413: retry the same endpoint
+    assert r.mark_rejected(PUBLIC_WSS_URL) == "wss://helius.example/ws"   # second: skip it, use the paid WSS
+    assert r.current() == "wss://helius.example/ws" and r.on_fallback()
+    r.rejected_until[PUBLIC_WSS_URL] -= sc.REJECT_SKIP_S + 1       # skip window over: public node retried
+    assert r.current() == PUBLIC_WSS_URL
+    r.mark_connected(PUBLIC_WSS_URL)
+    assert not r.rejected_until and not r.on_fallback()
+
+
+def test_router_all_rejected_knocks_on_least_recent():
+    r = WssRouter(PUBLIC_WSS_URL, ["wss://helius.example/ws"])
+    for _ in range(2):
+        r.mark_rejected(PUBLIC_WSS_URL)
+    for _ in range(2):
+        r.mark_rejected("wss://helius.example/ws")
+    assert r.current() == PUBLIC_WSS_URL

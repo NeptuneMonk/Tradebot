@@ -185,9 +185,10 @@ class PumpFunListener:
                         ],
                     }
                     await ws.send(json.dumps(sub_req))
+                    wss_router.mark_connected(url)
                     self.last_ok_ts = time.time()
                     self.last_error = None
-                    logger.info("Subscribed to Pump.fun logs.")
+                    logger.info(f"Subscribed to Pump.fun logs ({wss_label(url)}).")
                     async for raw in ws:
                         if self._stop:
                             break
@@ -228,6 +229,14 @@ class PumpFunListener:
                 self.connected = False
                 self.last_error = f"{type(e).__name__}: {str(e)[:100]}" if str(e) else type(e).__name__
                 logger.warning(f"WSS connection error: {e}; retrying in {backoff}s")
+                if "rejected WebSocket connection" in str(e):
+                    nxt = wss_router.mark_rejected(url)
+                    if nxt:
+                        self.last_error = f"{wss_label(url)} rejected the handshake ({str(e).rsplit(':', 1)[-1].strip()}) — switching to {wss_label(nxt)}"
+                        logger.error(self.last_error)
+                        self._kick = True
+                        backoff = 1
+                        continue
                 # Chunked sleep — poll the helius gate every 1s during the
                 # reconnect backoff. Without this, an OFF toggle issued
                 # while the listener is in a 30s backoff would take up to
