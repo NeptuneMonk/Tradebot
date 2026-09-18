@@ -2079,4 +2079,4 @@ Current state (07:04): bot RUNNING, RH paper ON, RH feed ON, Pump.fun feed ON (o
 - Manual holds do NOT count toward max_concurrent_positions / rh_max_positions (`BotState.counted_open()`, `RHPaperTrader.counted_open()`); manual_enter never refused for cap. `/api/bot/status.manual_hold_count` added.
 - UI: Active Trades = auto rows on top, `manual-holds-divider`, manual rows (HOLD badge) at bottom. KPI slots = counted/max (+N holds). Candidates "gate ✓ · buy" toast updated.
 - Moved DexScreener pair lookup to `rh_pairs.py` (operator-only), tests: `tests/test_manual_hold.py`; full suite 683 passed. Report: /app/test_reports/iteration_30.json.
-- Backlog: P2 port RH flush-hold to SOL; P2 slippage-aware fast SL on SOL; P3 execution learning / counterfactual replay / shadow book.
+- Backlog: (flush-hold on SOL already DONE 2026-09-18 — `_flush_holds_sol`); P2 slippage-aware fast SL on SOL (NOT started: feed measured trigger-to-fill gap into cost_gate); P3 execution learning / counterfactual replay / shadow book.
