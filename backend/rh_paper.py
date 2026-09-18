@@ -141,6 +141,8 @@ class RHPaperTrader:
         cg = b.get("creator_gate")
         if cg and now - cg[1] < 300.0:
             return cg[0]                                  # deployer-solvency verdict cached for the balance TTL
+        if b.get("manual"):
+            return "ladder-only"                          # operator-pinned established token: the Graduate Ladder is its only book
         seasoned = bool(b.get("graduated"))
         if seasoned:
             # post-sweep: the curve is gone. Enter only on a LIVE v4 pool with a fresh print, priced from pool swaps.

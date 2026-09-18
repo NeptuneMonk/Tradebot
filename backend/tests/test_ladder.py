@@ -1,5 +1,7 @@
 """Graduate Ladder: staircase qualification, starter/add/bank, ratchet trail, structure stop, re-entry controls."""
 import asyncio
+import time
+import pytest
 import os
 import sys
 import types
@@ -169,3 +171,87 @@ def test_paper_leg_unrealized_pnl_is_mc_based_and_pushed(monkeypatch):
     doc = {"id": leg["id"], "book": "ladder", "mode": "paper"}
     book.augment_trade(doc)
     assert abs(doc["unrealized_pnl_pct"] - 25.0) < 0.01 and doc["live_usd_market_cap"] == d["mc"]
+
+
+class _Disc:
+    """rh_discovery stand-in: pin_manual builds a pinned bucket priced from a fake pool."""
+    def __init__(self, spot=2e-9, usd=4000.0):
+        self.tracking, self.spot, self.usd, self.pins = {}, spot, usd, []
+
+    async def pin_manual(self, token, quote=None):
+        token = token.lower()
+        self.pins.append((token, quote))
+        if token.endswith("dead"):
+            raise ValueError("no initialised v4 pool for this token")
+        b = self.tracking.setdefault(token, {"symbol": "OLD", "name": "Old Coin", "buyers": set(), "quote_symbol": quote or "ETH", "pair_token": "0xeth",
+                                              "quote_decimals": 18, "last_pool_swap_ts": 0.0})
+        b.update(graduated=True, pool_live=True, manual=True, pinned=True, last_price_quote=self.spot,
+                 usd_market_cap=self.spot * 1_000_000_000 * self.usd, last_spot_ts=time.time())
+        return {"token": token, "symbol": "OLD", "name": "Old Coin", "quote_symbol": b["quote_symbol"], "pair_token": "0xeth",
+                "price_quote": self.spot, "usd_market_cap": b["usd_market_cap"], "quote_priced": self.usd > 0}
+
+    def unpin_manual(self, token):
+        b = self.tracking.get(token.lower())
+        if b: b["pinned"] = b["manual"] = False
+        return bool(b)
+
+    async def refresh_manual_spot(self, token, now):
+        b = self.tracking[token]; b["last_spot_ts"] = now; return True
+
+
+ADDR = "0x" + "ab" * 20
+
+
+def test_manual_rh_token_skips_mc_gate_and_is_ladder_source():
+    st = _state(); st.rh_discovery = _Disc(spot=1e-11, usd=4000.0)     # MC = $40 — far under the $50K graduate gate
+    book = L.LadderBook(st)
+    res = asyncio.run(book.add_manual(ADDR, "ETH"))
+    assert res["key"] == f"rh:{ADDR}" and res["quote_symbol"] == "ETH"
+    d = book.tokens[f"rh:{ADDR}"]
+    assert d["manual"] is True and d["state"] == "watching" and d["mc"] == 40.0
+    assert st.rh_discovery.tracking[ADDR]["pinned"] is True
+    assert any(k == f"rh:{ADDR}" and s["manual"] for k, s in book._sources())
+    snap = next(r for r in book.snapshot() if r["key"] == f"rh:{ADDR}")
+    assert snap["manual"] is True and snap["stale"] is False
+    assert st.db.ladder_tokens.updates and st.db.ladder_tokens.updates[-1][1]["$set"]["manual"] is True
+
+
+def test_manual_token_goes_stale_but_is_never_dropped_and_still_climbs_staircase():
+    st = _state(); st.rh_discovery = _Disc(spot=1e-9, usd=4000.0)
+    book = L.LadderBook(st)
+    asyncio.run(book.add_manual(ADDR))
+    key = f"rh:{ADDR}"
+    t0 = time.time()
+    quiet = {**next(s for k, s in book._sources() if k == key), "last_print_ts": t0 - 2 * L.STALE_AFTER_S}
+    asyncio.run(book.observe(key, quiet, t0))
+    assert next(r for r in book.snapshot() if r["key"] == key)["stale"] is True
+    assert key in book.tokens
+    base = book.tokens[key]["mc"]
+    for i, (dt, mult) in enumerate([(1 * H, 1.2), (5 * H, 1.45), (10 * H, 1.75), (15 * H, 2.1)]):
+        src = {**quiet, "mc": base * mult, "holders": 60 + i, "last_print_ts": t0 + dt}
+        asyncio.run(book.observe(key, src, t0 + dt))
+    d = book.tokens[key]
+    assert len(d["steps"]) >= 3 and d["state"] == "holding" and d["legs"] and d["legs"][0]["kind"] == "starter"
+
+
+def test_manual_add_rejects_when_no_pool_and_remove_refuses_with_open_legs():
+    st = _state(); st.rh_discovery = _Disc()
+    book = L.LadderBook(st)
+    with pytest.raises(ValueError):
+        asyncio.run(book.add_manual("0x" + "00" * 18 + "dead"))
+    asyncio.run(book.add_manual(ADDR))
+    key = f"rh:{ADDR}"
+    book.tokens[key]["legs"].append({"id": "leg1", "kind": "starter", "usd": 5.0, "entry_mc": 1.0, "peak_mc": 1.0, "ts": 0})
+    assert asyncio.run(book.remove_manual(key))["removed"] is False
+    book.tokens[key]["legs"].clear()
+    assert asyncio.run(book.remove_manual(key))["removed"] is True
+    assert key not in book.tokens and st.rh_discovery.tracking[ADDR]["pinned"] is False
+
+
+def test_manual_cap():
+    st = _state(); st.rh_discovery = _Disc()
+    book = L.LadderBook(st)
+    for i in range(L.MANUAL_MAX):
+        asyncio.run(book.add_manual("0x" + f"{i:040x}"))
+    with pytest.raises(ValueError):
+        asyncio.run(book.add_manual("0x" + f"{999:040x}"))

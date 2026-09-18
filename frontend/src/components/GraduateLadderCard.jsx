@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { ChainBadge } from "./ChainBadge";
 import { TokenDetailDialog } from "./TokenDetailDialog";
 import HelpHint from "./HelpHint";
+import { AddManualToken } from "./AddManualToken";
 import { api } from "@/lib/api";
 
 const fmtUsd = (n) => {
@@ -27,6 +28,8 @@ function LadderRow({ t, onRemove, onOpen }) {
         <span className="text-[10px] font-mono text-neutral-500 truncate">{t.name || short(t.mint)}</span>
         <span className={`text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border ${holding ? "border-emerald-700 text-emerald-300" : t.qualified ? "border-amber-700 text-amber-300" : "border-neutral-700 text-neutral-500"}`}
           data-testid={`ladder-state-${t.mint}`}>{holding ? `holding ${t.legs.length} leg${t.legs.length === 1 ? "" : "s"}` : t.qualified ? "qualified" : "watching"}</span>
+        {t.manual && <span className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-fuchsia-800 text-fuchsia-300" data-testid={`ladder-manual-${t.mint}`} title={`operator-pinned · pool vs ${t.price_unit || "ETH"} · no age/MC gate`}>manual</span>}
+        {t.stale && <span className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-amber-800 text-amber-300" data-testid={`ladder-stale-${t.mint}`} title="no swap or spot change for 10+ min — still watched, never dropped">stale</span>}
         {t.gate && <span className="text-[9px] font-mono text-neutral-500" title="re-entry control holding the starter">gate: {t.gate}</span>}
         <button onClick={() => onRemove(t.key)} data-testid={`ladder-remove-${t.mint}`} className="ml-auto p-1 border border-neutral-800 hover:bg-neutral-800 text-neutral-500" title="Drop from the ladder">
           <X className="w-3 h-3" />
@@ -54,8 +57,9 @@ function GraduateLadderCard({ ladder, config, onConfigPatch, onRefresh }) {
   const tokens = ladder?.tokens || [];
   const holding = tokens.filter((t) => t.state === "holding");
   const remove = async (key) => {
-    try { await api.removeLadder(key); toast.success("Dropped from the ladder"); onRefresh?.(); } catch { toast.error("Could not remove"); }
+    try { await api.removeLadder(key); toast.success("Dropped from the ladder"); onRefresh?.(); } catch (e) { toast.error(e?.response?.data?.detail || "Could not remove"); }
   };
+  const manualCount = tokens.filter((t) => t.manual).length;
   const enabled = config?.ladder_enabled ?? true;
   return (
     <div data-testid="ladder-card">
@@ -73,6 +77,7 @@ function GraduateLadderCard({ ladder, config, onConfigPatch, onRefresh }) {
             className={`px-2 py-0.5 border uppercase tracking-[0.15em] ${enabled ? "border-emerald-700 text-emerald-300" : "border-neutral-700 text-neutral-500"}`}>{enabled ? "on" : "off"}</button>
         </span>
       </div>
+      <div className="mb-2" data-testid="ladder-add-manual"><AddManualToken onAdded={() => onRefresh?.()} count={manualCount} /></div>
       {tokens.length === 0 ? (
         <div className="text-center py-4 text-[10px] uppercase tracking-[0.2em] text-neutral-600">no graduated token above $50K MC seen yet</div>
       ) : (

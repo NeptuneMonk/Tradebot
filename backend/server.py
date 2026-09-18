@@ -2435,8 +2435,31 @@ async def ladder_snapshot():
                      "paper_legs_closed": int(bot_state.ladder.stats.get("paper_legs_closed") or 0), "needed": ladder_mod.LIVE_AFTER_PAPER_LEGS}}
 
 
+class LadderManualIn(BaseModel):
+    address: str
+    quote: str | None = None      # ETH · stock symbol · pair-token address; auto-detected when omitted
+
+
+@api.post("/ladder/manual")
+async def ladder_add_manual(body: LadderManualIn):
+    """Operator pins an established RH token for the Graduate Ladder — no age gate, no MC gate, staircase + retry as usual."""
+    try:
+        return await bot_state.ladder.add_manual(body.address, body.quote)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.warning(f"ladder manual add failed: {e}")
+        raise HTTPException(status_code=502, detail=f"RPC lookup failed: {e}")
+
+
 @api.delete("/ladder/{key}")
 async def ladder_remove(key: str):
+    d = bot_state.ladder.tokens.get(key)
+    if d is not None and d.get("manual"):
+        res = await bot_state.ladder.remove_manual(key)
+        if not res["removed"]:
+            raise HTTPException(status_code=409, detail=res["reason"])
+        return res
     d = bot_state.ladder.tokens.pop(key, None)
     if d is not None:
         await db.ladder_tokens.update_one({"key": key}, {"$set": {"state": "dead"}})

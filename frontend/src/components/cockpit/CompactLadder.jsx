@@ -25,7 +25,9 @@ function Row({ t, onOpen }) {
     <tr data-testid={`cockpit-ladder-${t.mint}`} onClick={() => onOpen({ chain: t.chain, mint: t.mint, symbol: t.symbol, name: t.name })}
       className={`border-b border-neutral-900 cursor-pointer hover:bg-neutral-900/50 transition-colors duration-100 ${holding ? "" : "opacity-70"}`}
       title={`MC ${fmtUsd(t.mc)} · high ${fmtUsd(t.high)} · drawdown -${t.drawdown_pct}% · holders ${t.holders} · on ladder ${t.age_h}h`}>
-      <td className="py-1.5 pl-3 font-mono text-xs"><ChainBadge chain={t.chain} mint={t.mint} /> <span className="text-neutral-100 ml-1">{t.symbol || "?"}</span> <span className="text-neutral-600 text-[10px]">{fmtUsd(t.mc)}</span></td>
+      <td className="py-1.5 pl-3 font-mono text-xs"><ChainBadge chain={t.chain} mint={t.mint} /> <span className="text-neutral-100 ml-1">{t.symbol || "?"}</span> <span className="text-neutral-600 text-[10px]">{fmtUsd(t.mc)}</span>
+        {t.manual && <span className="ml-1 text-[8px] uppercase tracking-[0.15em] px-1 border border-fuchsia-800 text-fuchsia-300">manual</span>}
+        {t.stale && <span className="ml-1 text-[8px] uppercase tracking-[0.15em] px-1 border border-amber-800 text-amber-300">stale</span>}</td>
       <td><Steps n={t.steps} /> <span className="font-mono text-[10px] text-neutral-400 ml-1">{t.steps}/3</span></td>
       <td className="font-mono text-[11px] text-neutral-300">{state}</td>
       <td className={`font-mono text-xs text-right pr-3 ${legPnl == null ? "text-neutral-600" : legPnl >= 0 ? "text-emerald-300" : "text-red-300"}`}>

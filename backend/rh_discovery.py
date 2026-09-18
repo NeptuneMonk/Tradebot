@@ -643,6 +643,7 @@ class RHDiscovery:
         'rh-grad-no-pool' forever) plus anything we hold. Newest graduations first, capped."""
         paper = getattr(self.state, "rh_paper", None)
         held = [t for t in list(paper.positions.keys()) if (self.tracking.get(t) or {}).get("graduated")] if paper is not None else []
+        held += [t for t, b in self.tracking.items() if b.get("pinned") and t not in held]
         now = time.time()
         max_age_s = float(getattr(self.state.config, "rh_seasoned_max_age_min", 60.0) or 60.0) * 60 + 120
         fresh = sorted(
@@ -804,6 +805,88 @@ class RHDiscovery:
                 b["name"] = _dec_str(res[i * 2]) or None
                 b["symbol"] = _dec_str(res[i * 2 + 1]) or None
 
+    # ------------------------------------------------------------------ operator-pinned (manual ladder) tokens
+    def _resolve_quote(self, quote: str | None) -> list[tuple[str, str, int]]:
+        """Candidate (symbol, pair_token, decimals) pools to probe. Explicit symbol/address first; else ETH then every stock quote."""
+        if quote:
+            q = quote.strip()
+            if q.lower().startswith("0x") and len(q) == 42:
+                sym, dec = QUOTES.get(q.lower(), (q.lower(), 18))
+                return [(sym, q.lower(), dec)]
+            sym = q.upper()
+            if sym in QUOTE_BY_SYMBOL:
+                pair, dec = QUOTE_BY_SYMBOL[sym]
+                return [(sym, pair, dec)]
+            raise ValueError(f"unknown quote {quote!r} — use ETH, a stock symbol, or the pair token address")
+        out = [("ETH", rh_dex.NATIVE, 18)]
+        out += [(sym, pair, dec) for sym, (pair, dec) in QUOTE_BY_SYMBOL.items() if sym != "ETH"]
+        return out
+
+    async def pin_manual(self, token: str, quote: str | None = None) -> dict:
+        """Operator adds an established RH token for the Graduate Ladder: locate its v4 pool, build a pinned bucket that
+        the swap ingest prices like any graduated token, is exempt from every age/TTL rule and is never scalped by RH PONS."""
+        token = token.strip().lower()
+        if not (token.startswith("0x") and len(token) == 42 and all(c in "0123456789abcdef" for c in token[2:])):
+            raise ValueError("not an EVM address")
+        now = time.time()
+        pool = None
+        for sym, pair, dec in self._resolve_quote(quote):
+            try:
+                spot = await rh_dex.spot_price(token, pair, dec)
+            except Exception as e:
+                logger.debug(f"pin probe {token} / {sym}: {e}")
+                spot = 0.0
+            if spot > 0:
+                pool = (sym, pair, dec, spot)
+                break
+        if pool is None:
+            raise ValueError("no initialised v4 pool for this token" + (f" against {quote}" if quote else " (tried ETH + every stock quote)"))
+        sym, pair, dec, spot = pool
+        b = self.tracking.get(token)
+        if b is None:
+            b = self.tracking[token] = self._new_bucket({"token": token, "deployer": None, "curve": "", "pair_token": pair, "quote_symbol": sym,
+                                                          "quote_decimals": dec, "graduation_threshold": 0.0}, now)
+        b.update(pair_token=pair, quote_symbol=sym, quote_decimals=dec, graduated=True, graduated_at=b.get("graduated_at") or now,
+                 pool_live=True, manual=True, pinned=True, pinned_at=b.get("pinned_at") or now)
+        self._mark_spot(b, spot, now)
+        if not b.get("symbol"):
+            await self._fetch_metadata([token])
+        return {"token": token, "symbol": b.get("symbol"), "name": b.get("name"), "quote_symbol": sym, "pair_token": pair,
+                "price_quote": spot, "usd_market_cap": b.get("usd_market_cap") or 0.0, "quote_priced": self._quote_usd(sym) > 0}
+
+    def unpin_manual(self, token: str) -> bool:
+        b = self.tracking.get(token.lower())
+        if not b or not b.get("pinned"):
+            return False
+        b["pinned"] = b["manual"] = False
+        return True
+
+    def _mark_spot(self, b: dict, spot: float, now: float):
+        b["last_price_quote"] = spot
+        b["last_spot_ts"] = now
+        if now - b["last_price_sample_ts"] >= 1.0:
+            b["price_samples"].append((now, spot))
+            b["last_price_sample_ts"] = now
+        usd = self._quote_usd(b["quote_symbol"])
+        if usd > 0:
+            b["usd_market_cap"] = spot * TOKEN_SUPPLY * usd
+            b["mc_samples"].append((now, b["usd_market_cap"]))
+
+    async def refresh_manual_spot(self, token: str, now: float) -> bool:
+        """Pool spot for a pinned token that hasn't printed a swap lately — keeps the ladder staircase fed on quiet names."""
+        b = self.tracking.get(token)
+        if not b or not b.get("pinned"):
+            return False
+        try:
+            spot = await rh_dex.spot_price(token, b["pair_token"], int(b.get("quote_decimals") or 18))
+        except Exception as e:
+            logger.debug(f"manual spot {token}: {e}")
+            return False
+        if spot <= 0:
+            return False
+        self._mark_spot(b, spot, now)
+        return True
+
     def _launch_fields(self, b: dict) -> dict:
         gate = b.get("gate_reason")
         return {
@@ -871,6 +954,7 @@ class RHDiscovery:
     def _gc(self, now: float):
         paper = getattr(self.state, "rh_paper", None)
         held = set(paper.positions.keys()) if paper is not None else set()   # never evict a token we hold
+        held |= {t for t, b in self.tracking.items() if b.get("pinned")}      # operator-pinned ladder tokens: no age, no TTL
         # keep curve tokens at least as long as the RH max-age window says they are still eligible (≤ 24 h)
         ttl = min(86400.0, max(float(TRACK_MAX_AGE_S), float(getattr(self.state.config, "rh_max_age_min", 15.0) or 0) * 60.0))
         stale = [t for t, b in self.tracking.items() if now - b["start"] > ttl and t not in held]

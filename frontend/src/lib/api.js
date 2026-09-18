@@ -44,6 +44,7 @@ export const api = {
   ladder: () => client.get("/ladder").then(r => r.data),
   tokenDetail: (chain, mint) => client.get(`/token/${chain}/${mint}`).then(r => r.data),
   removeLadder: (key) => client.delete(`/ladder/${key}`).then(r => r.data),
+  addManualLadder: (address, quote) => client.post("/ladder/manual", { address, quote }).then(r => r.data),
   removeReentry: (mint) => client.delete(`/reentry/watchlist/${mint}`).then(r => r.data),
   scannerCandidates: () => client.get("/scanner/candidates").then(r => r.data),
   scannerSkips: () => client.get("/scanner/skips").then(r => r.data),

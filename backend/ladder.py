@@ -25,6 +25,9 @@ MAX_PULLBACK_PCT = 40.0    # deeper than this between highs = pump, staircase re
 ADD_PULLBACK_PCT = 10.0    # an add needs a real dip before the reclaim
 STRUCTURE_STOP_PCT = 25.0  # MC below last confirmed high by this much closes the ladder
 STEPS_TO_QUALIFY = 3
+MANUAL_MAX = 25                # operator-pinned RH tokens (bounded RPC load)
+MANUAL_SPOT_EVERY_S = 15.0     # pool spot poll for pinned tokens with no recent swap
+STALE_AFTER_S = 600.0          # no price movement/print for this long → row shows "stale" (never removed)
 MAX_LEGS = 4
 MIN_MC_USD = 50_000.0
 LIVE_AFTER_PAPER_LEGS = 15   # ladder legs go through the live executor only once this many paper legs have closed
@@ -67,6 +70,12 @@ class LadderBook:
                 self.tokens[d["key"]] = d
         except Exception as e:
             logger.debug(f"ladder restore failed: {e}")
+        for d in list(self.tokens.values()):                       # operator pins survive restarts
+            if d.get("manual") and d["chain"] == "rh":
+                try:
+                    await self.state.rh_discovery.pin_manual(d["mint"], d.get("price_unit"))
+                except Exception as e:
+                    logger.warning(f"ladder re-pin {d.get('symbol') or d['mint']} failed: {e}")
 
     async def _loop(self):
         await self.restore()
@@ -77,6 +86,7 @@ class LadderBook:
                     continue
                 now = time.time()
                 await self._refresh_paper_count(now)
+                await self._refresh_manual_spots(now)
                 for key, src in self._sources():
                     await self.observe(key, src, now)
                 await self._persist(now)
@@ -107,23 +117,76 @@ class LadderBook:
             if mc <= 0:
                 continue
             yield f"rh:{token}", {"chain": "rh", "protocol": "pons", "mint": token, "symbol": b.get("symbol"), "name": b.get("name"),
-                                  "mc": mc, "holders": len(b.get("buyers") or ()), "pool": "",
+                                  "mc": mc, "holders": len(b.get("buyers") or ()), "pool": "", "manual": bool(b.get("manual")),
+                                  "last_print_ts": max(float(b.get("last_pool_swap_ts") or 0), float(b.get("last_spot_ts") or 0)),
                                   "price": float(b.get("last_price_quote") or 0.0), "price_unit": b.get("quote_symbol") or "ETH"}
+
+    async def _refresh_manual_spots(self, now: float):
+        rd = getattr(self.state, "rh_discovery", None)
+        if rd is None:
+            return
+        for token, b in list((getattr(rd, "tracking", None) or {}).items()):
+            if not b.get("pinned"):
+                continue
+            last = max(float(b.get("last_pool_swap_ts") or 0), float(b.get("last_spot_ts") or 0))
+            if now - last >= MANUAL_SPOT_EVERY_S:
+                await rd.refresh_manual_spot(token, now)
+
+    # ------------------------------------------------------------------ operator pins
+    def manual_count(self) -> int:
+        return sum(1 for d in self.tokens.values() if d.get("manual"))
+
+    async def add_manual(self, address: str, quote: str | None = None) -> dict:
+        """Pin an established RH token: no age gate, no MC gate, staircase + retry logic exactly like graduates."""
+        key = f"rh:{address.strip().lower()}"
+        if key not in self.tokens and self.manual_count() >= MANUAL_MAX:
+            raise ValueError(f"manual ladder list is full ({MANUAL_MAX})")
+        info = await self.state.rh_discovery.pin_manual(address, quote)
+        now = time.time()
+        src = next((s for k, s in self._sources() if k == key), None)
+        if src is None:                                             # quote has no USD price yet → still register, MC fills in later
+            src = {"chain": "rh", "protocol": "pons", "mint": info["token"], "symbol": info["symbol"], "name": info["name"], "mc": 0.0,
+                   "holders": 0, "pool": "", "manual": True, "last_print_ts": now, "price": info["price_quote"], "price_unit": info["quote_symbol"]}
+        await self.observe(key, src, now)
+        d = self.tokens[key]
+        d["manual"], d["pinned_at"] = True, d.get("pinned_at") or now
+        self._dirty.add(key)
+        await self._persist(now)
+        return {**info, "key": key, "state": d["state"], "mc": d["mc"]}
+
+    async def remove_manual(self, key: str) -> dict:
+        d = self.tokens.get(key)
+        if d is None or not d.get("manual"):
+            return {"removed": False, "reason": "not a manual token"}
+        if d.get("legs"):
+            return {"removed": False, "reason": f"{len(d['legs'])} leg(s) open — close them first"}
+        self.state.rh_discovery.unpin_manual(d["mint"])
+        self.tokens.pop(key, None)
+        await self.state.db.ladder_tokens.update_one({"key": key}, {"$set": {"state": "dead", "manual": False}})
+        return {"removed": True}
 
     # ------------------------------------------------------------------ staircase
     async def observe(self, key: str, src: dict, now: float):
         d = self.tokens.get(key)
         if d is None:
-            if src["mc"] < MIN_MC_USD:
+            if src["mc"] < MIN_MC_USD and not src.get("manual"):
                 return
             d = self.tokens[key] = {"key": key, **{k: src[k] for k in ("chain", "protocol", "mint", "symbol", "name", "pool", "price_unit")},
+                                    "manual": bool(src.get("manual")),
                                     "state": "watching", "first_seen": now, "samples": [], "steps": [], "base": {"ts": now, "mc": src["mc"]},
                                     "high": src["mc"], "high_ts": now,
                                     "min_since_high": src["mc"], "holders_at_first_step": None, "holders": src["holders"], "legs": [],
                                     "closed_legs": 0, "realized_usd": 0.0, "reentry": {"attempts": 0, "last_exit_ts": None, "last_exit_reason": None,
                                                                                         "peak_after_exit": None, "trough_after_exit": None}}
         mc = src["mc"]
+        if src.get("last_print_ts"):
+            d["last_print_ts"] = src["last_print_ts"]
+        if mc <= 0:                                                 # pinned token whose quote has no USD price yet — wait, never drop
+            d["last_seen"] = now
+            return
         d.setdefault("base", {"ts": float(d.get("first_seen") or now), "mc": float(d.get("high") or mc)})   # docs persisted before `base` existed
+        if not d.get("high"):
+            d["high"], d["high_ts"], d["min_since_high"], d["base"] = mc, now, mc, {"ts": now, "mc": mc}
         d["mc"], d["holders"], d["last_seen"] = mc, src["holders"], now
         d["symbol"], d["name"] = src.get("symbol") or d.get("symbol"), src.get("name") or d.get("name")
         if not d["samples"] or now - d["samples"][-1][0] >= SAMPLE_EVERY_S or mc > d["high"]:
@@ -366,7 +429,9 @@ class LadderBook:
             steps = d.get("steps") or []
             out.append({k: d.get(k) for k in ("key", "chain", "protocol", "mint", "symbol", "name", "state", "qualified", "mc", "holders",
                                               "high", "gate", "closed_legs", "realized_usd", "reentry", "first_seen", "last_seen")}
-                       | {"steps": len(steps), "last_step_mc": steps[-1]["mc"] if steps else None,
+                       | {"manual": bool(d.get("manual")), "price_unit": d.get("price_unit"),
+                          "stale": bool(d.get("manual")) and now - float(d.get("last_print_ts") or d.get("last_seen") or now) > STALE_AFTER_S,
+                          "steps": len(steps), "last_step_mc": steps[-1]["mc"] if steps else None,
                           "drawdown_pct": round((d["high"] - d["min_since_high"]) / d["high"] * 100.0, 1) if d.get("high") else 0.0,
                           "legs": [{**leg, "pnl_pct": round((d["mc"] / leg["entry_mc"] - 1.0) * 100.0, 1)} for leg in d.get("legs") or []],
                           "age_h": round((now - float(d.get("first_seen") or now)) / 3600.0, 1)})
