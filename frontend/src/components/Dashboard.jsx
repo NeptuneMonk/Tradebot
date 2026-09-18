@@ -18,12 +18,10 @@ import ClassifierRulesEditor from "@/components/ClassifierRulesEditor";
 import ReentryWatchCard from "@/components/ReentryWatchCard";
 import GraduateLadderCard from "@/components/GraduateLadderCard";
 import ScannerCandidatesCard from "@/components/ScannerCandidatesCard";
-import StrategyDoctorPanel from "@/components/StrategyDoctorPanel";
 import CreatorGreylistPanel from "@/components/CreatorGreylistPanel";
 import PLBySourceCard from "@/components/PLBySourceCard";
-import CostTrackerCard from "@/components/CostTrackerCard";
 import CollapsibleSection from "@/components/CollapsibleSection";
-import AutopilotCard, { AutopilotSwitch } from "@/components/AutopilotCard";
+import { AutopilotSwitch } from "@/components/AutopilotCard";
 import RhWalletCard from "@/components/RhWalletCard";
 import MinimizableCard, { setAllMinimized } from "@/components/MinimizableCard";
 import DoctorStrip from "@/components/cockpit/DoctorStrip";
@@ -34,6 +32,7 @@ import CompactCandidates from "@/components/cockpit/CompactCandidates";
 import CompactLadder from "@/components/cockpit/CompactLadder";
 import SkipTicker from "@/components/cockpit/SkipTicker";
 import NavBar from "@/components/cockpit/NavBar";
+import DoctorWorkspace from "@/components/cockpit/DoctorWorkspace";
 import { useSkipFeed } from "@/lib/useSkipFeed";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Activity, LogOut } from "lucide-react";
@@ -473,7 +472,7 @@ export default function Dashboard() {
         doctor: pendingDoc || null,
       }} />
 
-      <main className="max-w-[1600px] mx-auto p-4 md:p-6 space-y-4 md:space-y-6 pb-16">
+      <main className="max-w-[1600px] mx-auto p-4 space-y-4 pb-16">
         {config?.autopilot_enabled && (
           <div className="border border-lime-800/60 bg-lime-950/20 px-4 py-2 text-[11px] font-mono text-lime-200 flex items-center gap-2" data-testid="autopilot-banner">
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-lime-400 animate-pulse" />
@@ -508,7 +507,7 @@ export default function Dashboard() {
         )}
 
         {view === "ladder" && (
-          <div key="ladder" className="space-y-4 md:space-y-6 tile-in" data-testid="view-ladder">
+          <div key="ladder" className="space-y-4 tile-in" data-testid="view-ladder">
             <div className="control-card">
               <GraduateLadderCard ladder={ladder} config={config} onConfigPatch={onConfigPatch} onRefresh={onLadderRefresh} />
             </div>
@@ -516,7 +515,7 @@ export default function Dashboard() {
         )}
 
         {view === "books" && (
-          <div key="books" className="space-y-4 md:space-y-6" data-testid="view-books">
+          <div key="books" className="space-y-4" data-testid="view-books">
             <div className="tile-in">
               <CollapsibleSection
                 title="P/L by Source"
@@ -528,7 +527,7 @@ export default function Dashboard() {
                 <PLBySourceCard refreshSignal={plSourceRefresh} />
               </CollapsibleSection>
             </div>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 items-start tile-in" style={{ animationDelay: "80ms" }}>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start tile-in" style={{ animationDelay: "80ms" }}>
               <CollapsibleSection
                 title="Scorecard"
                 description="situation cells — book × pattern × band × hour × cost · disabled cells skip"
@@ -550,8 +549,8 @@ export default function Dashboard() {
         )}
 
         {view === "scan" && (
-          <div key="scan" className="space-y-4 md:space-y-6" data-testid="view-scan">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 items-start">
+          <div key="scan" className="space-y-4" data-testid="view-scan">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
               <div className="tile-in">
                 <MinimizableCard id="launch-feed" title="Live launch feed" stat={`${launches.length} tracked`}>
                   <RecentLaunchesFeed launches={launches} feedLive={{ sol: !!status?.listener_connected, rh: !!status?.rh_feed_alive }} />
@@ -582,38 +581,15 @@ export default function Dashboard() {
         )}
 
         {view === "doctor" && (
-          <div key="doctor" className="space-y-4 md:space-y-6" data-testid="view-doctor">
-            <div className="tile-in">
-              <MinimizableCard id="autopilot" title="Autopilot" stat={config?.autopilot_enabled ? "doctor is driving" : "manual"}>
-                <AutopilotCard config={config} onConfigUpdate={setConfig} />
-              </MinimizableCard>
-            </div>
-            <div className="tile-in" style={{ animationDelay: "80ms" }}>
-              <CollapsibleSection
-                title="Strategy Doctor"
-                description="advisory toggle · pending suggestions · live panels"
-                storageKey="ui.section.doctor"
-                testId="section-doctor"
-                defaultOpen
-                badge={config?.autopilot_enabled ? "autopilot" : null}
-              >
-                <StrategyDoctorPanel tempo={status?.market_tempo} config={config} onConfigUpdate={setConfig} onApplied={onDoctorApplied} />
-              </CollapsibleSection>
-            </div>
-            <CollapsibleSection
-              title="Cost Tracker"
-              description="Helius credit burn · monthly cap"
-              storageKey="ui.section.cost"
-              testId="section-cost"
-            >
-              <CostTrackerCard apiBase={process.env.REACT_APP_BACKEND_URL || ""} />
-            </CollapsibleSection>
+          <div key="doctor" className="space-y-4" data-testid="view-doctor">
+            <DoctorWorkspace config={config} onConfigUpdate={setConfig} onApplied={onDoctorApplied} status={status} auto={auto}
+              onReloadAuto={() => api.autopilotStatus().then(setAuto).catch(() => {})} />
           </div>
         )}
 
         {view === "control" && (
-          <div key="control" className="space-y-4 md:space-y-6" data-testid="view-control">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 items-start">
+          <div key="control" className="space-y-4" data-testid="view-control">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
               <div className="tile-in">
                 <MinimizableCard id="wallet" title="Wallet" stat={wallet ? `${wallet.sol_balance.toFixed(4)} SOL` : "—"}>
                   <WalletCard wallet={wallet} />

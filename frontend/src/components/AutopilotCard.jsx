@@ -3,6 +3,8 @@ import { Bot, ShieldAlert, FlaskConical, Wallet, TrendingUp, Clock } from "lucid
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import HelpHint from "./HelpHint";
+import Explain from "./cockpit/Explain";
+import { matchesFilter } from "@/lib/doctorFilter";
 import ProfitSweepPanel from "./ProfitSweepPanel";
 import { AutopsyPanel, ReplayPanel, FlushPanel } from "./DoctorAutopsyPanels";
 
@@ -56,16 +58,22 @@ function Stat({ label, value, tone = "text-neutral-200", testid }) {
   );
 }
 
-function AutopilotCard({ config, onConfigUpdate }) {
-  const [s, setS] = useState(null);
+/** section: "all" (legacy card) | "now" (bankrolls, sizing, allocator, canary) | "forensics" (technique lab, autopsy, replay). */
+function AutopilotCard({ config, onConfigUpdate, section = "all", filter, status: sProp, onReload }) {
+  const [sLocal, setS] = useState(null);
   const load = useCallback(async () => {
+    if (onReload) return onReload();
     try { setS(await api.autopilotStatus()); } catch { /* best effort */ }
-  }, []);
+  }, [onReload]);
   useEffect(() => {
+    if (sProp) return undefined;
     load();
     const id = setInterval(load, 30000);
     return () => clearInterval(id);
-  }, [load, config?.autopilot_enabled, config?.max_trade_usd]);
+  }, [load, sProp, config?.autopilot_enabled, config?.max_trade_usd]);
+  const s = sProp || sLocal;
+  const showNow = section !== "forensics", showLab = section !== "now";
+  const inFilter = (book, chain) => matchesFilter(filter, book, chain);
 
   if (!s) return null;
   const b = s.bankroll || {};
@@ -93,16 +101,17 @@ function AutopilotCard({ config, onConfigUpdate }) {
     <div className={`control-card border ${s.driving ? "border-lime-800/60" : "border-neutral-800"}`} data-testid="autopilot-card">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-neutral-400">
-          <Bot className={`w-3.5 h-3.5 ${s.driving ? "text-lime-300" : ""}`} /> Autopilot
-          <HelpHint label="Autopilot">
-            One switch: Doctor learning + auto-apply (paper AND live) + bankroll sizing. Each chain has ITS OWN bankroll — Solana from the SOL wallet (live) or its paper pool, Robinhood from the ETH wallet (live) or its paper pool — never mixed. Stake = that chain&apos;s bankroll × risk%, kill switch = bankroll × loss limit, recomputed every 60s. Robinhood stakes are also lifted to the fee floor (gas ≤ drag %) or the chain sits out when the bankroll can&apos;t fund it. The Doctor works TECHNIQUE FIRST: it replays each book&apos;s own fills against a TP/SL/hold grid and splits them by entry feature, proposing the measured best setting as a canary (per-book exits, so RH never moves Solana). Disabling a book or cutting risk% is the last resort, only on 3× the sample when no technique change helps.
-          </HelpHint>
+          <Bot className={`w-3.5 h-3.5 ${s.driving ? "text-lime-300" : ""}`} /> {showNow ? "Autopilot" : "Technique lab"}
         </div>
         <span className={`text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 border ${s.driving ? "border-lime-700 text-lime-300 bg-lime-950/40" : "border-neutral-800 text-neutral-500"}`} data-testid="autopilot-driving-badge">
           {s.driving ? "doctor is driving" : s.autopilot_enabled ? "armed · waiting" : "manual"}
         </span>
       </div>
 
+      {showNow && <Explain short="One switch: Doctor learning + auto-apply (paper and live) + per-chain bankroll sizing." testid="autopilot-explain" className="mt-2">
+        Each chain has ITS OWN bankroll — Solana from the SOL wallet (live) or its paper pool, Robinhood from the ETH wallet (live) or its paper pool — never mixed. Stake = that chain's bankroll × risk %, kill switch = bankroll × loss limit, recomputed every 60 s. Robinhood stakes are lifted to the fee floor (gas ≤ drag %) or the chain sits out when the bankroll can't fund it. The Doctor works TECHNIQUE FIRST: it replays each book's own fills against a TP/SL/hold grid and splits them by entry feature, proposing the measured best setting as a canary (per-book exits, so RH never moves Solana). Disabling a book or cutting risk % is the last resort, only on 3× the sample when no technique change helps.
+      </Explain>}
+      {showNow && <>
       {s.driving && !s.bot_enabled && (
         <div className="mt-2 text-[10px] font-mono text-amber-300/90 border border-amber-900/60 bg-amber-950/20 px-2 py-1" data-testid="autopilot-bot-stopped">
           bot is STOPPED — autopilot sizes and tunes, but nothing trades until you press Start
@@ -125,7 +134,7 @@ function AutopilotCard({ config, onConfigUpdate }) {
 
       <div className="mt-3 space-y-1.5" data-testid="autopilot-chains">
         {[["sol", "Solana", sol, `${usd(s.sizing?.max_trade_usd)} · ${s.sizing?.max_concurrent_positions} · ${usd(s.sizing?.daily_kill_switch_usd, 0)}`],
-          ["rh", "Robinhood", rh, `${usd(s.sizing?.rh_max_trade_usd)} · ${s.sizing?.rh_max_positions} · ${usd(s.sizing?.rh_daily_kill_switch_usd, 0)}`]].map(([key, name, c, sizing]) => (
+          ["rh", "Robinhood", rh, `${usd(s.sizing?.rh_max_trade_usd)} · ${s.sizing?.rh_max_positions} · ${usd(s.sizing?.rh_daily_kill_switch_usd, 0)}`]].filter(([key]) => inFilter(null, key)).map(([key, name, c, sizing]) => (
           <div key={key} className={`grid grid-cols-2 sm:grid-cols-5 gap-3 px-2 py-1.5 border ${c.governor_active ? "border-rose-900/60 bg-rose-950/10" : "border-neutral-800/70"}`} data-testid={`autopilot-chain-${key}`}>
             <div>
               <div className="text-[9px] uppercase tracking-[0.15em] text-neutral-600">{name} · {c.mode || "—"}</div>
@@ -174,7 +183,7 @@ function AutopilotCard({ config, onConfigUpdate }) {
         </div>
       )}
       <div className="mt-3 flex flex-wrap gap-1.5 text-[9px] font-mono" data-testid="autopilot-books">
-        {Object.entries(books).map(([k, v]) => (
+        {Object.entries(books).filter(([k]) => inFilter(k)).map(([k, v]) => (
           <span key={k} className={`px-1.5 py-0.5 border ${v >= 1 ? "border-neutral-700 text-neutral-300" : v > 0 ? "border-amber-800 text-amber-300" : "border-rose-900 text-rose-400 line-through"}`} data-testid={`book-chip-${k}`}>
             {k} ×{Number(v).toFixed(2)}
           </span>
@@ -191,7 +200,7 @@ function AutopilotCard({ config, onConfigUpdate }) {
               {!s.allocator.enabled ? "off" : s.allocator.driving ? "driving" : "advisory (autopilot off)"} · floor ×{s.allocator.floor} · cap ×{s.allocator.cap}
             </span>
           </div>
-          {(s.allocator.rows || []).map((r) => (
+          {(s.allocator.rows || []).filter((r) => inFilter(r.book)).map((r) => (
             <div key={r.book} className="flex items-center justify-between gap-2 text-[10px] font-mono" data-testid={`allocator-row-${r.book}`}>
               <span className="text-neutral-400 truncate" title={r.reason}>
                 <span className="text-neutral-200">{r.book}</span> ×{r.current} → ×{r.target}{r.change ? <span className="text-amber-300"> (next ×{r.next})</span> : ""} · {r.reason}
@@ -205,13 +214,15 @@ function AutopilotCard({ config, onConfigUpdate }) {
           {Object.entries(books).some(([, v]) => v > 0 && v < 1) && !s.allocator.driving && (
             <div className="text-[10px] font-mono text-amber-300" data-testid="allocator-reduced-note">a book is running below ×1 — the Doctor reduced it; restore above or let Autopilot drive the allocator</div>
           )}
-          <div className="text-[9px] font-mono text-neutral-600 pt-1 border-t border-neutral-800/50" data-testid="immutable-rails">
-            immutable rails (code, never learned): book size ×0.25–×2 · SL 5–40% · TP 8–200% · trail 2–25% · hold 20s–1h · slippage 1–15% · flush hold ≤30s · kill switches, live toggles, max stake and gas reserve are never touched · ≤6 changes/day
-          </div>
+          <Explain short="Immutable rails — code, never learned." testid="immutable-rails" className="pt-1 border-t border-neutral-800/50 !text-[9px]">
+            book size ×0.25–×2 · SL 5–40% · TP 8–200% · trail 2–25% · hold 20s–1h · slippage 1–15% · flush hold ≤30s · kill switches, live toggles, max stake and gas reserve are never touched · ≤6 changes/day
+          </Explain>
         </div>
       )}
 
-      {s.technique && Object.keys(s.technique).length > 0 && (
+      </>}
+
+      {showLab && s.technique && Object.keys(s.technique).length > 0 && (
         <div className="mt-3 border border-neutral-800/70" data-testid="autopilot-technique">
           <div className="px-2 py-1 text-[9px] uppercase tracking-[0.15em] text-neutral-600 flex items-center gap-1.5">
             <FlaskConical className="w-3 h-3" /> technique lab · what each book&apos;s own fills say (7d)
@@ -221,7 +232,7 @@ function AutopilotCard({ config, onConfigUpdate }) {
               ride scorecard: {s.technique.ride.n} rode-winner exits · <span className={s.technique.ride.gain_vs_clock_usd_per_ride >= 0 ? "text-lime-300" : "text-rose-300"}>{signedUsd(s.technique.ride.gain_vs_clock_usd_per_ride)}/ride vs the clock</span> · {s.technique.ride.rides_that_beat_clock}/{s.technique.ride.n} beat it · ride threshold {s.technique.ride.current_min_pnl_pct}%{s.technique.ride.proposal != null ? ` → ${s.technique.ride.proposal}%` : ""}
             </div>
           )}
-          {Object.entries(s.technique).filter(([k]) => !NON_BOOK_KEYS.has(k)).map(([book, t]) => {
+          {Object.entries(s.technique).filter(([k]) => !NON_BOOK_KEYS.has(k) && inFilter(k)).map(([book, t]) => {
             const ex = t.current_exits || {};
             const wi = t.whatif || {};
             const best = wi.best;
@@ -268,6 +279,7 @@ function AutopilotCard({ config, onConfigUpdate }) {
         </div>
       )}
 
+      {showNow && <>
       <div className="mt-3 space-y-1 text-[10px] font-mono text-neutral-400">
         <div className="flex items-center gap-1.5" data-testid="autopilot-canary">
           <FlaskConical className="w-3 h-3 text-neutral-500" />
@@ -290,6 +302,7 @@ function AutopilotCard({ config, onConfigUpdate }) {
       </div>
 
       <ProfitSweepPanel config={config} onConfigUpdate={onConfigUpdate} />
+      </>}
     </div>
   );
 }

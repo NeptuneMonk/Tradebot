@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import HelpHint from "./HelpHint";
 import DoctorLivePanels from "./DoctorLivePanels";
 import LearningBooksPanel from "./LearningBooksPanel";
+import { matchesFilter, bookOfSuggestion } from "@/lib/doctorFilter";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
 const CATEGORY_LABEL = {
@@ -43,7 +44,7 @@ const CONFIDENCE_DOT = { high: "bg-emerald-400", med: "bg-amber-400", low: "bg-n
 
 const TEMPO_COLOR = (t) => (t >= 1.3 ? "text-emerald-400" : t <= 0.75 ? "text-amber-400" : "text-neutral-200");
 
-function TempoGauge({ tempo }) {
+export function TempoGauge({ tempo, filter }) {
   if (!tempo) return null;
   const hour = new Date().getUTCHours();
   const peak = tempo.peak_hours || [];
@@ -56,7 +57,7 @@ function TempoGauge({ tempo }) {
         </span>
       </div>
       <div className="grid grid-cols-2 gap-2">
-        {["sol", "rh"].map((c) => {
+        {["sol", "rh"].filter((c) => matchesFilter(filter, null, c)).map((c) => {
           const t = tempo[c];
           if (!t) return <div key={c} className="text-[10px] font-mono text-neutral-600">{c}: no flow yet</div>;
           const pctPos = Math.min(100, Math.max(0, ((t.tempo - 0.5) / 1.5) * 100));
@@ -80,7 +81,9 @@ function TempoGauge({ tempo }) {
   );
 }
 
-function StrategyDoctorPanel({ onApplied, config, onConfigUpdate, tempo }) {
+/** section: "all" (legacy: gauge + proposals + learning + live panels) | "proposals" (header + suggestion list only). */
+function StrategyDoctorPanel({ onApplied, config, onConfigUpdate, tempo, section = "all", filter }) {
+  const proposalsOnly = section === "proposals";
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
@@ -167,9 +170,12 @@ function StrategyDoctorPanel({ onApplied, config, onConfigUpdate, tempo }) {
     }
   };
 
+  const visible = items.filter((s) => (s.learning || s.category === "learning") && matchesFilter(filter, bookOfSuggestion(s)));
+  const hiddenByFilter = items.filter((s) => s.learning || s.category === "learning").length - visible.length;
+
   return (
     <div className="border border-neutral-800 bg-neutral-950 rounded-sm p-3 md:p-4" data-testid="strategy-doctor">
-      <TempoGauge tempo={tempo} />
+      {!proposalsOnly && <TempoGauge tempo={tempo} />}
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <Stethoscope className="w-4 h-4 text-emerald-300" />
@@ -219,17 +225,17 @@ function StrategyDoctorPanel({ onApplied, config, onConfigUpdate, tempo }) {
           <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
           loading…
         </div>
-      ) : items.filter((s) => s.learning || s.category === "learning").length === 0 ? (
+      ) : visible.length === 0 ? (
         <div className="text-[11px] font-mono text-neutral-500 py-6 text-center border border-dashed border-neutral-800 rounded-sm">
           <Sparkles className="w-4 h-4 inline mr-1 text-emerald-700" />
-          No expectancy edge to act on this cycle — see the book notes below.
+          {hiddenByFilter > 0 ? `${hiddenByFilter} proposal${hiddenByFilter === 1 ? "" : "s"} hidden by the filter` : "No expectancy edge to act on this cycle."}
           <div className="text-[10px] text-neutral-700 mt-1">
             Win-rate (v1) rules are retired; only $-expectancy proposals appear here. Doctor re-checks every 30 min.
           </div>
         </div>
       ) : (
         <div className="space-y-2">
-          {items.filter((s) => s.learning || s.category === "learning").map((s) => (
+          {visible.map((s) => (
             <SuggestionCard
               key={s.id}
               s={s}
@@ -246,9 +252,7 @@ function StrategyDoctorPanel({ onApplied, config, onConfigUpdate, tempo }) {
         {lastRun && <span>last poll: {lastRun.toLocaleTimeString()}</span>}
       </div>
 
-      {/* Doctor Live: trailing-stop circuit breaker, helius budget, applied history */}
-      <LearningBooksPanel />
-      <DoctorLivePanels />
+      {!proposalsOnly && <><LearningBooksPanel /><DoctorLivePanels /></>}
     </div>
   );
 }
@@ -282,6 +286,7 @@ function SuggestionCard({ s, busy, onApply, onDismiss }) {
         </Tooltip>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
+            {bookOfSuggestion(s) && <span className="text-[9px] uppercase tracking-wider font-mono px-1 border border-neutral-700 text-neutral-300" data-testid={`doctor-suggestion-book-${s.id}`}>{bookOfSuggestion(s).replace("_", " ")}</span>}
             <span className="text-[9px] uppercase tracking-wider font-mono opacity-80 inline-flex items-center gap-1">
               {s.category}
               <HelpHint label={`category: ${s.category}`}>

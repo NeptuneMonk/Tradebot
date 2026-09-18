@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { FlaskConical, BookOpen, Undo2 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { matchesFilter } from "@/lib/doctorFilter";
 
 const fmtUsd = (v) => (v == null ? "—" : `${v >= 0 ? "+" : ""}$${Number(v).toFixed(3)}`);
 const fmtR = (v) => (v == null ? "—" : `${v >= 0 ? "+" : ""}${Number(v).toFixed(2)}R`);
@@ -9,7 +10,7 @@ const BOOKS = ["momentum", "greylist_snipe", "reentry", "rh_pons"];
 const LABEL = { momentum: "Momentum book", greylist_snipe: "Greylist snipe book", reentry: "Re-entry book", rh_pons: "RH · PONS book (paper)" };
 const pct = (v, d = 0) => (v == null ? "—" : `${Number(v).toFixed(d)}%`);
 
-export default function LearningBooksPanel() {
+export default function LearningBooksPanel({ filter }) {
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -73,7 +74,7 @@ export default function LearningBooksPanel() {
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        {BOOKS.map((b) => {
+        {BOOKS.filter((b) => matchesFilter(filter, b)).map((b) => {
           const s = books[b] || { n: 0 };
           const pos = (s.expectancy_r ?? s.expectancy_usd ?? 0) >= 0;
           const bt = s.by_trigger || {};

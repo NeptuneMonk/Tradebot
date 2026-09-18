@@ -13,7 +13,8 @@ import HelpHint from "./HelpHint";
  * Designed to nest INSIDE the existing Doctor card so it's all one panel
  * the user can collapse. Avoids polluting Dashboard with new sections.
  */
-export default function DoctorLivePanels() {
+export default function DoctorLivePanels({ parts = ["trail", "helius", "history"] }) {
+  const show = (k) => parts.includes(k);
   const [live, setLive] = useState(null);
   const [budget, setBudget] = useState(null);
   const [history, setHistory] = useState([]);
@@ -74,9 +75,9 @@ export default function DoctorLivePanels() {
 
   return (
     <div className="space-y-3 mt-4">
-      <TrailStop live={live} onRun={runLive} running={running} onResume={resume} />
-      <HeliusBudgetCard budget={budget} onRefresh={refresh} />
-      <AppliedHistory history={history} onRevert={revert} />
+      {show("trail") && <TrailStop live={live} onRun={runLive} running={running} onResume={resume} />}
+      {show("helius") && <HeliusBudgetCard budget={budget} onRefresh={refresh} />}
+      {show("history") && <AppliedHistory history={history} onRevert={revert} />}
     </div>
   );
 }

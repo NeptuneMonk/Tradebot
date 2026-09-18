@@ -69,23 +69,19 @@ export default function CollapsibleSection({
         type="button"
         onClick={toggle}
         data-testid={testId ? `${testId}-toggle` : undefined}
-        className="w-full flex items-center justify-between px-3 md:px-4 py-2.5 text-left hover:bg-neutral-900/60 transition-colors duration-100"
+        title={description || undefined}
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-neutral-900/60 transition-colors duration-100"
       >
         <div className="flex items-center gap-2 min-w-0">
           <ChevronDown
             className={`w-4 h-4 text-neutral-500 transition-transform duration-150 ${open ? "rotate-0" : "-rotate-90"}`}
           />
-          <span className="text-xs font-mono uppercase tracking-[0.2em] text-neutral-300 truncate">
+          <span className="text-[11px] font-mono uppercase tracking-[0.2em] text-neutral-200 truncate">
             {title}
           </span>
           {badge != null && (
             <span className="text-[10px] font-mono px-1.5 py-0.5 border border-neutral-800 bg-neutral-900 text-neutral-400">
               {badge}
-            </span>
-          )}
-          {description && !open && (
-            <span className="hidden md:inline text-[10px] text-neutral-600 font-mono tracking-wide truncate ml-2">
-              {description}
             </span>
           )}
         </div>
@@ -96,7 +92,7 @@ export default function CollapsibleSection({
         )}
       </button>
       {open && everOpened && (
-        <div className="border-t border-neutral-900 p-3 md:p-4">
+        <div className="border-t border-neutral-900 p-3">
           {children}
         </div>
       )}

@@ -37,12 +37,12 @@ export default function MinimizableCard({ id, title, stat, children }) {
           type="button"
           onClick={() => setMin(false)}
           data-testid={`min-strip-${id}`}
-          className="w-full flex items-center justify-between px-3 md:px-4 py-2.5 text-left hover:bg-neutral-900/60 transition-colors duration-100"
+          className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-neutral-900/60 transition-colors duration-100"
           title="Expand"
         >
           <span className="flex items-center gap-2 min-w-0">
             <ChevronDown className="w-4 h-4 text-neutral-500 -rotate-90 flex-shrink-0" />
-            <span className="text-xs font-mono uppercase tracking-[0.2em] text-neutral-300 truncate">{title}</span>
+            <span className="text-[11px] font-mono uppercase tracking-[0.2em] text-neutral-200 truncate">{title}</span>
             {stat != null && stat !== "" && (
               <span className="text-[10px] font-mono px-1.5 py-0.5 border border-neutral-800 bg-neutral-900 text-neutral-400 truncate" data-testid={`min-stat-${id}`}>{stat}</span>
             )}
