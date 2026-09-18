@@ -135,7 +135,8 @@ class RHPaperTrader:
         for d in docs:
             self.entered.add(d["mint"])
             self.positions[d["mint"]] = {"trade": d, "peak_price": d.get("entry_price_quote") or 0.0,
-                                         "_last_price": d.get("entry_price_quote") or 0.0, "opened": time.time()}
+                                         "_last_price": d.get("entry_price_quote") or 0.0, "opened": time.time(),
+                                         "_r_trail_peak": d.get("entry_price_quote") or 0.0 if d.get("r_trail") else 0.0}
 
     # ---------- entries ----------
     def _gates(self, token: str, b: dict, now: float) -> str | None:
@@ -972,11 +973,17 @@ class RHPaperTrader:
         if pos.pop("exit_trigger", None) is not None:
             self.stats["grad_triggers_dropped"] = self.stats.get("grad_triggers_dropped", 0) + 1
         pos.pop("_fill_task", None)
+        # hot sweep → ride it: R-based trail from the post-sweep peak, stop ratchets to breakeven+costs, no fixed TP, no clock
+        t["r_trail"] = bool(getattr(self.state.config, "rh_grad_handoff_r_trail", True)) and not is_manual_hold(t)
+        if t["r_trail"]:
+            pos["_r_trail_peak"] = pos.get("_last_price") or 0.0
+            self.stats["grad_handoffs"] = self.stats.get("grad_handoffs", 0) + 1
         t["graduated_at_pnl_pct"] = round(((pos["_last_price"] or 0) / t["entry_price_quote"] - 1.0) * 100.0, 2) if t.get("entry_price_quote") else None
         t["graduated_hold_s"] = round(now - pos["opened"], 1)
         pos["pool_since"] = now
         self.stats["graduated_holds"] = self.stats.get("graduated_holds", 0) + 1
-        logger.warning(f"rh_paper {t.get('symbol')} GRADUATED while held ({t['graduated_at_pnl_pct']:+.1f}%) — riding on the v4 pool")
+        logger.warning(f"rh_paper {t.get('symbol')} GRADUATED while held ({t['graduated_at_pnl_pct']:+.1f}%) — riding on the v4 pool"
+                       + (" · R-trail handoff: no fixed TP, giveback trail in R" if t.get("r_trail") else ""))
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -985,9 +992,9 @@ class RHPaperTrader:
             try:
                 await self.state.db.trades.update_one({"_id": t["id"]}, {"$set": {
                     "venue": "pool", "graduated_during_hold": True, "graduated_at_pnl_pct": t["graduated_at_pnl_pct"],
-                    "graduated_hold_s": t["graduated_hold_s"]}})
+                    "graduated_hold_s": t["graduated_hold_s"], "r_trail": t["r_trail"]}})
                 await hub.broadcast("trade_update", {"id": t["id"], "mint": t["mint"], "chain": CHAIN, "venue": "pool",
-                                                     "graduated_at_pnl_pct": t["graduated_at_pnl_pct"]})
+                                                     "graduated_at_pnl_pct": t["graduated_at_pnl_pct"], "r_trail": t["r_trail"]})
             except Exception as e:
                 logger.debug(f"rh_paper venue persist failed {t.get('mint', '')[:10]}: {e}")
         asyncio.create_task(_persist())
@@ -1057,6 +1064,8 @@ class RHPaperTrader:
             if started == now:
                 pos.setdefault("_mom_defer_log", []).append({"kind": kind, "at_pnl_pct": round(pnl_pct, 2), "ts": now})
             return now - started < float(getattr(cfg, "exit_momentum_max_defer_s", 20))
+        if t.get("r_trail"):
+            return self._decide_r_trail(pos, b, now, t, bx, price, entry, pnl_pct, peak_pct, dd_from_peak, _mom_holds)
         if pnl_pct >= bx["take_profit_pct"] and _mom_holds("tp"):
             return None
         if pnl_pct <= -bx["stop_loss_pct"] and _mom_holds("sl"):
@@ -1082,6 +1091,29 @@ class RHPaperTrader:
         held = now - pos["opened"]
         if bx["hold_max_seconds"] > 0 and held >= bx["hold_max_seconds"] and not is_manual_hold(t):
             return "max_hold"
+        return None
+
+    def _decide_r_trail(self, pos, b, now, t, bx, price, entry, pnl_pct, peak_pct, dd_from_peak, _mom_holds) -> str | None:
+        """Post-graduation ride (operator rule): no fixed TP, no clock. 1R = the trade's SL% (with slip).
+        Stop: the entry SL until the peak clears +1R, then breakeven + exit costs (never back below). Trail: giveback
+        from the post-sweep peak ≥ rh_grad_trail_r × 1R (floored at the book's trailing_stop_pct). Flush holds apply."""
+        cfg = self.state.config
+        one_r = float(t.get("sl_pct_with_slip") or bx["stop_loss_pct"] or 10.0)
+        trail_pct = max(float(bx.get("trailing_stop_pct") or 0.0), float(getattr(cfg, "rh_grad_trail_r", 1.0) or 1.0) * one_r)
+        peak = max(float(pos.get("_r_trail_peak") or 0.0), price)
+        pos["_r_trail_peak"] = peak
+        ride_peak_pct = (peak - entry) / entry * 100.0
+        drop = (peak - price) / peak * 100.0 if peak > 0 else 0.0
+        stop_pct = -bx["stop_loss_pct"]
+        if ride_peak_pct >= one_r:
+            stop_pct = max(stop_pct, float(t.get("expected_cost_pct") or 0.0))          # breakeven + what it costs to get out
+        pos["_r_trail_stop_pct"], pos["_r_trail_trail_pct"] = round(stop_pct, 2), round(trail_pct, 2)
+        if pnl_pct <= stop_pct:
+            if stop_pct < 0 and _mom_holds("sl"):
+                return None
+            return None if self._flush_holds(pos, b, now, "sl", pnl_pct, bx) else ("stop_loss" if stop_pct < 0 else "r_trail_stop")
+        if ride_peak_pct >= one_r and drop >= trail_pct:
+            return None if self._flush_holds(pos, b, now, "trail", pnl_pct, bx) else "r_trail"
         return None
 
     def _flush_holds(self, pos: dict, b: dict, now: float, kind: str, pnl_pct: float, bx: dict) -> bool:
@@ -1510,6 +1542,11 @@ class RHPaperTrader:
         b = self.state.rh_discovery.tracking.get(d.get("mint")) or {}
         d["live_curve_fill_pct"] = b.get("curve_fill_pct") or 0
         d["live_usd_market_cap"] = b.get("usd_market_cap") or 0
+        if pos["trade"].get("r_trail"):
+            d["r_trail"] = True
+            d["r_trail_stop_pct"], d["r_trail_trail_pct"] = pos.get("_r_trail_stop_pct"), pos.get("_r_trail_trail_pct")
+            if entry > 0 and pos.get("_r_trail_peak"):
+                d["r_trail_peak_pct"] = round((pos["_r_trail_peak"] - entry) / entry * 100.0, 1)
 
     def augment_launch(self, row: dict):
         pos = self.positions.get(row.get("mint"))

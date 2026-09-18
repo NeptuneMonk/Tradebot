@@ -1082,7 +1082,13 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
                  value={local.rh_max_mc_usd ?? 60000} onChange={(v) => setLocal({ ...local, rh_max_mc_usd: parseFloat(v) || 0 })} step="5000" />
           <Field label="Max Last Trade (s)" testid="rh-max-last-trade-input" hint="Skip curves with no trade in this many seconds."
                  value={local.rh_max_last_trade_age_s ?? 20} onChange={(v) => setLocal({ ...local, rh_max_last_trade_age_s: parseInt(v, 10) || 0 })} step="5" />
+          <Field label="Grad Trail (R)" testid="rh-grad-trail-r-input" hint="Graduated while held → the position rides the v4 pool on an R trail: no fixed TP, no clock. Exit when the giveback from the post-sweep peak reaches this many R (1R = the trade's SL% with slip; floored at the book's trailing stop). Stop moves to breakeven+costs once +1R."
+                 value={local.rh_grad_trail_r ?? 1} onChange={(v) => setLocal({ ...local, rh_grad_trail_r: parseFloat(v) || 0 })} step="0.25" />
         </div>
+        <label className="flex items-center gap-2 text-neutral-300 text-xs" title="Off = graduation keeps the fixed TP / trailing-stop / clock ladder on pool prices instead of the R-trail ride.">
+          <input type="checkbox" data-testid="rh-grad-handoff-checkbox" checked={local.rh_grad_handoff_r_trail !== false}
+                 onChange={(e) => setLocal({ ...local, rh_grad_handoff_r_trail: e.target.checked })} /> hand graduated holds to the R-trail ride (no fixed TP)
+        </label>
       </div>
 
       <button

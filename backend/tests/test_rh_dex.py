@@ -63,7 +63,7 @@ def test_sell_calldata_shape():
 
 
 def test_graduation_switches_venue_and_keeps_ladder_running():
-    st = make_state(stop_loss_pct=12.0, trailing_arm_pct=12.0, trailing_stop_pct=6.0, hold_max_seconds=3500,
+    st = make_state(rh_grad_handoff_r_trail=False, stop_loss_pct=12.0, trailing_arm_pct=12.0, trailing_stop_pct=6.0, hold_max_seconds=3500,
                     no_momentum_exit_enabled=False, exit_momentum_gate_enabled=False)
     now = time.time()
     b = hot_bucket(st.rh_discovery, now, price=1e-9, first=5e-10)

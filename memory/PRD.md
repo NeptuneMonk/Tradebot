@@ -2099,3 +2099,8 @@ Current state (07:04): bot RUNNING, RH paper ON, RH feed ON, Pump.fun feed ON (o
 
 ## 2026-06 — Graduation never exits (operator rule)
 - `rh_paper._switch_to_pool` drops any in-flight curve-priced `exit_trigger` (+ `_fill_task`), stat `grad_triggers_dropped`; `exit()` hit with a non-manual reason while the trade is still `venue=curve` but the bucket graduated → switch venue, clear `_exiting`, return (no sell). SL/TP/trail/momentum gates re-evaluate on pool prices on the next tick; `manual exit` still sells. Tests +2 (`test_rh_paper.py`). CEST row left as-is per operator.
+
+## 2026-06 — RH graduation → R-trail ride (operator: "handoff to R based, no fixed TP")
+- `rh_paper._switch_to_pool` arms `t["r_trail"]` (config `rh_grad_handoff_r_trail`=True, skipped for manual holds); `_decide_r_trail()` replaces TP/no_momentum/fixed-trail/max_hold: 1R = `sl_pct_with_slip`; stop = entry SL until the post-sweep peak clears +1R, then breakeven + `expected_cost_pct` (`r_trail_stop`); exit `r_trail` on a giveback from the ride peak ≥ `rh_grad_trail_r`(1.0)×1R, floored at the book trailing stop; momentum gate defers a negative stop, flush holds apply. Persisted `r_trail` on the trade; restore re-arms the ride peak. WS/`augment_trade` push `r_trail_stop_pct/r_trail_trail_pct/r_trail_peak_pct`; Active Trades stage shows "R-trail · stop · give". Control card: Grad Trail (R) field + handoff checkbox.
+- Tests: +4 in `test_graduation_hold.py`; legacy fixed-ladder tests pin `rh_grad_handoff_r_trail=False`.
+- NOTE 21:18 UTC: helius_tracker/rh_feed/rh_paper switches + bot were turned OFF via PUT (single-key flips, looked operator-driven; no test found doing it); agent re-armed all + Start at 21:27 — confirm with operator.

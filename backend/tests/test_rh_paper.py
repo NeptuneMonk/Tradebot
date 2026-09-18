@@ -170,7 +170,7 @@ def test_enter_then_take_profit_exit_math():
 
 
 def test_stop_loss_trailing_graduation_and_hold():
-    st = make_state(stop_loss_pct=12.0, trailing_arm_pct=12.0, trailing_stop_pct=6.0, hold_max_seconds=35,
+    st = make_state(rh_grad_handoff_r_trail=False, stop_loss_pct=12.0, trailing_arm_pct=12.0, trailing_stop_pct=6.0, hold_max_seconds=35,
                     no_momentum_exit_enabled=False)
     now = time.time()
     b = hot_bucket(st.rh_discovery, now, price=1e-9, first=5e-10)

@@ -61,6 +61,8 @@ class BotConfig(BaseModel):
     rh_min_age_s: int = 5                 # snipe tax is 0 after 3s
     rh_max_age_min: float = 15.0
     rh_seasoned_max_age_min: float = 60.0   # post-pool entries: minutes since the PONS sweep
+    rh_grad_handoff_r_trail: bool = True    # graduated while held → hand off to an R-based trail (no fixed TP, no clock)
+    rh_grad_trail_r: float = 1.0            # giveback from the post-sweep peak that closes the ride, in R (1R = the trade's SL% with slip)
     seasoned_max_last_trade_s: float = 20.0  # seasoned (PumpSwap / RH pool) entry needs a print this recent
     rh_min_growth_pct: float = 30.0       # from first observed curve price
     rh_max_growth_pct: float = 400.0      # "chased" gate: already ran this far since first print → we'd be the exit liquidity

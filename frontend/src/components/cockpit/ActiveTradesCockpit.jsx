@@ -25,6 +25,12 @@ export function stageFor(t) {
     return { text: <>leg {t.ladder_leg ?? "?"} · entry MC {t.entry_mc_usd ? `$${Math.round(t.entry_mc_usd / 1000)}k` : "—"}</>, pct: clamp(pnl), hint: "graduate ladder leg: ratchet trail from the leg peak, structure stop closes every leg" };
   }
   if (book === "rh_pons" || t.chain === "rh") {
+    if (t.venue === "pool" && t.r_trail) {
+      const stop = t.r_trail_stop_pct != null ? `${Number(t.r_trail_stop_pct) >= 0 ? "+" : ""}${Number(t.r_trail_stop_pct).toFixed(0)}%` : "—";
+      const trail = t.r_trail_trail_pct != null ? `${Number(t.r_trail_trail_pct).toFixed(0)}%` : "—";
+      return { text: <>R-trail · stop {stop} · give {trail}</>, pct: clamp(Number(t.r_trail_peak_pct ?? pnl) / 3),
+               hint: `graduated while held → riding the v4 pool on an R trail: no fixed TP, no clock; stop ${stop} (breakeven+costs once +1R), exit on a ${trail} giveback from the peak (${t.r_trail_peak_pct != null ? "+" + Number(t.r_trail_peak_pct).toFixed(0) + "%" : "—"})` };
+    }
     if (t.venue === "pool") return { text: <>curve→pool <Check ok /></>, pct: 100, hint: "graduated while held — priced and exited via the Uniswap v4 pool" };
     const fill = Number(t.live_curve_fill_pct ?? 0);
     return { text: <>curve {fill.toFixed(0)}% · pool <Check ok={false} /></>, pct: clamp(fill), hint: "PONS bonding curve — graduation sweeps the position into the v4 pool" };

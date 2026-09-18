@@ -267,3 +267,59 @@ def test_rh_zero_quote_after_graduation_never_books_minus_100():
     # cooling down: the next tick's exit call is a no-op instead of a retry storm
     asyncio.run(st.rh_paper.exit(TOKEN, "stop_loss"))
     assert TOKEN in st.rh_paper.positions and pos.get("_exiting") is None
+
+
+def _rh_ride(**cfg):
+    """Graduated-while-held position armed on the R trail. Entry 2e-9, SL 10% → 1R ≈ SL%-with-slip."""
+    import rh_paper as rp
+    from tests.test_rh_paper import TOKEN, enter, hot_bucket, make_state
+    st = make_state(take_profit_pct=14.0, **cfg)
+    b = hot_bucket(st.rh_discovery, time.time(), price=2e-9)
+    enter(st)
+    pos = st.rh_paper.positions[TOKEN]
+    t = pos["trade"]
+    t["expected_cost_pct"] = 3.0
+    b["graduated"] = True
+    return st, b, TOKEN, pos, t
+
+
+def _tick(st, pos, b, price):
+    b["last_price_quote"] = price
+    return st.rh_paper._decide_exit(pos, b, time.time())
+
+
+def test_r_trail_handoff_has_no_fixed_tp_and_rides_the_pump():
+    st, b, TOKEN, pos, t = _rh_ride()
+    entry = t["entry_price_quote"]
+    assert _tick(st, pos, b, entry * 1.75) is None                     # +75% at the sweep: the 14% TP does NOT fire
+    assert t["r_trail"] is True and t["venue"] == "pool"
+    one_r = t["sl_pct_with_slip"]
+    for mult in (3, 10, 40, 80):                                        # keeps riding while the peak climbs
+        assert _tick(st, pos, b, entry * mult) is None
+    assert pos["_r_trail_stop_pct"] == 3.0                              # stop ratcheted to breakeven + exit costs after +1R
+    assert pos["_r_trail_trail_pct"] >= one_r
+
+
+def test_r_trail_exits_on_r_giveback_from_peak():
+    st, b, TOKEN, pos, t = _rh_ride()
+    entry = t["entry_price_quote"]
+    assert _tick(st, pos, b, entry * 1.75) is None
+    peak = entry * 10
+    assert _tick(st, pos, b, peak) is None
+    trail = pos["_r_trail_trail_pct"]
+    assert _tick(st, pos, b, peak * (1 - (trail - 1) / 100.0)) is None   # inside the giveback band
+    assert _tick(st, pos, b, peak * (1 - (trail + 1) / 100.0)) == "r_trail"
+
+
+def test_r_trail_stop_is_breakeven_plus_costs_after_one_r():
+    st, b, TOKEN, pos, t = _rh_ride()
+    entry = t["entry_price_quote"]
+    assert _tick(st, pos, b, entry * 1.75) is None                     # peak cleared +1R → stop = +expected_cost_pct
+    assert _tick(st, pos, b, entry * 1.02) == "r_trail_stop"           # +2% < +3% costs floor: out at ~breakeven, never a loser
+
+
+def test_r_trail_handoff_off_keeps_fixed_tp():
+    st, b, TOKEN, pos, t = _rh_ride(rh_grad_handoff_r_trail=False)
+    entry = t["entry_price_quote"]
+    assert _tick(st, pos, b, entry * 1.75) == "take_profit"
+    assert t["r_trail"] is False
