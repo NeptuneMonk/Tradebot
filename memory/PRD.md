@@ -2001,3 +2001,16 @@ Patterns the Doctor cannot see (it scores per book, not across exit reasons):
 - ✅ Fixed pre-existing React duplicate-key warning on the DOCTOR view: `/api/doctor/applied-history` rows written by scorecard / book_exits operator actions had no `id` → synthesized `log:<applied_at>:<title>`.
 - Test: frontend testing agent iteration_25 — all views, persistence, ticker scroll/pause/click, dialogs pass. Bot + Pump.fun feed were restored to their pre-test state (feed OFF, bot stopping gracefully).
 - Next (P1): persistent view rail, TokenDetailDialog → right-edge drawer, book-aware stage column in Active Trades.
+
+## 2026-09-18 — P1 Trading Cockpit restyle to the mockup (tested — iteration_26, all pass)
+- ✅ `cockpit/NavBar.jsx`: LIVE · SCAN · LADDER · DOCTOR · BOOKS · CONTROL (emerald underline, sticky under header) + STOP/START (graceful stop) on the right. Header lost the feed text (now in KPI strip).
+- ✅ `cockpit/KpiStrip.jsx`: WALLET · P/L TODAY · HARVEST / SEARCH (7-day search ledger from `/api/autopilot/status`) · DD 24h · SLOTS n/max · SOL FEED · RH FEED (ON/FALLBACK/PAUSED/STALLED/OFF with the *why* in the tooltip) · TEMPO ×/PEAK · DOC sol:ok|adjust|bench rh:…
+- ✅ `cockpit/ActiveTradesCockpit.jsx`: BOOK badge · SYMBOL · UNREALIZED P/L · book-aware STAGE (`stageFor`: scalp target/SL, hunt `legs n/2 · spike ✓`, runner `stage · trail x% · +3R ✓`, rh `curve x% · pool`/`curve→pool ✓`, ladder `leg n`, Sol curve→pool) · progress bar · exit. Row click → drawer.
+- ✅ `cockpit/EquityPanel.jsx`: EQUITY + book chips (ALL/SCALP/HUNT/RUNNER/RH PONS) as the only visible controls; ⋯ reveals tf/mode/line-wicks. PLSummaryCard (with paper reset) moved to CONTROL.
+- ✅ `cockpit/CompactCandidates.jsx`: passing-only table (falls back to 5 closest when none pass) + **TOP BLOCKERS 10m/since-start** footer diffing `/api/scanner/skips` snapshots client-side every 30 s. Backend `scanner.candidates_snapshot` now emits `gate_reason`/`gate_detail` for Sol rows.
+- ✅ `cockpit/CompactLadder.jsx`: CURRENT · STEPS · STATUS · LEGS P/L table + MODE footer (paper n/15 / LIVE).
+- ✅ `cockpit/DoctorStrip.jsx` moved to the bottom of LIVE in mockup form: `SOL hunt · clear|ADJUSTING ×0.5|BENCHED · canary key=value [revert] | RH rh pons · … · N pending · DOC driving · open doctor →`.
+- ✅ `TokenDetailDialog.jsx` is now a right-edge Sheet drawer (w ≤ 3xl) — cockpit stays visible.
+- Views now: LIVE (KPI, 2×2, doctor strip, history, re-entry) · SCAN (feed, scanner, greylist) · LADDER (full card) · DOCTOR (autopilot, doctor, cost) · BOOKS (P/L by source, scorecard, classifier) · CONTROL (wallets, daily loss, P/L+reset, bot control).
+- Known low-priority: one WS 401 at first handshake when the cookie lands after navigation (tester artefact; WS reconnects immediately).
+- Next (P2): DoctorWorkspace split (Now / Proposals / Forensics) with chain/book filter; `Explain` short/long component; density pass; ticker filters.

@@ -1,0 +1,28 @@
+{
+  "summary": "Iteration 26 (frontend-only) verified the P1 Trading Cockpit UI restyle on https://micro-stake-trader.preview.emergentagent.com/dashboard. All required data-testid nodes and behaviors pass: nav bar (view-tabs + 6 view-tab-* + nav-run-toggle reading 'STOP' – NOT clicked); KPI strip (all 9 kpi-* nodes with non-empty title tooltips – kpi-feed-sol title='connected via primary WSS', kpi-harvest full 7-day ledger summary; feed pills show 'SOL FEED ON' / 'RH FEED OFF' with dots); active-trades-card table renders 2 active-trade-row-<mint> with active-stage-<mint> text like 'legs 0/2 · spike –'; pl-summary-card EQUITY panel with all 5 book chips (all/scalp/hunt/runner/rh_pons) and equity-more toggles pl-timeframes containing pl-tf-15m, pl-mode-all, pl-view-line; clicking pl-book-hunt fired GET /api/pl/equity?tf=15m&mode=all&book=hunt and the chart updated cleanly; cockpit-candidates footer contains 'TOP BLOCKERS since start:' with reason counts ('growth 4087 ·no-buy-events 202 ·inflow 160 ·liquidity 12'); cockpit-ladder + ladder-live-status shows 'MODE paper 0/15'; doctor-strip contains doctor-strip-sol ('SOL hunt · clear · canary greylist_snipe_min_score=55'), doctor-strip-rh ('RH rh pons · clear'), doctor-strip-pending ('1 pending'), and doctor-strip-open which switches view to view-doctor. TokenDetailDialog is now a right-edge Radix Sheet: opened from active-trade row, cockpit-cand row, cockpit-ladder row, and ticker-chip (with animation paused + hover). Bounding box confirmed {x:1152,y:0,w:768,h:900} on 1920 vw (right-edge, x+w == vw). Escape closes it. Tab checks pass: SCAN (view-scan + min-wrap-launch-feed + section-scanner + section-greylist; section-ladder/scorecard/classifier correctly absent), LADDER (view-ladder + ladder-card), BOOKS (view-books + section-pl-by-source + section-scorecard + section-classifier), DOCTOR (view-doctor + min-wrap-autopilot + section-doctor + section-cost), CONTROL (view-control + min-wrap-wallet/rh-wallet/daily-loss/pl + section-bot-control). Tab persistence works: choose BOOKS → ui.view='books' in localStorage → reload → still view-books. Footer skip-ticker present on ALL six tabs, counter format 'N SKIPS / 10M' (observed 5→12), chips 10→24. NO console duplicate-key warnings this run (the iter-25 null-key warning did NOT reproduce). Only 1 console error: a 401 on WS handshake resource (non-blocking, recovers to WS LIVE). Bot left RUNNING in paper mode, no config touched.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "WebSocket /api/ws", "issue": "One 401 resource error at page load on WS handshake (recovers; WS LIVE indicator green afterwards). Same class of issue noted in iter-25.", "selector": "console", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Optional: quiet the WS 401 at initial handshake by attaching the session_token before the first WS connect."
+  ],
+  "critical_code_review_comments": [
+    "TokenDetailDialog drawer correctly uses Radix Sheet side='right' and sets data-state=open; bounding box hugs right edge exactly (x+width == viewport width).",
+    "Equity book chip → /api/pl/equity?book=... query param round-trip is clean; no duplicate re-fetches observed on click.",
+    "graduate-ladder testid is NOT present on LADDER view; only ladder-card is. The review request accepts either (`ladder-card OR graduate-ladder testids`) so this passes, but if any other consumer expects `graduate-ladder`, consider aliasing."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (skipped)", "frontend": "100% of listed acceptance criteria pass"},
+  "test_credentials": "cookie session_token from /app/memory/.tok (test_session_1789699215762) still valid",
+  "seed_data_creation": "none",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "P1 cockpit restyle fully verified. Drawer conversion (right-edge Sheet) confirmed via 4 entry points. Tab persistence via localStorage ui.view works. Book chip triggers /api/pl/equity with book query. No duplicate-key warnings this run (iter-25 issue appears resolved or intermittent). Bot left RUNNING in paper mode; nav-run-toggle reads STOP and was NOT clicked. WS 401 handshake still the only console error class.",
+  "rca of the issue": "N/A – all acceptance criteria pass. WS 401 is likely due to socket connecting before the auth cookie is attached to the upgrade request; fixing requires deferring WS open until session_token is available (or forwarding it via subprotocol/query)."
+}
