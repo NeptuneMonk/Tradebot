@@ -41,7 +41,46 @@ const CATEGORY_TINT = {
 
 const CONFIDENCE_DOT = { high: "bg-emerald-400", med: "bg-amber-400", low: "bg-neutral-500" };
 
-function StrategyDoctorPanel({ onApplied, config, onConfigUpdate }) {
+const TEMPO_COLOR = (t) => (t >= 1.3 ? "text-emerald-400" : t <= 0.75 ? "text-amber-400" : "text-neutral-200");
+
+function TempoGauge({ tempo }) {
+  if (!tempo) return null;
+  const hour = new Date().getUTCHours();
+  const peak = tempo.peak_hours || [];
+  return (
+    <div className="mb-3 border border-neutral-800 px-3 py-2" data-testid="tempo-gauge">
+      <div className="flex items-center justify-between text-[9px] font-mono uppercase tracking-[0.2em] text-neutral-500 mb-1.5">
+        <span>market tempo · gate multiplier = √tempo</span>
+        <span title="UTC hours that get the ×1.25 size boost (busiest 8 by launches over 7 d, minus losing hours)">
+          peak hours {peak.length ? peak.map((h) => <span key={h} className={`ml-1 px-1 border ${h === hour ? "border-emerald-600 text-emerald-300" : "border-neutral-800"}`}>{String(h).padStart(2, "0")}</span>) : "— (needs 7 d of launches)"}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        {["sol", "rh"].map((c) => {
+          const t = tempo[c];
+          if (!t) return <div key={c} className="text-[10px] font-mono text-neutral-600">{c}: no flow yet</div>;
+          const pctPos = Math.min(100, Math.max(0, ((t.tempo - 0.5) / 1.5) * 100));
+          return (
+            <div key={c} data-testid={`tempo-${c}`}>
+              <div className="flex items-baseline gap-2 text-[10px] font-mono">
+                <span className="uppercase text-neutral-500 w-6">{c}</span>
+                <span className={`text-sm ${TEMPO_COLOR(t.tempo)}`}>{t.tempo.toFixed(2)}×</span>
+                <span className="text-neutral-500">gates ×{t.gate_mult.toFixed(2)}</span>
+                <span className="ml-auto text-neutral-600">{t.buys_2m} buys/2m vs {t.baseline_buys_2m} · {t.launch_rate_h}/h vs {t.baseline_rate_h}</span>
+              </div>
+              <div className="h-1 bg-neutral-900 mt-1 relative">
+                <div className="absolute left-1/3 top-0 h-full w-px bg-neutral-700" title="baseline 1.0×" />
+                <div className={`h-full ${t.tempo >= 1.3 ? "bg-emerald-500" : t.tempo <= 0.75 ? "bg-amber-500" : "bg-neutral-400"}`} style={{ width: `${pctPos}%` }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function StrategyDoctorPanel({ onApplied, config, onConfigUpdate, tempo }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
@@ -130,6 +169,7 @@ function StrategyDoctorPanel({ onApplied, config, onConfigUpdate }) {
 
   return (
     <div className="border border-neutral-800 bg-neutral-950 rounded-sm p-3 md:p-4" data-testid="strategy-doctor">
+      <TempoGauge tempo={tempo} />
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <Stethoscope className="w-4 h-4 text-emerald-300" />

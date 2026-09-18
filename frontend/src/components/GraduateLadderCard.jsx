@@ -1,7 +1,8 @@
-import { memo } from "react";
+import { memo, useState } from "react";
 import { Layers, X } from "lucide-react";
 import { toast } from "sonner";
 import { ChainBadge } from "./ChainBadge";
+import { TokenDetailDialog } from "./TokenDetailDialog";
 import HelpHint from "./HelpHint";
 import { api } from "@/lib/api";
 
@@ -13,11 +14,13 @@ const fmtUsd = (n) => {
 };
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 
-function LadderRow({ t, onRemove }) {
+function LadderRow({ t, onRemove, onOpen }) {
   const holding = t.state === "holding";
   const legPnl = t.legs?.length ? t.legs.reduce((a, l) => a + l.pnl_pct, 0) / t.legs.length : null;
   return (
-    <li data-testid={`ladder-row-${t.mint}`} className={`border px-3 py-2 ${holding ? "border-emerald-800 bg-emerald-950/20" : "border-neutral-800"}`}>
+    <li data-testid={`ladder-row-${t.mint}`} className={`border px-3 py-2 cursor-pointer ${holding ? "border-emerald-800 bg-emerald-950/20" : "border-neutral-800"}`}
+      onClick={(e) => { if (!e.target.closest("button, a")) onOpen?.({ chain: t.chain, mint: t.mint, symbol: t.symbol, name: t.name }); }}
+      title="Click for live market data, our record and a manual re-entry">
       <div className="flex items-center gap-2">
         <ChainBadge chain={t.chain} protocol={t.chain === "rh" ? t.protocol : null} mint={t.mint} />
         <span className="font-mono font-semibold text-sm truncate">{t.symbol || "?"}</span>
@@ -47,6 +50,7 @@ function LadderRow({ t, onRemove }) {
 }
 
 function GraduateLadderCard({ ladder, config, onConfigPatch, onRefresh }) {
+  const [detail, setDetail] = useState(null);
   const tokens = ladder?.tokens || [];
   const holding = tokens.filter((t) => t.state === "holding");
   const remove = async (key) => {
@@ -72,8 +76,9 @@ function GraduateLadderCard({ ladder, config, onConfigPatch, onRefresh }) {
       {tokens.length === 0 ? (
         <div className="text-center py-4 text-[10px] uppercase tracking-[0.2em] text-neutral-600">no graduated token above $50K MC seen yet</div>
       ) : (
-        <ul className="space-y-1">{tokens.slice(0, 40).map((t) => <LadderRow key={t.key} t={t} onRemove={remove} />)}</ul>
+        <ul className="space-y-1">{tokens.slice(0, 40).map((t) => <LadderRow key={t.key} t={t} onRemove={remove} onOpen={setDetail} />)}</ul>
       )}
+      <TokenDetailDialog token={detail} onClose={() => setDetail(null)} />
     </div>
   );
 }

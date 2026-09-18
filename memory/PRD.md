@@ -1983,3 +1983,8 @@ Patterns the Doctor cannot see (it scores per book, not across exit reasons):
 ## 2026-09-17 — Tracked Tokens (scanner candidates) card froze while the WS was healthy
 - Root cause: `/api/scanner/candidates` (and `/api/ladder`) were only fetched in `refreshAll` — initial load + the 30 s safety-net poll that runs **only while the WS is disconnected**. There is no WS push for the scanner ranking, so with the bot running (WS healthy) the card showed its first snapshot forever and "refreshed" only when the bot stopped.
 - ✅ Dashboard polls scanner candidates + ladder on their own 5 s clock regardless of WS state.
+
+## 2026-09-18 — Scanner push · detail from every card · tempo gauge
+- ✅ `MomentumScanner._push_snapshot` broadcasts `scanner_snapshot` (Sol + RH candidates) over the WS after every scan tick (≤1×/2 s); Dashboard applies it (`case "scanner_snapshot"`), 5 s polling stays as safety net.
+- ✅ `TokenDetailDialog` opens from launch-feed rows, scanner (Tracked Tokens) rows and Graduate Ladder rows, not just Trade History (row click; buttons/links inside rows don't trigger it).
+- ✅ `TempoGauge` at the top of the Strategy Doctor panel: per-chain tempo ×, gate multiplier, buys/2 m vs baseline, launches/h vs baseline, bar with the 1.0× baseline tick; peak UTC hours listed with the current hour highlighted. Fed by `status.market_tempo`.

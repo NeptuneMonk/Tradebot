@@ -1,6 +1,7 @@
 import { memo, useState } from "react";
 import { Radio, Users, Droplets, Flame, DollarSign } from "lucide-react";
 import { ChainBadge, ChainFilterChips } from "./ChainBadge";
+import { TokenDetailDialog } from "./TokenDetailDialog";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const fmtUsd = (n) => {
@@ -68,6 +69,7 @@ const RH_GATE_HINT = {
 };
 
 function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh: false } }) {
+  const [detail, setDetail] = useState(null);
   const [chainFilter, setChainFilter] = useState(() => localStorage.getItem(CHAIN_FILTER_KEY) || "all");
   const setFilter = (k) => { localStorage.setItem(CHAIN_FILTER_KEY, k); setChainFilter(k); };
   const counts = { all: allLaunches.length, sol: 0, rh: 0 };
@@ -106,7 +108,9 @@ function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh
             <li
               key={l.id}
               data-testid={`launch-row-${l.mint}`}
-              className="border border-neutral-800 hover:bg-neutral-900/60 px-3 py-2 transition-colors duration-100 relative"
+              className="border border-neutral-800 hover:bg-neutral-900/60 px-3 py-2 transition-colors duration-100 relative cursor-pointer"
+              onClick={(e) => { if (!e.target.closest("button, a")) setDetail({ chain: l.chain || "sol", mint: l.mint, symbol: l.symbol, name: l.name }); }}
+              title="Click for live market data, our record and a manual re-entry"
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">
@@ -174,6 +178,7 @@ function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh
           })}
         </ul>
       </div>
+      <TokenDetailDialog token={detail} onClose={() => setDetail(null)} />
     </div>
   );
 }

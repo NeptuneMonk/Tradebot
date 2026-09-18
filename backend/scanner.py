@@ -340,6 +340,20 @@ class MomentumScanner:
         )
         return out[:80]
 
+    _last_push_ts = 0.0
+
+    async def _push_snapshot(self, st, now: float):
+        """Push the ranking to the UI right after each scan tick (≤ 1×/2 s) so rows move when a gate flips."""
+        if now - self._last_push_ts < 2.0:
+            return
+        self._last_push_ts = now
+        try:
+            rd = getattr(st, "rh_discovery", None)
+            items = self.candidates_snapshot() + (rd.candidates_snapshot() if rd is not None else [])
+            await hub.broadcast("scanner_snapshot", {"items": items, "ts": now})
+        except Exception as e:
+            logger.debug(f"scanner push failed: {e}")
+
     async def loop(self):
         """Background: every scanner_interval_s scan tracked mints for momentum
         signal (growth + volume + new buyers) and attempt entry on the best."""
@@ -448,9 +462,11 @@ class MomentumScanner:
                     scored.append((mint, b, m, rank_score, band))
 
                 if not scored:
+                    await self._push_snapshot(st, now)
                     continue
                 for _m, _b, _mm, _r, _band in scored:
                     st.prerank_skip(_band, _Verdict(_b)("pass"))
+                await self._push_snapshot(st, now)
 
                 scored.sort(key=lambda x: x[3], reverse=True)
                 remaining = max(0, cfg.max_concurrent_positions - len(st.active_trades))

@@ -3,6 +3,7 @@ import { Telescope, TrendingUp, Sparkles, Hourglass, Eye, Zap } from "lucide-rea
 import { toast } from "sonner";
 import HelpHint from "./HelpHint";
 import { ChainBadge } from "./ChainBadge";
+import { TokenDetailDialog } from "./TokenDetailDialog";
 import { api } from "@/lib/api";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
@@ -18,7 +19,7 @@ const fmtUsd = (n) => {
   return `$${v.toFixed(0)}`;
 };
 
-function Band({ title, Icon, accentClass, items, emptyText, testId }) {
+function Band({ title, Icon, accentClass, items, emptyText, testId , onOpen }) {
   const passing = items.filter((c) => c.passes);
   const watching = items.filter((c) => !c.passes).slice(0, 8);
   return (
@@ -43,7 +44,7 @@ function Band({ title, Icon, accentClass, items, emptyText, testId }) {
                 <TrendingUp className="w-3 h-3" /> Passing
               </div>
               <ul className="space-y-1">
-                {passing.map((c) => <CandidateRow key={c.mint} c={c} passing />)}
+                {passing.map((c) => <CandidateRow key={c.mint} c={c} passing onOpen={onOpen} />)}
               </ul>
             </div>
           )}
@@ -51,7 +52,7 @@ function Band({ title, Icon, accentClass, items, emptyText, testId }) {
             <div>
               <div className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 mb-1">Watching</div>
               <ul className="space-y-1">
-                {watching.map((c) => <CandidateRow key={c.mint} c={c} />)}
+                {watching.map((c) => <CandidateRow key={c.mint} c={c} onOpen={onOpen} />)}
               </ul>
             </div>
           )}
@@ -62,6 +63,7 @@ function Band({ title, Icon, accentClass, items, emptyText, testId }) {
 }
 
 function ScannerCandidatesCard({ candidates, config }) {
+  const [detail, setDetail] = useState(null);
   // Protocol-aware bands: NEW = pumpfun [band_new_min_age_min, band_new_max_age_min] min
   //                        SEASONED = pumpswap [band_seasoned_min_age_min, band_seasoned_max_age_min] min
   const newMin = config?.band_new_min_age_min ?? 0;
@@ -95,6 +97,7 @@ function ScannerCandidatesCard({ candidates, config }) {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         <Band
+          onOpen={(t) => setDetail(t)}
           title={`New (Pump.fun · ${newRange})`}
           Icon={Sparkles}
           accentClass="text-amber-300"
@@ -102,6 +105,7 @@ function ScannerCandidatesCard({ candidates, config }) {
           emptyText="no fresh tokens meeting momentum criteria"
         />
         <Band
+          onOpen={(t) => setDetail(t)}
           title={`Seasoned (PumpSwap · ${seasonedRange})`}
           Icon={Hourglass}
           accentClass="text-cyan-300"
@@ -109,6 +113,7 @@ function ScannerCandidatesCard({ candidates, config }) {
           emptyText="no seasoned tokens meeting momentum criteria"
         />
         <Band
+          onOpen={(t) => setDetail(t)}
           title={`Robinhood (PONS · ${rhRange})`}
           testId="scanner-band-robinhood"
           Icon={Eye}
@@ -117,6 +122,7 @@ function ScannerCandidatesCard({ candidates, config }) {
           emptyText="no robinhood chain launches in band"
         />
       </div>
+      <TokenDetailDialog token={detail} onClose={() => setDetail(null)} />
     </div>
   );
 }
@@ -154,7 +160,7 @@ function ManualBuyButton({ c, isRh }) {
   );
 }
 
-function CandidateRow({ c, passing }) {
+function CandidateRow({ c, passing, onOpen }) {
   const growth = c.growth_pct ?? 0;
   const growthCls = growth >= 0 ? "text-emerald-400" : "text-red-400";
   const discovered = c.discovered === true;
@@ -163,7 +169,9 @@ function CandidateRow({ c, passing }) {
   return (
     <li
       data-testid={`scanner-row-${c.mint}`}
-      className={`border px-3 py-2 ${passing ? "border-emerald-800 bg-emerald-950/20" : "border-neutral-800"}`}
+      className={`border px-3 py-2 cursor-pointer ${passing ? "border-emerald-800 bg-emerald-950/20" : "border-neutral-800"}`}
+      onClick={(e) => { if (!e.target.closest("button, a")) onOpen?.({ chain: c.chain || "sol", mint: c.mint, symbol: c.symbol, name: c.name }); }}
+      title="Click for live market data, our record and a manual re-entry"
     >
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0 flex-1">

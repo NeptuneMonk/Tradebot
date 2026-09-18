@@ -245,6 +245,9 @@ export default function Dashboard() {
       case "trade_update":
         setActiveTrades((prev) => prev.map((t) => (t.id === data.id ? { ...t, ...data } : t)));
         break;
+      case "scanner_snapshot":
+        if (Array.isArray(data?.items)) setScanner(data.items);
+        break;
       case "trade_exit":
         setActiveTrades((prev) => prev.filter((t) => t.id !== data.id));
         setHistory((prev) => [data, ...prev.filter((t) => t.id !== data.id)]);
@@ -531,6 +534,7 @@ export default function Dashboard() {
           badge={config?.autopilot_enabled ? "autopilot" : null}
         >
           <StrategyDoctorPanel
+            tempo={status?.market_tempo}
             config={config}
             onConfigUpdate={setConfig}
             onApplied={onDoctorApplied}
