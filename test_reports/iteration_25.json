@@ -1,0 +1,27 @@
+{
+  "summary": "Iteration 25 (frontend-only): Trading Cockpit UI restructure verified end-to-end on https://micro-stake-trader.preview.emergentagent.com/dashboard. All required data-testid nodes are present on LIVE/SCAN/DOCTOR/CONTROL views; tab persistence via localStorage 'ui.view' works across reload; footer skip-ticker is position:fixed at bottom:0px on every tab, counter shows 'N skips / 10m' (observed '4skips / 10m'), 48-50 ticker-chip-* elements render within 5s, .ticker-track transform advances between samples, hover pauses animation (animationPlayState=paused), chip click opens token-detail-dialog and Escape closes it. Cockpit rows also open the dialog: 28 cockpit-cand-* and 14 cockpit-ladder-* rows rendered and both open TokenDetailDialog on click. Header bot toggle text = 'RUNNING' (left running). Screenshot captured.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Dashboard (unknown child list)", "issue": "React warning: 'Encountered two children with the same key, null'. 18 duplicate-key warnings fire on load/tab-switch. Key is null so cannot be traced to a single list from console; likely a list rendered with key={item.mint} or similar where a null mint sneaks in. Grep of /app/frontend/src/components/cockpit shows all cockpit lists use safe keys (ViewTabs id, TempoPill c, SkipTicker `${rep}-${it.key}`, CompactLadder t.key, CompactCandidates `${c.chain}-${c.mint}`) so source is outside cockpit — check TradeHistory / launch-feed / scanner / ladder / scorecard / greylist / reentry map()s for a nullable key.", "selector": "console", "priority": "MEDIUM"},
+      {"component": "WebSocket /api/ws", "issue": "1 x 401 on initial WS handshake + 'closed before established' warning at page load; app recovers (WS LIVE indicator shows green, ticker feed works). Likely token attach timing / cookie vs bearer.", "selector": "console", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Track down the null-keyed list responsible for 'two children with the same key `null`' warning (list is outside /components/cockpit/ — likely TradeHistory, LaunchFeed, or one of the SCAN sections). Adding `key={x.mint || x.id || idx}` on the offending map() will silence it."
+  ],
+  "critical_code_review_comments": [
+    "SkipTicker doubles the list for seamless scroll (map twice with rep index) — fine, but if list.length === 0 the track is empty and counter still reads 0; acceptable but worth a visual placeholder.",
+    "CompactCandidates uses `${c.chain}-${c.mint}`; if two feeds emit the same chain+mint (very possible for pumpfun candidates seen twice) this collides. Consider adding a monotonic seq or ts as tiebreaker."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (skipped)", "frontend": "100% required testids present, 1 non-blocking console warning class"},
+  "seed_data_creation": "none",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Bot left RUNNING in paper mode. Cockpit + tabs + ticker + persistence + dialog + row clicks all pass. Only remaining item is the null duplicate-key warning; token in /app/memory/.tok still valid.",
+  "rca of the issue": "Duplicate-key warning: React sees key === null in a list somewhere in the LIVE view render tree (fires ~18 times per full render cycle, consistent with the 4 side-tables on LIVE view expanding). Cockpit files vetted clean. Reproduction: open /dashboard, watch console; warnings appear on first render and every tab switch back to LIVE."
+}

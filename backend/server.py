@@ -2988,7 +2988,7 @@ async def doctor_applied_history(limit: int = 25):
     out = []
     for r in rows:
         out.append({
-            "id": r.get("id"),
+            "id": r.get("id") or f"log:{r.get('applied_at')}:{r.get('title')}",   # operator log rows (scorecard / book_exits) carry no suggestion id
             "title": r.get("title"),
             "category": r.get("category"),
             "status": r.get("status"),

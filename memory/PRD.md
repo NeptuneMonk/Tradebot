@@ -1988,3 +1988,16 @@ Patterns the Doctor cannot see (it scores per book, not across exit reasons):
 - ✅ `MomentumScanner._push_snapshot` broadcasts `scanner_snapshot` (Sol + RH candidates) over the WS after every scan tick (≤1×/2 s); Dashboard applies it (`case "scanner_snapshot"`), 5 s polling stays as safety net.
 - ✅ `TokenDetailDialog` opens from launch-feed rows, scanner (Tracked Tokens) rows and Graduate Ladder rows, not just Trade History (row click; buttons/links inside rows don't trigger it).
 - ✅ `TempoGauge` at the top of the Strategy Doctor panel: per-chain tempo ×, gate multiplier, buys/2 m vs baseline, launches/h vs baseline, bar with the 1.0× baseline tick; peak UTC hours listed with the current hour highlighted. Fed by `status.market_tempo`.
+
+## 2026-09-18 — P0 "Trading Cockpit" UI restructure (approved plan, built + tested — iteration_25)
+- ✅ **Doctor strip** (`cockpit/DoctorStrip.jsx`) under the banners: per-chain tempo × / gate multiplier, peak-hour flag, benched books, live-loss vs kill-switch bar, open/today counts, sol/rh live-paper pills.
+- ✅ **View tabs** (`cockpit/ViewTabs.jsx`, localStorage `ui.view`, default `live`): LIVE / SCAN / DOCTOR / CONTROL. Nothing deleted — relocated:
+  - LIVE: 2×2 cockpit (Active Trades · KPI row + equity chart / P/L today · compact Candidates · compact Graduate Ladder) + Trade history + Re-entry watchlist.
+  - SCAN: Launch feed · Scanner Candidates (full) · Graduate Ladder (full, ON/OFF + remove) · Scorecard · Classifier · Creator Greylist.
+  - DOCTOR: Autopilot · Strategy Doctor (Tempo gauge inside) · P/L by source · Cost tracker.
+  - CONTROL: Wallet · Robinhood wallet · Daily loss · Bot Control.
+- ✅ **Footer skip ticker** (`cockpit/SkipTicker.jsx` + `lib/useSkipFeed.js`): fixed bottom bar, `CHAIN SYMBOL · reason · age` chips scrolling right→left (CSS marquee, `w-max` track doubled for a seamless loop, hover pauses), counter "N skips / 10m". Fed by WS `scanner_skip` + `candidate`/`candidate_update` gate verdicts (Sol `gate`, RH `rh_gate`), deduped 60 s per mint+reason, seeded from the launch feed's last verdicts on first paint. Chip click → `TokenDetailDialog`. Backend `_skip_event` now fills `symbol` from the tracking bucket.
+- ✅ Compact tiles: `CompactCandidates.jsx` (chain · symbol · band · gate verdict · growth, passing first) and `CompactLadder.jsx` (chain · symbol · MC · 3-step boxes · state · legs P/L). Row click → detail dialog. Staggered `tile-in` entrance animation (index.css).
+- ✅ Fixed pre-existing React duplicate-key warning on the DOCTOR view: `/api/doctor/applied-history` rows written by scorecard / book_exits operator actions had no `id` → synthesized `log:<applied_at>:<title>`.
+- Test: frontend testing agent iteration_25 — all views, persistence, ticker scroll/pause/click, dialogs pass. Bot + Pump.fun feed were restored to their pre-test state (feed OFF, bot stopping gracefully).
+- Next (P1): persistent view rail, TokenDetailDialog → right-edge drawer, book-aware stage column in Active Trades.
