@@ -14,11 +14,12 @@ def test_benched_rh_book_marks_passing_tokens_as_doctor_breaker_without_entering
     now = time.time()
     b = hot_bucket(st.rh_discovery, now)
     assert st.rh_paper._gates(TOKEN, b, now) is None
-    st.live_doctor = SimpleNamespace(book_paused=lambda book: book == "rh_pons")
+    st.live_doctor = SimpleNamespace(book_paused=lambda book: book == "rh_pons", book_benched=lambda book, live: book == "rh_pons",
+                                     book_adjust=lambda book, live: (1.0, 1.0))
     st.rh_paper._scan_entries(now)
     assert b["gate_reason"] == "doctor-breaker" and TOKEN not in st.rh_paper._pending_entries
     assert st.rh_paper.stats["skip_reasons"] == {"curve:doctor-breaker": 1}
-    st.live_doctor = SimpleNamespace(book_paused=lambda book: False)
+    st.live_doctor = SimpleNamespace(book_paused=lambda book: False, book_benched=lambda book, live: False, book_adjust=lambda book, live: (1.0, 1.0))
 
     async def _go():
         st.rh_paper._scan_entries(now)

@@ -34,9 +34,10 @@ def test_panic_helper_classification():
         "stop-loss hit (-22.0%) [fast]",
         "hard-stop (user requested)",
         "ladder stop +2.0% hit (1.2%)",
-        "bonding curve completed (LP about to deploy)",
+        "hunt rip-cord (pattern broke)",
     ]
     chill_reasons = [
+        "bonding curve completed (LP about to deploy)",   # graduation is a hold-through now, never a panic sell
         "take-profit hit (+25.1%)",
         "take-profit hit (+20.0%) [fast]",
         "timeout after 45s",

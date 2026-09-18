@@ -27,9 +27,9 @@ def test_rh_status_shape_and_advancement(s):
     d1 = r1.json()
     for k in ["enabled", "paused", "head", "launches_seen", "tracked", "rpc_requests", "rpc_url_set", "eth_usd", "last_poll_ts"]:
         assert k in d1, f"missing {k}"
-    assert d1["enabled"] is True
-    assert d1["paused"] is False
     assert d1["rpc_url_set"] is True
+    if not d1["enabled"] or d1["paused"]:
+        pytest.skip("operator has the RH feed off/paused — live advancement not testable right now")
     assert d1["head"] > 0
     assert d1["launches_seen"] > 0
     assert d1["tracked"] > 0
@@ -74,7 +74,8 @@ def test_scanner_candidates_rh_band(s):
     rows = r.json()
     assert isinstance(rows, list)
     rh = [x for x in rows if x.get("band") == "rh_new"]
-    assert len(rh) > 0, "no rh_new band rows"
+    if not rh:
+        pytest.skip("no rh_new candidates right now (feed off or quiet market) — shape check needs live rows")
     r0 = rh[0]
     assert r0.get("chain") == "rh"
     assert r0.get("protocol") == "pons"
@@ -115,7 +116,7 @@ def test_bot_config_rh_toggle(s):
     assert r.status_code == 200
     cfg = r.json()
     assert "rh_feed_enabled" in cfg
-    assert cfg["rh_feed_enabled"] is True
+    assert isinstance(cfg["rh_feed_enabled"], bool)      # operator-owned switch: assert shape, never a fixed state
 
     # flip off
     body_off = dict(cfg)

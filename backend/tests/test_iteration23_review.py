@@ -31,7 +31,7 @@ def test_bot_config_runner_and_max_concurrent():
     assert r.status_code == 200, r.text
     d = r.json()
     assert 0.25 <= float(d.get("book_runner_size_mult")) <= 2.0, d.get("book_runner_size_mult")   # allocator-owned, inside its rail
-    assert d.get("max_concurrent_positions") == 3, d.get("max_concurrent_positions")
+    assert 1 <= int(d.get("max_concurrent_positions")) <= 8, d.get("max_concurrent_positions")   # autopilot-sized, inside the rail
 
 
 # --- Manual buy invalid mint → 409 fast reject ---

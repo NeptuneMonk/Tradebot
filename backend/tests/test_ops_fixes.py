@@ -299,7 +299,7 @@ def test_discovery_clip_caps_entry_notional_but_not_runner_add_on():
     assert "discovery_clip_usd" in __import__("rails").NEVER_TOUCH        # operator-owned, the Doctor cannot lift it
 
 
-def test_sequencer_factory_calldata_wakes_the_poller_and_feed_idles_with_doctor():
+def test_sequencer_factory_calldata_wakes_the_poller_and_feed_idles_with_doctor(monkeypatch):
     import rh_feed
     from rh_discovery import RHDiscovery, FACTORY
     d = RHDiscovery.__new__(RHDiscovery)
@@ -315,8 +315,8 @@ def test_sequencer_factory_calldata_wakes_the_poller_and_feed_idles_with_doctor(
     feed.state = type("S2", (), {"config": d.state.config, "rh_discovery": d, "rh_paper": d.state.rh_paper})()
     feed.stats = {"messages": 0, "txs": 0, "curve_sells": 0, "rug_alerts": 0, "factory_txs": 0, "last_seq": 0}
     d.tracking, d._curve_to_token = {}, {}
-    rh_feed.decode_tx = lambda txb: {"to": FACTORY, "value": 0, "data": b"\\x00"}
-    rh_feed._walk = lambda body: [b"tx"]
+    monkeypatch.setattr(rh_feed, "decode_tx", lambda txb: {"to": FACTORY, "value": 0, "data": b"\\x00"})   # restored after the test
+    monkeypatch.setattr(rh_feed, "_walk", lambda body: [b"tx"])
     import base64, json
     raw = json.dumps({"messages": [{"sequenceNumber": 7, "message": {"message": {"header": {"kind": 3}, "l2Msg": base64.b64encode(b"x").decode()}}}]})
     feed._on_message(raw)

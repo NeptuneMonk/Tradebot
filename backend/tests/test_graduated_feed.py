@@ -19,6 +19,17 @@ def _state():
                            recent_launches=[], db=None)
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _restore_batch():
+    import pumpswap
+    orig = pumpswap.fetch_pool_states_batch
+    yield
+    pumpswap.fetch_pool_states_batch = orig       # never leak the fake into later test modules (test_rpc_waste)
+
+
 def _feed(coins):
     d = disc.PumpfunDiscovery(_state())
 
@@ -33,7 +44,7 @@ def _feed(coins):
 
     async def fake_batch(pools):
         return {}
-    disc.pumpswap.fetch_pool_states_batch = fake_batch
+    disc.pumpswap.fetch_pool_states_batch = fake_batch          # restored by the autouse _restore_batch fixture
     return d
 
 

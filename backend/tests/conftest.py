@@ -64,9 +64,18 @@ def base_url():
     return BASE_URL
 
 
+MUTATE_LIVE = os.environ.get("PYTEST_LIVE_MUTATE") == "1"
+# Operator switches: a test-session restore must never flip these (the operator may have changed them mid-run).
+SWITCH_KEYS = ("enabled", "helius_tracker_enabled", "rh_feed_enabled", "rh_paper_enabled", "rh_live_trading", "live_trading",
+               "scanner_enabled", "ladder_enabled")
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _restore_user_config_after_session():
-    """Live-API tests PUT clamps/toggles into the running bot; put the user's config back afterwards."""
+    """Live-API tests PUT clamps/toggles into the running bot; put the user's config back afterwards (switches excluded)."""
+    if not MUTATE_LIVE:
+        yield
+        return
     snap = None
     try:
         r = requests.get(f"{BASE_URL}/api/bot/config", headers=AUTH_HEADERS, timeout=15)
@@ -78,8 +87,9 @@ def _restore_user_config_after_session():
     if snap is None:
         return
     try:
-        r = requests.put(f"{BASE_URL}/api/bot/config", headers=AUTH_HEADERS, json=snap, timeout=15)
-        print(f"[conftest] restored user bot config: HTTP {r.status_code}")
+        body = {k: v for k, v in snap.items() if k not in SWITCH_KEYS}
+        r = requests.put(f"{BASE_URL}/api/bot/config", headers=AUTH_HEADERS, json=body, timeout=15)
+        print(f"[conftest] restored user bot config (switches untouched): HTTP {r.status_code}")
     except Exception as e:
         print(f"[conftest] could not restore bot config: {e}")
 
@@ -96,7 +106,13 @@ def _inject_auth_into_requests():
     original = requests.Session.request
 
     def patched(self, method, url, **kwargs):
-        if TOKEN and str(url).startswith(BASE_URL):
+        u = str(url)
+        if u.startswith(BASE_URL) and str(method).upper() in ("PUT", "POST", "DELETE", "PATCH") and not MUTATE_LIVE \
+                and "/api/auth/" not in u:
+            # 2026-09-18: a plain `pytest tests/` used to PUT feed/RH toggles into the RUNNING bot (and a timed-out run
+            # never restored them) — that is how the operator's RH switches got flipped mid-session. Opt in explicitly.
+            pytest.skip("mutating live-API call — set PYTEST_LIVE_MUTATE=1 to run against the running bot")
+        if TOKEN and u.startswith(BASE_URL):
             headers = dict(self.headers or {})
             headers.update(kwargs.get("headers") or {})
             if "Authorization" not in headers:

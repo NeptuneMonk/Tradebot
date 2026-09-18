@@ -117,7 +117,7 @@ class PumpFunListener:
     def health(self) -> dict:
         return {"connected": self.connected, "last_error": self.last_error, "last_ok_ts": self.last_ok_ts or None,
                 "last_attempt_ts": self.last_attempt_ts or None, "task_alive": bool(self._task and not self._task.done()),
-                "via": self.via}
+                "via": getattr(self, "via", None)}
 
     def start(self):
         if self._task and not self._task.done():

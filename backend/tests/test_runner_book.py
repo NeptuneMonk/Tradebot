@@ -206,7 +206,7 @@ def test_add_on_once_cost_gated_and_second_refused():
     assert thin["size_usd"] == 10.0 and thin["cost_gate_pass"] is False
 
 
-def test_second_add_on_refused_in_bot_path():
+def test_second_add_on_refused_in_bot_path(monkeypatch):
     st = _patched(_bot_stub())
     s = _slot("runner", protocol="pumpswap")
     runner.promote(s["trade"], s, 1.0, "pumpswap")
@@ -214,7 +214,7 @@ def test_second_add_on_refused_in_bot_path():
     st.active_trades[MINT] = s
     import bot as botmod
     async def _boom(*a, **k): raise AssertionError("pool state must not be fetched for a second add-on")
-    botmod.pumpswap.fetch_pool_state = _boom
+    monkeypatch.setattr(botmod.pumpswap, "fetch_pool_state", _boom)
     async def _plan(*a, **k): raise AssertionError("no second add-on")
     old = runner.add_on_plan
     runner.add_on_plan = _plan

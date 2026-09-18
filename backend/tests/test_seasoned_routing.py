@@ -90,8 +90,12 @@ def test_classifier_unused_on_pumpswap_and_no_trending_clients():
     bot_src = (src / "bot.py").read_text()
     assert 'if is_new_band and protocol == "pumpfun" and not bypass_gates:' in bot_src
     text = "".join(p.read_text() for p in src.glob("*.py"))
-    for needle in ("dexscreener", "birdeye", "/trending"):
+    for needle in ("birdeye", "/trending"):
         assert needle not in text.lower(), needle
+    # DexScreener is allowed only for on-demand operator views (token drawer, manual-pin metadata) — never for
+    # discovery, gating or entry decisions.
+    for f in ("discovery.py", "scanner.py", "bot.py", "rh_discovery.py", "rh_paper.py", "classifier.py"):
+        assert "dexscreener" not in (src / f).read_text().lower(), f
 
 
 def test_seasoned_buyers_gate_treats_unknown_buy_count_as_unknown_not_zero():
