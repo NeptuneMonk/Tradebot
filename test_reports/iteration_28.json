@@ -1,0 +1,42 @@
+{
+  "summary": "Verified the RH-paper / config-switch-guard / readiness backend fixes on the running micro-stake bot without mutating state. All 5 targeted pytest suites pass (46 tests). The mutating-live guard skips PUT/POST integration tests as designed. GET /api/bot/config for the four switches was byte-identical before/after the pytest run. The 90s background-save window produced ZERO new 'CONFIG SWITCHES CHANGED' audit lines and the three RH/Helius switches did not change. A no-op PUT /api/bot/config {max_trade_usd:100.0} also produced zero audit lines. /api/readiness exposes rh_breaker_armed=true and reasons never say 'benched by the live-doctor breaker' while rh_live_trading is false. Frontend /dashboard loads with no console errors; the RH banner correctly reads 'RH not armed — paper and live are both off'.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_rh_paper.py",
+    "/app/backend/tests/test_config_switch_guard.py",
+    "/app/backend/tests/test_readiness.py",
+    "/app/backend/tests/test_flush_hold_sol.py",
+    "/app/backend/tests/test_ladder.py",
+    "/app/backend/tests/test_rh_integration_api.py"
+  ],
+  "test_results": {
+    "targeted_suites": "46 passed in 1.40s (test_rh_paper 18, test_config_switch_guard 2, test_readiness 7, test_flush_hold_sol 5, test_ladder 14). Task said '~55'; actual collected count is 46 — matches all currently defined tests in those five files.",
+    "mutating_live_guard": "test_rh_integration_api.py: 5 passed, 1 skipped with reason 'mutating live-API call — set PYTEST_LIVE_MUTATE=1 to run against the running bot' — as expected.",
+    "config_byte_identity_around_pytest": {
+      "before": {"enabled": false, "rh_feed_enabled": true, "rh_paper_enabled": false, "helius_tracker_enabled": true},
+      "after":  {"enabled": false, "rh_feed_enabled": true, "rh_paper_enabled": false, "helius_tracker_enabled": true},
+      "identical": true
+    },
+    "90s_background_save_wait": {
+      "audit_lines_delta": 0,
+      "three_rh_switches_unchanged": true,
+      "note": "During the 95s wait the operator (via UI) started the bot: `enabled` flipped false→true. This did NOT go through save_config (audit delta is 0 and dedicated /api/bot/start does not emit that log line). The three switches (rh_feed_enabled, rh_paper_enabled, helius_tracker_enabled) remained unchanged, so the switch-guard invariant holds. The unit test test_background_save_never_touches_switches also passes."
+    },
+    "noop_put_audit": "PUT /api/bot/config {max_trade_usd:100.0} → 200. 'CONFIG SWITCHES CHANGED' audit lines delta = 0.",
+    "readiness": "GET /api/readiness returns rh_breaker_armed=true (bool). reasons = ['bot STOPPED — press Start', 'RH not armed — paper and live are both off']. No 'benched by the live-doctor breaker' text.",
+    "frontend": "Dashboard renders. Banner: 'RH NOT TRADING · OFF · RH not armed — paper and live are both off'. Zero console errors. Only hovered CONTROL tab — never clicked any toggle / Start / Stop / Save / Restore."
+  },
+  "action_items": [],
+  "critical_code_review_comments": [
+    "The task expected ~55 passing tests in the five targeted files but only 46 collected. Not a defect — most likely the estimate simply differed from the current file contents; worth confirming with main agent whether tests were consolidated/removed."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Used Bearer token from /app/memory/.tok (session_token=test_session_1789699215762) as documented in /app/memory/test_credentials.md.",
+  "seed_data_creation": "None. Read-only + one no-op PUT as instructed.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Live operator bot: never mutate state. Use /app/memory/.tok Bearer token. The seeded session_token cookie also works. During this iteration a real operator (or scheduled action) pressed Start on the UI mid-run — the bot is currently RUNNING in paper mode. If future tests expect `enabled=false`, snapshot first and be aware that human/operator activity can toggle it independently of tests.",
+  "rca of the issue": "N/A — this iteration validates the fixes. All acceptance criteria met."
+}
