@@ -294,6 +294,18 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [wsConnected, refreshAll]);
 
+  // Scanner candidates and the ladder have no WS push — they are snapshots of the backend's in-memory ranking,
+  // so poll them on their own clock. Without this the Tracked Tokens card froze at its first load while the
+  // WS was healthy and only "refreshed" when the bot stopped and the 30 s safety-net polling took over.
+  useEffect(() => {
+    const tick = () => {
+      api.scannerCandidates().then((sc) => setScanner(sc || [])).catch(() => {});
+      api.ladder().then((ld) => ld && setLadder(ld)).catch(() => {});
+    };
+    const id = setInterval(tick, 5000);
+    return () => clearInterval(id);
+  }, []);
+
   // Bot Control only cares about 4 status fields — hand it a slice so the 3 s status tick doesn't re-render
   // the 1100-line card (and its inputs) every time. Callbacks are stable for the same reason.
   const controlStatus = useMemo(() => status && ({

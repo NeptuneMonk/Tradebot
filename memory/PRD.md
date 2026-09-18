@@ -1979,3 +1979,7 @@ Patterns the Doctor cannot see (it scores per book, not across exit reasons):
 - ✅ `LiveDoctor.update_tempo()` (≤1×/30 s per chain): flow = buys in the last 2 min across every tracked bucket + launches/h; baseline = 6 h EMA of the same; tempo = geometric mean of the ratios, clamped 0.5–2.0. `tempo_gate_mult(chain) = tempo ** 0.5` (0.71 … 1.41) multiplies the momentum gates on both chains via `book_adjust`. The peak-hour profile now only boosts **size** (×1.25); gates are the tempo's job (no double counting). Exposed as `market_tempo` on `/api/bot/status` (per chain: tempo, gate_mult, buys_2m vs baseline, launch rate vs baseline, peak_hours).
 - Hour profile live in preview: peak UTC hours [0,1,4,5,6,7,14,19] from 22 152 launches / 7 d.
 - Tests: `tests/test_doctor_adjust.py` (3).
+
+## 2026-09-17 — Tracked Tokens (scanner candidates) card froze while the WS was healthy
+- Root cause: `/api/scanner/candidates` (and `/api/ladder`) were only fetched in `refreshAll` — initial load + the 30 s safety-net poll that runs **only while the WS is disconnected**. There is no WS push for the scanner ranking, so with the bot running (WS healthy) the card showed its first snapshot forever and "refreshed" only when the bot stopped.
+- ✅ Dashboard polls scanner candidates + ladder on their own 5 s clock regardless of WS state.
