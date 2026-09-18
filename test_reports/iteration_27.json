@@ -1,0 +1,33 @@
+{
+  "summary": "Frontend-only verification of DoctorWorkspace P2+P3 (NOW/PROPOSALS/FORENSICS sub-tabs, chain/book FilterBar, Explain component with lazy long body, density pass on CollapsibleSection headers). All 9 test cases from the review request PASS. No console errors, no React duplicate-key warnings, no regressions on LIVE cockpit or doctor-strip navigation.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "detailed_results": {
+    "1_doctor_workspace_and_tabs": "PASS — doctor-workspace + doctor-tab-{now,proposals,forensics} + all 5 book filter chips + sol/rh/all render; default sub-tab NOW visible.",
+    "2_now_content": "PASS — tempo-gauge (tempo-sol, tempo-rh), autopilot-card with autopilot-chains rows (sol, rh), autopilot-books, desk-allocator, autopilot-canary, trail-stop-card, helius-budget-card all present. autopilot-technique / learning-panel / applied-history-card correctly ABSENT on NOW.",
+    "3_explain_component": "PASS — for doctor-explain-now, autopilot-explain, immutable-rails: short text + toggle always present, long body absent before click, present after clicking 'more', absent again after clicking 'less' (verified DOM mount/unmount).",
+    "4_filter_rh_and_hunt": "PASS — filter-rh removes autopilot-chain-sol + tempo-sol, book chips reduce to rh_pons only. filter-all restores both. filter-hunt auto-activates SOL chain and allocator rows reduce to allocator-row-hunt (allocator-row-scalp absent). Filter persists across reload via localStorage ui.doctor.filter.",
+    "5_proposals_tab": "PASS — strategy-doctor + doctor-auto-apply-toggle + doctor-run-now + applied-history-card present (not clicked). tempo-gauge and learning-panel correctly ABSENT.",
+    "6_forensics_tab": "PASS — autopilot-technique (header reads 'TECHNIQUE LAB · WHAT EACH BOOK'S OWN FILLS SAY (7D)'), learning-panel, Trading Costs card all present. autopilot-chains + autopilot-canary correctly ABSENT. Under filter-hunt only technique-hunt and technique-regime-hunt rows remain.",
+    "7_subtab_persistence": "PASS — after selecting FORENSICS and reloading, localStorage.ui.doctor.tab='forensics' and doctor-forensics is the mounted panel (doctor-now count=0).",
+    "8_density_leak_check": "PASS — collapsed CollapsibleSection headers render title (+ optional badge) only; description text is on the button's title attribute, not inline. Verified on section-reentry (LIVE), section-scanner + section-greylist (SCAN), section-scorecard + section-classifier + section-pl-by-source (BOOKS), section-bot-control (CONTROL).",
+    "9_regression": "PASS — LIVE cockpit renders kpi-strip, cockpit-grid, doctor-strip, skip-ticker. doctor-strip-open lands on the DOCTOR view (doctor-workspace visible). No console errors (only benign 401 for one WS/resource + WS retry warning, unrelated to feature). No React duplicate-key warnings while cycling through all three doctor sub-tabs."
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "DoctorWorkspace.jsx line 62: the long Explain body for doctor-explain-now is fine now that mount is lazy, but the very long inline string keeps the JSX file readable-limit — consider extracting to a copy constant.",
+    "doctorFilter.js matchesFilter treats untagged items as visible under any filter — intentional but worth documenting; ensure book-tagged suggestions always populate metrics.book to avoid bleed-through when RH filter is active."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (skipped)", "frontend": "100% (9/9 cases)"},
+  "test_credentials": "session_token from /app/memory/.tok, cookie for micro-stake-trader.preview.emergentagent.com",
+  "seed_data_creation": "None — used existing seeded session.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 27 fully covers DoctorWorkspace sub-tabs + FilterBar + Explain lazy mount + CollapsibleSection description-leak. Do not click autopilot-toggle, doctor-auto-apply-toggle, doctor-run-now, revert-*, allocator-restore-*, learning-revert-btn, doctor-canary-revert, header-bot-toggle, nav-run-toggle. Bot is STOPPED with feeds off; sparse lists are expected."
+}

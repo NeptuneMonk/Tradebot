@@ -2014,3 +2014,11 @@ Patterns the Doctor cannot see (it scores per book, not across exit reasons):
 - Views now: LIVE (KPI, 2×2, doctor strip, history, re-entry) · SCAN (feed, scanner, greylist) · LADDER (full card) · DOCTOR (autopilot, doctor, cost) · BOOKS (P/L by source, scorecard, classifier) · CONTROL (wallets, daily loss, P/L+reset, bot control).
 - Known low-priority: one WS 401 at first handshake when the cookie lands after navigation (tester artefact; WS reconnects immediately).
 - Next (P2): DoctorWorkspace split (Now / Proposals / Forensics) with chain/book filter; `Explain` short/long component; density pass; ticker filters.
+
+## 2026-09-18 — P2 + P3 of the cockpit plan (tested — iteration_27, all pass)
+- ✅ **DoctorWorkspace** (`cockpit/DoctorWorkspace.jsx`) replaces the DOCTOR view: sub-tabs **NOW** (Explain, Tempo gauge, Autopilot bankrolls/sizing/allocator/canary, Trail stop, Helius budget) · **PROPOSALS** (Strategy Doctor list w/ book tag, Applied history + revert) · **FORENSICS** (Technique lab, autopsy/flush/replay, Learning loop, Trading costs). Persisted `ui.doctor.tab`.
+- ✅ **Chain/book filter** (`lib/doctorFilter.js`: `matchesFilter`, `bookOfSuggestion`, persisted `ui.doctor.filter`): ALL · SOL · RH | scalp hunt runner rh pons ladder. Picking a book auto-selects its chain. Applied to tempo, chain rows, book chips, allocator rows, suggestions, technique rows, learning books.
+- ✅ **Explain** (`cockpit/Explain.jsx`): short line always visible, long body mounted only while open. Used for the Doctor NOW/FORENSICS intros, Autopilot header help, immutable rails.
+- ✅ Refactors kept backward-compatible: `AutopilotCard` gets `section` (`now`|`forensics`|`all`), `filter`, `status`/`onReload` (shares Dashboard's autopilot poll); `StrategyDoctorPanel` gets `section="proposals"` + exported `TempoGauge`; `DoctorLivePanels` gets `parts`; `LearningBooksPanel` gets `filter`.
+- ✅ P3 density pass: collapsed section descriptions no longer leak into headers (now the button `title`); header padding/type tightened; page gutters `p-4`, grid gaps `gap-4`.
+- Backlog: ticker chain/reason filters · attention pull on partial/exit · keyboard shortcuts (user undecided) · Route Ladder Live Mode (P2 trading) · execution learning · counterfactual replay.
