@@ -1948,6 +1948,9 @@ async def trades_active():
     # most-important question — "am I in profit?" — so we surface it
     # right on the active-trades row.
     for d in docs:
+        if d.get("book") == "ladder" and d.get("mode") == "paper":
+            bot_state.ladder.augment_trade(d)
+            continue
         if d.get("chain") == "rh":
             bot_state.rh_paper.augment_trade(d)
             continue

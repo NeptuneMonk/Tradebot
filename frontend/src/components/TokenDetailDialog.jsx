@@ -49,7 +49,7 @@ export function TokenDetailDialog({ token, onClose }) {
 
   return (
     <Sheet open={!!token} onOpenChange={(o) => !o && onClose()}>
-      <SheetContent side="right" className="w-full sm:max-w-2xl lg:max-w-3xl bg-neutral-950 border-l border-neutral-800 text-neutral-100 p-0 overflow-y-auto" data-testid="token-detail-dialog">
+      <SheetContent side="right" className="w-full sm:max-w-none sm:w-[min(1280px,94vw)] bg-neutral-950 border-l border-neutral-800 text-neutral-100 p-0 overflow-y-auto flex flex-col" data-testid="token-detail-dialog">
         <SheetHeader className="px-4 pt-4 pb-2 border-b border-neutral-800 pr-12">
           <SheetTitle className="flex items-center gap-2 font-mono text-base">
             <ChainBadge chain={chain} protocol={live?.protocol} mint={mint} />
@@ -65,8 +65,8 @@ export function TokenDetailDialog({ token, onClose }) {
           <SheetDescription className="font-mono text-[10px] text-neutral-500 break-all">{mint}</SheetDescription>
         </SheetHeader>
 
-        <div className="px-4 py-3 grid grid-cols-1 gap-3">
-          <div className="w-full space-y-3">
+        <div className="px-4 py-3 grid grid-cols-1 lg:grid-cols-[minmax(300px,2fr)_3fr] gap-3 flex-1 min-h-0">
+          <div className="w-full space-y-3 lg:overflow-y-auto lg:max-h-[calc(100vh-120px)] lg:pr-1">
             <div className="grid grid-cols-2 gap-1.5" data-testid="token-detail-stats">
               <Stat label={m?.mc_usd ? "market cap · dexscreener" : "market cap · our feed"} value={fmtUsd(m?.mc_usd ?? live?.mc_usd)} />
               <Stat label="price" value={m?.price_usd ? `$${Number(m.price_usd).toPrecision(4)}` : live?.price ? `${Number(live.price).toPrecision(4)} ${live.price_unit}` : "—"} />
@@ -105,11 +105,11 @@ export function TokenDetailDialog({ token, onClose }) {
             <div className="text-[9px] font-mono text-neutral-600">Manual entry bypasses the momentum gates; max positions, kill switches and the live/paper mode still apply.</div>
           </div>
 
-          <div className="min-h-[420px] border border-neutral-800 bg-black" data-testid="token-detail-widget">
+          <div className="min-h-[420px] lg:h-[calc(100vh-120px)] border border-neutral-800 bg-black" data-testid="token-detail-widget">
             {chain === "sol" && m?.embed ? (
-              <iframe title="DexScreener" src={m.embed} className="w-full h-[460px]" allow="clipboard-write" loading="lazy" />
+              <iframe title="DexScreener" src={m.embed} className="w-full h-[460px] lg:h-full" allow="clipboard-write" loading="lazy" />
             ) : chain === "sol" ? (
-              <iframe title="DexScreener" src={`https://dexscreener.com/solana/${mint}?embed=1&theme=dark&trades=0&info=0`} className="w-full h-[460px]" loading="lazy" />
+              <iframe title="DexScreener" src={`https://dexscreener.com/solana/${mint}?embed=1&theme=dark&trades=0&info=0`} className="w-full h-[460px] lg:h-full" loading="lazy" />
             ) : (
               <div className="p-3 text-[10px] font-mono text-neutral-500">
                 No public chart widget covers Robinhood Chain yet — live curve / pool numbers on the left come straight from our sequencer feed.

@@ -150,3 +150,22 @@ def test_live_routing_needs_15_paper_legs_and_armed_chain():
     st.active_trades.clear()
     _feed(book, k, [(15 * H + 60, 195_000, 64)])
     assert d["legs"] == [] and d["state"] == "watching"
+
+
+def test_paper_leg_unrealized_pnl_is_mc_based_and_pushed(monkeypatch):
+    """Paper ladder legs live outside the engine monitor: P/L must come from MC and reach the UI via WS + REST."""
+    st = _state()
+    book = L.LadderBook(st)
+    k = "sol:" + "M" * 44
+    _feed(book, k, [(0, 100_000, 50), (1 * H, 90_000, 52), (5 * H, 125_000, 55), (6 * H, 105_000, 56), (10 * H, 155_000, 60), (15 * H, 190_000, 64)])
+    d = book.tokens[k]
+    assert d["state"] == "holding" and d["legs"]
+    leg = d["legs"][0]
+    pushed = []
+    monkeypatch.setattr(L.hub, "broadcast", lambda typ, data: pushed.append((typ, data)) or asyncio.sleep(0))
+    asyncio.run(book.observe(k, _src(leg["entry_mc"] * 1.25, 80), 15 * H + 60))
+    assert pushed and pushed[-1][0] == "trade_update"
+    assert pushed[-1][1]["id"] == leg["id"] and abs(pushed[-1][1]["unrealized_pnl_pct"] - 25.0) < 0.01
+    doc = {"id": leg["id"], "book": "ladder", "mode": "paper"}
+    book.augment_trade(doc)
+    assert abs(doc["unrealized_pnl_pct"] - 25.0) < 0.01 and doc["live_usd_market_cap"] == d["mc"]

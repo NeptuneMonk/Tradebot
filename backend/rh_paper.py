@@ -1166,6 +1166,7 @@ class RHPaperTrader:
                 asyncio.create_task(self.exit(token, "tracking_lost"))
                 continue
             reason = self._decide_exit(pos, b, now)
+            self._push_pnl(token, pos, now)
             if reason:
                 pos["_exiting"] = True
                 asyncio.create_task(self.exit(token, reason))
@@ -1450,6 +1451,16 @@ class RHPaperTrader:
             self.positions.pop(token, None)
 
     # ---------- API helpers ----------
+    def _push_pnl(self, token: str, pos: dict, now: float):
+        """Live P/L tick for the Active Trades row over WS (throttled 2 s/position) — the UI never polls while the WS is up."""
+        if now - float(pos.get("_pnl_push_ts") or 0) < 2.0:
+            return
+        pos["_pnl_push_ts"] = now
+        d = {"id": pos["trade"]["id"], "mint": token, "chain": CHAIN, "entry_price_quote": pos["trade"].get("entry_price_quote")}
+        self.augment_trade(d)
+        if "unrealized_pnl_pct" in d:
+            asyncio.create_task(hub.broadcast("trade_update", d))
+
     def augment_trade(self, d: dict):
         pos = self.positions.get(d.get("mint"))
         if not pos:

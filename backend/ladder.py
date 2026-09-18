@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from models import Trade
 from reentry_policy import ReentryLedger
+from ws_hub import hub
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +157,35 @@ class LadderBook:
             await self._try_start(key, d, src, now)
         if d["legs"]:
             await self._manage_legs(key, d, src, now)
+            self._push_leg_pnl(d, now)
         self._dirty.add(key)
+
+    def _push_leg_pnl(self, d: dict, now: float):
+        """Paper ladder legs live outside the engine's monitor, so the Active Trades table would show '—' forever
+        without this: MC-based unrealized P/L per open leg over WS (throttled 2 s/token)."""
+        if now - float(d.get("_pnl_push_ts") or 0) < 2.0:
+            return
+        d["_pnl_push_ts"] = now
+        for leg in d["legs"]:
+            if leg.get("live") or not leg.get("id") or not leg.get("entry_mc"):
+                continue
+            asyncio.create_task(hub.broadcast("trade_update", {"id": leg["id"], "mint": d["mint"], **self.leg_pnl(d, leg)}))
+
+    @staticmethod
+    def leg_pnl(d: dict, leg: dict) -> dict:
+        mc, entry, peak = float(d.get("mc") or 0), float(leg.get("entry_mc") or 0), float(leg.get("peak_mc") or 0)
+        if mc <= 0 or entry <= 0:
+            return {}
+        return {"unrealized_pnl_pct": round((mc / entry - 1.0) * 100.0, 2), "live_usd_market_cap": mc,
+                "drawdown_from_peak_pct": round((peak - mc) / peak * 100.0, 1) if peak > 0 else None}
+
+    def augment_trade(self, doc: dict) -> None:
+        """REST fallback for /api/trades/active — same numbers the WS pushes."""
+        for d in self.tokens.values():
+            for leg in d["legs"]:
+                if leg.get("id") == doc.get("id"):
+                    doc.update(self.leg_pnl(d, leg))
+                    return
 
     # ------------------------------------------------------------------ live routing
     async def _refresh_paper_count(self, now: float):

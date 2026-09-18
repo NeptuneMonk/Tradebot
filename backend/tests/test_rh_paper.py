@@ -482,3 +482,23 @@ async def _run_pyramid(st, pos, b):
     st.rh_paper._maybe_pyramid(TOKEN, pos, b, time.time())
     for _ in range(4):
         await asyncio.sleep(0)
+
+
+def test_rh_positions_push_unrealized_pnl_over_ws(monkeypatch):
+    """Active Trades never polls while the WS is up — RH positions must tick their P/L like Solana ones do."""
+    st = make_state()
+    now = time.time()
+    b = hot_bucket(st.rh_discovery, now, price=1.5e-9)
+    pos = _open_pos(st, b, entry=1e-9)
+    pos["trade"]["id"] = "t-rh-1"
+    pushed = []
+    monkeypatch.setattr(rp.hub, "broadcast", lambda typ, data: pushed.append((typ, data)) or asyncio.sleep(0))
+    async def run():
+        st.rh_paper._decide_exit(pos, b, now)          # marks _last_price from the bucket
+        st.rh_paper._push_pnl(TOKEN, pos, now)
+        st.rh_paper._push_pnl(TOKEN, pos, now + 1.0)   # throttled: 2 s per position
+        await asyncio.sleep(0)
+    asyncio.run(run())
+    assert len(pushed) == 1 and pushed[0][0] == "trade_update"
+    d = pushed[0][1]
+    assert d["id"] == "t-rh-1" and d["chain"] == "rh" and abs(d["unrealized_pnl_pct"] - 50.0) < 0.01
