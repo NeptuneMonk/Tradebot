@@ -1,0 +1,32 @@
+{
+  "summary": "Verified the LADDER 'ADD TOKEN' + sort-order fixes for the pump.fun / Robinhood micro-stake bot. All 7 acceptance criteria pass: 15/15 pytest tests in test_ladder.py, /api/ladder exposes CHILLZ (rh, manual, price_unit=NFLX, mc=$187.2K) and biketyson (sol, manual, mc=$1.97M) and CRAYON (rh, manual), the LADDER card lists the three MANUAL rows at positions 0-2 (biketyson $1.97M, CHILLZ $187.2K, CRAYON $36.2K) above all untagged watching graduates, the idempotent CHILLZ re-pin submits cleanly and CHILLZ remains in the list, the garbage-address negative path shows the expected toast 'no initialised v4 pool for this token (tried ETH + every stock quote, and DexScreener has no Robinhood pair)' with the form still open, and the LIVE cockpit-ladder tile also shows the three MANUAL rows at the top. No mutating side-effects: only the two POST /api/ladder/manual attempts described in the request were made.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_ladder.py"
+  ],
+  "test_results": {
+    "pytest_ladder": "15 passed in 0.30s",
+    "api_ladder": {
+      "tokens_total": 24,
+      "CHILLZ": {"chain": "rh", "manual": true, "price_unit": "NFLX", "mc": 187200.0, "mint": "0x5b6ef408c4ebb166788c0ca4cb644f12ac757777"},
+      "biketyson": {"chain": "sol", "manual": true, "mc": 1974334.85, "mint": "CbyTNf7UPzvewHh4Zp6umogM2RWahhmGRJWLJnPwpump"},
+      "CRAYON": {"chain": "rh", "manual": true, "price_unit": "ETH", "mc": 36236.45}
+    },
+    "ladder_ui_sort_order": "positions 0-2 = MANUAL rows (biketyson, CHILLZ, CRAYON); first non-manual at index 3; zero manual rows appearing after any non-manual row",
+    "cockpit_ui_sort_order": "positions 0-2 = MANUAL rows (biketyson, CHILLZ, CRAYON) with the 'MANUAL' badge; all subsequent rows untagged watching",
+    "add_token_idempotent_CHILLZ": "submit accepted, CHILLZ still present, no error toast (page contained 'CHILLZ' near the toast area)",
+    "add_token_negative_garbage": "toast: 'no initialised v4 pool for this token (tried ETH + every stock quote, and DexScreener has no Robinhood pair)' — form stays open as required",
+    "console_errors_on_ladder_and_live": "Only two generic polling errors ('Failed to load resource: 401' and '400') from unrelated background endpoints — no red-flag console errors from the LADDER or LIVE views themselves, no React exceptions."
+  },
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Used Bearer token / session_token cookie from /app/memory/.tok (test_session_1789699215762, email nbobby79@gmail.com).",
+  "seed_data_creation": "None. CHILLZ / biketyson / CRAYON were already pinned by the main agent.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Live paper-mode bot; do NOT toggle switches or remove ladder tokens. The only safe mutating operator on the ladder is POST /api/ladder/manual for the already-pinned CHILLZ (idempotent) or the documented garbage address (negative path). Use /app/memory/.tok Bearer token or set cookie session_token on domain micro-stake-trader.preview.emergentagent.com (httpOnly, secure, sameSite=None). The two background 401/400 console errors are pre-existing and unrelated to the ladder fixes.",
+  "rca of the issue": "N/A — this iteration validates the shipped fixes. Both bug categories are resolved: (1) CHILLZ (RH, NFLX-quoted stock) now resolves via DexScreener + on-chain quote registration and marks MC via DexScreener USD; (2) newly-pinned MANUAL rows are visibly at the top of both the full LADDER card and the LIVE cockpit tile."
+}
