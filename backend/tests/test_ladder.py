@@ -255,3 +255,55 @@ def test_manual_cap():
         asyncio.run(book.add_manual("0x" + f"{i:040x}"))
     with pytest.raises(ValueError):
         asyncio.run(book.add_manual("0x" + f"{999:040x}"))
+
+
+def test_reaper_drops_rugged_and_lost_graduates_but_never_manual_pins_or_open_legs():
+    st = _state(); st.rh_discovery = _Disc()
+    book = L.LadderBook(st)
+    t0 = 1_000_000.0
+    _feed(book, "sol:rug", [(t0, 200_000, 50), (t0 + 60, 210_000, 55)])
+    _feed(book, "sol:lost", [(t0, 120_000, 50)])
+    _feed(book, "sol:held", [(t0, 150_000, 50)])
+    book.tokens["sol:held"]["legs"].append({"id": "l1", "kind": "starter", "usd": 5.0, "entry_mc": 150_000, "peak_mc": 150_000, "ts": t0})
+    asyncio.run(book.add_manual(ADDR))
+    asyncio.run(book.observe("sol:rug", _src(20_000, 40), t0 + 120))            # -90% from high → rugged
+    book.tokens["sol:held"].update(mc=10_000, last_seen=t0)                    # rugged AND unseen, but a leg is open → the structure stop closes first
+    asyncio.run(book._reap(t0 + 120 + L.SOURCE_LOST_S + 1))                    # 'lost' unseen for 30 min+
+    assert "sol:rug" not in book.tokens and "sol:lost" not in book.tokens
+    assert "sol:held" in book.tokens and f"rh:{ADDR}" in book.tokens
+    dead = {q["key"]: u["$set"] for q, u in st.db.ladder_tokens.updates if u["$set"].get("state") == "dead"}
+    assert dead["sol:rug"]["dead_reason"] == "rugged" and dead["sol:lost"]["dead_reason"] == "source lost"
+    assert book.stats["reaped"] == 2
+
+
+def test_ws_push_only_when_the_board_changed(monkeypatch):
+    st = _state(); st.rh_discovery = _Disc()
+    book = L.LadderBook(st)
+    pushed = []
+    monkeypatch.setattr(L.hub, "broadcast", lambda typ, data: pushed.append((typ, data)) or asyncio.sleep(0))
+    _feed(book, "sol:a", [(0, 100_000, 50)])
+    asyncio.run(book._push(10.0)); asyncio.run(book._push(20.0))
+    assert len(pushed) == 1 and pushed[0][0] == "ladder" and pushed[0][1]["tokens"][0]["key"] == "sol:a" and "live" in pushed[0][1]
+    asyncio.run(book.observe("sol:a", _src(130_000, 60), 25.0))
+    asyncio.run(book._push(30.0))
+    assert len(pushed) == 2
+
+
+def test_sol_dust_pools_are_not_graduates_and_unknown_holders_do_not_block():
+    st = _state()
+    st.tracking = {
+        "DUST": {"protocol": "pumpswap", "usd_market_cap": 200_000_000.0, "last_real_sol_lamports": int(0.4e9), "buyers": set(), "symbol": "WOFI"},
+        "REAL": {"protocol": "pumpswap", "usd_market_cap": 5_400_000.0, "last_real_sol_lamports": int(947e9), "buyers": set(), "symbol": "NTDA", "holders_real": 2109},
+        "UNKN": {"protocol": "pumpswap", "usd_market_cap": 90_000.0, "buyers": set(), "symbol": "NEW"},     # depth unknown → not gated
+    }
+    book = L.LadderBook(st)
+    srcs = dict(book._sources())
+    assert "sol:DUST" not in srcs and srcs["sol:REAL"]["holders"] == 2109 and srcs["sol:UNKN"]["holders"] is None
+    # staircase with holders unknown: qualifies on steps alone; a real count later is kept
+    t0 = 1_000_000.0
+    for dt, mc in [(0, 100_000), (1 * H, 90_000), (5 * H, 125_000), (6 * H, 105_000), (10 * H, 155_000), (15 * H, 190_000)]:
+        asyncio.run(book.observe("sol:UNKN", {**_src(mc), "mint": "UNKN", "holders": None}, t0 + dt))
+    d = book.tokens["sol:UNKN"]
+    assert d["state"] == "holding" and d["holders_at_first_step"] is None
+    asyncio.run(book.observe("sol:UNKN", {**_src(191_000), "mint": "UNKN", "holders": 812}, t0 + 15 * H + 60))
+    assert d["holders"] == 812

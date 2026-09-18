@@ -111,7 +111,7 @@ class PumpfunDiscovery:
         # Drop feed tokens that aged out of the Seasoned band — otherwise the
         # refresh loop keeps spending a pool-state RPC per minute on each.
         for mint in [m for m, b in st.tracking.items()
-                     if b.get("graduated_feed") and m not in st.active_trades
+                     if b.get("graduated_feed") and not b.get("pinned") and m not in st.active_trades
                      and now - (b.get("graduated_at") or now) > band_max_s + 300]:
             st.tracking.pop(mint, None)
         max_created_age_s = band_max_s + 6 * 3600.0

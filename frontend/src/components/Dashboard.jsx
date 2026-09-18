@@ -251,6 +251,7 @@ export default function Dashboard() {
   }, [navigate]);
 
   // Real-time WebSocket event handler
+  const wsUpRef = useRef(false);
   const { connected: wsConnected } = useWebSocket(useCallback((evt) => {
     const { type, data } = evt || {};
     if (!type) return;
@@ -275,6 +276,9 @@ export default function Dashboard() {
         break;
       case "scanner_skip":
         skipFeedRef.current(type, data, resolveToken);
+        break;
+      case "ladder":
+        setLadder(data);
         break;
       case "trade_enter":
         setActiveTrades((prev) => [data, ...prev.filter((t) => t.id !== data.id)]);
@@ -334,14 +338,14 @@ export default function Dashboard() {
     const id = setInterval(refreshAll, 30000);
     return () => clearInterval(id);
   }, [wsConnected, refreshAll]);
+  useEffect(() => { wsUpRef.current = wsConnected; }, [wsConnected]);
 
-  // Scanner candidates and the ladder have no WS push — they are snapshots of the backend's in-memory ranking,
-  // so poll them on their own clock. Without this the Tracked Tokens card froze at its first load while the
-  // WS was healthy and only "refreshed" when the bot stopped and the 30 s safety-net polling took over.
+  // Scanner candidates have no WS push — they are a snapshot of the backend's in-memory ranking, so poll them on
+  // their own clock. (The ladder board is pushed over WS every 5 s tick; REST only seeds it / covers WS gaps.)
   useEffect(() => {
     const tick = () => {
       api.scannerCandidates().then((sc) => setScanner(sc || [])).catch(() => {});
-      api.ladder().then((ld) => ld && setLadder(ld)).catch(() => {});
+      if (!wsUpRef.current) api.ladder().then((ld) => ld && setLadder(ld)).catch(() => {});
     };
     const id = setInterval(tick, 5000);
     return () => clearInterval(id);

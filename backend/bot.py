@@ -1278,8 +1278,10 @@ class BotState:
         }
         # LRU-style cap: drop oldest if over the limit
         if len(self.tracking) > MAX_TRACKED_MINTS:
-            oldest = min(self.tracking.items(), key=lambda kv: kv[1].get("graduated_at") or kv[1]["start"])[0]
-            self.tracking.pop(oldest, None)
+            evictable = [kv for kv in self.tracking.items() if not kv[1].get("pinned")]   # operator ladder pins never age out
+            if evictable:
+                oldest = min(evictable, key=lambda kv: kv[1].get("graduated_at") or kv[1]["start"])[0]
+                self.tracking.pop(oldest, None)
 
         asyncio.create_task(self._compute_social(launch.mint))
         asyncio.create_task(self._fetch_pumpfun_socials(launch.mint))
@@ -2235,7 +2237,8 @@ class BotState:
                 window_h = SCANNER_TRACK_HOURS
             remaining = max(0, window_h * 3600 - TRACK_DURATION_S)
             await asyncio.sleep(remaining)
-            self.tracking.pop(mint, None)
+            if not (self.tracking.get(mint) or {}).get("pinned"):
+                self.tracking.pop(mint, None)
         asyncio.create_task(_final_drop())
 
     # ---------- Entry decision (assess only — entry handled by MomentumScanner) ----------
@@ -3812,7 +3815,9 @@ class BotState:
                     _tb["last_price_sol"] = cur_price_sol
                     _sp = float(solana_client._sol_price_cache.get("price") or 0.0)
                     if _sp > 0:
-                        _tb["usd_market_cap"] = cur_price_sol * _sp * 1_000_000_000
+                        # price is SOL per RAW unit → × 10^decimals per token × 1B supply (matches discovery's quote·1e6/base)
+                        _dec = int(((pool_state if protocol == "pumpswap" else None) or {}).get("base_decimals") or 6)
+                        _tb["usd_market_cap"] = cur_price_sol * (10 ** _dec) * 1_000_000_000 * _sp
                 _ep0 = float(trade_doc.get("entry_price_sol") or 0.0)
                 if slot.get("_ff_remaining_usd") and _ep0 > 0 and (cur_price_sol - _ep0) / _ep0 * 100.0 >= FAST_FAIL_ADD_AT_PCT:
                     await self._fast_fail_add(mint, slot, protocol, pool_state if protocol == "pumpswap" else state, cur_price_sol)
