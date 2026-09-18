@@ -35,6 +35,7 @@ import cost_gate
 import creator_solvency
 import r_sizer
 import exits
+import flush
 import runner
 from scorecard import Scorecard
 from inventory import InventoryHalt, HUNT_SLOT_CAP
@@ -522,6 +523,47 @@ class BotState:
         return base_exit_slip_bps
 
     # ---------- Intelligent Exit v2 helpers ----------
+    def _flush_holds_sol(self, mint: str, slot: dict, kind: str, pct_change: float, cur_price_sol: float) -> bool:
+        """Solana twin of rh_paper._flush_holds: hold an SL/trail exit while the dip reads as ONE (or two) wallets flushing
+        weak hands with buyers still arriving — bounded by flush_hold_s and an extra-drop floor below the trough seen
+        when the hold began. Broad selling (many wallets) is distribution and sells at once."""
+        cfg = self.config
+        if not getattr(cfg, "flush_hold_enabled", True) or kind not in ("sl", "trail"):
+            return False
+        trade_doc = slot["trade"]
+        bucket = self.tracking.get(mint)
+        if not bucket:
+            return False
+        in_scope = (str(getattr(cfg, "flush_hold_scope", "hot_reentry")) == "all" or bool(trade_doc.get("reentry"))
+                    or bool(trade_doc.get("reentry_source")) or bucket.get("hot"))
+        if not in_scope:
+            return False
+        now = time.time()
+        pos = {"peak_ts": float(slot.get("peak_ts") or 0.0), "peak_price": float(slot.get("peak_price_sol") or 0.0),
+               "trough_price": float(slot.get("trough_price_sol") or 0.0), "_last_price": float(cur_price_sol or 0.0)}
+        # dip_forensics expects quote amounts in the same unit for buys and sells (SOL here)
+        b = {"sell_events": bucket.get("sell_events") or (),
+             "buy_events": [(ts, int(lam or 0) / LAMPORTS_PER_SOL, w) for ts, lam, w in (bucket.get("buy_events") or ())]}
+        f = flush.dip_forensics(b, pos, now, float(getattr(cfg, "flush_window_s", 30)))
+        slot["_dip_forensics"] = {**f, "flush": flush.is_flush(f, cfg), "kind": kind}
+        if not slot["_dip_forensics"]["flush"]:
+            slot.pop("_flush_hold_since", None)
+            return False
+        since = slot.get("_flush_hold_since")
+        if since is None:
+            slot["_flush_hold_since"] = now
+            slot["_flush_hold_trough"] = pos["trough_price"] or cur_price_sol
+            slot["_flush_hold_at_pnl_pct"] = round(pct_change, 2)
+            self.stats["flush_holds"] = self.stats.get("flush_holds", 0) + 1
+            logger.warning(f"FLUSH? {trade_doc.get('symbol')} {kind} at {pct_change:+.1f}%: {f['n_sellers']} seller(s), top {f['top_seller_share']*100:.0f}% "
+                           f"of {f['sold_quote']:.3f} SOL sold, {f['buyers']} buyers still in — holding up to {getattr(cfg, 'flush_hold_s', 10)}s")
+            since = now
+        floor = float(slot.get("_flush_hold_trough") or 0) * (1.0 - float(getattr(cfg, "flush_extra_drop_pct", 5.0)) / 100.0)
+        if cur_price_sol <= floor:
+            slot["_dip_forensics"]["hold_broke_floor"] = True
+            return False                      # kept falling — distribution after all
+        return now - since < float(getattr(cfg, "flush_hold_s", 10))
+
     def _buy_momentum_holds(self, mint: str, slot: dict, kind: str, pct_change: float) -> bool:
         """True ⇒ DEFER this SL/TP exit because buyers are still piling in.
         Pure read of the discovery bucket's buy_events (ts, lamports, wallet);
@@ -1326,6 +1368,8 @@ class BotState:
             bucket.setdefault("_dump_window_s", float(getattr(self.config, "creator_dump_window_s", 60.0) or 60.0))
             creator_solvency.record_creator_sell(bucket, int(trade_data.get("sol_amount", 0)) / LAMPORTS_PER_SOL,
                                                  float(trade_data.get("token_amount") or 0) / 1e6, now)
+        if not trade_data.get("is_buy") and trade_data.get("user"):
+            bucket.setdefault("sell_events", deque(maxlen=500)).append((now, int(trade_data.get("sol_amount", 0)) / LAMPORTS_PER_SOL, trade_data["user"]))
         if trade_data.get("is_buy"):
             if trade_data["user"] not in bucket["buyers"]:
                 bucket["last_new_buyer_ts"] = now
@@ -1580,8 +1624,10 @@ class BotState:
                 return False
         if d.kind is None:
             return False
-        kind = "sl" if ("stop-loss" in d.reason or "ladder stop" in d.reason) else "tp" if "target" in d.reason else None
+        kind = "sl" if ("stop-loss" in d.reason or "ladder stop" in d.reason) else "tp" if "target" in d.reason else "trail" if "trail" in d.reason else None
         if kind and self._buy_momentum_holds(mint, slot, kind, pct):
+            return False
+        if kind and d.kind == "exit" and self._flush_holds_sol(mint, slot, kind, pct, cur_price_sol):
             return False
         slot["exit_in_progress"] = True
         try:
@@ -4756,6 +4802,7 @@ class BotState:
                 "exit_price_sol": exit_price_sol,
                 "exit_sig": exit_sig,
                 "exit_reason": reason,
+                "dip_forensics": slot.get("_dip_forensics"),       # flush-hold verdict at the stop (None when no SL/trail ran)
                 "pnl_sol": total_pnl_sol,
                 "pnl_usd": total_pnl_usd,
                 "pnl_pct": pnl_pct,

@@ -2058,3 +2058,7 @@ Findings from logs (RH last traded 04:38–04:46, then nothing):
 4. **Readiness banner** said "rh_pons benched by the live-doctor breaker" even on paper, where an armed breaker only means ×0.5 size / gates ×1.25 (`book_benched(book, live)`); now `rh_breaker_armed` is a note, not a blocker.
 Current state (07:04): bot RUNNING, RH paper ON, RH feed ON, Pump.fun feed ON (operator re-armed via UI; each flip logged). rh_pons breaker lifted.
 - Pre-existing failing tests unrelated to this work: test_feed_audit (breaker marks), test_feed_wiring, test_iteration23_review, test_panic_slip_and_guards, test_pump_bot_api::test_wallet_info, test_rh_feed (2).
+
+## 2026-09-18 — Flush hold ported to Solana scalp/hunt (5 new tests; existing exit tests green)
+- Why the 07:06–07:09 stops didn't hold: **flush hold existed only in the RH PONS book**; the 7 Sol scalps had no dip forensics at all (and fills landed 5–25 pts past the trigger on thin curves). The 2 RH stops ran the hold correctly and forensics said "distribution" (NBS 3 sellers, NIKITA 19 sellers).
+- `bot.py`: Sol buckets now record `sell_events (ts, SOL, wallet)` from the trade stream; `_flush_holds_sol()` mirrors `rh_paper._flush_holds` (same `flush.dip_forensics`/`is_flush`, same config keys `flush_hold_*`, scope `all`/`hot_reentry`, bounded by `flush_hold_s` + `flush_extra_drop_pct` floor). Wired into `_run_ladder` after the buy-momentum gate for SL / ladder-stop / trail exits on both the monitor and `[fast]` paths (never TP). Verdict persisted as `dip_forensics` on the closed trade.
