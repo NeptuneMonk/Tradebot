@@ -2091,3 +2091,8 @@ Current state (07:04): bot RUNNING, RH paper ON, RH feed ON, Pump.fun feed ON (o
 - `listener.PumpFunListener` = parser + subscriber only (no socket): `start()` registers the Pump.fun channel + starts the bus; `connected/last_error/…/health()` delegate to the bus → SOL FEED status = the one real connection. `_handle_message` accepts the parsed dict (bus bills bytes once).
 - `bot.py` no longer stops the bus on bot stop (feeds are independent of start/stop); `server.stop_leader_services` stops it (followers hold no socket). Tests rewritten: `test_wss_fallback` (+multiplex test), `test_feed_wiring`; full suite 690 passed.
 - Net: 1 socket per instance (was 2) → half the per-IP pressure on the public node (HTTP 413). Requires redeploy.
+
+## 2026-06 — CEST +15,630% paper trade = orphaned-position bug (FIXED)
+- Trade was PAPER. Price path was real (RH pool 6e-7 ETH, DexScreener FDV $1.49M) but the P/L is an artifact: at graduation `rh_paper._switch_to_pool` did `asyncio.create_task(db.trades.update_one(...))` — Motor returns a Future → TypeError inside `exit()` → `except` dropped the position from memory while the Mongo row stayed `active` → unmonitored (no TP at +75%, no SL) for 3h until a restart re-hydrated it from the pool and booked TP at the then-current price.
+- Fix: persist via an inner coroutine; `exit()` failure now keeps the position (clears `_exiting`, retries after `EXIT_ERROR_RETRY_S`=5s, logs traceback) instead of orphaning. Tests +2 in `tests/test_rh_paper.py`.
+- Open question for operator: void the CEST row (`status: voided`, like MANTA) so Doctor/equity don't learn from the artifact.

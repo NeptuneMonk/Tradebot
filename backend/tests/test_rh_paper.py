@@ -518,3 +518,37 @@ def test_graceful_stop_blocks_new_rh_entries_but_keeps_monitoring(monkeypatch):
     st.stopping_gracefully = False
     asyncio.run(st.rh_paper.tick(time.time()))
     assert calls == {"scan": 1, "mon": 2}
+
+
+def test_switch_to_pool_with_motor_future_does_not_raise():
+    """CEST 2026-09-18: Motor's update_one returns a Future; create_task(Future) raised TypeError inside exit() and the
+    position was dropped from memory while its Mongo row stayed active → unmonitored for 3h. Must not raise."""
+    st = make_state()
+    tr = st.rh_paper
+    fut_col = SimpleNamespace(update_one=lambda *a, **k: asyncio.get_event_loop().create_future())   # Future, like Motor
+    st.db = SimpleNamespace(launches=FakeCol(), trades=fut_col)
+    pos = {"trade": {"id": "t1", "mint": TOKEN, "entry_price_quote": 1e-9, "symbol": "X"}, "_last_price": 1.75e-9, "opened": time.time() - 30}
+
+    async def go():
+        tr._switch_to_pool(pos, {"graduated": True}, time.time())
+        await asyncio.sleep(0)
+        return pos["trade"]["venue"], pos["trade"]["graduated_at_pnl_pct"]
+    assert asyncio.run(go()) == ("pool", 75.0)
+
+
+def test_exit_failure_keeps_position_active():
+    st = make_state()
+    tr = st.rh_paper
+    now = time.time()
+    b = hot_bucket(st.rh_discovery, now)
+    st.rh_discovery.tracking[TOKEN] = b
+    pos = {"trade": {"id": "t2", "mint": TOKEN, "entry_price_quote": 1e-9, "entry_tokens": 1000.0, "entry_usd": 5.0, "entry_quote": 0.002,
+                     "symbol": "X", "mode": "paper", "quote_symbol": "ETH"}, "_last_price": 2e-9, "opened": now - 30, "peak_price": 2e-9}
+    tr.positions[TOKEN] = pos
+
+    async def boom(*a, **k):
+        raise RuntimeError("quote node down")
+    tr._quote_usd = boom
+    asyncio.run(tr.exit(TOKEN, "take_profit"))
+    assert TOKEN in tr.positions and not pos.get("_exiting")
+    assert pos["_zero_quote_retry_after"] > time.time()

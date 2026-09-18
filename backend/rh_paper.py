@@ -51,6 +51,7 @@ SNIPE_TAX_START_BPS = 9900
 SNIPE_TAX_SECONDS = 3
 RH_GAS_USD = 0.09  # fallback per-side gas; live fills refine it (observed ~$0.08 buy / ~$0.10 sell)
 LIVE_SELL_RETRY_COOLDOWN_S = 10.0  # after 3 failed on-chain sells, wait before the next exit attempt
+EXIT_ERROR_RETRY_S = 5.0        # unexpected exit failure: keep the position, retry after this
 ZERO_QUOTE_RETRY_S = 5.0  # paper exit met a zero quote with tokens held (dead venue) — retry, never book -100%
 TRACKING_LOST_GRACE_S = 120.0  # held position with no bucket (restart): try to rehydrate from the v4 pool before giving up
 REHYDRATE_RETRY_S = 15.0
@@ -976,11 +977,16 @@ class RHPaperTrader:
             asyncio.get_running_loop()
         except RuntimeError:
             return  # sync caller (tests) — nothing to persist from here
-        asyncio.create_task(self.state.db.trades.update_one({"_id": t["id"]}, {"$set": {
-            "venue": "pool", "graduated_during_hold": True, "graduated_at_pnl_pct": t["graduated_at_pnl_pct"],
-            "graduated_hold_s": t["graduated_hold_s"]}}))
-        asyncio.create_task(hub.broadcast("trade_update", {"id": t["id"], "mint": t["mint"], "chain": CHAIN, "venue": "pool",
-                                                           "graduated_at_pnl_pct": t["graduated_at_pnl_pct"]}))
+        async def _persist():   # Motor returns a Future, not a coroutine — create_task(update_one(...)) raises TypeError
+            try:
+                await self.state.db.trades.update_one({"_id": t["id"]}, {"$set": {
+                    "venue": "pool", "graduated_during_hold": True, "graduated_at_pnl_pct": t["graduated_at_pnl_pct"],
+                    "graduated_hold_s": t["graduated_hold_s"]}})
+                await hub.broadcast("trade_update", {"id": t["id"], "mint": t["mint"], "chain": CHAIN, "venue": "pool",
+                                                     "graduated_at_pnl_pct": t["graduated_at_pnl_pct"]})
+            except Exception as e:
+                logger.debug(f"rh_paper venue persist failed {t.get('mint', '')[:10]}: {e}")
+        asyncio.create_task(_persist())
 
     async def _paper_pool_proceeds(self, token: str, t: dict, price: float) -> tuple[float, float]:
         """Paper fill on the pool: the real V4Quoter output for our size, else spot minus the hook take."""
@@ -1460,8 +1466,12 @@ class RHPaperTrader:
             pos.pop("_fill_task", None)
             raise
         except Exception as e:
-            logger.warning(f"rh_paper exit failed {token[:10]}: {e}")
-            self.positions.pop(token, None)
+            # never orphan a held position: the Mongo row stays `active`, so dropping it from memory would leave it
+            # unmonitored (no SL / TP) until the next restart re-hydrates it — retry on a later tick instead
+            logger.exception(f"rh_paper exit failed {token[:10]} ({reason}) — position stays active, retrying in {EXIT_ERROR_RETRY_S:.0f}s: {e}")
+            pos.pop("_exiting", None)
+            pos.pop("_fill_task", None)
+            pos["_zero_quote_retry_after"] = time.time() + EXIT_ERROR_RETRY_S
 
     # ---------- API helpers ----------
     def _push_pnl(self, token: str, pos: dict, now: float):
