@@ -557,8 +557,8 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
             <input
               type="checkbox"
               data-testid="scanner-enabled-checkbox"
-              checked={local.scanner_enabled}
-              onChange={(e) => setLocal({ ...local, scanner_enabled: e.target.checked })}
+              checked={!!local.scanner_enabled}
+              onChange={(e) => flipKey("scanner_enabled", e.target.checked, () => toast.success(e.target.checked ? "SOL scanner ON — auto-entries armed" : "SOL scanner OFF — no auto-entries"))}
             />
             enabled
           </label>

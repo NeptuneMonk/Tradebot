@@ -1074,7 +1074,7 @@ class BotState:
             if mint in self.active_trades or mint in self._pending_entry_mints:
                 return
             cap = max(1, self.config.max_concurrent_positions)
-            in_flight = len(self.active_trades) + len(self._pending_entry_mints)
+            in_flight = self.counted_open() + len(self._pending_entry_mints)
             if in_flight >= cap:
                 return
             if self._hunt_open() >= min(self._hunt_cap(), cap):
@@ -1427,7 +1427,8 @@ class BotState:
     def _hunt_open(self) -> int:
         # hunt cap counts snipes/re-entries only; seasoned continuation (scanner_momentum) rides hunt exits on a normal slot
         return sum(1 for sl in self.active_trades.values()
-                   if (sl.get("trade") or {}).get("book") == "hunt" and (sl.get("trade") or {}).get("classifier_action") != "scanner_momentum")
+                   if (sl.get("trade") or {}).get("book") == "hunt" and (sl.get("trade") or {}).get("classifier_action") != "scanner_momentum"
+                   and not self._is_manual_hold(sl))
 
     def _runner_open(self) -> int:
         return runner.open_count(self.active_trades)
@@ -1510,7 +1511,8 @@ class BotState:
             logger.info(f"runner {mint[:8]}… stage {prev_stage} → {stage} ({flow['reason']})")
             await self.db.trades.update_one({"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True)
             await hub.broadcast("trade_update", trade_doc)
-        d = exits.decide_runner(cfg, slot, cur_price_sol, sl_fire, ts_fire, flow=flow, stage=stage,
+        d = exits.decide_runner(cfg, slot, cur_price_sol, sl_fire, ts_fire, flow=flow,
+                                stage=("live" if stage == "exhausted" and self._is_manual_hold(slot) else stage),   # manual hold: flow death is not an exit
                                 pool_missing_s=(now - pool_missing_since) if pool_missing_since else 0.0)
         if d.kind == "partial":
             slot["exit_in_progress"] = True
@@ -1604,7 +1606,7 @@ class BotState:
         book = trade_doc.get("book") or "scalp"
         if book == "runner":
             return await self._run_runner(mint, slot, cur_price_sol, sl_fire, ts_fire)
-        dead = exits.search_dead_tape(cfg, book, self.tracking.get(mint), time.time(), entry_ts=slot.get("_entry_ts_mono"))
+        dead = exits.search_dead_tape(cfg, book, self.tracking.get(mint), time.time(), entry_ts=slot.get("_entry_ts_mono"), trade=trade_doc)
         d = dead if dead is not None else (exits.decide_hunt(cfg, slot, pct, cur_price_sol, elapsed, sl_fire, ts_fire) if book == "hunt"
                                            else exits.decide_scalp(cfg, slot, pct, cur_price_sol, elapsed, sl_fire, ts_fire))
         # promotion → runner: scalp at its +target·R exit, hunt once the +1R leg is banked (never on a stop)
@@ -1714,6 +1716,18 @@ class BotState:
             "winner_likeness_pct": doctor["winner_likeness_pct"], "exit_liquidity_likeness_pct": doctor["exit_liquidity_likeness_pct"],
             "doctor_decision": doctor["doctor_decision"], "scorecard_cell": cell}, "size_mult": sz.get("size_mult", 1.0)}
 
+    def _is_manual_hold(self, slot: dict) -> bool:
+        """Operator-bought (Buy Now / ladder pin) or pinned-bucket position: long hold, exempt from clocks + momentum kills."""
+        t = (slot or {}).get("trade") or {}
+        if exits.is_manual_hold(t):
+            return True
+        mint = (slot or {}).get("mint") or t.get("mint") or ""
+        return bool((self.tracking.get(mint) or {}).get("pinned"))
+
+    def counted_open(self) -> int:
+        """Open Solana positions that consume a max_concurrent_positions slot — manual holds don't."""
+        return sum(1 for s in self.active_trades.values() if not self._is_manual_hold(s))
+
     def _is_snipe(self, slot: dict) -> bool:
         """True iff this position should follow the pattern-based exit ladder
         (profit ripcord / stale / peak-MC / curve-fill / velocity decay)
@@ -1734,6 +1748,8 @@ class BotState:
         """
         if not self.config.greylist_snipe_pattern_exits:
             return False
+        if self._is_manual_hold(slot):
+            return False                     # operator long hold: standard SL/TP/trail only, no pattern rip-cords
         ctx = (slot or {}).get("snipe_pattern_ctx")
         if ctx is None:
             # Restart-survival: snipe_pattern_ctx is persisted on the trade
@@ -2527,9 +2543,7 @@ class BotState:
             return {"ok": False, "reason": "already in an active position"}
         if self.kill_switch_tripped:
             return {"ok": False, "reason": "daily kill switch tripped"}
-        cap = max(1, self.config.max_concurrent_positions)
-        if len(self.active_trades) + len(self._pending_entry_mints) >= cap:
-            return {"ok": False, "reason": f"max positions reached ({cap})"}
+        # manual holds live outside max_concurrent_positions (they never consume a scanner slot)
         if as_runner and self._runner_open() >= runner.RUNNER_CAP:
             return {"ok": False, "reason": "runner-cap: the runner slot is already taken"}
         launch = Launch(mint=mint, creator=b.get("creator") or "", bonding_curve="",
@@ -2611,8 +2625,8 @@ class BotState:
             if launch.mint in self.active_trades or launch.mint in self._pending_entry_mints:
                 return
             cap = max(1, self.config.max_concurrent_positions)
-            in_flight = len(self.active_trades) + len(self._pending_entry_mints)
-            if in_flight >= cap:
+            in_flight = self.counted_open() + len(self._pending_entry_mints)
+            if in_flight >= cap and not is_manual:
                 return
             hunt_cap = self._hunt_cap()
             if book == "hunt" and self._hunt_open() >= min(hunt_cap, cap):
@@ -3770,9 +3784,11 @@ class BotState:
                 # No-momentum exit — one-shot at no_momentum_after_s: a position
                 # that never reached +min_mfe% is dead money on a micro-cap.
                 is_runner = (slot.get("trade") or {}).get("book") == "runner"
+                _pinned = self._is_manual_hold(slot)   # operator buy / pin = long hold: never a momentum kill
                 if (
                     self.config.no_momentum_exit_enabled
                     and not is_runner
+                    and not _pinned
                     and not slot.get("ladder_legs_done")
                     and not slot.get("_no_momentum_checked")
                     and elapsed >= self.config.no_momentum_after_s

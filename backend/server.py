@@ -886,6 +886,7 @@ async def bot_status():
         daily_kill_switch_usd=bot_state.config.daily_kill_switch_usd,
         total_trades_today=total_today,
         active_trade_count=len(bot_state.active_trades),
+        manual_hold_count=len(bot_state.active_trades) - bot_state.counted_open(),
         stopping_gracefully=bot_state.stopping_gracefully,
     )
 
@@ -2703,6 +2704,8 @@ async def scanner_manual_buy(mint: str, runner: bool = False):
     if mint in bot_state.rh_discovery.tracking:
         res = await bot_state.rh_paper.manual_enter(mint)
     else:
+        if (bot_state.tracking.get(mint) or {}).get("pinned"):
+            runner = True                          # operator pin = long hold → runner book (trail, no clock, no momentum kill)
         res = await bot_state.manual_enter(mint, as_runner=runner)
     if not res.get("ok"):
         raise HTTPException(status_code=409, detail=res.get("reason") or "entry refused")

@@ -25,6 +25,7 @@ import httpx
 
 import quote_prices
 import rh_dex
+import rh_pairs
 from models import Launch
 from ws_hub import hub
 
@@ -823,19 +824,8 @@ class RHDiscovery:
         return out
 
     async def _dex_pair(self, token: str) -> dict | None:
-        """DexScreener (operator views only, never gating): best Robinhood-chain pair → quote token, pair, USD price, liquidity."""
-        try:
-            async with httpx.AsyncClient(timeout=6.0) as c:
-                pairs = ((await c.get(f"https://api.dexscreener.com/latest/dex/tokens/{token}")).json() or {}).get("pairs") or []
-        except Exception as e:
-            logger.debug(f"dexscreener {token[:8]}: {e}")
-            return None
-        pairs = [p for p in pairs if str(p.get("chainId", "")).lower() in ("robinhood", "robinhoodchain", "rh")
-                 and str(p.get("baseToken", {}).get("address", "")).lower() == token]
-        if not pairs:
-            return None
-        pairs.sort(key=lambda p: float((p.get("liquidity") or {}).get("usd") or 0), reverse=True)
-        return pairs[0]
+        """Operator-only pair lookup (manual pin + pinned marks) — never gating."""
+        return await rh_pairs.best_pair(token)
 
     async def _register_quote(self, addr: str, sym: str) -> tuple[str, str, int]:
         """Unknown quote (e.g. NFLX stock token): learn symbol + decimals on-chain and add it to the quote tables."""
@@ -885,9 +875,9 @@ class RHDiscovery:
         if pool is None and dex and float(dex.get("priceUsd") or 0) > 0:
             qaddr = dex["quoteToken"]["address"].lower()
             sym, dec = QUOTES.get(qaddr, (dex["quoteToken"].get("symbol", "?").upper(), 18))
-            pool = (sym, qaddr, dec, float(dex.get("priceNative") or 0.0))   # pool not readable via our quoter → DexScreener marks
+            pool = (sym, qaddr, dec, float(dex.get("priceNative") or 0.0))   # pool not readable via our quoter → external marks
         if pool is None:
-            raise ValueError("no initialised v4 pool for this token" + (f" against {quote}" if quote else " (tried ETH + every stock quote, and DexScreener has no Robinhood pair)"))
+            raise ValueError("no initialised v4 pool for this token" + (f" against {quote}" if quote else " (tried ETH + every stock quote, and no external Robinhood pair found)"))
         sym, pair, dec, spot = pool
         b = self.tracking.get(token)
         if b is None:
@@ -923,7 +913,7 @@ class RHDiscovery:
         if usd > 0 and spot > 0:
             b["usd_market_cap"] = spot * TOKEN_SUPPLY * usd
             b["mc_samples"].append((now, b["usd_market_cap"]))
-        elif float(b.get("dex_price_usd") or 0) > 0:                 # quote has no oracle (NFLX…): DexScreener USD marks
+        elif float(b.get("dex_price_usd") or 0) > 0:                 # quote has no oracle (NFLX…): external USD marks
             b["usd_market_cap"] = float(b["dex_price_usd"]) * TOKEN_SUPPLY
             b["mc_samples"].append((now, b["usd_market_cap"]))
 
@@ -932,7 +922,7 @@ class RHDiscovery:
         b = self.tracking.get(token)
         if not b or not b.get("pinned"):
             return False
-        if b.get("dex_pair") and now - float(b.get("dex_ts") or 0) >= 60.0:      # DexScreener marks for oracle-less quotes
+        if b.get("dex_pair") and now - float(b.get("dex_ts") or 0) >= 60.0:      # external marks for oracle-less quotes
             dex = await self._dex_pair(token)
             if dex:
                 b["dex_price_usd"], b["dex_ts"] = float(dex.get("priceUsd") or 0.0), now

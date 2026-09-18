@@ -695,4 +695,5 @@ class BotStatus(BaseModel):
     daily_kill_switch_usd: float
     total_trades_today: int
     active_trade_count: int
+    manual_hold_count: int = 0          # operator holds inside active_trade_count that don't consume a slot
     stopping_gracefully: bool = False

@@ -34,6 +34,7 @@ import rh_live
 import rh_wallet
 from pymongo.errors import DuplicateKeyError
 from flush import dip_forensics, is_flush
+from exits import is_manual_hold
 
 if TYPE_CHECKING:
     from bot import BotState
@@ -99,6 +100,10 @@ class RHPaperTrader:
         return bool(getattr(cfg, "enabled", False)) and (
             bool(getattr(cfg, "rh_paper_enabled", False)) or bool(getattr(cfg, "rh_live_trading", False)))
 
+    def counted_open(self) -> int:
+        """Open RH positions that consume an rh_max_positions slot — manual holds don't."""
+        return sum(1 for p in self.positions.values() if not is_manual_hold(p.get("trade")))
+
     def _may_open(self) -> bool:
         """New RH entries need the RH book armed AND no graceful stop in flight (a stop must drain, not keep re-filling)."""
         return self._active() and not getattr(self.state, "stopping_gracefully", False)
@@ -139,7 +144,7 @@ class RHPaperTrader:
         blk, _ = self.reentry.check(token, cfg, now)      # SL cooldown first, then the reentry_* controls inside the window
         if blk:
             return blk
-        if len(self.positions) + len(self._pending_entries) >= cfg.rh_max_positions:
+        if self.counted_open() + len(self._pending_entries) >= cfg.rh_max_positions:
             return "max-positions"
         eb = b.get("entry_block")
         if eb and now < eb[1]:
@@ -401,7 +406,7 @@ class RHPaperTrader:
         cfg = self.state.config
         if f["cooldown_left_s"] > 0:
             return "focus_cooldown"
-        if len(self.positions) + len(self._pending_entries) >= int(cfg.rh_max_positions) - f["reserved_slots"]:
+        if self.counted_open() + len(self._pending_entries) >= int(cfg.rh_max_positions) - f["reserved_slots"]:
             return "focus_reserved_slot"
         return None
 
@@ -463,8 +468,7 @@ class RHPaperTrader:
             return {"ok": False, "reason": "graduated — curve closed, v4 pool not live yet"}
         if token in self.positions or token in self._pending_entries:
             return {"ok": False, "reason": "already in an active position"}
-        if len(self.positions) + len(self._pending_entries) >= cfg.rh_max_positions:
-            return {"ok": False, "reason": f"RH max positions reached ({cfg.rh_max_positions})"}
+        # manual holds live outside rh_max_positions (they never consume a scanner slot)
         if self._quote_usd(b["quote_symbol"]) <= 0:
             return {"ok": False, "reason": f"quote asset {b['quote_symbol']} has no USD price — can't size the paper stake"}
         if (b.get("last_price_quote") or 0) <= 0:
@@ -1003,7 +1007,7 @@ class RHPaperTrader:
             pos["peak_price"] = price
             pos["peak_ts"] = now
         from exits import search_dead_tape
-        dead = search_dead_tape(cfg, "rh_pons", b, now, entry_ts=pos.get("opened"))
+        dead = search_dead_tape(cfg, "rh_pons", b, now, entry_ts=pos.get("opened"), trade=t)
         if dead is not None:
             return dead.reason
         if price < pos.get("trough_price", entry):
@@ -1049,6 +1053,7 @@ class RHPaperTrader:
             return None
         if (
             cfg.no_momentum_exit_enabled
+            and not (b.get("pinned") or is_manual_hold(t))   # operator pin / manual buy = long hold: never a momentum kill
             and not pos.get("_nm_checked")
             and now - pos["opened"] >= cfg.no_momentum_after_s
         ):
@@ -1065,7 +1070,7 @@ class RHPaperTrader:
         if peak_pct >= arm and trail > 0 and dd_from_peak >= trail:
             return None if self._flush_holds(pos, b, now, "trail", pnl_pct, bx) else "trailing_stop"
         held = now - pos["opened"]
-        if bx["hold_max_seconds"] > 0 and held >= bx["hold_max_seconds"]:
+        if bx["hold_max_seconds"] > 0 and held >= bx["hold_max_seconds"] and not is_manual_hold(t):
             return "max_hold"
         return None
 

@@ -379,7 +379,7 @@ class MomentumScanner:
                         continue
                 except Exception:
                     pass
-                if len(st.active_trades) >= cfg.max_concurrent_positions:
+                if st.counted_open() >= cfg.max_concurrent_positions:
                     continue
                 if await st.check_kill_switch():
                     continue
@@ -471,7 +471,7 @@ class MomentumScanner:
                 await self._push_snapshot(st, now)
 
                 scored.sort(key=lambda x: x[3], reverse=True)
-                remaining = max(0, cfg.max_concurrent_positions - len(st.active_trades))
+                remaining = max(0, cfg.max_concurrent_positions - st.counted_open())
                 # Allow the loop to fill toward max_concurrent_positions in a
                 # single pass. We still consider only a generous top-N slice
                 # so we don't waste RPC budget on long-tail candidates.

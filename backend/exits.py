@@ -19,6 +19,15 @@ class ExitDecision:
     fraction: float = 1.0
 
 
+MANUAL_ACTIONS = ("manual", "rh_pons_manual")
+
+
+def is_manual_hold(trade: dict | None) -> bool:
+    """Operator-bought position (Buy Now / Graduate Ladder pin): long hold — SL / TP / trail only, no clock, no momentum kill."""
+    t = trade or {}
+    return bool(t.get("manual")) or t.get("classifier_action") in MANUAL_ACTIONS
+
+
 def r_pct(slot: dict) -> float:
     """1R expressed as a % move of entry price (sl + expected exit slip at entry)."""
     t = slot.get("trade") or {}
@@ -78,7 +87,7 @@ def decide_scalp(cfg, slot: dict, pct: float, cur: float, elapsed: float, sl_fir
     if lv["trailing_stop_pct"] > 0 and peak_pct > 0 and peak_pct >= lv["trailing_arm_pct"] \
             and ts_fire(drop >= lv["trailing_stop_pct"]):
         return ExitDecision("exit", f"trailing-stop hit (peak +{peak_pct:.1f}%, now +{pct:.1f}%)")
-    if lv["hold_max_seconds"] > 0 and elapsed > lv["hold_max_seconds"]:
+    if lv["hold_max_seconds"] > 0 and elapsed > lv["hold_max_seconds"] and not is_manual_hold(slot.get("trade")):
         return ExitDecision("exit", f"scalp clock {int(lv['hold_max_seconds'])}s ({pct:+.1f}%)")
     return ExitDecision()
 
@@ -139,10 +148,10 @@ def after_partial(slot: dict, expected_exit_cost_pct: float) -> None:
     slot["ladder_stop_pct"] = round(max(float(slot.get("ladder_stop_pct") or 0.0), expected_exit_cost_pct), 2)
 
 
-def search_dead_tape(cfg, book: str, bucket: dict | None, now: float, *, entry_ts: float | None = None):
+def search_dead_tape(cfg, book: str, bucket: dict | None, now: float, *, entry_ts: float | None = None, trade: dict | None = None):
     """Search-book time-stop: `book_exits.<book>.no_new_buyers_s` > 0 and no NEW unique buyer AND no inflow tick for
-    that long → exit "search-dead-tape". Default 0 = off. Runner never uses this."""
-    if book == "runner" or not bucket:
+    that long → exit "search-dead-tape". Default 0 = off. Runner and manual holds never use this."""
+    if book == "runner" or not bucket or is_manual_hold(trade):
         return None
     win = float(((getattr(cfg, "book_exits", None) or {}).get(book) or {}).get("no_new_buyers_s") or 0)
     if win <= 0:

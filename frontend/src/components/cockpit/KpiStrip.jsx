@@ -69,8 +69,9 @@ function KpiStrip({ wallet, status, config, auto, pl }) {
       <Cell label="dd 24h" testid="kpi-dd" title="24-hour P/L and drawdown across both paper/live bankrolls">
         <span className={tone(dd24)}>{usd(dd24, true)}</span> <span className="text-neutral-600 text-xs">{isFinite(dd) ? `${dd.toFixed(1)}%` : ""}</span>
       </Cell>
-      <Cell label="slots" testid="kpi-slots" title="open positions / max concurrent positions">
-        {status?.active_trade_count ?? 0}<span className="text-neutral-600">/{slotsMax || "—"}</span>
+      <Cell label="slots" testid="kpi-slots" title={`open scanner positions / max concurrent positions${status?.manual_hold_count ? ` · +${status.manual_hold_count} manual hold(s) outside the cap` : ""}`}>
+        {(status?.active_trade_count ?? 0) - (status?.manual_hold_count ?? 0)}<span className="text-neutral-600">/{slotsMax || "—"}</span>
+        {status?.manual_hold_count ? <span className="text-fuchsia-400 text-xs ml-1">+{status.manual_hold_count}</span> : null}
       </Cell>
       <Cell label="sol feed" testid="kpi-feed-sol" title={sol.why}><Dot on={sol.on} warn={sol.warn} /><span className={sol.on ? "text-emerald-300" : sol.warn ? "text-amber-300" : "text-red-300"}>{sol.text}</span></Cell>
       <Cell label="rh feed" testid="kpi-feed-rh" title={rh.why}><Dot on={rh.on} warn={rh.warn} /><span className={rh.on ? "text-emerald-300" : rh.warn ? "text-amber-300" : "text-red-300"}>{rh.text}</span></Cell>

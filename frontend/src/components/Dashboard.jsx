@@ -490,7 +490,7 @@ export default function Dashboard() {
             <div className="grid grid-cols-1 lg:grid-cols-[1.15fr_1fr] gap-4 items-stretch" data-testid="cockpit-grid">
               <div className="tile-in" style={{ animationDelay: "60ms" }}><ActiveTradesCockpit trades={activeTrades} onExit={onExitTrade} /></div>
               <div className="tile-in" style={{ animationDelay: "120ms" }}><EquityPanel refreshKey={pl?.cumulative_usd} /></div>
-              <div className="tile-in" style={{ animationDelay: "180ms" }}><CompactCandidates candidates={scanner} /></div>
+              <div className="tile-in" style={{ animationDelay: "180ms" }}><CompactCandidates candidates={scanner} scannerEnabled={config?.scanner_enabled ?? true} onEnableScanner={() => onConfigPatch({ scanner_enabled: true })} /></div>
               <div className="tile-in" style={{ animationDelay: "240ms" }}><CompactLadder ladder={ladder} /></div>
             </div>
             <div className="tile-in" style={{ animationDelay: "300ms" }}><DoctorStrip status={status} auto={auto} pending={pendingDoc} onOpenDoctor={() => pickView("doctor")} /></div>

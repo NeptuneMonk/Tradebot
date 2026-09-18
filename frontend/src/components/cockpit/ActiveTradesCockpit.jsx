@@ -34,15 +34,19 @@ export function stageFor(t) {
   return { text: <>target {t.target_r ? `${t.target_r}R` : "—"} · SL {t.sl_pct ? `${t.sl_pct}%` : "—"}</>, pct: target > 0 ? clamp((pnl / target) * 100) : 0, hint: "scalp: single exit at +target·R or −1R, clock allowed" };
 }
 
+const isManualHold = (t) => t.manual === true || t.classifier_action === "manual" || t.classifier_action === "rh_pons_manual";
+
 function Row({ t, onExit, onOpen }) {
   const pnl = t.unrealized_pnl_pct;
   const book = t.book || (t.chain === "rh" ? "rh_pons" : "scalp");
   const st = stageFor(t);
+  const manual = isManualHold(t);
   return (
     <tr data-testid={`active-trade-row-${t.mint}`} onClick={(e) => { if (!e.target.closest("button")) onOpen({ chain: t.chain || "sol", mint: t.mint, symbol: t.symbol }); }}
-      className="border-b border-neutral-900 hover:bg-neutral-900/50 cursor-pointer transition-colors duration-100"
-      title={`${t.mode} · size $${Number(t.size_usd ?? t.entry_usd ?? 0).toFixed(2)} · R $${Number(t.r_usd ?? 0).toFixed(3)} · risk ${t.risk_score ?? "—"} · ${t.scorecard_cell || ""}`}>
+      className={`border-b border-neutral-900 hover:bg-neutral-900/50 cursor-pointer transition-colors duration-100 ${manual ? "bg-fuchsia-950/10" : ""}`}
+      title={`${t.mode} · size $${Number(t.size_usd ?? t.entry_usd ?? 0).toFixed(2)} · R $${Number(t.r_usd ?? 0).toFixed(3)} · risk ${t.risk_score ?? "—"} · ${t.scorecard_cell || ""}${manual ? " · MANUAL HOLD: SL/TP/trail only — no clock, no momentum kill, not counted toward max positions" : ""}`}>
       <td className="py-2 pl-3"><span className={`px-1.5 py-0.5 border text-[9px] font-mono uppercase tracking-[0.15em] ${BOOK_CLS[book] || BOOK_CLS.scalp}`}>{book.replace("_", " ")}</span>
+        {manual && <span className="ml-1 px-1 py-0.5 border border-fuchsia-700 text-fuchsia-300 text-[9px] font-mono" data-testid={`active-manual-badge-${t.mint}`}>HOLD</span>}
         {t.mode === "live" && <span className="ml-1 px-1 py-0.5 border border-red-800 text-red-300 text-[9px] font-mono">LIVE</span>}</td>
       <td className="font-mono text-xs"><span className="text-neutral-100">{t.symbol || "—"}</span> <span className="text-neutral-600 text-[10px]">{t.chain === "rh" ? "rh" : "sol"}</span></td>
       <td className="font-mono text-xs text-right" data-testid={`active-pnl-${t.mint}`}>
@@ -62,10 +66,13 @@ function Row({ t, onExit, onOpen }) {
 
 function ActiveTradesCockpit({ trades, onExit }) {
   const [detail, setDetail] = useState(null);
+  const auto = trades.filter((t) => !isManualHold(t));
+  const manual = trades.filter(isManualHold);
   return (
     <div className="control-card h-full flex flex-col !p-0" data-testid="active-trades-card">
       <div className="px-3 py-2 border-b border-neutral-800 text-[11px] font-mono tracking-[0.2em] text-neutral-200 flex items-center justify-between">
-        <span>ACTIVE TRADES</span><span className="text-neutral-500">{trades.length}</span>
+        <span>ACTIVE TRADES</span>
+        <span className="text-neutral-500" data-testid="active-trades-count">{auto.length}{manual.length ? <span className="text-fuchsia-400"> +{manual.length} hold</span> : null}</span>
       </div>
       <div className="overflow-auto max-h-[380px]">
         <table className="w-full text-xs" data-testid="active-trades-table">
@@ -77,7 +84,13 @@ function ActiveTradesCockpit({ trades, onExit }) {
           </thead>
           <tbody>
             {trades.length === 0 && <tr><td colSpan="6" className="text-center py-8 text-[10px] uppercase tracking-[0.2em] text-neutral-600">no active positions</td></tr>}
-            {trades.map((t) => <Row key={t.id} t={t} onExit={onExit} onOpen={setDetail} />)}
+            {auto.map((t) => <Row key={t.id} t={t} onExit={onExit} onOpen={setDetail} />)}
+            {manual.length > 0 && (
+              <tr data-testid="manual-holds-divider"><td colSpan="6" className="py-1 pl-3 text-[9px] uppercase tracking-[0.2em] text-fuchsia-400/80 bg-fuchsia-950/20 border-y border-fuchsia-900/40"
+                title="Operator buys (Buy Now / Graduate Ladder). Long holds: SL / TP / trail only — no clock, no momentum kill, not counted toward max positions.">
+                manual holds · {manual.length} · outside max positions</td></tr>
+            )}
+            {manual.map((t) => <Row key={t.id} t={t} onExit={onExit} onOpen={setDetail} />)}
           </tbody>
         </table>
       </div>

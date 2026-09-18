@@ -58,6 +58,7 @@ class _Stub:
             setattr(_Cfg, k, v)
         self.config = _Cfg()
         self.tracking = {}
+        self._is_manual_hold = lambda slot: False
 
 
 def _bind(stub, name):
