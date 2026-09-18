@@ -60,25 +60,32 @@ def test_put_config_applies_patch_keys_only():
 
 def test_helius_toggle_drives_gate_and_listener():
     import helius_gate
+    import account_event_bus as B
     import listener as L
-    lst = L.PumpFunListener.__new__(L.PumpFunListener)
-    lst._task, lst._ws, lst.connected, lst._stop = None, None, True, False
+    bus = B.AccountEventBus()
+    bus._connected.set()
 
     class _WS:
         closed = False
         async def close(self): self.closed = True
-    ws = _WS(); lst._ws = ws
-    asyncio.run(lst.disconnect())
-    assert lst.connected is False and ws.closed is True and lst._ws is None
-    # server.sync_helius_feed: OFF pauses the gate + disconnects; ON unpauses + starts the task
-    import server
-    server.listener = lst
-    started = []
-    lst.start = lambda: started.append(True)
-    asyncio.run(server.sync_helius_feed(False, True))
-    assert helius_gate.is_helius_paused() is True and lst.connected is False
-    asyncio.run(server.sync_helius_feed(True, False))
-    assert helius_gate.is_helius_paused() is False and started == [True]
+    ws = _WS(); bus._ws = ws
+    lst = L.PumpFunListener(on_launch=None)
+    L.PumpFunListener._bus = property(lambda self: bus)
+    try:
+        asyncio.run(lst.disconnect())
+        assert lst.connected is False and ws.closed is True and bus._ws is None
+        # server.sync_helius_feed: OFF pauses the gate + disconnects; ON unpauses + kicks the shared socket
+        import server
+        server.listener = lst
+        started = []
+        bus.start = lambda: started.append(True)
+        asyncio.run(server.sync_helius_feed(False, True))
+        assert helius_gate.is_helius_paused() is True and lst.connected is False
+        asyncio.run(server.sync_helius_feed(True, False))
+        assert helius_gate.is_helius_paused() is False and started == [True] and bus._kick is True
+        assert lst.mentions in bus._log_handlers            # kick re-registers the Pump.fun logs channel
+    finally:
+        del L.PumpFunListener._bus
 
 
 def test_start_with_helius_off_does_not_reconnect():
@@ -119,14 +126,12 @@ def test_status_has_listener_health_and_start_kicks_listener():
 
 def test_listener_reports_pause_reason_and_kick_resets_backoff():
     import helius_gate
-    import listener as L
-    lst = L.PumpFunListener.__new__(L.PumpFunListener)
-    lst._task, lst._ws, lst._stop, lst.connected, lst._kick = None, None, False, False, False
-    lst.last_error, lst.last_ok_ts, lst.last_attempt_ts = None, 0.0, 0.0
-    lst.start = lambda: None
-    lst.kick()
-    assert lst._kick is True
-    h = lst.health()
+    import account_event_bus as B
+    bus = B.AccountEventBus()
+    bus.start = lambda: None
+    bus.kick()
+    assert bus._kick is True
+    h = bus.health()
     assert h["connected"] is False and h["task_alive"] is False and h["last_ok_ts"] is None
     helius_gate.set_auto_paused(True, "live-doctor paused scalp + hunt · no open Solana position")
     assert helius_gate.snapshot()["auto_reason"].startswith("live-doctor")

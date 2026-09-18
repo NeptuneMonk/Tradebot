@@ -164,6 +164,8 @@ async def stop_leader_services(reason: str = "shutdown"):
     """Lease lost: stop in-process and stay up as a follower (never kill the process — that flaps both pods)."""
     await bot_state.stop_loops(reason)
     listener.stop()
+    from account_event_bus import account_event_bus
+    account_event_bus.stop()            # follower pods hold no Solana socket at all
     for t in _leader_tasks:
         t.cancel()
     _leader_tasks.clear()

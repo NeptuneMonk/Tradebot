@@ -19,7 +19,7 @@ def test_inventory_runner_fields():
     assert 1 <= int(d.get("hunt_cap_now") or 0) <= 2, d   # tempo/breaker-scaled live value
     assert d.get("runner_cap") == 1, d
     assert 0 <= int(d.get("runner_open") or 0) <= 1, d   # live value: a runner may be open
-    assert d.get("runners") == [], d
+    assert isinstance(d.get("runners"), list) and len(d["runners"]) == int(d.get("runner_open") or 0), d   # live list mirrors runner_open
     # existing halted fields still present
     for k in ("halted", "trigger_n", "window_min", "book_paused_until"):
         assert k in d, f"missing {k} in {d}"

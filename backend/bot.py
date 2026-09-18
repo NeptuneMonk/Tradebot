@@ -289,11 +289,8 @@ class BotState:
                 t.cancel()
         self._bg_tasks = []
         auto_tuner.stop()
-        try:
-            from account_event_bus import account_event_bus
-            account_event_bus.stop()
-        except Exception:
-            pass
+        # the shared Solana WSS stays up: it also carries the Pump.fun launch feed (feeds are independent of start/stop);
+        # per-position accountSubscribes drop as the monitors exit
         self.active_trades.clear()          # monitors see their slot gone and exit on their next tick
         self._initial_load_done = False     # a later re-gain restores positions from Mongo again
         logger.error(f"trading loops stopped in-process ({reason}); {len(tasks)} tasks cancelled — this pod is a follower")

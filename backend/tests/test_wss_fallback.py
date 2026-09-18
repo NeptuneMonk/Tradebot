@@ -62,10 +62,10 @@ class _FakeWs:
         return self._msgs.pop(0)
 
 
-def test_listener_switches_to_public_on_quota(monkeypatch):
-    import listener as lmod
+def test_shared_socket_switches_to_public_on_quota(monkeypatch):
+    import account_event_bus as bmod
     router = WssRouter(PAID, [])
-    monkeypatch.setattr(lmod, "wss_router", router)
+    monkeypatch.setattr(bmod, "wss_router", router)
     monkeypatch.setattr(sc, "wss_router", router)
     connects = []
 
@@ -73,19 +73,19 @@ def test_listener_switches_to_public_on_quota(monkeypatch):
         connects.append(url)
         return _FakeWs([QUOTA] if url == PAID else [])
 
-    monkeypatch.setattr(lmod, "websockets", types.SimpleNamespace(connect=fake_connect))
+    monkeypatch.setattr(bmod, "websockets", types.SimpleNamespace(connect=fake_connect))
     monkeypatch.setitem(sys.modules, "helius_gate", types.SimpleNamespace(
         is_helius_paused=lambda: False, snapshot=lambda: {"manual": False, "auto_reason": None}))
 
     async def run():
-        li = lmod.PumpFunListener(on_launch=None)
-        li.start()
+        bus = bmod.AccountEventBus()
+        bus.start()
         for _ in range(60):
             await asyncio.sleep(0.1)
-            if li.connected and li.via:
+            if bus.connected and bus.via:
                 break
-        snap = (li.connected, li.via, dict(li.health()))
-        li.stop()
+        snap = (bus.connected, bus.via, dict(bus.health()))
+        bus.stop()
         return snap
 
     connected, via, health = asyncio.run(run())
@@ -93,6 +93,61 @@ def test_listener_switches_to_public_on_quota(monkeypatch):
     assert connected and via == "public WSS"
     assert PAID in router.exhausted
     assert health["via"] == "public WSS"
+
+
+def test_one_socket_multiplexes_logs_and_accounts(monkeypatch):
+    """The Pump.fun firehose and position accountSubscribes ride ONE connection: one connect, both subscribe
+    frames on it, and each notification kind is routed to its owner."""
+    import account_event_bus as bmod
+    import listener as lmod
+    router = WssRouter(PUBLIC_WSS_URL, [])
+    monkeypatch.setattr(bmod, "wss_router", router)
+    monkeypatch.setattr(sc, "wss_router", router)
+    monkeypatch.setitem(sys.modules, "helius_gate", types.SimpleNamespace(
+        is_helius_paused=lambda: False, snapshot=lambda: {"manual": False, "auto_reason": None}))
+    connects, sent, got_logs = [], [], []
+
+    class _Ws(_FakeWs):
+        async def send(self, payload):
+            sent.append(json.loads(payload))
+            req = sent[-1]
+            sub_id = 700 if req["method"] == "logsSubscribe" else 800
+            self._msgs.append(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": sub_id}))
+            if req["method"] == "accountSubscribe":
+                self._msgs.append(json.dumps({"method": "logsNotification", "params": {"subscription": 700, "result": {"context": {"slot": 1}, "value": {"signature": "s", "err": None, "logs": []}}}}))
+                self._msgs.append(json.dumps({"method": "accountNotification", "params": {"subscription": 800, "result": {"context": {"slot": 1}, "value": {"data": ["", "base64"]}}}}))
+
+    def fake_connect(url, **kw):
+        connects.append(url)
+        return _Ws([])
+
+    monkeypatch.setattr(bmod, "websockets", types.SimpleNamespace(connect=fake_connect))
+
+    async def run():
+        bus = bmod.AccountEventBus()
+        lst = lmod.PumpFunListener(on_launch=None)
+        lmod.PumpFunListener._bus = property(lambda self: bus)
+        try:
+            async def on_logs(msg):
+                got_logs.append(msg)
+            bus.subscribe_logs(lst.mentions, on_logs)
+            ev = bus.subscribe("Acct111")
+            bus.start()
+            for _ in range(60):
+                await asyncio.sleep(0.05)
+                if got_logs and ev.is_set():
+                    break
+            snap = (len(connects), [m["method"] for m in sent], len(got_logs), ev.is_set(), bus.is_live("Acct111"), bus.health()["logs_channels"])
+            bus.stop()
+            return snap
+        finally:
+            del lmod.PumpFunListener._bus
+
+    n_conn, methods, n_logs, acct_fired, live, channels = asyncio.run(run())
+    assert n_conn == 1
+    assert methods == ["logsSubscribe", "accountSubscribe"]
+    assert n_logs == 1 and acct_fired and live
+    assert channels == [str(lmod.PUMP_PROGRAM_ID)]
 
 
 def test_router_handshake_rejection_fails_over_then_recovers(monkeypatch):

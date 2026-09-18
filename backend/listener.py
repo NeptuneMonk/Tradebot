@@ -1,5 +1,5 @@
 """
-Pump.fun mempool listener via Helius WSS logsSubscribe.
+Pump.fun launch/trade firehose — a logsSubscribe channel on the single shared Solana WSS (account_event_bus).
 Detects Create + Trade events for Pump.fun and emits them.
 """
 import os
@@ -10,14 +10,11 @@ import base64
 import struct
 import hashlib
 import logging
-import websockets
 
 from pumpfun import PUMP_PROGRAM_ID, CREATE_DISCRIMINATOR
-from solana_client import wss_router, wss_label
 
 logger = logging.getLogger("listener")
 
-QUOTA_BACKOFF_S = 300.0   # provider plan exhausted: retry the WSS every 5 min, not 6×/s
 
 
 def _anchor_event_disc(name: str) -> bytes:
@@ -96,184 +93,68 @@ def parse_trade_event(raw: bytes) -> dict | None:
 
 
 class PumpFunListener:
+    """Pump.fun program firehose: a `logsSubscribe` channel on the ONE shared Solana WSS (account_event_bus).
+    Parses Create / Trade events out of each notification and emits them. Health / kick / disconnect delegate to
+    the shared socket, so the SOL FEED status reflects the single real connection."""
+
     def __init__(self, on_launch, on_trade=None):
         self.on_launch = on_launch  # async callable(launch_dict)
         self.on_trade = on_trade  # async callable(trade_dict) — optional
-        self._task: asyncio.Task | None = None
-        self._ws = None
-        self._stop = False
-        self.connected = False
-        self.last_error: str | None = None      # why we are not connected (short, operator-facing)
-        self.last_ok_ts: float = 0.0            # last successful subscribe
-        self.last_attempt_ts: float = 0.0       # last connect attempt
-        self._kick = False                      # skip the remaining backoff and reconnect now
-        self.via: str | None = None             # "public WSS" etc. when the primary is exhausted and a fallback carries the feed
+        self.mentions = str(PUMP_PROGRAM_ID)
+
+    @property
+    def _bus(self):
+        from account_event_bus import account_event_bus
+        return account_event_bus
+
+    def start(self):
+        self._bus.subscribe_logs(self.mentions, self._handle_message)
+        self._bus.start()
+
+    def stop(self):
+        self._bus.unsubscribe_logs(self.mentions)
 
     def kick(self):
         """Reconnect immediately (feed toggled ON / bot started) instead of waiting out the backoff."""
-        self._kick = True
-        self.start()
-
-    def health(self) -> dict:
-        return {"connected": self.connected, "last_error": self.last_error, "last_ok_ts": self.last_ok_ts or None,
-                "last_attempt_ts": self.last_attempt_ts or None, "task_alive": bool(self._task and not self._task.done()),
-                "via": getattr(self, "via", None)}
-
-    def start(self):
-        if self._task and not self._task.done():
-            return
-        self._stop = False
-        self._task = asyncio.create_task(self._run())
+        self._bus.subscribe_logs(self.mentions, self._handle_message)
+        self._bus.kick()
 
     async def disconnect(self):
-        """Close the live socket now (gate OFF) — `connected` flips false immediately, the loop idles on the gate."""
-        self.connected = False
-        ws, self._ws = self._ws, None
-        if ws is not None:
-            try:
-                await ws.close()
-            except Exception:
-                pass
+        """Close the shared socket now (gate OFF) — `connected` flips false immediately, the loop idles on the gate."""
+        await self._bus.disconnect()
 
-    def stop(self):
-        self._stop = True
-        if self._task:
-            self._task.cancel()
-        self.connected = False
+    def health(self) -> dict:
+        return self._bus.health()
 
-    async def _run(self):
-        backoff = 1
-        # Poll interval for the helius_gate when paused — we don't want to
-        # busy-wait, but we also want toggling the switch ON to take effect
-        # within a few seconds (not minutes).
-        gate_check_interval_s = 1
-        while not self._stop:
-            # Helius kill switch — when the user toggles tracker OFF, we
-            # disconnect (or never connect) and idle here. Polling every
-            # 5s gets us back online quickly when the switch flips ON.
-            try:
-                from helius_gate import is_helius_paused, snapshot as gate_snapshot
-                if is_helius_paused():
-                    g = gate_snapshot()
-                    if self.connected:
-                        logger.info("Helius gate paused — keeping listener idle")
-                    self.connected = False
-                    self.last_error = "paused: operator switch OFF" if g["manual"] else f"paused: {g['auto_reason'] or 'auto'}"
-                    await asyncio.sleep(gate_check_interval_s)
-                    continue
-            except Exception:
-                pass
-            url = wss_router.current()
-            try:
-                self._kick = False
-                self.last_attempt_ts = time.time()
-                logger.info(f"Connecting to Solana WSS for logsSubscribe ({wss_label(url)})...")
-                async with websockets.connect(
-                    url, ping_interval=20, ping_timeout=20, max_size=4 * 1024 * 1024
-                ) as ws:
-                    self._ws = ws
-                    self.connected = True
-                    self.via = wss_label(url) if wss_router.on_fallback() else None
-                    backoff = 1
-                    sub_req = {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "logsSubscribe",
-                        "params": [
-                            {"mentions": [str(PUMP_PROGRAM_ID)]},
-                            {"commitment": "processed"},
-                        ],
-                    }
-                    await ws.send(json.dumps(sub_req))
-                    wss_router.mark_connected(url)
-                    self.last_ok_ts = time.time()
-                    self.last_error = None
-                    logger.info(f"Subscribed to Pump.fun logs ({wss_label(url)}).")
-                    async for raw in ws:
-                        if self._stop:
-                            break
-                        # Re-check the gate inside the message loop too —
-                        # the user could toggle OFF mid-stream and we want
-                        # to drop the connection immediately rather than
-                        # keep consuming credits until the next reconnect.
-                        try:
-                            from helius_gate import is_helius_paused
-                            if is_helius_paused():
-                                logger.info("Helius gate flipped OFF mid-stream — closing WSS")
-                                break
-                        except Exception:
-                            pass
-                        if self._is_quota_error(raw):
-                            # provider plan exhausted (QuickNode: -32003 "request limit reached") — skip it until the
-                            # feed is toggled OFF→ON and carry the firehose on the next endpoint (public node last)
-                            self.connected = False
-                            if wss_router.mark_exhausted(url):
-                                nxt = wss_router.current()
-                                self.last_error = f"{wss_label(url)} quota exhausted — switching to {wss_label(nxt)}"
-                                logger.error(f"WSS provider quota exhausted ({wss_label(url)}): {raw[:160]} — switching to {wss_label(nxt)}")
-                                self._kick = True
-                            else:
-                                self.last_error = "RPC plan quota exhausted on every WSS — feed idle, retrying every 5 min"
-                                logger.error(f"WSS quota exhausted on all endpoints: {raw[:160]} — listener sleeping {QUOTA_BACKOFF_S:.0f}s")
-                                await self._sleep_gated(int(QUOTA_BACKOFF_S))
-                            break
-                        await self._handle_message(raw)
-                # clean close (server hung up) — back off like an error instead of reconnecting instantly
-                self.connected = False
-                if not self._stop and not self._kick:
-                    await self._sleep_gated(backoff)
-                    backoff = min(backoff * 2, 30)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                self.connected = False
-                self.last_error = f"{type(e).__name__}: {str(e)[:100]}" if str(e) else type(e).__name__
-                logger.warning(f"WSS connection error: {e}; retrying in {backoff}s")
-                if "rejected WebSocket connection" in str(e):
-                    nxt = wss_router.mark_rejected(url)
-                    if nxt:
-                        self.last_error = f"{wss_label(url)} rejected the handshake ({str(e).rsplit(':', 1)[-1].strip()}) — switching to {wss_label(nxt)}"
-                        logger.error(self.last_error)
-                        self._kick = True
-                        backoff = 1
-                        continue
-                # Chunked sleep — poll the helius gate every 1s during the
-                # reconnect backoff. Without this, an OFF toggle issued
-                # while the listener is in a 30s backoff would take up to
-                # 30s to take effect; with chunking it bites within ~1s.
-                await self._sleep_gated(backoff)
-                backoff = 1 if self._kick else min(backoff * 2, 30)
-        self.connected = False
+    @property
+    def connected(self) -> bool:
+        return self._bus.connected
 
-    @staticmethod
-    def _is_quota_error(raw) -> bool:
-        from account_event_bus import _is_quota_error
-        return _is_quota_error(raw)
+    @property
+    def last_error(self) -> str | None:
+        return self._bus.last_error
 
-    async def _sleep_gated(self, seconds: int) -> None:
-        """Sleep in 1 s steps, waking early on a kick or when the operator flips the feed OFF."""
-        for _ in range(max(1, seconds)):
-            await asyncio.sleep(1)
-            if self._kick or self._stop:
-                break
-            try:
-                from helius_gate import is_helius_paused
-                if is_helius_paused():
-                    break
-            except Exception:
-                pass
+    @property
+    def last_ok_ts(self) -> float:
+        return self._bus.last_ok_ts
+
+    @property
+    def last_attempt_ts(self) -> float:
+        return self._bus.last_attempt_ts
+
+    @property
+    def via(self) -> str | None:
+        return self._bus.via
 
     async def _handle_message(self, raw):
-        # Track Helius credit consumption per inbound bytes
-        try:
-            from helius_budget import record_ws_message
-            record_ws_message(len(raw) if isinstance(raw, (str, bytes)) else 0)
-        except Exception:
-            pass
-        try:
-            msg = json.loads(raw)
-        except Exception:
-            return
+        """`raw` is the parsed notification dict from the shared socket (a JSON string is accepted for tests)."""
+        if isinstance(raw, dict):
+            msg = raw
+        else:
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                return
         params = msg.get("params")
         if not params:
             return
