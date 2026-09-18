@@ -213,6 +213,7 @@ export const SECTIONS = [
         ["runner-exhausted / giveback", "flow died or 15% giveback from peak (armed +1R)", "Runner only."],
         ["rug_detected (RH)", "single sell ≥ $300 or ≥15% of curve reserves", "Bypasses the momentum gate."],
         ["r_trail / r_trail_stop (RH)", "graduated-while-held ride: 1R giveback from peak / breakeven+costs stop", "No fixed TP, no clock."],
+        ["tracking_lost / runner-no-pool", "the token's bucket vanished (RH) or the curve completed with no PumpSwap pool after the grace period", "Nothing left to price the position against — closed at the last known price; the held-bag watcher recovers any tokens still in the wallet."],
         ["daily kill switch", "realised loss today ≥ daily_kill_switch_usd ($20)", "Bot disables itself. Reset from CONTROL."],
         ["manual", "✕ on the row / detail drawer", "Always honoured, even mid-graduation."],
       ] },

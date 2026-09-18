@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, memo } from "react";
 import { PauseCircle, Power, Zap, Settings2, ChevronDown, ChevronRight, Radio, Pause, Eye } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
+import { wikiSectionFor } from "@/lib/wikiNav";
 import SpeedModeSlider from "./SpeedModeSlider";
 import ConfigSyncPanel from "./ConfigSyncPanel";
 import BrainSyncPanel from "./BrainSyncPanel";
@@ -1159,11 +1160,12 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
 }
 
 function Field({ label, value, onChange, step, testid, hint }) {
+  const labelRef = useRef(null);
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 inline-flex items-center gap-1">
+      <span ref={labelRef} className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 inline-flex items-center gap-1 select-none" title={hint ? "long-press for help on phones" : undefined}>
         {label}
-        {hint && <HelpHint label={`help: ${label}`}>{hint}</HelpHint>}
+        {hint && <HelpHint label={`help: ${label}`} wiki={wikiSectionFor(testid, label)} longPressRef={labelRef}>{hint}</HelpHint>}
       </span>
       <input
         data-testid={testid}

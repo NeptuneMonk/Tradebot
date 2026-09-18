@@ -4,6 +4,8 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip
 import { ChainBadge } from "./ChainBadge";
 import { TradeTicket } from "./TradeTicket";
 import { TokenDetailDialog } from "./TokenDetailDialog";
+import { openWiki, wikiTargetForExit } from "@/lib/wikiNav";
+import { BookOpen } from "lucide-react";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const fmtTime = (iso) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—");
@@ -110,7 +112,8 @@ function TradeHistoryTable({ history }) {
                           type="button"
                           data-testid={`history-exit-reason-${t.id}`}
                           className="text-neutral-600 hover:text-neutral-200 transition-colors duration-100"
-                          aria-label={`Why this trade exited: ${exitSummary.label}`}
+                          aria-label={`Why this trade exited: ${exitSummary.label} — click for the wiki definition`}
+                          onClick={(e) => { e.stopPropagation(); const w = wikiTargetForExit(t.exit_reason || exitSummary.label); openWiki(w.section, w.term); }}
                         >
                           <Search className="w-3 h-3" />
                         </button>
@@ -120,7 +123,11 @@ function TradeHistoryTable({ history }) {
                         className="max-w-[280px] bg-neutral-900 border border-neutral-700 text-neutral-200 px-3 py-2 text-[11px] font-mono leading-relaxed"
                       >
                         <div className="text-[9px] uppercase tracking-[0.15em] text-neutral-500 mb-1">Exit Trigger</div>
-                        <div className={`text-[12px] mb-1 ${exitSummary.tint}`}>{exitSummary.label}</div>
+                        <button type="button" data-testid={`history-exit-wiki-${t.id}`}
+                          onClick={(e) => { e.stopPropagation(); const w = wikiTargetForExit(t.exit_reason || exitSummary.label); openWiki(w.section, w.term); }}
+                          className={`inline-flex items-center gap-1 text-[12px] mb-1 underline decoration-dotted underline-offset-2 hover:text-emerald-200 ${exitSummary.tint}`} title="open the wiki definition of this exit">
+                          {exitSummary.label} <BookOpen className="w-3 h-3" />
+                        </button>
                         {t.exit_reason && (
                           <div className="text-neutral-400 text-[10px] break-words">{t.exit_reason}</div>
                         )}

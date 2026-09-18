@@ -2107,3 +2107,9 @@ Current state (07:04): bot RUNNING, RH paper ON, RH feed ON, Pump.fun feed ON (o
 
 ## 2026-06 — WIKI tab (after CONTROL)
 - `frontend/src/components/wiki/Wiki.jsx` + `wikiContent.js` (19 sections, 11 groups: start here, market basics, trading concepts, how the bot thinks, screens, gates SOL/RH with defaults + loosen effects, exits table + holds, Doctor/safety, manual trading, playbooks, glossary A–Z). Sticky index, full-text search (`wiki-search`), deep link `#wiki/<section>` opens the tab on load. NavBar VIEWS gained `wiki`. Keep `wikiContent.js` in sync when gates/exits change.
+
+## 2026-06 — Help "?" → wiki deep links, mobile help, exit-reason → wiki
+- `lib/wikiNav.js`: `openWiki(section, term)` (hash `#wiki/<id>[:term]` or `#wiki/search:<term>` + `open-wiki` event), `wikiSectionFor(testid,label)` (CONTROL field → section heuristic), `wikiTargetForExit(reason)` (exit reason → exits-table row term; underscores normalised).
+- `HelpHint.jsx` rewritten on Popover: hover opens (desktop), tap toggles (phones), optional `longPressRef` (450ms touch hold on the field label opens it); every hint ends with "full description in the wiki →" (`help-wiki-link`) → section jump or wiki search by label. `BotControlCard.Field` passes `wiki` + `longPressRef`.
+- Dashboard listens to `open-wiki`/`hashchange` → switches to the WIKI view. `Wiki.jsx` reads the hash, highlights matching table rows / list items / kv rows (`data-wiki-hit`, `wiki-highlight` banner) and scrolls to the first hit.
+- Trade history: the exit magnifier click and the tooltip's exit label (`history-exit-wiki-<id>`) open the wiki exits table with that exit highlighted. Added `tracking_lost / runner-no-pool` row.

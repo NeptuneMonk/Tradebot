@@ -66,6 +66,13 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [plSourceRefresh]);
   const pickView = useCallback((v) => { setView(v); localStorage.setItem("ui.view", v); }, []);
+  useEffect(() => {
+    const onWiki = () => setView("wiki");
+    const onHash = () => { if (window.location.hash.startsWith("#wiki")) setView("wiki"); };
+    window.addEventListener("open-wiki", onWiki);
+    window.addEventListener("hashchange", onHash);
+    return () => { window.removeEventListener("open-wiki", onWiki); window.removeEventListener("hashchange", onHash); };
+  }, []);
 
   // Footer skip ticker — resolves launch ids / mints to symbol + chain from whatever the UI already holds.
   const skipFeed = useSkipFeed();
