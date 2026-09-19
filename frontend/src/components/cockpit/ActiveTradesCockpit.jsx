@@ -12,6 +12,12 @@ const Check = ({ ok }) => <span className={ok ? "text-emerald-300" : "text-neutr
 /** Book-aware stage: what the exit engine is waiting for on this position, from fields already on the trade doc. */
 export function stageFor(t) {
   const pnl = Number(t.unrealized_pnl_pct ?? 0);
+  if (t.recovery_watch) {
+    const w = t.recovery_watch;
+    return { text: <span className="text-sky-300">recovery · stop {Number(w.stop_pct).toFixed(0)}% · reclaim {Number(w.target_pct) >= 0 ? "+" : ""}{Number(w.target_pct).toFixed(0)}% · {w.left_s}s</span>,
+             pct: clamp(100 - (w.left_s / 90) * 100),
+             hint: `No-momentum kill deferred: the tape was recovering (${Number(w.from_pct).toFixed(1)}% when armed). Stop just under the trough at ${Number(w.stop_pct).toFixed(1)}%, must reclaim ${Number(w.target_pct).toFixed(1)}% within the watch or exit on timeout.` };
+  }
   const book = t.book || (t.chain === "rh" ? "rh_pons" : "scalp");
   if (book === "hunt") {
     const legs = Number(t.ladder_legs_done || 0);

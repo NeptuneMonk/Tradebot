@@ -323,3 +323,60 @@ def test_r_trail_handoff_off_keeps_fixed_tp():
     entry = t["entry_price_quote"]
     assert _tick(st, pos, b, entry * 1.75) == "take_profit"
     assert t["r_trail"] is False
+
+
+def _rh_red_no_momentum(**cfg):
+    """Position 40s old, never above +5%, now −8% but climbing off a −12% trough set 25s ago."""
+    from tests.test_rh_paper import TOKEN, enter, hot_bucket, make_state
+    st = make_state(**cfg)
+    now = time.time()
+    b = hot_bucket(st.rh_discovery, now, price=2e-9)
+    enter(st)
+    pos = st.rh_paper.positions[TOKEN]
+    t = pos["trade"]
+    entry = t["entry_price_quote"]
+    pos["opened"] = now - 40
+    pos["peak_price"] = entry * 1.02
+    pos["trough_price"], pos["trough_ts"] = entry * 0.88, now - 25
+    b["price_samples"].clear()
+    b["price_samples"].extend([(now - 32, entry * 0.89), (now - 15, entry * 0.90), (now - 1, entry * 0.92)])
+    return st, b, TOKEN, pos, t, entry, now
+
+
+def test_rh_no_momentum_on_recovering_red_tape_becomes_watch_then_reclaims():
+    st, b, TOKEN, pos, t, entry, now = _rh_red_no_momentum()
+    b["last_price_quote"] = entry * 0.92
+    assert st.rh_paper._decide_exit(pos, b, now) is None                      # watch armed, no kill
+    w = pos["_recovery_watch"]
+    assert abs(w["stop"] - entry * 0.88 * 0.97) < 1e-20 and abs(w["target"] - entry * 0.94) < 1e-20
+    b["last_price_quote"] = entry * 0.93
+    assert st.rh_paper._decide_exit(pos, b, now + 10) is None                 # holding inside the box
+    b["last_price_quote"] = entry * 0.95
+    assert st.rh_paper._decide_exit(pos, b, now + 20) is None                 # reclaimed → back on the normal ladder
+    assert "_recovery_watch" not in pos and t["recovery_watch"] == "recovered"
+
+
+def test_rh_recovery_watch_exits_on_trough_breach_or_timeout():
+    st, b, TOKEN, pos, t, entry, now = _rh_red_no_momentum()
+    b["last_price_quote"] = entry * 0.92
+    assert st.rh_paper._decide_exit(pos, b, now) is None
+    b["last_price_quote"] = entry * 0.85                                       # through trough −3%
+    r = st.rh_paper._decide_exit(pos, b, now + 5)
+    assert r and r.startswith("recovery-stop") and t["recovery_watch"] == "failed"
+    st, b, TOKEN, pos, t, entry, now = _rh_red_no_momentum()
+    b["last_price_quote"] = entry * 0.92
+    assert st.rh_paper._decide_exit(pos, b, now) is None
+    b["last_price_quote"] = entry * 0.93
+    r = st.rh_paper._decide_exit(pos, b, now + 91)
+    assert r and r.startswith("recovery-timeout")
+
+
+def test_rh_flat_dead_red_tape_still_gets_no_momentum_kill():
+    st, b, TOKEN, pos, t, entry, now = _rh_red_no_momentum()
+    b["price_samples"].clear()
+    b["price_samples"].extend([(now - 32, entry * 0.92), (now - 1, entry * 0.92)])   # flat vs 30s ago
+    b["last_price_quote"] = entry * 0.92
+    assert st.rh_paper._decide_exit(pos, b, now) == "no_momentum"
+    st, b, TOKEN, pos, t, entry, now = _rh_red_no_momentum(recovery_watch_enabled=False)
+    b["last_price_quote"] = entry * 0.92
+    assert st.rh_paper._decide_exit(pos, b, now) == "no_momentum"

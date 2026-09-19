@@ -1604,6 +1604,21 @@ class BotState:
         book = trade_doc.get("book") or "scalp"
         if book == "runner":
             return await self._run_runner(mint, slot, cur_price_sol, sl_fire, ts_fire)
+        w = slot.get("_recovery_watch")
+        if w:
+            verdict, why = exits.recovery_watch_step(w, time.time(), cur_price_sol)
+            if verdict == "exit":
+                slot.pop("_recovery_watch", None)
+                trade_doc["recovery_watch"] = "failed"
+                await self._exit(mint, reason=why)
+                return True
+            if verdict == "reclaimed":
+                slot.pop("_recovery_watch", None)
+                trade_doc["recovery_watch"] = "recovered"
+                slot["_clock_reset_ts"] = time.time()   # fresh clock: the recovery is a new leg, not the dead probe it replaced
+                logger.info(f"RECOVERY WATCH {mint[:8]}… reclaimed {cur_price_sol:.3e} (from {w['from_pct']:+.1f}%) — back on the ladder, clock restarted")
+            elif pct > -float(exits.levels(cfg, slot)["stop_loss_pct"]):
+                return False                       # holding: the hard SL below still applies through the normal path
         dead = exits.search_dead_tape(cfg, book, self.tracking.get(mint), time.time(), entry_ts=slot.get("_entry_ts_mono"), trade=trade_doc)
         d = dead if dead is not None else (exits.decide_hunt(cfg, slot, pct, cur_price_sol, elapsed, sl_fire, ts_fire) if book == "hunt"
                                            else exits.decide_scalp(cfg, slot, pct, cur_price_sol, elapsed, sl_fire, ts_fire))
@@ -3292,7 +3307,16 @@ class BotState:
             "id": trade_doc["id"], "mint": mint, "current_price_sol": cur,
             "unrealized_pnl_pct": round((cur - entry) / entry * 100.0, 2), "peak_price_sol": peak,
             "drawdown_from_peak_pct": round((peak - cur) / peak * 100.0, 1) if peak > 0 else None,
-            "live_curve_fill_pct": tb.get("curve_fill_pct") or 0, "live_usd_market_cap": tb.get("usd_market_cap") or 0}))
+            "live_curve_fill_pct": tb.get("curve_fill_pct") or 0, "live_usd_market_cap": tb.get("usd_market_cap") or 0,
+            "recovery_watch": self._recovery_view(slot, entry, now)}))
+
+    @staticmethod
+    def _recovery_view(slot: dict, entry: float, now: float):
+        w = slot.get("_recovery_watch")
+        if not w or entry <= 0:
+            return None
+        return {"stop_pct": round((w["stop"] / entry - 1.0) * 100.0, 1), "target_pct": round((w["target"] / entry - 1.0) * 100.0, 1),
+                "left_s": max(0, int(w["deadline"] - now)), "from_pct": w.get("from_pct")}
 
 
     async def claim_entry_lock(self, mint: str, chain: str = "solana") -> bool:
@@ -3783,7 +3807,7 @@ class BotState:
                         )
                 except Exception:
                     pass  # never let a persist failure kill the monitor
-            elapsed = time.time() - start
+            elapsed = time.time() - float(slot.get("_clock_reset_ts") or start)   # recovery reclaim restarts the book clock
 
             try:
                 # Greylist snipes use pattern-based exits — short-circuit
@@ -3809,12 +3833,27 @@ class BotState:
                     _pk = float(slot.get("peak_price_sol") or 0)
                     _mfe = (_pk / _ep - 1.0) * 100.0 if _ep > 0 and _pk > 0 else 0.0
                     if _mfe < self.config.no_momentum_min_mfe_pct:
-                        slot["exit_in_progress"] = True
-                        try:
-                            await self._exit(mint, reason=f"no-momentum (peak {_mfe:+.1f}% after {int(elapsed)}s)")
-                            return
-                        finally:
-                            slot["exit_in_progress"] = False
+                        _b = self.tracking.get(mint) or {}
+                        _px = float(_b.get("last_price_sol") or slot.get("_last_price") or 0.0)
+                        _now = time.time()
+                        _rec = (
+                            getattr(self.config, "recovery_watch_enabled", True) and 0 < _px < _ep
+                            and exits.is_recovering(_now, _px, float(slot.get("trough_price_sol") or _px), slot.get("trough_ts"),
+                                                    exits.price_ago(_b.get("price_samples"), _now, 30.0),
+                                                    len({w for ts, _q, w in (_b.get("buy_events") or ()) if _now - ts <= 30.0}))
+                        )
+                        if _rec:
+                            slot["_recovery_watch"] = exits.start_recovery_watch(self.config, _now, _ep, _px, float(slot.get("trough_price_sol") or _px))
+                            w = slot["_recovery_watch"]
+                            logger.info(f"RECOVERY WATCH {mint[:8]}… {w['from_pct']:+.1f}% recovering (peak {_mfe:+.1f}%): stop {w['stop']:.3e}, "
+                                        f"reclaim {w['target']:.3e}, {int(w['deadline'] - _now)}s — no-momentum kill deferred")
+                        else:
+                            slot["exit_in_progress"] = True
+                            try:
+                                await self._exit(mint, reason=f"no-momentum (peak {_mfe:+.1f}% after {int(elapsed)}s)")
+                                return
+                            finally:
+                                slot["exit_in_progress"] = False
 
                 # Protocol-aware price polling — one state read per tick, shared by every check below.
                 # Push-first: a WSS push carries the account bytes (decoded locally, no RPC); while the

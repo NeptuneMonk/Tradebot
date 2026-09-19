@@ -115,6 +115,13 @@ class BotConfig(BaseModel):
     no_momentum_exit_enabled: bool = True
     no_momentum_after_s: int = 30
     no_momentum_min_mfe_pct: float = 5.0   # flattens a dead runner on any book (never a clock)
+    # Recovery watch: a no-momentum kill on a RED position whose tape is recovering (above its 30s-ago price, no new
+    # lower low for 20s or ≥2 fresh buyers) becomes a time-boxed watch — stop just under the trough, exit on timeout,
+    # rejoin the normal ladder once the price reclaims `recovery_reclaim_frac` of the way back to entry.
+    recovery_watch_enabled: bool = True
+    recovery_watch_s: int = 90
+    recovery_stop_below_trough_pct: float = 3.0
+    recovery_reclaim_frac: float = 0.5
     # Buy-momentum exit gate (2026-06): SL/TP only fire when buy pressure has
     # faded. If, in the last `exit_momentum_window_s`, >= min_buyers distinct
     # wallets bought AND >= min_inflow_sol flowed in, the exit is DEFERRED

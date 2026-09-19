@@ -229,7 +229,8 @@ export const SECTIONS = [
         ["take-profit / target", "P/L ≥ target R × SL%", "Scalp cash-out. Hunt sells a leg instead."],
         ["trailing-stop", "giveback from peak ≥ trail% once armed", "Ratchet tiers tighten the trail as the peak grows."],
         ["ladder leg (+1R / +2R)", "hunt: sell 35% / 30%", "Stop moves to breakeven + exit costs after each leg."],
-        ["no_momentum", "after no_momentum_after_s (30s) the peak never reached no_momentum_min_mfe_pct (5%)", "Flattens dead entries. Never applies to manual holds."],
+        ["no_momentum", "after no_momentum_after_s (30s) the peak never reached no_momentum_min_mfe_pct (5%) AND the tape is flat or still sliding", "Flattens dead entries. Never applies to manual holds. A RED position that is recovering goes into a recovery watch instead (below)."],
+        ["recovery-stop / recovery-timeout", "recovery watch: price broke trough − recovery_stop_below_trough_pct (3%), or recovery_watch_s (90s) ran out without reclaiming recovery_reclaim_frac (½) of the way back to entry", "The watch replaces a no-momentum kill on a recovering tape. If the price reclaims the target the position rejoins SL/TP/trail with a fresh clock (autopsy: recovered)."],
         ["scalp clock / max_hold", "hold_max_seconds (scalp 40s, rh_pons 35s)", "Search probes are not investments. Runner and manual holds have no clock."],
         ["search-dead-tape", "no new buyer and no inflow for no_new_buyers_s", "Off by default (0)."],
         ["snipe rip-cords", "pattern broke / drawdown / velocity decay on greylist snipes", "Hunt-book specific. Manual holds exempt."],
@@ -244,6 +245,7 @@ export const SECTIONS = [
       { t: "ul", v: [
         "Buy-momentum gate: a SL/TP that fires while ≥ exit_momentum_min_buyers distinct wallets are still buying (and inflow > outflow) is deferred up to 20s, bounded by a hard extra-loss floor. Stops you from selling into the dip right before the next leg.",
         "Flush hold: on a SL/trail trigger, forensics look at who sold since the peak. ≤2 sellers with one holding ≥70% of the sold amount and ≥1 buyer stepping in = a flush, not distribution → hold up to flush_hold_s (10s) with a flush_extra_drop_pct (5%) floor under the trough. Scope: hot/re-entry positions by default, or all.",
+        "Recovery watch: when no-momentum would kill a red position whose price is above its 30s-ago level (and no new low for 20s, or ≥2 fresh buyers), the bot waits instead — stop just under the trough, up to recovery_watch_s to reclaim half the drawdown. Bounded downside, keeps the slow crawl-backs you would otherwise sell at the bottom. Stage shows 'recovery · stop · reclaim · Ns'.",
         "Graduation: never an exit. The venue flips to the pool, any curve-priced trigger in flight is dropped, and the gates re-evaluate on pool prices (RH hands the position to the R-trail ride).",
       ] },
     ],

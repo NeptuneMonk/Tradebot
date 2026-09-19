@@ -1088,7 +1088,32 @@ class RHPaperTrader:
         ):
             pos["_nm_checked"] = True
             if peak_pct < cfg.no_momentum_min_mfe_pct:
-                return "no_momentum"
+                from exits import is_recovering, price_ago, start_recovery_watch
+                trough = float(pos.get("trough_price") or price)
+                new_buyers = len({w for ts, _q, w in (b.get("buy_events") or ()) if now - ts <= 30.0})
+                if (getattr(cfg, "recovery_watch_enabled", True) and pnl_pct < 0
+                        and is_recovering(now, price, trough, pos.get("trough_ts"), price_ago(b.get("price_samples"), now, 30.0), new_buyers)):
+                    pos["_recovery_watch"] = start_recovery_watch(cfg, now, entry, price, trough)
+                    w = pos["_recovery_watch"]
+                    logger.info(f"rh_paper RECOVERY WATCH {t.get('symbol')} {pnl_pct:+.1f}% recovering (peak {peak_pct:+.1f}%): stop {w['stop']:.3e}, "
+                                f"reclaim {w['target']:.3e}, {int(w['deadline'] - now)}s — no-momentum kill deferred")
+                else:
+                    return "no_momentum"
+        w = pos.get("_recovery_watch")
+        if w:
+            from exits import recovery_watch_step
+            verdict, why = recovery_watch_step(w, now, price)
+            if verdict == "exit":
+                pos.pop("_recovery_watch", None)
+                t["recovery_watch"] = "failed"
+                return why
+            if verdict == "reclaimed":
+                pos.pop("_recovery_watch", None)
+                t["recovery_watch"] = "recovered"
+                pos["opened"] = now                 # fresh clock: the recovery is a new leg, not the dead probe it replaced
+                logger.info(f"rh_paper RECOVERY WATCH {t.get('symbol')} reclaimed {price:.3e} — back on the ladder, clock restarted")
+            elif pnl_pct > -bx["stop_loss_pct"]:
+                return None                         # holding; the hard SL below still applies
         if pnl_pct >= bx["take_profit_pct"]:
             return "take_profit"
         if pnl_pct <= -bx["stop_loss_pct"]:
@@ -1552,6 +1577,10 @@ class RHPaperTrader:
         b = self.state.rh_discovery.tracking.get(d.get("mint")) or {}
         d["live_curve_fill_pct"] = b.get("curve_fill_pct") or 0
         d["live_usd_market_cap"] = b.get("usd_market_cap") or 0
+        w = pos.get("_recovery_watch")
+        if w and entry > 0:
+            d["recovery_watch"] = {"stop_pct": round((w["stop"] / entry - 1.0) * 100.0, 1), "target_pct": round((w["target"] / entry - 1.0) * 100.0, 1),
+                                   "left_s": max(0, int(w["deadline"] - time.time())), "from_pct": w.get("from_pct")}
         if pos["trade"].get("r_trail"):
             d["r_trail"] = True
             d["r_trail_stop_pct"], d["r_trail_trail_pct"] = pos.get("_r_trail_stop_pct"), pos.get("_r_trail_trail_pct")

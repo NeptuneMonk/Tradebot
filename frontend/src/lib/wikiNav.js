@@ -33,6 +33,7 @@ export function wikiTargetForExit(reason = "") {
   const r = reason.toLowerCase().replace(/_/g, "-");
   const pick = (term, section = "exits") => ({ section, term });
   if (/flush/.test(r)) return pick("flush hold");
+  if (/recovery/.test(r)) return pick("recovery-stop");
   if (/rip-?cord|ripcord|velocity decay|stale-exit|peak-mc|curve-fill|pattern-tp/.test(r)) return pick("rip-cord");
   if (/no-momentum|no momentum/.test(r)) return pick("no_momentum");
   if (/dead-tape|dead tape/.test(r)) return pick("dead-tape");

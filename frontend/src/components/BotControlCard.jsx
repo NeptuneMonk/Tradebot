@@ -465,6 +465,18 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
                hint="Minimum peak gain (max favourable excursion) the position must have shown by the check time to be allowed to keep running."
                value={local.no_momentum_min_mfe_pct ?? 5}
                onChange={(v) => setLocal({ ...local, no_momentum_min_mfe_pct: parseFloat(v) || 0 })} step="1" />
+        <Field label="Recovery Watch (s)" testid="recovery-watch-input"
+               hint="When the no-momentum check would kill a RED position whose tape is recovering (above its price 30s ago, and no new low for 20s or ≥2 fresh buyers), the kill becomes a time-boxed watch instead: stop just under the trough, this many seconds to reclaim part of the way back to entry, then it rejoins the normal ladder with a fresh clock. Flat or still-sliding tapes are still killed. 0 = off."
+               value={local.recovery_watch_s ?? 90}
+               onChange={(v) => { const n = parseInt(v, 10) || 0; setLocal({ ...local, recovery_watch_s: n, recovery_watch_enabled: n > 0 }); }} step="15" />
+        <Field label="Recovery Stop (%)" testid="recovery-stop-input"
+               hint="During a recovery watch the stop sits this far below the trough the position already survived — the bounded downside of waiting."
+               value={local.recovery_stop_below_trough_pct ?? 3}
+               onChange={(v) => setLocal({ ...local, recovery_stop_below_trough_pct: parseFloat(v) || 0 })} step="1" />
+        <Field label="Recovery Reclaim" testid="recovery-reclaim-input"
+               hint="Fraction of the distance from the trough back to entry the price must reclaim to end the watch and rejoin the ladder. 0.5 = halfway back; 1.0 = back to entry."
+               value={local.recovery_reclaim_frac ?? 0.5}
+               onChange={(v) => setLocal({ ...local, recovery_reclaim_frac: Math.min(1, Math.max(0, parseFloat(v) || 0)) })} step="0.1" />
         <Field label="Mom Gate Buyers" testid="exit-momentum-buyers-input"
                hint="Buy-momentum exit gate: SL and TP are DEFERRED while at least this many distinct wallets bought in the momentum window AND the inflow floor is met — so you don't sell into a dip that buyers are still absorbing. Set 0 to disable."
                value={local.exit_momentum_min_buyers ?? 3}

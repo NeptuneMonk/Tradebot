@@ -98,3 +98,32 @@ def test_rh_counted_open_and_manual_gates():
     rh.positions.pop("0x1")
     b["manual"] = True
     assert rh._gates("0x3", b, time.time()) == "ladder-only"   # past max-positions with the manual hold still open
+
+
+# ---------------------------------------------------------------- recovery watch (no-momentum on a recovering red tape)
+def test_is_recovering_direction_test():
+    now = 1000.0
+    assert exits.is_recovering(now, 0.95, 0.90, now - 30, 0.92, 0)                 # climbing, no lower low for 30s
+    assert exits.is_recovering(now, 0.95, 0.90, now - 5, 0.92, 2)                  # climbing, fresh buyers
+    assert not exits.is_recovering(now, 0.95, 0.90, now - 5, 0.92, 1)              # lower low 5s ago, one buyer: still sliding
+    assert not exits.is_recovering(now, 0.92, 0.90, now - 30, 0.92, 3)             # flat vs 30s ago
+    assert not exits.is_recovering(now, 0.90, 0.90, now - 30, 0.95, 3)             # sitting on the low
+    assert not exits.is_recovering(now, 0.95, 0.90, now - 30, None, 3)             # no history → no watch
+
+
+def test_recovery_watch_lifecycle():
+    cfg = BotConfig()
+    now = 1000.0
+    w = exits.start_recovery_watch(cfg, now, entry=1.0, price=0.94, trough=0.90)
+    assert abs(w["stop"] - 0.873) < 1e-9 and abs(w["target"] - 0.95) < 1e-9 and w["deadline"] == now + 90
+    assert exits.recovery_watch_step(w, now + 10, 0.945) == ("hold", None)
+    assert exits.recovery_watch_step(w, now + 20, 0.951)[0] == "reclaimed"
+    assert exits.recovery_watch_step(w, now + 30, 0.87)[0] == "exit" and "recovery-stop" in exits.recovery_watch_step(w, now + 30, 0.87)[1]
+    assert exits.recovery_watch_step(w, now + 91, 0.94)[0] == "exit" and "recovery-timeout" in exits.recovery_watch_step(w, now + 91, 0.94)[1]
+
+
+def test_price_ago_picks_nearest_sample():
+    now = 1000.0
+    samples = [(now - 60, 1.0), (now - 31, 0.9), (now - 2, 0.95)]
+    assert exits.price_ago(samples, now, 30.0) == 0.9
+    assert exits.price_ago([(now - 2, 0.95)], now, 30.0) is None

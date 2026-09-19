@@ -163,3 +163,48 @@ def search_dead_tape(cfg, book: str, bucket: dict | None, now: float, *, entry_t
     if idle >= win:
         return ExitDecision("exit", f"search-dead-tape: no new buyer / inflow for {idle:.0f}s (≥{win:g}s)")
     return None
+
+
+# ---------------------------------------------------------------- recovery watch (no-momentum on a recovering red tape)
+def price_ago(samples, now: float, ago_s: float) -> float | None:
+    """Price sample closest to `now - ago_s` (samples: iterable of (ts, price)); None without history that old."""
+    target = now - ago_s
+    best, best_d = None, None
+    for ts, px in list(samples or ()):
+        d = abs(float(ts) - target)
+        if best_d is None or d < best_d:
+            best, best_d = float(px), d
+    return best if best is not None and best_d is not None and best_d <= max(10.0, ago_s * 0.5) else None
+
+
+def is_recovering(now: float, price: float, trough: float, trough_ts: float | None, price_30s_ago: float | None,
+                  new_buyers_30s: int, *, trough_age_s: float = 20.0, min_new_buyers: int = 2) -> bool:
+    """Direction test for a red position that never showed momentum: climbing (above where it was 30s ago)
+    AND either no lower low for `trough_age_s` or fresh buyers stepping in. Flat / still sliding → not recovering."""
+    if price <= 0 or trough <= 0 or price_30s_ago is None or price <= price_30s_ago * 1.002:
+        return False
+    if price <= trough * 1.001:
+        return False                                   # sitting on the low = still making lows
+    no_lower_low = trough_ts is not None and (now - float(trough_ts)) >= trough_age_s
+    return no_lower_low or int(new_buyers_30s or 0) >= min_new_buyers
+
+
+def start_recovery_watch(cfg, now: float, entry: float, price: float, trough: float) -> dict:
+    """Time-boxed watch that replaces a no-momentum kill: stop just under the trough, reclaim target part-way to entry."""
+    below = float(getattr(cfg, "recovery_stop_below_trough_pct", 3.0) or 0.0) / 100.0
+    frac = min(1.0, max(0.0, float(getattr(cfg, "recovery_reclaim_frac", 0.5))))
+    watch_s = float(getattr(cfg, "recovery_watch_s", 90) or 90)
+    target = min(entry, trough + (entry - trough) * frac) if entry > trough else entry
+    return {"start": now, "deadline": now + watch_s, "trough": trough, "stop": trough * (1.0 - below), "target": target,
+            "from_price": price, "from_pct": round((price / entry - 1.0) * 100.0, 2) if entry > 0 else 0.0}
+
+
+def recovery_watch_step(watch: dict, now: float, price: float) -> tuple[str, str | None]:
+    """→ ("exit", reason) | ("reclaimed", None) | ("hold", None)."""
+    if price <= watch["stop"]:
+        return "exit", f"recovery-stop (trough −{(1 - watch['stop'] / watch['trough']) * 100:.0f}% breached after {int(now - watch['start'])}s)"
+    if price >= watch["target"]:
+        return "reclaimed", None
+    if now >= watch["deadline"]:
+        return "exit", f"recovery-timeout ({int(watch['deadline'] - watch['start'])}s, never reclaimed {watch['target']:.3e})"
+    return "hold", None
