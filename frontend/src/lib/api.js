@@ -25,6 +25,8 @@ export const api = {
   tradeHistory: (limit = 100) => client.get(`/trades/history?limit=${limit}`).then(r => r.data),
   exitTrade: (id) => client.post(`/trades/${id}/exit`).then(r => r.data),
   scannerManualBuy: (mint) => client.post(`/scanner/manual-buy/${mint}`).then(r => r.data),
+  creatorAudit: (chain, mint, force = false) => client.get(`/creator-audit/${chain}/${mint}`, { params: { force } }).then(r => r.data),
+  creatorAuditStats: () => client.get(`/creator-audit/stats`).then(r => r.data),
   autopilotStatus: () => client.get("/autopilot/status").then(r => r.data),
   autopilotSet: (on) => client.post(`/autopilot/${on ? "on" : "off"}`).then(r => r.data),
   autopilotReleaseGovernor: () => client.post("/autopilot/governor/release").then(r => r.data),

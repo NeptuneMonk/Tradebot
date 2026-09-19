@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ExternalLink, RefreshCw, ShoppingCart } from "lucide-react";
 import { toast } from "sonner";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
+import { CreatorAuditPanel } from "@/components/CreatorAuditPanel";
 import { ChainBadge } from "./ChainBadge";
 import { api } from "@/lib/api";
 
@@ -103,6 +104,8 @@ export function TokenDetailDialog({ token, onClose }) {
               <ShoppingCart className="w-3.5 h-3.5" /> {data?.summary?.active ? "position open" : busy ? "sending…" : "re-enter manually"}
             </button>
             <div className="text-[9px] font-mono text-neutral-600">Manual entry bypasses the momentum gates; max positions, kill switches and the live/paper mode still apply.</div>
+
+            <CreatorAuditPanel key={`${chain}:${mint}`} chain={chain} mint={mint} initial={live?.creator_audit || null} />
           </div>
 
           <div className="min-h-[420px] lg:h-[calc(100vh-120px)] border border-neutral-800 bg-black" data-testid="token-detail-widget">

@@ -989,6 +989,42 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
             </label>
           </div>
         </div>
+        <div className={`border p-2 space-y-2 ${local.creator_audit_enabled ? "border-emerald-800/70" : "border-neutral-800"}`} data-testid="creator-audit-section">
+          <div className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 inline-flex items-center gap-1">
+            creator wallet audit · master gate {local.creator_audit_enabled ? <span className="text-emerald-400">ON</span> : <span className="text-neutral-600">OFF</span>}
+            <HelpHint label="help: creator wallet audit" wiki="creator-audit">Runs LAST, after every other gate, on both chains. A launch is only bought when the creator wallet looks like a person launching one token: funded before the deploy, has used a DEX/launchpad before, main funding landed hours (not seconds) earlier, wallet older than a day, no other deploy in the same batch or hour, no rug / spam / blacklist tag in our greylist, clean metadata. Each check is pass / fail / unavailable; the policy below decides what "unavailable" means. Cached 1h per creator. Solana history comes from Helius (needs credits); Robinhood Chain only exposes balance + nonce + our own feed.</HelpHint>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+            <label className="flex items-center gap-2 text-neutral-300">
+              <input type="checkbox" data-testid="creator-audit-enabled" checked={!!local.creator_audit_enabled}
+                     onChange={(e) => setLocal({ ...local, creator_audit_enabled: e.target.checked })} /> enabled
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 inline-flex items-center gap-1">unavailable data
+                <HelpHint label="help: audit unavailable policy" wiki="creator-audit">PASS = judge the launch on the checks that could run (Helius timeout / RH has no history API → those checks are ignored). SKIP = fail-closed: any check we could not run blocks the entry.</HelpHint></span>
+              <select data-testid="creator-audit-unavailable-select" value={local.creator_audit_unavailable ?? "pass"}
+                      onChange={(e) => setLocal({ ...local, creator_audit_unavailable: e.target.value })}
+                      className="bg-neutral-950 border border-neutral-800 px-2 py-1 text-neutral-100 font-mono text-xs">
+                <option value="pass">pass — judge on the rest</option>
+                <option value="skip">skip — fail closed</option>
+              </select>
+            </label>
+            <Field label="Funding lead ≥ (h)" testid="creator-audit-lead-input" hint="The largest SOL transfer into the creator wallet before the deploy must have landed at least this many hours earlier. Funded seconds before deploying = throwaway wallet."
+                   value={local.creator_audit_min_funding_lead_h ?? 1} onChange={(v) => setLocal({ ...local, creator_audit_min_funding_lead_h: parseFloat(v) || 0 })} step="0.5" />
+            <Field label="Wallet age ≥ (h)" testid="creator-audit-age-input" hint="First on-chain activity of the creator wallet must be at least this many hours before the deploy."
+                   value={local.creator_audit_min_wallet_age_h ?? 24} onChange={(v) => setLocal({ ...local, creator_audit_min_wallet_age_h: parseFloat(v) || 0 })} step="1" />
+            <Field label="Prior DEX txs ≥" testid="creator-audit-dex-input" hint="Transactions with Pump.fun / PumpSwap / Raydium / Jupiter / Orca / Meteora before the deploy. On Robinhood Chain: transactions sent before the deploy (nonce)."
+                   value={local.creator_audit_min_prior_dex ?? 1} onChange={(v) => setLocal({ ...local, creator_audit_min_prior_dex: parseInt(v, 10) || 0 })} step="1" />
+            <Field label="Max deploys / hour" testid="creator-audit-perhour-input" hint="Launches by this creator in the hour around the deploy, including this one. 1 = this must be the only launch (also covers batch deploys)."
+                   value={local.creator_audit_max_deploys_per_hour ?? 1} onChange={(v) => setLocal({ ...local, creator_audit_max_deploys_per_hour: parseInt(v, 10) || 1 })} step="1" />
+            <Field label="Rug tags ≥ fail" testid="creator-audit-rugs-input" hint="Failed / rugged launches on the creator's greylist record that count as a rug tag. 1 = any prior failed launch blocks."
+                   value={local.creator_audit_max_rug_tags ?? 1} onChange={(v) => setLocal({ ...local, creator_audit_max_rug_tags: parseInt(v, 10) || 1 })} step="1" />
+            <label className="flex items-center gap-2 text-neutral-300 sm:col-span-2">
+              <input type="checkbox" data-testid="creator-audit-post-activity" checked={!!local.creator_audit_require_post_activity}
+                     onChange={(e) => setLocal({ ...local, creator_audit_require_post_activity: e.target.checked })} /> require post-deploy activity (non-sell tx after the launch)
+            </label>
+          </div>
+        </div>
         <div className="border border-amber-900/50 p-2 space-y-2" data-testid="hot-focus-section">
           <div className="text-[10px] uppercase tracking-[0.15em] text-amber-400/90 inline-flex items-center gap-1">
             hot focus · play the runners out

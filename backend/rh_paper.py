@@ -529,6 +529,16 @@ class RHPaperTrader:
                     b["creator_gate"] = (cs_reason, now)   # _gates returns this until the balance cache expires: no re-entry spam
                     logger.info(f"rh_paper skip {b['symbol']}: {cs_reason} — deployer {b['creator'][:10]} eth={creator_eth} sold={b.get('creator_sold_pct')}%")
                     return
+            if not manual and getattr(cfg, "creator_audit_enabled", False) and b.get("creator"):
+                import creator_audit
+                audit = await creator_audit.audit(cfg, self.state.db, chain="rh", creator=b["creator"], mint=token,
+                                                  deploy_ts=float(b.get("start") or now), deploy_block=b.get("deploy_block"),
+                                                  name=b.get("name"), symbol=b.get("symbol"))
+                b["creator_audit"] = audit
+                if audit["verdict"] != "pass":
+                    logger.info(f"rh_paper skip {b['symbol']}: {audit['reason']} — deployer {b['creator'][:10]}")
+                    self._block_entry(token, b, "creator-audit", now, ttl_s=creator_audit.CACHE_TTL_S, detail=audit["reason"])
+                    return
             _gov = getattr(self.state, "bankroll", None)
             base_stake = float(getattr(cfg, "rh_max_trade_usd", 5.0))
             if base_stake <= 0:

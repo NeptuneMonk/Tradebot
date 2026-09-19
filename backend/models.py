@@ -301,6 +301,15 @@ class BotConfig(BaseModel):
     sl_cooldown_minutes: float = 5.0
     # creator-solvency + dump gate (hunt / seasoned / rh_pons only — never the new-band scalp tape by default)
     creator_solvency_enabled: bool = True
+    # Creator Wallet Audit — optional MASTER gate, runs last (after every other gate), cached 1h per creator
+    creator_audit_enabled: bool = False
+    creator_audit_unavailable: str = "pass"        # "pass" = judge on the checks we could run · "skip" = fail-closed
+    creator_audit_min_funding_lead_h: float = 1.0  # main funding transfer landed ≥ this long before the deploy
+    creator_audit_min_wallet_age_h: float = 24.0   # first wallet activity ≥ this long before the deploy
+    creator_audit_min_prior_dex: int = 1           # prior Pump.fun/PumpSwap/Raydium/Jupiter/Orca txs (RH: sent-tx nonce)
+    creator_audit_max_deploys_per_hour: int = 1    # launches by this creator in the hour around the deploy (incl. this one)
+    creator_audit_require_post_activity: bool = False
+    creator_audit_max_rug_tags: int = 1            # failed/rugged launches on record that count as a rug tag
     creator_sol_min: float = 0.5
     creator_eth_min: float = 0.0        # retired: RH has no deployer balance floor (kept so stored configs still load)
     creator_sol_gate_new_band: bool = False

@@ -592,6 +592,7 @@ class RHDiscovery:
             "chain": CHAIN,
             "protocol": PROTOCOL,
             "creator": d["deployer"],
+            "deploy_block": d.get("block"),
             "curve": d["curve"],
             "pair_token": d["pair_token"],
             "quote_symbol": d["quote_symbol"],

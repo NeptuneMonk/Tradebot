@@ -2426,6 +2426,10 @@ async def token_detail(chain: str, mint: str):
                                              "reentry_trigger", "classifier_action", "peak_pnl_pct")} for t in rows]
     out["summary"] = {"n": len(rows), "pnl_usd": round(sum(float(t.get("pnl_usd") or 0) for t in rows), 2),
                       "active": any(t.get("status") == "active" for t in rows)}
+    if out.get("live") is not None:
+        _b = (bot_state.rh_discovery.tracking.get(mint.lower()) if chain == "rh" else bot_state.tracking.get(mint)) or {}
+        if _b.get("creator_audit"):
+            out["live"]["creator_audit"] = _b["creator_audit"]
     return out
 
 
@@ -2695,6 +2699,42 @@ async def scanner_skips():
                    "curve": {k.split(":", 1)[1]: v for k, v in rh.items() if k.startswith("curve:")},
                    "seasoned_tracked": sum(1 for b in bot_state.rh_discovery.tracking.values() if b.get("graduated")),
                    "seasoned_with_pool": sum(1 for b in bot_state.rh_discovery.tracking.values() if b.get("graduated") and b.get("pool_live"))}}
+
+
+@api.get("/creator-audit/stats")
+async def creator_audit_stats():
+    """Creator Wallet Audit counters since process start: audits, passed, skipped, fails / unavailable per check."""
+    import creator_audit
+    return {"enabled": bool(getattr(bot_state.config, "creator_audit_enabled", False)),
+            "policy": getattr(bot_state.config, "creator_audit_unavailable", "pass"), **creator_audit.stats,
+            "checks": [{"key": k, "label": v} for k, v in creator_audit.CHECKS]}
+
+
+@api.get("/creator-audit/{chain}/{mint}")
+async def creator_audit_run(chain: str, mint: str, force: bool = False):
+    """Run (or read the cached) Creator Wallet Audit for a tracked token — the drawer's AUDIT panel. Works with the
+    gate switched off so the operator can test the checks before arming them."""
+    import creator_audit
+    if chain == "rh":
+        b = bot_state.rh_discovery.tracking.get(mint.lower()) or bot_state.rh_discovery.tracking.get(mint)
+        if not b or not b.get("creator"):
+            raise HTTPException(404, "token not tracked (or no deployer known)")
+        return await creator_audit.audit(bot_state.config, bot_state.db, chain="rh", creator=b["creator"], mint=mint, deploy_ts=float(b.get("start") or time.time()),
+                                         deploy_block=b.get("deploy_block"), name=b.get("name"), symbol=b.get("symbol"), force=force)
+    b = bot_state.tracking.get(mint) or {}
+    creator = b.get("creator")
+    deploy_ts = float(b.get("start") or 0.0)
+    name, symbol = b.get("name"), b.get("symbol")
+    if not creator:
+        doc = await bot_state.db.launches.find_one({"mint": mint}, {"_id": 0, "creator": 1, "detected_at": 1, "name": 1, "symbol": 1})
+        if not doc or not doc.get("creator"):
+            raise HTTPException(404, "token not tracked (or no creator known)")
+        creator = doc["creator"]
+        dt = doc.get("detected_at")
+        deploy_ts = dt.timestamp() if hasattr(dt, "timestamp") else time.time()
+        name, symbol = doc.get("name"), doc.get("symbol")
+    return await creator_audit.audit(bot_state.config, bot_state.db, chain="sol", creator=creator, mint=mint, deploy_ts=deploy_ts or time.time(),
+                                     name=name, symbol=symbol, force=force)
 
 
 @api.post("/scanner/manual-buy/{mint}")

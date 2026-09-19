@@ -178,6 +178,29 @@ export const SECTIONS = [
     ],
   },
   {
+    id: "creator-audit", group: "Gates", title: "Creator Wallet Audit (master gate)",
+    body: [
+      { t: "p", v: "An optional last gate (CONTROL → creator wallet audit, off by default) that judges the WALLET that launched the token rather than the token's tape. Rug farms use throwaway wallets: created minutes ago, funded seconds before the deploy, several launches per hour, never traded on a DEX. A person launching one token looks the opposite. The audit runs only for launches that already passed every other gate (so it costs one history pull per creator, cached an hour) and applies on both chains." },
+      { t: "table", cols: ["Check", "Pass when", "Solana source", "Robinhood Chain source"], rows: [
+        ["Funded before deploy", "wallet received funds before the deploy tx", "Solscan funded-by → Helius inbound transfers", "eth_getBalance at deploy block − 1"],
+        ["Prior DEX / launchpad use", "≥ N txs with Pump.fun / PumpSwap / Raydium / Jupiter / Orca / Meteora", "Solscan transactions + DeFi activities → Helius", "sent-tx count (nonce) — proxy"],
+        ["Funding lead time", "the wallet's funding transfer ≥ N hours before the deploy", "Solscan funded-by → Helius", "unavailable"],
+        ["Wallet age", "first activity ≥ N hours before the deploy (deep history = pass)", "Solscan transactions → Helius", "unavailable"],
+        ["Deploys this hour", "≤ N launches in the hour around this one (1 = deployed alone; covers batches)", "Solscan / Helius creates + our launch feed", "our launch feed"],
+        ["Post-deploy activity", "(optional) a tx after the launch; a creator SELL fails it", "Solscan / Helius history", "unavailable"],
+        ["Tags", "no scam / rug / phishing / bot / spam / cluster explorer label; not blacklisted; fewer rug tags than the limit", "Solscan account metadata (labels + tags) → our greylist", "our greylist (explorer blocked)"],
+        ["Clean metadata", "name + symbol present and printable; metadata URI resolves", "Solscan token meta → DAS getAsset + URI fetch", "PONS create event"],
+        ["Verified contract", "n/a — Pump.fun mints share one program", "—", "unavailable (Blockscout API blocked)"],
+      ] },
+      { t: "kv", v: [
+        ["unavailable data policy", "PASS = judge on the checks that could run. SKIP = fail-closed: anything we could not verify blocks the entry. Start with PASS; RH launches would otherwise never pass (no history API)."],
+        ["Where you see it", "Skip ticker: 'creator-audit: funding lead time — main funding 40s before deploy'. Token drawer → CREATOR WALLET AUDIT panel lists every check with ✓ ✗ ? – and a re-run button; it works with the gate OFF so you can test on live launches first."],
+        ["Sources & cost", "Solscan Pro API (SOLSCAN_API_KEY; attribution shown in the panel) is primary: detail, funded-by, metadata labels, transactions, DeFi activities, token meta — ~6 calls per creator, cached 1h. Any endpoint your Solscan plan does not cover falls back to Helius enhanced history (100 credits per page) for that check; with neither available the check reads 'unavailable'."],
+      ] },
+      { t: "warn", v: "This gate is strict by design. With the defaults (lead ≥ 1h, age ≥ 24h, 1 prior DEX tx, 1 deploy per hour) expect it to refuse the large majority of Pump.fun launches — that is the point. Watch the DOCTOR / skip ticker share of 'creator-audit' before deciding whether the survivors trade better." },
+    ],
+  },
+  {
     id: "gates-rh", group: "Gates", title: "Robinhood Chain (RH PONS) gates",
     body: [
       { t: "table", cols: ["Field", "Default", "Meaning"], rows: [

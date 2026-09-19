@@ -3085,6 +3085,19 @@ class BotState:
                                       book_mult_override=(book_size_mult(self.config, book) * reentry_mult) if reentry_mult is not None else None)
         if not plan:
             return
+        if action != "manual" and getattr(self.config, "creator_audit_enabled", False) and launch.creator:
+            # MASTER gate, deliberately last: one cached wallet-history pull per creator, only for launches that already
+            # cleared every momentum / liquidity / cost gate
+            import creator_audit
+            deploy_ts = float(bucket.get("start") or (launch.detected_at.timestamp() if launch.detected_at else time.time()))
+            audit = await creator_audit.audit(self.config, self.db, chain="sol", creator=launch.creator, mint=launch.mint,
+                                              deploy_ts=deploy_ts, name=launch.name, symbol=launch.symbol)
+            bucket["creator_audit"] = audit
+            if audit["verdict"] != "pass":
+                logger.info(f"skip {launch.mint[:8]} [{action}]: {audit['reason']} — creator {str(launch.creator)[:8]}")
+                await self._skip_event({"mint": launch.mint, "symbol": launch.symbol, "band": "new" if is_new_band else "seasoned",
+                                        "reason": "creator-audit", "details": [audit["reason"] or "", f"failed={','.join(audit['failed'])}"]})
+                return
         size_mult = plan["size_mult"]
         planned_usd = plan["size_usd"]
         # Hardwired fast-fail sizing: buy half now, the other half after the first +5 % (see _fast_fail_add)
