@@ -277,6 +277,7 @@ class BotConfig(BaseModel):
     scanner_entry_velocity_window_s: int = 30
     # New-band scalps enter on the SECOND impulse only: a ≥dip% pullback from the tracked peak that is recovering
     scanner_second_impulse_enabled: bool = True
+    scanner_seasoned_entries_enabled: bool = True   # seasoned-band (graduated pool) entries → hunt book; off = new-band scalps only
     scanner_second_impulse_dip_pct: float = 8.0
     scanner_entry_velocity_min_pct: float = 0.0
     # Pyramid into a riding winner: on each confirmed higher-high (+step% above the last add level)

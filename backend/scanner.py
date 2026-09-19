@@ -546,6 +546,9 @@ class MomentumScanner:
                             verdict("new-buyers")
                             continue
 
+                    if band == "seasoned" and not getattr(cfg, "scanner_seasoned_entries_enabled", True):
+                        verdict("seasoned-off")          # operator switch: seasoned/graduated-pool entries paused (hunt book)
+                        continue
                     action = "scanner_momentum" if band == "seasoned" else "momentum_new"
                     synthetic = Launch(
                         mint=mint,
