@@ -8,6 +8,9 @@ import httpx
 logger = logging.getLogger("solscan")
 BASE = "https://pro-api.solscan.io/v2.0"
 API_KEY = (os.environ.get("SOLSCAN_API_KEY") or "").strip()
+PLAN_BACKOFF_S = 3600.0
+_plan_blocked_until = 0.0        # 401 "upgrade your api key level" → the plan has no account/token access; stop asking for a while
+_last_plan_error = ""
 
 
 class SolscanError(Exception):
@@ -17,7 +20,13 @@ class SolscanError(Exception):
 
 
 def enabled() -> bool:
-    return bool(API_KEY)
+    import time
+    return bool(API_KEY) and time.time() >= _plan_blocked_until
+
+
+def plan_status() -> dict:
+    import time
+    return {"key_set": bool(API_KEY), "blocked_s": max(0, round(_plan_blocked_until - time.time())), "last_error": _last_plan_error}
 
 
 async def get(path: str, params: dict, timeout: float = 8.0):
@@ -32,7 +41,13 @@ async def get(path: str, params: dict, timeout: float = 8.0):
         body = {}
     if r.status_code != 200 or not body.get("success", True):
         err = (body.get("errors") or {}) if isinstance(body, dict) else {}
-        raise SolscanError(r.status_code, str(err.get("message") or r.text[:120]))
+        msg = str(err.get("message") or r.text[:120])
+        if r.status_code == 401 and "upgrade" in msg.lower():
+            import time
+            global _plan_blocked_until, _last_plan_error
+            _plan_blocked_until, _last_plan_error = time.time() + PLAN_BACKOFF_S, msg
+            logger.warning(f"solscan: plan does not cover {path} — provider paused {PLAN_BACKOFF_S:.0f}s ({msg})")
+        raise SolscanError(r.status_code, msg)
     return body.get("data")
 
 

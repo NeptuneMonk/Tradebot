@@ -2705,8 +2705,9 @@ async def scanner_skips():
 async def creator_audit_stats():
     """Creator Wallet Audit counters since process start: audits, passed, skipped, fails / unavailable per check."""
     import creator_audit
+    import solscan
     return {"enabled": bool(getattr(bot_state.config, "creator_audit_enabled", False)),
-            "policy": getattr(bot_state.config, "creator_audit_unavailable", "pass"), **creator_audit.stats,
+            "policy": getattr(bot_state.config, "creator_audit_unavailable", "pass"), **creator_audit.stats, "solscan": solscan.plan_status(),
             "checks": [{"key": k, "label": v} for k, v in creator_audit.CHECKS]}
 
 
