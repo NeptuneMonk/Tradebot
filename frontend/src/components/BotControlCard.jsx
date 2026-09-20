@@ -65,7 +65,7 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
   // Only the keys the user actually changed go over the wire. Sending the whole form snapshot re-wrote
   // stale values (a feed toggle flipped by another click / the Doctor) — that's why feeds "switched themselves off".
   // Operator switches only ever travel through their own toggle (flipKey) — never inside a form save.
-  const SWITCH_KEYS = new Set(["enabled", "helius_tracker_enabled", "rh_feed_enabled", "rh_paper_enabled", "rh_live_trading", "live_trading", "scanner_enabled", "ladder_enabled"]);
+  const SWITCH_KEYS = new Set(["enabled", "helius_tracker_enabled", "rh_feed_enabled", "rh_paper_enabled", "rh_live_trading", "live_trading", "scanner_enabled", "scanner_seasoned_entries_enabled", "ladder_enabled"]);
   const diff = (a, b) => Object.fromEntries(Object.entries(a || {}).filter(([k, v]) => !SWITCH_KEYS.has(k) && JSON.stringify(v) !== JSON.stringify((b || {})[k])));
   const save = async () => {
     try {
@@ -583,6 +583,15 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
               onChange={(e) => flipKey("scanner_enabled", e.target.checked, () => toast.success(e.target.checked ? "SOL scanner ON — auto-entries armed" : "SOL scanner OFF — no auto-entries"))}
             />
             enabled
+          </label>
+          <label className="flex items-center gap-1.5 text-[10px] font-mono uppercase text-neutral-400" title="Seasoned-band (graduated PumpSwap pool) entries → hunt book. Off = new-band scalps only.">
+            <input
+              type="checkbox"
+              data-testid="scanner-seasoned-entries-checkbox"
+              checked={local.scanner_seasoned_entries_enabled !== false}
+              onChange={(e) => flipKey("scanner_seasoned_entries_enabled", e.target.checked, () => toast.success(e.target.checked ? "SEASONED entries ON — graduated pools can enter the hunt book" : "SEASONED entries OFF — new-band only"))}
+            />
+            seasoned entries
           </label>
         </div>
         <div className="grid grid-cols-2 gap-2 text-xs">

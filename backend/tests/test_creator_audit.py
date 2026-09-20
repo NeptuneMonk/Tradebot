@@ -166,3 +166,26 @@ def test_solscan_profile_drives_checks(monkeypatch):
     ca._cache.clear()
     res2 = asyncio.run(ca.audit(_cfg(), _DB({"tokens_failed": 0}), chain="sol", creator=CREATOR, mint=MINT, deploy_ts=d))
     assert _status(res2, "tags") == "fail" and res2["verdict"] == "skip"
+
+
+def test_rh_post_activity_is_unavailable_not_fail(monkeypatch):
+    """RH has no explorer: an unobservable check must defer to creator_audit_unavailable, never hard-fail every creator."""
+    import rh_wallet
+
+    async def _rpc(method, params, timeout=8.0):
+        return hex(10 ** 18) if method == "eth_getBalance" else hex(5)
+    monkeypatch.setattr(rh_wallet, "rpc", _rpc)
+    monkeypatch.setattr(ca, "_tags", lambda db, c: _async({"ok": True, "blacklisted": False, "rugs": 0}))
+    now = time.time()
+    cfg = _cfg(creator_audit_require_post_activity=True, creator_audit_unavailable="pass", creator_audit_min_prior_dex=3)
+    res = asyncio.run(ca.audit(cfg, _DB(), chain="rh", creator="0x" + "a" * 40, mint="0x" + "b" * 40, deploy_ts=now - 30, deploy_block=100, name="Tok", symbol="TOK"))
+    assert _status(res, "post_activity") == "unavailable"
+    assert res["verdict"] == "pass", res["reason"]
+    cfg.creator_audit_unavailable = "skip"
+    ca._cache.clear()
+    res = asyncio.run(ca.audit(cfg, _DB(), chain="rh", creator="0x" + "c" * 40, mint="0x" + "d" * 40, deploy_ts=now - 30, deploy_block=100, name="Tok", symbol="TOK"))
+    assert res["verdict"] == "skip" and "unavailable" in (res["reason"] or "")
+
+
+async def _async(v):
+    return v

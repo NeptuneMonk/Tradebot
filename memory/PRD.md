@@ -2182,3 +2182,8 @@ User rule: turning a feed off is cheating — improve WHICH tokens we enter/exit
 - `components/VirtualRows.jsx` (`VirtualUl`, `useVirtualTable`, `SpacerRow`) on `@tanstack/react-virtual`; applied to RecentLaunchesFeed (14–16 of 60 rows mounted), TradeHistoryTable (25 of 50), ScannerCandidatesCard bands
 - `DiagStrip.jsx` in Dashboard footer (collapsed by default, state in localStorage): client msgs/s + avg frame, hub msgs/s (1m) + avg frame (1m), ws clients, seen/ident, loop lag, tracked/open. Backend: `hub.diagnostics` adds `msgs_per_s_1m`, `avg_frame_bytes_1m`; `useWebSocket` exposes `statsRef`
 - README "Live data path" note (P4.3). Perf brief P0–P4 complete except unit test for rAF coalescing (no component-test harness)
+
+## 2026-09-20 (d) — Published pod: 0 RH / 0 seasoned trades in 7h — root causes
+- **RH**: `creator_audit_require_post_activity=true` + `_audit_rh` returned a hard **fail** for `post_activity` ("not observable on Robinhood Chain") → every RH creator failed the audit (published skips: `creator-audit` 69,987). FIXED: check is now `unavailable` (policy `creator_audit_unavailable` decides). Test `test_rh_post_activity_is_unavailable_not_fail`. Needs redeploy.
+- **Seasoned**: published config has `scanner_seasoned_entries_enabled=false` and there was no UI switch. ADDED "seasoned entries" checkbox in CONTROL → Momentum Scanner (`scanner-seasoned-entries-checkbox`, instant switch key).
+- Published status also shows RH `launch_rate_h: 0.0` (feed alive, buys flowing) — Robinhood launchpad is genuinely slow (~4 launches/h in preview), so RH volume will stay low even after the fix.

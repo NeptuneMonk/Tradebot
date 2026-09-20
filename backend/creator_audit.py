@@ -500,7 +500,9 @@ async def _audit_rh(cfg, db, creator, mint, deploy_ts, deploy_block, name, symbo
     others = [ts for ts in ours if abs(ts - deploy_ts) > 2]
     n_hour = 1 + len(others)
     out.append(_c("deploys_per_hour", "pass" if n_hour <= max_per_h else "fail", f"{n_hour} deploy(s) in the hour (max {max_per_h}, our feed)", n_hour))
-    out.append(_c("post_activity", "fail" if want_post else "n/a", "not observable on Robinhood Chain" + ("" if want_post else " (not required)")))
+    # not observable on Robinhood Chain (explorer blocked) → "unavailable" so the creator_audit_unavailable policy decides;
+    # a hard "fail" here benched every RH creator (69k skips on the published pod)
+    out.append(_c("post_activity", "unavailable" if want_post else "n/a", "not observable on Robinhood Chain" + ("" if want_post else " (not required)")))
     tg = await _tags(db, creator)
     if not tg.get("ok"):
         out.append(_c("tags", "unavailable", "greylist unavailable"))
