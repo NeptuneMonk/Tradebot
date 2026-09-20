@@ -10,6 +10,8 @@ frame with the live fields only (`LIVE_FIELDS`, + `seq`); every later `launch_up
 import asyncio
 import json
 import logging
+import time
+from collections import deque
 from fastapi import WebSocket
 
 logger = logging.getLogger("ws_hub")
@@ -49,6 +51,7 @@ class WSHub:
         self._seen: dict[str, dict] = {}    # launch id → {"seq": int, "d": slim merged payload last sent}
         self._ident: dict[str, dict] = {}   # launch id → identity stub of a not-yet-candidate launch
         self.stats = {"frames": 0, "bytes": 0}
+        self._recent: deque = deque()   # (ts, bytes) for the last 60 s → msgs/s + avg bytes on the diagnostics strip
 
     async def connect(self, ws: WebSocket):
         await ws.accept()
@@ -125,6 +128,10 @@ class WSHub:
         msg = json.dumps({"type": event_type, "data": data}, default=str)
         self.stats["frames"] += 1
         self.stats["bytes"] += len(msg)
+        now = time.time()
+        self._recent.append((now, len(msg)))
+        while self._recent and self._recent[0][0] < now - 60:
+            self._recent.popleft()
         dead: list[WebSocket] = []
         for ws in list(self.clients):
             try:
@@ -138,9 +145,15 @@ class WSHub:
 
     @property
     def diagnostics(self) -> dict:
+        now = time.time()
+        while self._recent and self._recent[0][0] < now - 60:
+            self._recent.popleft()
+        n1m = len(self._recent)
+        b1m = sum(b for _, b in self._recent)
         return {"clients": len(self.clients), "seen": len(self._seen), "ident": len(self._ident),
                 "frames": self.stats["frames"], "bytes": self.stats["bytes"],
-                "avg_frame_bytes": round(self.stats["bytes"] / self.stats["frames"]) if self.stats["frames"] else 0}
+                "avg_frame_bytes": round(self.stats["bytes"] / self.stats["frames"]) if self.stats["frames"] else 0,
+                "msgs_per_s_1m": round(n1m / 60.0, 2), "avg_frame_bytes_1m": round(b1m / n1m) if n1m else 0}
 
 
 hub = WSHub()

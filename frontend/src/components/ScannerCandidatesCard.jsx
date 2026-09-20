@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import HelpHint from "./HelpHint";
 import { ChainBadge } from "./ChainBadge";
 import { TokenDetailDialog } from "./TokenDetailDialog";
+import { VirtualUl } from "./VirtualRows";
 import { api } from "@/lib/api";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
@@ -22,6 +23,10 @@ const fmtUsd = (n) => {
 function Band({ title, Icon, accentClass, items, emptyText, testId , onOpen }) {
   const passing = items.filter((c) => c.passes);
   const watching = items.filter((c) => !c.passes).slice(0, 8);
+  const rows = [
+    ...(passing.length ? [{ key: "h-pass", header: "passing" }] : []), ...passing.map((c) => ({ key: c.mint, c, passing: true })),
+    ...(watching.length ? [{ key: "h-watch", header: "watching" }] : []), ...watching.map((c) => ({ key: c.mint, c, passing: false })),
+  ];
   return (
     <div className="border border-neutral-800 p-3" data-testid={testId || `scanner-band-${title.toLowerCase().split(" ")[0]}`}>
       <div className={`flex items-center justify-between mb-2 ${accentClass}`}>
@@ -37,26 +42,12 @@ function Band({ title, Icon, accentClass, items, emptyText, testId , onOpen }) {
           {emptyText}
         </div>
       ) : (
-        <div className="space-y-2">
-          {passing.length > 0 && (
-            <div>
-              <div className="text-[10px] uppercase tracking-[0.15em] text-emerald-500 mb-1 flex items-center gap-1">
-                <TrendingUp className="w-3 h-3" /> Passing
-              </div>
-              <ul className="space-y-1">
-                {passing.map((c) => <CandidateRow key={c.mint} c={c} passing onOpen={onOpen} />)}
-              </ul>
+        <VirtualUl items={rows} estimate={60} maxHeightClass="max-h-[420px] md:max-h-[560px]"
+          renderItem={(r) => r.header ? (
+            <div className={`text-[10px] uppercase tracking-[0.15em] mb-1 mt-1 flex items-center gap-1 ${r.header === "passing" ? "text-emerald-500" : "text-neutral-500"}`}>
+              {r.header === "passing" ? <><TrendingUp className="w-3 h-3" /> Passing</> : "Watching"}
             </div>
-          )}
-          {watching.length > 0 && (
-            <div>
-              <div className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 mb-1">Watching</div>
-              <ul className="space-y-1">
-                {watching.map((c) => <CandidateRow key={c.mint} c={c} onOpen={onOpen} />)}
-              </ul>
-            </div>
-          )}
-        </div>
+          ) : <div className="mb-1"><CandidateRow c={r.c} passing={r.passing} onOpen={onOpen} /></div>} />
       )}
     </div>
   );
@@ -167,7 +158,7 @@ function CandidateRow({ c, passing, onOpen }) {
   const isPumpSwap = c.protocol === "pumpswap";
   const isRh = c.chain === "rh";
   return (
-    <li
+    <div
       data-testid={`scanner-row-${c.mint}`}
       className={`border px-3 py-2 cursor-pointer ${passing ? "border-emerald-800 bg-emerald-950/20" : "border-neutral-800"}`}
       onClick={(e) => { if (!e.target.closest("button, a")) onOpen?.({ chain: c.chain || "sol", mint: c.mint, symbol: c.symbol, name: c.name }); }}
@@ -302,7 +293,7 @@ function CandidateRow({ c, passing, onOpen }) {
           </span>
         )}
       </div>
-    </li>
+    </div>
   );
 }
 

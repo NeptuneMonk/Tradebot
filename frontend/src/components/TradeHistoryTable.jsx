@@ -1,9 +1,10 @@
-import { memo, useState } from "react";
+import { memo, useRef, useState } from "react";
 import { History, CircleDot, Search } from "lucide-react";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { ChainBadge } from "./ChainBadge";
 import { TradeTicket } from "./TradeTicket";
 import { TokenDetailDialog } from "./TokenDetailDialog";
+import { useVirtualTable, SpacerRow } from "./VirtualRows";
 import { openWiki, wikiTargetForExit } from "@/lib/wikiNav";
 import { BookOpen } from "lucide-react";
 
@@ -59,6 +60,8 @@ const reentryTitle = (t) => {
 
 function TradeHistoryTable({ history }) {
   const [detail, setDetail] = useState(null);
+  const scrollRef = useRef(null);
+  const vt = useVirtualTable(scrollRef, history.length, 34);
   const partialCount = history.filter((t) => t.partial_done).length;
   const partialBanked = history.reduce((sum, t) => sum + (t.partial_realized_usd || 0), 0);
 
@@ -78,7 +81,7 @@ function TradeHistoryTable({ history }) {
           </div>
         )}
       </div>
-      <div className="overflow-x-auto max-h-[300px] md:max-h-[420px] overflow-y-auto [contain:layout] [overscroll-behavior:contain]">
+      <div ref={scrollRef} className="overflow-x-auto max-h-[300px] md:max-h-[420px] overflow-y-auto [contain:layout] [overscroll-behavior:contain]">
         <table className="w-full text-xs" data-testid="trade-history-table">
           <thead className="sticky top-0 bg-neutral-900">
             <tr className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 border-b border-neutral-800">
@@ -97,12 +100,14 @@ function TradeHistoryTable({ history }) {
             {history.length === 0 && (
               <tr><td colSpan="9" className="text-center py-6 text-[10px] uppercase tracking-[0.2em] text-neutral-600">no trades yet</td></tr>
             )}
-            {history.map((t) => {
+            <SpacerRow height={vt.padTop} colSpan={9} />
+            {vt.rows.map((vr) => {
+              const t = history[vr.index];
               const win = t.pnl_usd > 0;
               const banked = Number(t.partial_realized_usd || 0);
               const exitSummary = summarizeExit(t);
               return (
-                <tr key={t.id} className="border-b border-neutral-900 hover:bg-neutral-900/60 cursor-pointer" data-testid={`history-row-${t.id}`}
+                <tr key={t.id} data-index={vr.index} ref={vt.measure} className="border-b border-neutral-900 hover:bg-neutral-900/60 cursor-pointer" data-testid={`history-row-${t.id}`}
                     onClick={(e) => { if (!e.target.closest("button, a")) setDetail({ chain: t.chain || "sol", mint: t.mint, symbol: t.symbol, name: t.name }); }}
                     title="Click for live market data, our record on this token and a manual re-entry">
                   <td className="py-1.5 pl-0.5">
@@ -217,6 +222,7 @@ function TradeHistoryTable({ history }) {
                 </tr>
               );
             })}
+            <SpacerRow height={vt.padBottom} colSpan={9} />
           </tbody>
         </table>
       </div>

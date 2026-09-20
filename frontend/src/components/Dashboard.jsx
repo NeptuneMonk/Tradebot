@@ -37,6 +37,7 @@ import DoctorWorkspace from "@/components/cockpit/DoctorWorkspace";
 import { useSkipFeed } from "@/lib/useSkipFeed";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Activity, LogOut } from "lucide-react";
+import DiagStrip from "./DiagStrip";
 
 // On-screen list caps (P0.5): 30 Solana + 30 RH launches, newest first by detected_at; history never grows past 50 from WS.
 const LAUNCH_CAP_PER_CHAIN = 30;
@@ -295,7 +296,7 @@ export default function Dashboard() {
   }, [navigate]);
 
   // Real-time WebSocket event handler
-  const { connected: wsConnected } = useWebSocket(useCallback((evt) => {
+  const { connected: wsConnected, statsRef: wsStatsRef } = useWebSocket(useCallback((evt) => {
     const { type, data } = evt || {};
     if (!type) return;
     switch (type) {
@@ -698,6 +699,7 @@ export default function Dashboard() {
           </div>
         )}
 
+        <DiagStrip statsRef={wsStatsRef} connected={wsConnected} />
         <footer className="text-[10px] text-neutral-600 font-mono text-center pt-4 pb-8 tracking-wider uppercase">
           // Preview-only. Real funds at risk. Never deploy this outside Emergent preview.
         </footer>

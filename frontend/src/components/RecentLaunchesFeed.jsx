@@ -2,6 +2,7 @@ import { memo, useState } from "react";
 import { Radio, Users, Droplets, Flame, DollarSign } from "lucide-react";
 import { ChainBadge, ChainFilterChips } from "./ChainBadge";
 import { TokenDetailDialog } from "./TokenDetailDialog";
+import { VirtualUl } from "./VirtualRows";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const fmtUsd = (n) => {
@@ -95,20 +96,14 @@ function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh
           })()}
         </div>
       </div>
-      <div className="overflow-y-auto max-h-[280px] md:max-h-[480px] [contain:layout] [overscroll-behavior:contain]" data-testid="launches-list">
-        {launches.length === 0 && (
-          <div className="text-center py-6 text-[10px] uppercase tracking-[0.2em] text-neutral-600">
-            listening for launches…
-          </div>
-        )}
-        <ul className="space-y-1">
-          {launches.map((l) => {
+      <VirtualUl items={launches} estimate={68} maxHeightClass="max-h-[280px] md:max-h-[480px]" testId="launches-list"
+        empty={<div className="text-center py-6 text-[10px] uppercase tracking-[0.2em] text-neutral-600">listening for launches…</div>}
+        renderItem={(l) => {
             const isRh = l.chain === "rh";
             return (
-            <li
-              key={l.id}
+            <div
               data-testid={`launch-row-${l.mint}`}
-              className="border border-neutral-800 hover:bg-neutral-900/60 px-3 py-2 transition-colors duration-100 relative cursor-pointer"
+              className="border border-neutral-800 hover:bg-neutral-900/60 px-3 py-2 mb-1 transition-colors duration-100 relative cursor-pointer"
               onClick={(e) => { if (!e.target.closest("button, a")) setDetail({ chain: l.chain || "sol", mint: l.mint, symbol: l.symbol, name: l.name }); }}
               title="Click for live market data, our record and a manual re-entry"
             >
@@ -173,11 +168,9 @@ function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh
                   <span className="text-[10px] font-mono text-neutral-600">{timeAgo(l.detected_at)}</span>
                 </div>
               </div>
-            </li>
+            </div>
             );
-          })}
-        </ul>
-      </div>
+          }} />
       <TokenDetailDialog token={detail} onClose={() => setDetail(null)} />
     </div>
   );

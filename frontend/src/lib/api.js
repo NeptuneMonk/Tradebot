@@ -95,6 +95,7 @@ export const api = {
   doctorRevertApplied: (id) => client.post(`/doctor/applied-history/${id}/revert`).then(r => r.data),
   // Helius credit budget
   heliusBudget: () => client.get("/diagnostics/helius-budget").then(r => r.data),
+  diagnosticsLoop: () => client.get("/diagnostics/loop").then(r => r.data),
   heliusBudgetReset: () => client.post("/diagnostics/helius-budget/reset").then(r => r.data),
   // Config sync (preview ↔ production)
   configExport: () => client.get("/config/export").then(r => r.data),

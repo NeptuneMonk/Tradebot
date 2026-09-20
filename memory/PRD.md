@@ -2177,3 +2177,8 @@ User rule: turning a feed off is cheating — improve WHICH tokens we enter/exit
 - In-process buy/sell deques 500→240 (`tick_store.EVENT_KEEP`); RH metadata already off-poller; account subscriptions already scoped to held inventory
 - Tests: `tests/test_explorer_cache.py`, `tests/test_iter32_api.py`; 724 pytest pass (1 pre-existing env flake in test_pump_bot_v3 repeat-creator)
 ### Next: P3.4 list virtualization if scroll janks, P4 diagnostics strip + docs note; optional pre-entry buy-size gate
+
+## 2026-09-20 (c) — P3.4 list virtualization + P4 diagnostics strip DONE
+- `components/VirtualRows.jsx` (`VirtualUl`, `useVirtualTable`, `SpacerRow`) on `@tanstack/react-virtual`; applied to RecentLaunchesFeed (14–16 of 60 rows mounted), TradeHistoryTable (25 of 50), ScannerCandidatesCard bands
+- `DiagStrip.jsx` in Dashboard footer (collapsed by default, state in localStorage): client msgs/s + avg frame, hub msgs/s (1m) + avg frame (1m), ws clients, seen/ident, loop lag, tracked/open. Backend: `hub.diagnostics` adds `msgs_per_s_1m`, `avg_frame_bytes_1m`; `useWebSocket` exposes `statsRef`
+- README "Live data path" note (P4.3). Perf brief P0–P4 complete except unit test for rAF coalescing (no component-test harness)

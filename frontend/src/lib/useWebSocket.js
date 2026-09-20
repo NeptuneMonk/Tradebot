@@ -16,6 +16,7 @@ export function useWebSocket(onEvent) {
   const timerRef = useRef(null);
   const aliveRef = useRef(true);
   const handlerRef = useRef(onEvent);
+  const statsRef = useRef({ msgs: 0, bytes: 0, since: Date.now() });
 
   useEffect(() => { handlerRef.current = onEvent; }, [onEvent]);
 
@@ -43,6 +44,8 @@ export function useWebSocket(onEvent) {
     ws.onmessage = (msg) => {
       if (!aliveRef.current || wsRef.current !== ws) return;
       try {
+        statsRef.current.msgs += 1;
+        statsRef.current.bytes += typeof msg.data === "string" ? msg.data.length : 0;
         const data = JSON.parse(msg.data);
         handlerRef.current && handlerRef.current(data);
       } catch (e) { /* ignore */ }
@@ -72,5 +75,5 @@ export function useWebSocket(onEvent) {
     };
   }, [connect]);
 
-  return { connected };
+  return { connected, statsRef };
 }

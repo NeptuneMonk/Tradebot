@@ -325,3 +325,9 @@ python -m pytest tests -q
 ## Disclaimer
 
 This software trades real assets when `live_trading` is enabled. Memecoin launches are adversarial markets: rugs, sandwiches, failed transactions and RPC outages are normal. Nothing here is financial advice; there is no warranty of any kind. Start in paper mode, keep stakes micro, and never fund the hot wallet with more than you are prepared to lose.
+
+## Live data path (perf notes)
+- **WebSocket is slim + patch.** `candidate` carries only the live fields (`ws_hub.LIVE_FIELDS`) plus a `seq`; every later change is a `candidate_update {id, seq, p}` patch (frontend applies it only when `seq` is newer). Event names are unchanged. The full launch document lives in Mongo and is fetched on demand by the token-detail dialog (`GET /api/token/{chain}/{mint}`).
+- **Frontend flushes on animation frames.** Launch / trade ticks are coalesced per frame; scanner + ladder REST polling only runs while the socket is down. Long lists (launches, scanner bands, trade history) are windowed with `@tanstack/react-virtual` (`components/VirtualRows.jsx`).
+- **Explorers are cached enrichment.** Solscan (20 min / 60 s negative cache), RugCheck free summary (20 min, 1 rps) and the CreateEvent metadata URI feed the detail view / socials; nothing on the live tick awaits an explorer. Pump.fun `/coins` is only a fallback.
+- **Diagnostics.** `GET /api/diagnostics/loop` → loop lag, hub msgs/s, avg frame bytes, `seen`/`ident` cache sizes; the dashboard footer has a collapsible diagnostics strip with the same numbers plus client-side WS rate.
