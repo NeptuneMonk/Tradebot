@@ -15,7 +15,8 @@ def size_trade(*, bankroll_usd: float, risk_per_trade_pct: float, sl_pct: float,
     mult = float(book_mult) * float(doctor_mult) * float(governor_mult)
     raw = risk_nominal / (sl_with_slip / 100.0) * mult if risk_nominal > 0 else 0.0
     if mult <= 0 or raw < min_trade_usd:
-        return {"skip": True, "reason": f"size ${raw:.2f} < min ${min_trade_usd:.2f} (mult {mult:.2f})",
+        return {"skip": True, "reason": f"size ${raw:.2f} < min ${min_trade_usd:.2f} — bankroll ${bankroll_usd:,.2f} × risk {risk_per_trade_pct:g}% = ${risk_nominal:.2f} R "
+                                       f"÷ (SL {sl_pct:g}% + slip {exit_slip_pct:.1f}%) × mult {mult:.2f}",
                 "size_usd": 0.0, "r_usd": 0.0, "r_usd_nominal": round(risk_nominal, 4), "size_clamped": False,
                 "sl_pct_with_slip": sl_with_slip}
     size = min(max_trade_usd, raw)
