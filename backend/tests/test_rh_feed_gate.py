@@ -27,7 +27,7 @@ def test_launch_and_update_events_become_candidates_for_rh():
     # merged with the remembered raw launch → first appearance carries the whole row (symbol, creator, chain…)
     assert ev == "candidate" and data["chain"] == "rh" and data["unique_buyers"] == 6 and data["symbol"] == "PONS1" and data["creator"] == "0xdead"
     ev, data = hub._gate_launch("launch_update", {"id": "L1", "rh_gate": "pass", "classifier_action": "rh_pons"})
-    assert ev == "candidate_update" and data["rh_gate"] == "pass"
+    assert ev == "candidate_update" and data["p"]["rh_gate"] == "pass" and data["seq"] == 2
 
 
 def test_scan_stamps_gate_verdict_on_bucket_and_marks_it_dirty():

@@ -1091,7 +1091,7 @@ async def book_exits_restore_defaults():
 async def diagnostics_loop():
     from helius_gate import snapshot as gate_snapshot
     return {"event_loop_lag_ms": bot_state.loop_lag_ms, "helius_gate": gate_snapshot(),
-            "active_positions": len(bot_state.active_trades), "tracked_mints": len(bot_state.tracking)}
+            "active_positions": len(bot_state.active_trades), "tracked_mints": len(bot_state.tracking), "ws_hub": hub.diagnostics}
 
 
 @api.get("/readiness")

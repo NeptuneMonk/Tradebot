@@ -244,8 +244,7 @@ def test_breakers_fail_closed_when_store_unreadable():
 
 def test_ws_hub_forwards_candidates_only():
     from ws_hub import WSHub
-    h = WSHub.__new__(WSHub)
-    h._seen = {}
+    h = WSHub()
     # raw launch with no tape → dropped
     assert h._gate_launch("launch", {"id": "a", "classifier_action": "pending", "unique_buyers": 1}) == (None, None)
     # pending with real tape → candidate (merged payload)
@@ -253,10 +252,12 @@ def test_ws_hub_forwards_candidates_only():
     assert ev == "candidate" and d["unique_buyers"] == 7
     # follow-up metrics → candidate_update
     ev, d = h._gate_launch("launch_update", {"id": "a", "unique_buyers": 9})
-    assert ev == "candidate_update" and d == {"id": "a", "unique_buyers": 9}
+    assert ev == "candidate_update" and d == {"id": "a", "seq": 2, "p": {"unique_buyers": 9}}
+    # unchanged metrics → nothing on the wire
+    assert h._gate_launch("launch_update", {"id": "a", "unique_buyers": 9}) == (None, None)
     # degraded to skip → one final update flagged dropped, then silence
     ev, d = h._gate_launch("launch_update", {"id": "a", "classifier_action": "skip"})
-    assert ev == "candidate_update" and d["dropped"] is True
+    assert ev == "candidate_update" and d["p"]["dropped"] is True
     assert h._gate_launch("launch_update", {"id": "a", "unique_buyers": 10}) == (None, None)
     # scalp / hunt / entered are always candidates; skip never
     assert h._gate_launch("launch", {"id": "b", "classifier_action": "scalp"})[0] == "candidate"

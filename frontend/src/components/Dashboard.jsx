@@ -38,6 +38,24 @@ import { useSkipFeed } from "@/lib/useSkipFeed";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Activity, LogOut } from "lucide-react";
 
+// On-screen list caps (P0.5): 30 Solana + 30 RH launches, newest first by detected_at; history never grows past 50 from WS.
+const LAUNCH_CAP_PER_CHAIN = 30;
+const HISTORY_CAP = 50;
+const isActiveRow = (t) => !t.status || t.status === "active";
+const tsOf = (l) => (l?.detected_at ? Date.parse(l.detected_at) || 0 : 0);
+function capLaunches(list) {
+  // Per-chain caps: the Robinhood Chain feed (~12 launches/min) must never evict Solana launches, and vice versa.
+  // Evict the OLDEST by detected_at (not by array position) so a late re-broadcast can't push live rows off.
+  const sol = [], rh = [];
+  for (const l of list) (l.chain === "rh" ? rh : sol).push(l);
+  const trim = (arr) => {
+    if (arr.length <= LAUNCH_CAP_PER_CHAIN) return new Set(arr.map((l) => l.id));
+    return new Set([...arr].sort((a, b) => tsOf(b) - tsOf(a)).slice(0, LAUNCH_CAP_PER_CHAIN).map((l) => l.id));
+  };
+  const keep = new Set([...trim(sol), ...trim(rh)]);
+  return list.filter((l) => keep.has(l.id));
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [me, setMe] = useState(null);
@@ -109,9 +127,9 @@ export default function Dashboard() {
       if (s) setStatus(s);
       if (c) setConfig(c);
       if (r) setRules(r);
-      setLaunches(l || []);
-      setActiveTrades(a || []);
-      setHistory(h || []);
+      setLaunches(capLaunches(l || []));
+      setActiveTrades((a || []).filter(isActiveRow));
+      setHistory((h || []).slice(0, HISTORY_CAP));
       setPl(p);
       setReentry(re || []);
       setScanner(sc || []);
@@ -128,17 +146,18 @@ export default function Dashboard() {
   }, [refreshAll]);
 
   // ----- Coalesced launches updates --------------------------------------
-  // High-volume markets emit 5-20 launch_update events per second. Calling
-  // setLaunches on every one trashes the React render loop and tanks the
-  // UI on lower-power devices. We coalesce all updates within a 400ms
-  // window into a single state mutation by buffering pending patches in a
-  // ref + scheduling one render.
-  const launchUpdateBufRef = useRef(new Map());     // mint -> latest patch
+  // High-volume markets emit 5-20 candidate_update events per second. Calling
+  // setLaunches on every one trashes the React render loop. All patches that
+  // arrive within one animation frame are buffered in refs and applied in ONE
+  // state write on the next frame (~16ms), so the tape ticks immediately.
+  // Wire shape: `candidate` = slim row (+seq); `candidate_update` = { id, seq, p: {changed} } —
+  // a patch is only applied when its seq is newer than what the row already carries.
+  const launchUpdateBufRef = useRef(new Map());     // id -> { seq, p } (later patches merged in order)
   const launchUpdateNewBufRef = useRef([]);          // brand-new launches (FIFO)
   const launchFlushHandleRef = useRef(null);
   const scheduleLaunchFlush = useCallback(() => {
     if (launchFlushHandleRef.current) return;
-    launchFlushHandleRef.current = setTimeout(() => {
+    launchFlushHandleRef.current = requestAnimationFrame(() => {
       launchFlushHandleRef.current = null;
       const updates = launchUpdateBufRef.current;
       const newOnes = launchUpdateNewBufRef.current;
@@ -146,8 +165,12 @@ export default function Dashboard() {
       launchUpdateNewBufRef.current = [];
       if (updates.size === 0 && newOnes.length === 0) return;
       setLaunches((prev) => {
-        // 1. Merge updates against current state; a candidate that degraded to a skip arrives with `dropped` → remove it
-        let next = prev.map((l) => (updates.has(l.id) ? { ...l, ...updates.get(l.id) } : l)).filter((l) => !l.dropped);
+        // 1. Apply patches (seq-guarded) against current state; a candidate that degraded to a skip arrives with `dropped` → remove it
+        let next = prev.map((l) => {
+          const u = updates.get(l.id);
+          if (!u || (u.seq != null && l.seq != null && u.seq <= l.seq)) return l;
+          return { ...l, ...u.p, seq: u.seq ?? l.seq };
+        }).filter((l) => !l.dropped);
         // Drop any updates that hit mints we never displayed — keeps state tight
         // 2. Prepend brand-new launches, dropping dupes (BOTH against `next`
         //    AND within `newOnes` itself — the backend can re-broadcast a
@@ -181,26 +204,39 @@ export default function Dashboard() {
             ];
           }
         }
-        // Per-chain caps: the Robinhood Chain feed (~12 launches/min) must
-        // never evict Solana launches from the window, and vice versa.
-        const keep = new Set();
-        let nSol = 0, nRh = 0;
-        for (const l of next) {
-          if (l.chain === "rh") { if (nRh < 30) { keep.add(l.id); nRh++; } }
-          else if (nSol < 30) { keep.add(l.id); nSol++; }
-        }
-        return next.filter((l) => keep.has(l.id));
+        return capLaunches(next);
       });
-    }, 400);
+    });
   }, []);
   // Cleanup pending flush on unmount
   useEffect(() => {
     return () => {
       if (launchFlushHandleRef.current) {
-        clearTimeout(launchFlushHandleRef.current);
+        cancelAnimationFrame(launchFlushHandleRef.current);
         launchFlushHandleRef.current = null;
       }
     };
+  }, []);
+
+  // ----- Coalesced trade ticks -------------------------------------------
+  // trade_update fires per open position per price tick; buffer per trade id and apply once per frame.
+  const tradeUpdateBufRef = useRef(new Map());
+  const tradeFlushHandleRef = useRef(null);
+  const scheduleTradeFlush = useCallback(() => {
+    if (tradeFlushHandleRef.current) return;
+    tradeFlushHandleRef.current = requestAnimationFrame(() => {
+      tradeFlushHandleRef.current = null;
+      const updates = tradeUpdateBufRef.current;
+      tradeUpdateBufRef.current = new Map();
+      if (updates.size === 0) return;
+      setActiveTrades((prev) => prev.map((t) => (updates.has(t.id) ? { ...t, ...updates.get(t.id) } : t)).filter(isActiveRow));
+    });
+  }, []);
+  useEffect(() => () => {
+    if (tradeFlushHandleRef.current) {
+      cancelAnimationFrame(tradeFlushHandleRef.current);
+      tradeFlushHandleRef.current = null;
+    }
   }, []);
 
   // ----- Coalesced exit toasts -------------------------------------------
@@ -235,7 +271,7 @@ export default function Dashboard() {
     if (tradeExitRefetchHandleRef.current) return;
     tradeExitRefetchHandleRef.current = setTimeout(() => {
       tradeExitRefetchHandleRef.current = null;
-      api.launches().then(setLaunches).catch(() => {});
+      api.launches().then((l) => setLaunches(capLaunches(l || []))).catch(() => {});
       api.plSummary(7).then(setPl).catch(() => {});
       setPlSourceRefresh((n) => n + 1);
       api.reentryWatchlist().then(setReentry).catch(() => {});
@@ -259,7 +295,6 @@ export default function Dashboard() {
   }, [navigate]);
 
   // Real-time WebSocket event handler
-  const wsUpRef = useRef(false);
   const { connected: wsConnected } = useWebSocket(useCallback((evt) => {
     const { type, data } = evt || {};
     if (!type) return;
@@ -272,16 +307,21 @@ export default function Dashboard() {
         break;
       case "candidate":
         // The hub only forwards CANDIDATES (tens/min) — raw launches never reach the wire.
-        // Buffered for the 400 ms coalesced flush (see scheduleLaunchFlush).
+        // Buffered for the per-frame coalesced flush (see scheduleLaunchFlush).
         launchUpdateNewBufRef.current.push(data);
         scheduleLaunchFlush();
         skipFeedRef.current(type, data, resolveToken);
         break;
-      case "candidate_update":
-        launchUpdateBufRef.current.set(data.id, data);
+      case "candidate_update": {
+        // { id, seq, p } patch — later patches for the same row merge on top (seq = newest)
+        const buf = launchUpdateBufRef.current;
+        const cur = buf.get(data.id);
+        const p = data.p || {};
+        buf.set(data.id, cur ? { seq: data.seq ?? cur.seq, p: { ...cur.p, ...p } } : { seq: data.seq, p });
         scheduleLaunchFlush();
-        skipFeedRef.current(type, data, resolveToken);
+        skipFeedRef.current(type, { id: data.id, ...p }, resolveToken);
         break;
+      }
       case "scanner_skip":
         skipFeedRef.current(type, data, resolveToken);
         break;
@@ -289,18 +329,23 @@ export default function Dashboard() {
         setLadder(data);
         break;
       case "trade_enter":
-        setActiveTrades((prev) => [data, ...prev.filter((t) => t.id !== data.id)]);
-        api.launches().then(setLaunches).catch(() => {});   // refresh ENT badges / live P/L stamps
+        setActiveTrades((prev) => [data, ...prev.filter((t) => t.id !== data.id)].filter(isActiveRow));
+        api.launches().then((l) => setLaunches(capLaunches(l || []))).catch(() => {});   // refresh ENT badges / live P/L stamps
         break;
       case "trade_update":
-        setActiveTrades((prev) => prev.map((t) => (t.id === data.id ? { ...t, ...data } : t)));
+      case "trade_partial": {
+        const buf = tradeUpdateBufRef.current;
+        buf.set(data.id, { ...(buf.get(data.id) || {}), ...data });
+        scheduleTradeFlush();
         break;
+      }
       case "scanner_snapshot":
         if (Array.isArray(data?.items)) setScanner(data.items);
         break;
       case "trade_exit":
+        tradeUpdateBufRef.current.delete(data.id);
         setActiveTrades((prev) => prev.filter((t) => t.id !== data.id));
-        setHistory((prev) => [data, ...prev.filter((t) => t.id !== data.id)]);
+        setHistory((prev) => [data, ...prev.filter((t) => t.id !== data.id)].slice(0, HISTORY_CAP));
         // Coalesce refetches + toast spam during exit bursts (perf).
         scheduleTradeExitRefetch();
         scheduleExitToast();
@@ -346,18 +391,18 @@ export default function Dashboard() {
     const id = setInterval(refreshAll, 30000);
     return () => clearInterval(id);
   }, [wsConnected, refreshAll]);
-  useEffect(() => { wsUpRef.current = wsConnected; }, [wsConnected]);
 
-  // Scanner candidates have no WS push — they are a snapshot of the backend's in-memory ranking, so poll them on
-  // their own clock. (The ladder board is pushed over WS every 5 s tick; REST only seeds it / covers WS gaps.)
+  // Scanner candidates are pushed over WS (`scanner_snapshot`, every scanner pass). REST polling is a fallback that
+  // only runs while the socket is down — same pattern as the 30s status fallback above.
   useEffect(() => {
+    if (wsConnected) return undefined;
     const tick = () => {
       api.scannerCandidates().then((sc) => setScanner(sc || [])).catch(() => {});
-      if (!wsUpRef.current) api.ladder().then((ld) => ld && setLadder(ld)).catch(() => {});
+      api.ladder().then((ld) => ld && setLadder(ld)).catch(() => {});
     };
     const id = setInterval(tick, 5000);
     return () => clearInterval(id);
-  }, []);
+  }, [wsConnected]);
 
   // Bot Control only cares about 4 status fields — hand it a slice so the 3 s status tick doesn't re-render
   // the 1100-line card (and its inputs) every time. Callbacks are stable for the same reason.
@@ -392,6 +437,20 @@ export default function Dashboard() {
   const onReentryRefresh = useCallback(() => api.reentryWatchlist().then(setReentry).catch(() => {}), []);
   const onLadderRefresh = useCallback(() => api.ladder().then(setLadder).catch(() => {}), []);
   const onStop = useCallback(async () => { await api.stop(); refreshAll(); }, [refreshAll]);
+  // Stable props for the memo'd cockpit cards — an inline arrow / object literal here would defeat React.memo
+  // and repaint every card on each 3s status tick.
+  const onEnableScanner = useCallback(() => onConfigPatch({ scanner_enabled: true }), [onConfigPatch]);
+  const onOpenDoctor = useCallback(() => pickView("doctor"), [pickView]);
+  const onReloadAuto = useCallback(() => api.autopilotStatus().then(setAuto).catch(() => {}), []);
+  const onAutopilotChange = useCallback(async () => { try { setConfig(await api.config()); } catch { /* noop */ } refreshAll(); }, [refreshAll]);
+  const onResetKill = useCallback(async () => { await api.resetKillSwitch(); refreshAll(); }, [refreshAll]);
+  const ladderHolding = useMemo(() => (ladder?.tokens || []).filter((t) => t.state === "holding").length, [ladder]);
+  const navBadges = useMemo(() => ({
+    live: activeTrades.length || null, scan: launches.length || null, ladder: ladderHolding || null, doctor: pendingDoc || null,
+  }), [activeTrades.length, launches.length, ladderHolding, pendingDoc]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const feedLive = useMemo(() => ({ sol: !!status?.listener_connected, rh: !!status?.rh_feed_alive }), [status?.listener_connected, status?.rh_feed_alive]);
+  const scannerEnabled = config?.scanner_enabled ?? true;
 
   return (
     <TooltipProvider delayDuration={150} skipDelayDuration={50}>
@@ -408,7 +467,7 @@ export default function Dashboard() {
           {config && (
             <AutopilotSwitch
               enabled={!!config.autopilot_enabled}
-              onChange={async () => { try { setConfig(await api.config()); } catch { /* noop */ } refreshAll(); }}
+              onChange={onAutopilotChange}
             />
           )}
           <PodPill />
@@ -475,14 +534,10 @@ export default function Dashboard() {
         </div>
       </header>
 
-      <StatusBanner status={status} onResetKill={async () => { await api.resetKillSwitch(); refreshAll(); }} />
+      <StatusBanner status={status} onResetKill={onResetKill} />
       <HaltBanner />
       <ReadinessBanner onChanged={refreshAll} />
-      <NavBar value={view} onChange={pickView} status={status} onStart={onStart} onStop={onStop} badges={{
-        live: activeTrades.length || null, scan: launches.length || null,
-        ladder: (ladder?.tokens || []).filter((t) => t.state === "holding").length || null,
-        doctor: pendingDoc || null,
-      }} />
+      <NavBar value={view} onChange={pickView} status={status} onStart={onStart} onStop={onStop} badges={navBadges} />
 
       <main className="max-w-[1600px] mx-auto p-4 space-y-4 pb-16">
         {config?.autopilot_enabled && (
@@ -498,10 +553,10 @@ export default function Dashboard() {
             <div className="grid grid-cols-1 lg:grid-cols-[1.15fr_1fr] gap-4 items-stretch" data-testid="cockpit-grid">
               <div className="tile-in" style={{ animationDelay: "60ms" }}><ActiveTradesCockpit trades={activeTrades} onExit={onExitTrade} /></div>
               <div className="tile-in" style={{ animationDelay: "120ms" }}><EquityPanel refreshKey={pl?.cumulative_usd} /></div>
-              <div className="tile-in" style={{ animationDelay: "180ms" }}><CompactCandidates candidates={scanner} scannerEnabled={config?.scanner_enabled ?? true} onEnableScanner={() => onConfigPatch({ scanner_enabled: true })} /></div>
+              <div className="tile-in" style={{ animationDelay: "180ms" }}><CompactCandidates candidates={scanner} scannerEnabled={scannerEnabled} onEnableScanner={onEnableScanner} /></div>
               <div className="tile-in" style={{ animationDelay: "240ms" }}><CompactLadder ladder={ladder} /></div>
             </div>
-            <div className="tile-in" style={{ animationDelay: "300ms" }}><DoctorStrip status={status} auto={auto} pending={pendingDoc} onOpenDoctor={() => pickView("doctor")} /></div>
+            <div className="tile-in" style={{ animationDelay: "300ms" }}><DoctorStrip status={status} auto={auto} pending={pendingDoc} onOpenDoctor={onOpenDoctor} /></div>
 
             <MinimizableCard id="trade-history" title="Trade history" stat={`${history.length} trades`}>
               <TradeHistoryTable history={history} />
@@ -565,7 +620,7 @@ export default function Dashboard() {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
               <div className="tile-in">
                 <MinimizableCard id="launch-feed" title="Live launch feed" stat={`${launches.length} tracked`}>
-                  <RecentLaunchesFeed launches={launches} feedLive={{ sol: !!status?.listener_connected, rh: !!status?.rh_feed_alive }} />
+                  <RecentLaunchesFeed launches={launches} feedLive={feedLive} />
                 </MinimizableCard>
               </div>
               <div className="tile-in" style={{ animationDelay: "80ms" }}>
@@ -595,7 +650,7 @@ export default function Dashboard() {
         {view === "doctor" && (
           <div key="doctor" className="space-y-4" data-testid="view-doctor">
             <DoctorWorkspace config={config} onConfigUpdate={setConfig} onApplied={onDoctorApplied} status={status} auto={auto}
-              onReloadAuto={() => api.autopilotStatus().then(setAuto).catch(() => {})} />
+              onReloadAuto={onReloadAuto} />
           </div>
         )}
 

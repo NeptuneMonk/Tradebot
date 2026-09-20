@@ -37,20 +37,20 @@ function EquityChart({ data, view, tf, height = 280 }) {
     return () => { ro.disconnect(); chart.remove(); chartRef.current = null; seriesRef.current = null; };
   }, [height, tf]);
 
+  // Series lives as long as the chart + view do; data changes go through series.update() for a same-length
+  // or +1 tail change (the 15s poll), setData() only when the shape changed (timeframe / book / mode / view).
+  const byTRef = useRef(new Map());
+  const lastFedRef = useRef([]);
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return undefined;
     if (seriesRef.current) { chart.removeSeries(seriesRef.current); seriesRef.current = null; }
-    const candles = data?.candles || [];
-    const points = data?.points || [];
-    const byT = new Map(candles.map((c) => [c.t, c]));
     let series;
     if (view === "wicks") {
       series = chart.addSeries(CandlestickSeries, {
         upColor: "#10b981", downColor: "#ef4444", borderUpColor: "#10b981", borderDownColor: "#ef4444",
         wickUpColor: "#10b981", wickDownColor: "#ef4444", priceLineVisible: false,
       });
-      series.setData(candles.map((c) => ({ time: c.t, open: c.open, high: c.high, low: c.low, close: c.close })));
     } else {
       series = chart.addSeries(BaselineSeries, {
         baseValue: { type: "price", price: 0 },
@@ -58,26 +58,51 @@ function EquityChart({ data, view, tf, height = 280 }) {
         bottomLineColor: "#ef4444", bottomFillColor1: "rgba(239,68,68,0.02)", bottomFillColor2: "rgba(239,68,68,0.28)",
         lineWidth: 2, priceLineVisible: false,
       });
-      // one value per timestamp (lightweight-charts needs strictly increasing time)
-      const dedup = [];
-      for (const p of points) {
-        if (dedup.length && dedup[dedup.length - 1].time === p.t) dedup[dedup.length - 1].value = p.equity;
-        else dedup.push({ time: p.t, value: p.equity });
-      }
-      series.setData(dedup);
     }
     series.createPriceLine({ price: 0, color: "#525252", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "0" });
     seriesRef.current = series;
-    chart.timeScale().fitContent();
+    lastFedRef.current = [];
     const onMove = (param) => {
       if (!param?.time || !param.point) { setHover(null); return; }
-      const c = byT.get(param.time);
+      const c = byTRef.current.get(param.time);
       const v = param.seriesData?.get(series);
       setHover({ t: param.time, c, v: v && (v.close ?? v.value) });
     };
     chart.subscribeCrosshairMove(onMove);
     return () => chart.unsubscribeCrosshairMove(onMove);
-  }, [data, view]);
+  }, [view, tf, height]);
+
+  const candles = data?.candles;
+  useEffect(() => {
+    byTRef.current = new Map((candles || []).map((c) => [c.t, c]));
+  }, [candles]);
+
+  useEffect(() => {
+    const chart = chartRef.current, series = seriesRef.current;
+    if (!chart || !series) return;
+    let next;
+    if (view === "wicks") {
+      next = (data?.candles || []).map((c) => ({ time: c.t, open: c.open, high: c.high, low: c.low, close: c.close }));
+    } else {
+      // one value per timestamp (lightweight-charts needs strictly increasing time)
+      next = [];
+      for (const p of data?.points || []) {
+        if (next.length && next[next.length - 1].time === p.t) next[next.length - 1].value = p.equity;
+        else next.push({ time: p.t, value: p.equity });
+      }
+    }
+    const prev = lastFedRef.current;
+    const same = (a, b) => a && b && a.time === b.time && (a.value === b.value) && a.open === b.open && a.high === b.high && a.low === b.low && a.close === b.close;
+    const tailOnly = prev.length > 0 && next.length >= prev.length && next.length - prev.length <= 1
+      && prev.slice(0, -1).every((p, i) => same(p, next[i]));
+    if (tailOnly) {
+      for (let i = prev.length - 1; i < next.length; i++) if (!same(prev[i], next[i])) series.update(next[i]);
+    } else {
+      series.setData(next);
+      chart.timeScale().fitContent();
+    }
+    lastFedRef.current = next;
+  }, [data, view, tf, height]);
 
   return (
     <div className="relative" data-testid="equity-chart">
