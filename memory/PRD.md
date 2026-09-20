@@ -2158,3 +2158,22 @@ Current state (07:04): bot RUNNING, RH paper ON, RH feed ON, Pump.fun feed ON (o
 - Tests: `tests/test_ws_hub_slim.py` (6), updated `test_ops_fixes.py` / `test_rh_feed_gate.py`; testing agent `tests/test_iter31_regression.py`
 
 ### Next (brief order): P2 explorer/metadata caching (Solscan LRU+TTL, DAS batch, RugCheck, lazy creator) → P3 subscriptions + tick caps → P4 diagnostics strip + docs
+
+## 2026-09-20 (b) — "Use all feeds" re-tune + organic-tape analysis + Perf P2/P3
+User rule: turning a feed off is cheating — improve WHICH tokens we enter/exit instead; no new organic-detection code.
+### Config-only changes (all existing knobs)
+- RH PONS paper back ON with `rh_min_age_s=300`, `rh_min_mc_usd=20000`, `rh_min_unique_buyers=30` (7d replay: 561 trades -$390 → 54 trades +$9.6, WR 37%→52%)
+- Seasoned band back ON; band was 121→121 min (`hi=max(lo,hi)` clamp made it a 1-min window 2h post-grad, 12% WR, -$129/7d) → `band_seasoned 2–45 min`, `scanner_min_mc_velocity_5m_pct_seasoned=15`, `discovery_clip_usd=5`
+- Solana: `serial_creator_min_launches=2`, `serial_creator_requires_graduation=false` (creators with ≥2 prior launches: -$51 of the -$62; first/second launch only: -$11), `regime_gate_mult.momentum.busy=2.0` (launch-rate ≥500/h cohort = -$25)
+- Greylist sniper stays OFF (24% WR), doctor auto-apply OFF for the comparison window
+### Organic-tape findings (551 held positions, 48h, tick_paths buys)
+- Wallet-distribution stats (top-wallet share 7%, top-3 share, repeat-wallet fraction, buy-interval regularity) are IDENTICAL for winners and losers → bundlers already look organic at wallet level; wallet counts cannot separate
+- What separates: pre-entry 60 s **buy size** and **intensity**. Big losers: 94 buys / 83 uniq / median 0.29 SOL in the 60 s before entry; winners: 69 / 52 / 0.18 SOL. Median pre-buy ≤0.18 SOL → ~flat (0.08–0.18: +$22, 49% WR); ≥0.18 SOL → -$62, 37% WR. Max single pre-buy 4–15 SOL → -$73
+- Missed-runner check on 1,916 skipped tokens: skipped cohorts run the same as entered ones (median max-run ~18–20%, >200% in 3–6% both) — gates are not what's hiding the 1000%+ tokens; those are late-seasoned moves (buying them late = 12% WR)
+- Proposed (NOT built, needs approval): `max_pre_entry_median_buy_sol` (0.18) / `max_pre_entry_single_buy_sol` gate
+### Perf P2/P3 DONE
+- `solscan.py` TTL cache (ok 20 min / err 60 s / cap 2000) + stats in `plan_status()`; `rugcheck.py` free summary (1 rps, cached) on `GET /api/token/sol/{mint}` → TokenDetailDialog block `token-detail-rugcheck`
+- Socials: CreateEvent metadata URI first (`_fetch_uri_metadata`), Pump `/coins` only as fallback or when `gate_socials_required`; persisted on launch doc (`meta_source`)
+- In-process buy/sell deques 500→240 (`tick_store.EVENT_KEEP`); RH metadata already off-poller; account subscriptions already scoped to held inventory
+- Tests: `tests/test_explorer_cache.py`, `tests/test_iter32_api.py`; 724 pytest pass (1 pre-existing env flake in test_pump_bot_v3 repeat-creator)
+### Next: P3.4 list virtualization if scroll janks, P4 diagnostics strip + docs note; optional pre-entry buy-size gate
