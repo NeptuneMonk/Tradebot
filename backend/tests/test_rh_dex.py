@@ -174,7 +174,7 @@ def test_live_sell_falls_back_to_pool_when_curve_closed(monkeypatch):
 
 
 def test_pool_swaps_feed_price_and_event_stops():
-    st = make_state(stop_loss_pct=10.0, no_momentum_exit_enabled=False, exit_momentum_gate_enabled=False,
+    st = make_state(stop_loss_pct=10.0, no_momentum_exit_enabled=False, exit_momentum_gate_enabled=False, flush_hold_scope="hot_reentry",
                     paper_exit_latency_ms=600)
     now = time.time()
     b = hot_bucket(st.rh_discovery, now, price=1e-9, first=5e-10)

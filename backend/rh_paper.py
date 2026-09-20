@@ -34,6 +34,7 @@ import rh_live
 import rh_wallet
 from pymongo.errors import DuplicateKeyError
 from flush import dip_forensics, is_flush
+import flow
 from exits import is_manual_hold
 
 if TYPE_CHECKING:
@@ -1067,7 +1068,12 @@ class RHPaperTrader:
             sell_q = sum(q for ts, q, _w in b.get("sell_events", ()) if ts >= cutoff)
             # "momentum" means buyers AND net inflow — a dump with a few bot
             # buys sprinkled in must not hold an SL open
-            if len(buyers) < int(getattr(cfg, "exit_momentum_min_buyers", 3)) or buy_q <= sell_q:
+            fr = flow.flow_ratio_pct(b, now, float(getattr(cfg, "exit_momentum_window_s", 10)), sol=False)
+            weak = (fr < float(getattr(cfg, "exit_momentum_min_flow_pct", 1.0))) if fr is not None else \
+                (len(buyers) < int(getattr(cfg, "exit_momentum_min_buyers", 3)) or buy_q <= sell_q)
+            if fr is not None:
+                pos["_mom_flow_pct"] = fr
+            if weak:
                 pos.pop(key, None)
                 return False
             started = pos.setdefault(key, now)
@@ -1092,7 +1098,8 @@ class RHPaperTrader:
                 trough = float(pos.get("trough_price") or price)
                 new_buyers = len({w for ts, _q, w in (b.get("buy_events") or ()) if now - ts <= 30.0})
                 if (getattr(cfg, "recovery_watch_enabled", True) and pnl_pct < 0
-                        and is_recovering(now, price, trough, pos.get("trough_ts"), price_ago(b.get("price_samples"), now, 30.0), new_buyers)):
+                        and is_recovering(now, price, trough, pos.get("trough_ts"), price_ago(b.get("price_samples"), now, 30.0), new_buyers,
+                                          net_flow=flow.net_flow(b, now, 30.0, sol=False)[0])):
                     pos["_recovery_watch"] = start_recovery_watch(cfg, now, entry, price, trough)
                     w = pos["_recovery_watch"]
                     logger.info(f"rh_paper RECOVERY WATCH {t.get('symbol')} {pnl_pct:+.1f}% recovering (peak {peak_pct:+.1f}%): stop {w['stop']:.3e}, "
@@ -1183,7 +1190,7 @@ class RHPaperTrader:
                 except RuntimeError:
                     pass
             since = now
-        floor = float(pos.get("_flush_hold_trough") or 0) * (1.0 - float(getattr(cfg, "flush_extra_drop_pct", 5.0)) / 100.0)
+        floor = float(pos.get("_flush_hold_trough") or 0) * (1.0 - flow.flush_floor_pct(cfg, b.get("price_samples"), now) / 100.0)
         if pos["_last_price"] <= floor:
             pos["_dip_forensics"]["hold_broke_floor"] = True
             return False                      # it kept falling — that was distribution after all

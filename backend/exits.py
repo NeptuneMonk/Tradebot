@@ -178,7 +178,7 @@ def price_ago(samples, now: float, ago_s: float) -> float | None:
 
 
 def is_recovering(now: float, price: float, trough: float, trough_ts: float | None, price_30s_ago: float | None,
-                  new_buyers_30s: int, *, trough_age_s: float = 20.0, min_new_buyers: int = 2) -> bool:
+                  new_buyers_30s: int, *, trough_age_s: float = 20.0, min_new_buyers: int = 2, net_flow: float | None = None) -> bool:
     """Direction test for a red position that never showed momentum: climbing (above where it was 30s ago)
     AND either no lower low for `trough_age_s` or fresh buyers stepping in. Flat / still sliding → not recovering."""
     if price <= 0 or trough <= 0 or price_30s_ago is None or price <= price_30s_ago * 1.002:
@@ -186,6 +186,8 @@ def is_recovering(now: float, price: float, trough: float, trough_ts: float | No
     if price <= trough * 1.001:
         return False                                   # sitting on the low = still making lows
     no_lower_low = trough_ts is not None and (now - float(trough_ts)) >= trough_age_s
+    if net_flow is not None:                              # size-aware: money still net-entering beats a wallet count
+        return no_lower_low or net_flow > 0
     return no_lower_low or int(new_buyers_30s or 0) >= min_new_buyers
 
 

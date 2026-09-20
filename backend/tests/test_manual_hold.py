@@ -127,3 +127,29 @@ def test_price_ago_picks_nearest_sample():
     samples = [(now - 60, 1.0), (now - 31, 0.9), (now - 2, 0.95)]
     assert exits.price_ago(samples, now, 30.0) == 0.9
     assert exits.price_ago([(now - 2, 0.95)], now, 30.0) is None
+
+
+# ---------------------------------------------------------------- net-flow momentum
+def test_flow_ratio_and_flush_floor():
+    import flow
+    from solana_client import LAMPORTS_PER_SOL
+    now = 1000.0
+    b = {"last_vsr_lamports": 50 * LAMPORTS_PER_SOL,                           # 20 SOL real liquidity
+         "buy_events": [(now - 5, 1 * LAMPORTS_PER_SOL, "a"), (now - 8, 0.5 * LAMPORTS_PER_SOL, "b")],
+         "sell_events": [(now - 3, 0.5 * LAMPORTS_PER_SOL, "c")]}
+    assert flow.liquidity(b, sol=True) == 20.0
+    assert flow.flow_ratio_pct(b, now, 10.0, sol=True) == 5.0                   # (1.5 − 0.5) / 20
+    assert flow.flow_ratio_pct({"buy_events": []}, now, 10.0, sol=True) is None   # unknown liquidity → callers fall back
+    rh = {"net_quote": 2.0, "buy_events": [(now - 2, 0.1, "a")], "sell_events": [(now - 1, 0.3, "b")]}
+    assert flow.flow_ratio_pct(rh, now, 10.0, sol=False) == -10.0
+    cfg = BotConfig()
+    calm = [(now - 50, 1.0), (now - 20, 1.02), (now - 1, 1.01)]
+    wild = [(now - 50, 1.0), (now - 20, 0.6), (now - 1, 0.8)]
+    assert flow.flush_floor_pct(cfg, calm, now) == 5.0                          # base floor on a calm tape
+    assert abs(flow.flush_floor_pct(cfg, wild, now) - 14.0) < 1e-9              # 0.35 × 40% swing
+
+
+def test_recovering_uses_net_flow_when_known():
+    now = 1000.0
+    assert exits.is_recovering(now, 0.95, 0.90, now - 5, 0.92, 0, net_flow=0.2)       # lower low 5s ago but money net-entering
+    assert not exits.is_recovering(now, 0.95, 0.90, now - 5, 0.92, 5, net_flow=-0.1)  # 5 buyers but net outflow → not recovering

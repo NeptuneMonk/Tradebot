@@ -36,6 +36,7 @@ import creator_solvency
 import r_sizer
 import exits
 import flush
+import flow
 import runner
 from scorecard import Scorecard
 from inventory import InventoryHalt, HUNT_SLOT_CAP
@@ -556,7 +557,7 @@ class BotState:
             logger.warning(f"FLUSH? {trade_doc.get('symbol')} {kind} at {pct_change:+.1f}%: {f['n_sellers']} seller(s), top {f['top_seller_share']*100:.0f}% "
                            f"of {f['sold_quote']:.3f} SOL sold, {f['buyers']} buyers still in — holding up to {getattr(cfg, 'flush_hold_s', 10)}s")
             since = now
-        floor = float(slot.get("_flush_hold_trough") or 0) * (1.0 - float(getattr(cfg, "flush_extra_drop_pct", 5.0)) / 100.0)
+        floor = float(slot.get("_flush_hold_trough") or 0) * (1.0 - flow.flush_floor_pct(cfg, (self.tracking.get(mint) or {}).get("price_samples"), now) / 100.0)
         if cur_price_sol <= floor:
             slot["_dip_forensics"]["hold_broke_floor"] = True
             return False                      # kept falling — distribution after all
@@ -582,8 +583,13 @@ class BotState:
             if ts >= cutoff:
                 buyers.add(user)
                 lamports += int(lam or 0)
-        strong = len(buyers) >= int(cfg.exit_momentum_min_buyers) and \
-            lamports / LAMPORTS_PER_SOL >= float(cfg.exit_momentum_min_inflow_sol)
+        fr = flow.flow_ratio_pct(bucket, now, float(cfg.exit_momentum_window_s), sol=True)
+        if fr is not None:   # net-flow momentum (size-aware); wallet counts only when liquidity is unknown
+            strong = fr >= float(getattr(cfg, "exit_momentum_min_flow_pct", 1.0))
+            slot["_mom_flow_pct"] = fr
+        else:
+            strong = len(buyers) >= int(cfg.exit_momentum_min_buyers) and \
+                lamports / LAMPORTS_PER_SOL >= float(cfg.exit_momentum_min_inflow_sol)
         key = f"_mom_defer_{kind}"
         if not strong:
             slot.pop(key, None)
@@ -3011,6 +3017,12 @@ class BotState:
         samples = b.get("price_samples")
         vel_window = max(5, int(self.config.scanner_entry_velocity_window_s))
         velocity = velocity_pct_strict(samples, time.time(), vel_window) if samples else None
+        _min_flow = float(getattr(self.config, "scanner_min_flow_ratio_pct", 0.0) or 0.0)
+        _fr = flow.flow_ratio_pct(bucket, time.time(), 30.0, sol=True) if (_min_flow > 0 and not bypass_gates) else None
+        if _fr is not None and _fr < _min_flow:
+            await self._skip_event({"mint": launch.mint, "symbol": launch.symbol, "band": "new" if is_new_band else "seasoned",
+                                    "reason": "flow", "details": [f"net inflow {_fr:+.2f}% of liquidity in 30s < {_min_flow:.1f}%"]})
+            return
         if not bypass_gates and velocity is not None and velocity < self.config.scanner_entry_velocity_min_pct:
             logger.info(
                 f"skip {launch.mint} [{action}]: entry velocity "
@@ -3840,7 +3852,8 @@ class BotState:
                             getattr(self.config, "recovery_watch_enabled", True) and 0 < _px < _ep
                             and exits.is_recovering(_now, _px, float(slot.get("trough_price_sol") or _px), slot.get("trough_ts"),
                                                     exits.price_ago(_b.get("price_samples"), _now, 30.0),
-                                                    len({w for ts, _q, w in (_b.get("buy_events") or ()) if _now - ts <= 30.0}))
+                                                    len({w for ts, _q, w in (_b.get("buy_events") or ()) if _now - ts <= 30.0}),
+                                                    net_flow=flow.net_flow(_b, _now, 30.0, sol=True)[0] if _b.get("buy_events") else None)
                         )
                         if _rec:
                             slot["_recovery_watch"] = exits.start_recovery_watch(self.config, _now, _ep, _px, float(slot.get("trough_price_sol") or _px))

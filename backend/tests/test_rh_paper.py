@@ -228,7 +228,7 @@ def test_event_driven_stop_fires_on_breaching_trade_and_fills_after_latency():
     """A dump inside one poll batch: SL must trigger on the first breaching
     sell (block-accurate) and fill `latency_blocks` later — NOT at the
     end-of-batch price the 1s tick would have used."""
-    st = make_state(stop_loss_pct=12.0, paper_exit_latency_ms=600, exit_momentum_gate_enabled=False)
+    st = make_state(stop_loss_pct=12.0, paper_exit_latency_ms=600, exit_momentum_gate_enabled=False, flush_hold_scope="hot_reentry")
     now = time.time()
     b = hot_bucket(st.rh_discovery, now, price=1e-9, first=5e-10)
     enter(st)

@@ -115,6 +115,9 @@ class BotConfig(BaseModel):
     no_momentum_exit_enabled: bool = True
     no_momentum_after_s: int = 30
     no_momentum_min_mfe_pct: float = 5.0   # flattens a dead runner on any book (never a clock)
+    # Net-flow momentum (buys − sells as % of curve liquidity): the size-aware replacement for wallet counts
+    exit_momentum_min_flow_pct: float = 1.0     # momentum gate defers SL/TP only while net inflow ≥ this % of liquidity per window
+    scanner_min_flow_ratio_pct: float = 2.0     # entry: net inflow over the last 30s ≥ this % of liquidity (0 = off)
     # Recovery watch: a no-momentum kill on a RED position whose tape is recovering (above its 30s-ago price, no new
     # lower low for 20s or ≥2 fresh buyers) becomes a time-boxed watch — stop just under the trough, exit on timeout,
     # rejoin the normal ladder once the price reclaims `recovery_reclaim_frac` of the way back to entry.
@@ -138,8 +141,9 @@ class BotConfig(BaseModel):
     # dip's sells, ≤ max_sellers) with buyers still arriving is a flush of weak hands, not distribution →
     # hold the exit up to flush_hold_s (floor: extra_drop below the flush trough); scope hot/re-entry or all.
     flush_hold_enabled: bool = True
-    flush_hold_scope: str = "hot_reentry"      # "hot_reentry" | "all"
-    flush_hold_s: int = 10
+    flush_hold_scope: str = "all"              # "hot_reentry" | "all" — high-vol tapes shake every book
+    flush_hold_s: int = 15
+    flush_range_floor_mult: float = 0.35        # flush floor = max(flush_extra_drop_pct, mult × last-60s range%)
     flush_top_share: float = 0.7
     flush_max_sellers: int = 2
     flush_min_buyers: int = 1

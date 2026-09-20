@@ -477,6 +477,15 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
                hint="Fraction of the distance from the trough back to entry the price must reclaim to end the watch and rejoin the ladder. 0.5 = halfway back; 1.0 = back to entry."
                value={local.recovery_reclaim_frac ?? 0.5}
                onChange={(v) => setLocal({ ...local, recovery_reclaim_frac: Math.min(1, Math.max(0, parseFloat(v) || 0)) })} step="0.1" />
+        <Field label="Mom Gate Flow (%)" testid="exit-momentum-flow-input"
+               hint="Net-flow momentum: buys − sells over the gate window as % of the curve's liquidity. The momentum gate defers a stop / target only while net inflow is at least this much (1 = 1% of the pool's SOL/ETH per window). Size-aware replacement for wallet counts (bundlers fake counts, not net money). Buyers count is used only when liquidity is unknown."
+               value={local.exit_momentum_min_flow_pct ?? 1} onChange={(v) => setLocal({ ...local, exit_momentum_min_flow_pct: parseFloat(v) || 0 })} step="0.5" />
+        <Field label="Entry Flow ≥ (%)" testid="scanner-min-flow-input"
+               hint="Entry gate: net inflow over the last 30s must be at least this % of curve liquidity. Velocity says the price moved; flow says money is behind it. 0 = off."
+               value={local.scanner_min_flow_ratio_pct ?? 2} onChange={(v) => setLocal({ ...local, scanner_min_flow_ratio_pct: parseFloat(v) || 0 })} step="0.5" />
+        <Field label="Flush Floor × Range" testid="flush-range-floor-input"
+               hint="Flush hold floor = max(Flush Extra Drop %, this × the last-60s high-low range %). On a token that just swung 40% the floor becomes ~14% instead of 5%, so a whale's flush doesn't stop you out 2% under the trough. Distribution (many sellers) still exits immediately."
+               value={local.flush_range_floor_mult ?? 0.35} onChange={(v) => setLocal({ ...local, flush_range_floor_mult: parseFloat(v) || 0 })} step="0.05" />
         <Field label="Mom Gate Buyers" testid="exit-momentum-buyers-input"
                hint="Buy-momentum exit gate: SL and TP are DEFERRED while at least this many distinct wallets bought in the momentum window AND the inflow floor is met — so you don't sell into a dip that buyers are still absorbing. Set 0 to disable."
                value={local.exit_momentum_min_buyers ?? 3}
