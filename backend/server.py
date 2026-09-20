@@ -2421,6 +2421,11 @@ async def token_detail(chain: str, mint: str):
                                  "image": (p.get("info") or {}).get("imageUrl")}
         except Exception as e:
             out["market_error"] = str(e)[:120]
+        try:
+            import rugcheck
+            out["rugcheck"] = await asyncio.wait_for(rugcheck.summary(mint), timeout=6.0)
+        except Exception:
+            out["rugcheck"] = None
     rows = await db.trades.find({"mint": mint}, {"_id": 0}).sort("entry_time", -1).limit(20).to_list(20)
     out["trades"] = [{k: t.get(k) for k in ("id", "book", "mode", "status", "entry_time", "exit_time", "entry_usd", "pnl_usd", "pnl_pct", "exit_reason",
                                              "reentry_trigger", "classifier_action", "peak_pnl_pct")} for t in rows]

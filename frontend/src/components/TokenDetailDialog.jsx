@@ -106,6 +106,24 @@ export function TokenDetailDialog({ token, onClose }) {
             <div className="text-[9px] font-mono text-neutral-600">Manual entry bypasses the momentum gates; max positions, kill switches and the live/paper mode still apply.</div>
 
             <CreatorAuditPanel key={`${chain}:${mint}`} chain={chain} mint={mint} initial={live?.creator_audit || null} />
+            {chain === "sol" && data?.rugcheck !== undefined && (
+              <div className="border border-neutral-800 p-2 space-y-1" data-testid="token-detail-rugcheck">
+                <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.15em] text-neutral-500">
+                  <span>rugcheck · free summary</span>
+                  {data.rugcheck ? (
+                    <span className={`font-mono ${data.rugcheck.rugged ? "text-red-400" : (data.rugcheck.score_normalised ?? 0) >= 50 ? "text-amber-300" : "text-emerald-300"}`} data-testid="rugcheck-score">
+                      {data.rugcheck.rugged ? "RUGGED" : `risk ${data.rugcheck.score_normalised ?? data.rugcheck.score ?? "—"}`}
+                    </span>
+                  ) : <span className="text-neutral-600">unavailable</span>}
+                </div>
+                {(data.rugcheck?.risks || []).slice(0, 6).map((r, i) => (
+                  <div key={i} className="text-[10px] font-mono text-neutral-400 flex gap-2">
+                    <span className={r.level === "danger" ? "text-red-400" : r.level === "warn" ? "text-amber-300" : "text-neutral-500"}>{r.level}</span>
+                    <span className="text-neutral-300">{r.name}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="min-h-[420px] lg:h-[calc(100vh-120px)] border border-neutral-800 bg-black" data-testid="token-detail-widget">

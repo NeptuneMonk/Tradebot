@@ -18,6 +18,7 @@ import math
 import os
 import time
 from collections import deque
+from tick_store import EVENT_KEEP
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
@@ -602,8 +603,8 @@ class RHDiscovery:
             "name": None,
             "symbol": None,
             "buyers": set(),
-            "buy_events": deque(maxlen=500),
-            "sell_events": deque(maxlen=500),
+            "buy_events": deque(maxlen=EVENT_KEEP),
+            "sell_events": deque(maxlen=EVENT_KEEP),
             "buy_count": 0,
             "sell_count": 0,
             "net_quote": 0.0,
@@ -677,7 +678,7 @@ class RHDiscovery:
                 b["buy_events"].append((now, tr["quote"], tr["wallet"]))
             else:
                 b["sell_count"] += 1
-                b.setdefault("sell_events", deque(maxlen=500)).append((now, tr["quote"], tr["wallet"]))
+                b.setdefault("sell_events", deque(maxlen=EVENT_KEEP)).append((now, tr["quote"], tr["wallet"]))
                 if tr["wallet"] == b.get("creator"):
                     import creator_solvency
                     b.setdefault("_dump_window_s", float(getattr(self.state.config, "creator_dump_window_s", 60.0) or 60.0))
@@ -729,7 +730,7 @@ class RHDiscovery:
         else:
             b["sell_count"] += 1
             b["net_quote"] -= tr["quote"]
-            b.setdefault("sell_events", deque(maxlen=500)).append((now, tr["quote"], tr["wallet"]))
+            b.setdefault("sell_events", deque(maxlen=EVENT_KEEP)).append((now, tr["quote"], tr["wallet"]))
         thr = b["graduation_threshold"] or 0
         if thr > 0 and not b["graduated"]:
             b["curve_fill_pct"] = max(0.0, min(100.0, b["net_quote"] / thr * 100.0))

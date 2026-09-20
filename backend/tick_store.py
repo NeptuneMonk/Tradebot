@@ -16,6 +16,7 @@ FLUSH_S = 10.0
 TTL_S = 48 * 3600
 MAX_SAMPLES = 3000
 MAX_BUYS = 1500
+EVENT_KEEP = 240     # in-process buy/sell events kept per token (Mongo tick_paths keeps the long history)
 COL = "tick_paths"
 
 

@@ -17,6 +17,7 @@ import asyncio
 import logging
 import time
 from collections import deque
+from tick_store import EVENT_KEEP
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -571,7 +572,7 @@ class PumpfunDiscovery:
             # at age 0 (the high-EV window starts when we SEE them).
             "graduated_at": time.time() if is_pumpswap else None,
             "buyers": set(),
-            "buy_events": deque(maxlen=500),
+            "buy_events": deque(maxlen=EVENT_KEEP),
             "sol_inflow_lamports": 0,
             # Cumulative buy count from Pump.fun API when it still returns one (the v3 API dropped the field —
             # None = unknown, and the seasoned buyers gate must not treat "unknown" as zero).

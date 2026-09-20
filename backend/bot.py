@@ -10,6 +10,7 @@ import asyncio
 import logging
 import time
 from collections import deque
+from tick_store import EVENT_KEEP
 from datetime import datetime, timezone, timedelta
 
 from solders.pubkey import Pubkey
@@ -1303,7 +1304,7 @@ class BotState:
             # This is the Seasoned band's age clock origin.
             "graduated_at": None,
             "buyers": set(),
-            "buy_events": deque(maxlen=500),  # (ts, sol_lamports, user)
+            "buy_events": deque(maxlen=EVENT_KEEP),  # (ts, sol_lamports, user)
             "sol_inflow_lamports": 0,
             "buy_count": 0,
             "curve_fill_pct": 0.0,
@@ -1331,6 +1332,7 @@ class BotState:
             "twitter": "",
             "telegram": "",
             "website": "",
+            "uri": (launch_data.get("uri") or "").strip(),   # CreateEvent metadata URI — first (on-chain) source of socials
         }
         # LRU-style cap: drop oldest if over the limit
         if len(self.tracking) > MAX_TRACKED_MINTS:
@@ -1373,7 +1375,7 @@ class BotState:
             creator_solvency.record_creator_sell(bucket, int(trade_data.get("sol_amount", 0)) / LAMPORTS_PER_SOL,
                                                  float(trade_data.get("token_amount") or 0) / 1e6, now)
         if not trade_data.get("is_buy") and trade_data.get("user"):
-            bucket.setdefault("sell_events", deque(maxlen=500)).append((now, int(trade_data.get("sol_amount", 0)) / LAMPORTS_PER_SOL, trade_data["user"]))
+            bucket.setdefault("sell_events", deque(maxlen=EVENT_KEEP)).append((now, int(trade_data.get("sol_amount", 0)) / LAMPORTS_PER_SOL, trade_data["user"]))
         if trade_data.get("is_buy"):
             if trade_data["user"] not in bucket["buyers"]:
                 bucket["last_new_buyer_ts"] = now
@@ -2203,20 +2205,47 @@ class BotState:
             logger.debug(f"project score failed for {mint}: {e}")
 
     async def _fetch_pumpfun_socials(self, mint: str):
-        """Pull on-chain social proof fields (reply_count, twitter, telegram,
-        website) from Pump.fun's `/coins/{mint}` endpoint. Used by the entry
-        gate. Re-tries a few times because the mint is only indexed by Pump's
-        API after the first trade event hits it (usually 2-10s post-creation).
-        """
-        import httpx
+        """Social-proof fields (twitter, telegram, website, image, reply_count) for the entry gate + Project Score.
+        Source order (P2.2 / P2.4): the CreateEvent's metadata URI (on-chain truth at t=0, one fetch) → Pump.fun's
+        `/coins/{mint}` only when the URI gave nothing or the socials gate needs `reply_count`. What we learn is
+        persisted on the launch doc so a restart / another replica never refetches it."""
         b = self.tracking.get(mint)
         if not b:
             return
+        if b.get("uri") and await self._fetch_uri_metadata(mint, b["uri"]):
+            if not self.config.gate_socials_required:
+                return
+        await self._fetch_pumpfun_coin(mint)
+
+    async def _fetch_uri_metadata(self, mint: str, uri: str) -> bool:
+        import httpx
+        b = self.tracking.get(mint)
+        if not b or not uri.startswith("http"):
+            return False
+        try:
+            async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
+                r = await client.get(uri, headers={"accept": "application/json"})
+            if r.status_code != 200:
+                return False
+            c = r.json() or {}
+        except Exception as e:
+            logger.debug(f"uri metadata skipped for {mint[:8]}…: {e}")
+            return False
+        if not isinstance(c, dict):
+            return False
+        await self._apply_socials(mint, {"twitter": c.get("twitter"), "telegram": c.get("telegram"), "website": c.get("website"),
+                                         "image_uri": c.get("image")}, source="uri")
+        return True
+
+    async def _fetch_pumpfun_coin(self, mint: str):
+        import httpx
         url = f"https://frontend-api-v3.pump.fun/coins/{mint}"
-        # Up to 4 attempts with backoff (2s, 6s, 14s, 30s — covers ~50s window)
+        # Up to 4 attempts with backoff (2s, 6s, 14s, 30s — covers ~50s window): Pump indexes the mint only after its
+        # first trade lands (usually 2-10s post-creation).
         for delay in (2.0, 6.0, 14.0, 30.0):
             await asyncio.sleep(delay)
-            if mint not in self.tracking:
+            b = self.tracking.get(mint)
+            if not b:
                 return  # bucket evicted
             try:
                 async with httpx.AsyncClient(timeout=8.0) as client:
@@ -2224,20 +2253,33 @@ class BotState:
                     if r.status_code != 200:
                         continue
                     c = r.json() or {}
-                    b["reply_count"] = int(c.get("reply_count") or 0)
-                    b["twitter"] = (c.get("twitter") or "").strip()
-                    b["telegram"] = (c.get("telegram") or "").strip()
-                    b["website"] = (c.get("website") or "").strip()
-                    b["image_uri"] = (c.get("image_uri") or "").strip()
-                    b["meta_seen"] = True
-                    await self._compute_social(mint)
-                    asyncio.create_task(self._reclassify(mint, source="meta"))
-                    # We got a real response — exit early. Any later updates
-                    # will be picked up by the discovery refresh loop once the
-                    # mint becomes discoverable.
+                    await self._apply_socials(mint, {"reply_count": c.get("reply_count"), "twitter": c.get("twitter"), "telegram": c.get("telegram"),
+                                                     "website": c.get("website"), "image_uri": c.get("image_uri")}, source="pump")
                     return
             except Exception as e:
                 logger.debug(f"social fetch retry for {mint}: {e}")
+
+    async def _apply_socials(self, mint: str, fields: dict, *, source: str):
+        b = self.tracking.get(mint)
+        if not b:
+            return
+        for k in ("twitter", "telegram", "website", "image_uri"):
+            v = (fields.get(k) or "").strip() if isinstance(fields.get(k), str) else ""
+            if v or k not in b:
+                b[k] = v
+        if fields.get("reply_count") is not None:
+            b["reply_count"] = int(fields.get("reply_count") or 0)
+        b["meta_seen"] = True
+        b["meta_source"] = source
+        await self._compute_social(mint)
+        asyncio.create_task(self._reclassify(mint, source="meta"))
+        if b.get("launch_id"):
+            try:
+                await self.db.launches.update_one({"_id": b["launch_id"]}, {"$set": {
+                    "twitter": b.get("twitter", ""), "telegram": b.get("telegram", ""), "website": b.get("website", ""),
+                    "image_uri": b.get("image_uri", ""), "reply_count": int(b.get("reply_count") or 0), "meta_source": source}})
+            except Exception:
+                pass
 
     async def _tracker_cleanup(self, mint: str):
         await asyncio.sleep(TRACK_DURATION_S)
@@ -2552,7 +2594,7 @@ class BotState:
                 return {"ok": False, "reason": "mint not tracked (scanner no longer sees it) and no PumpSwap pool found"}
             b = self.tracking[mint] = {
                 "launch_id": None, "creator": "", "start": time.time(), "protocol": "pumpswap", "pumpswap_pool": pool,
-                "graduated_at": time.time(), "buyers": set(), "buy_events": deque(maxlen=500), "sol_inflow_lamports": 0,
+                "graduated_at": time.time(), "buyers": set(), "buy_events": deque(maxlen=EVENT_KEEP), "sol_inflow_lamports": 0,
                 "buy_count": None, "curve_fill_pct": 100.0, "social_score": 0, "project_score": 0, "project_flags": {},
                 "last_persist": 0.0, "name": None, "symbol": None, "creator_rugs": 0, "first_seen_price_sol": 0.0,
                 "last_price_sol": 0.0, "price_samples": deque(maxlen=120), "last_price_sample_ts": 0.0,

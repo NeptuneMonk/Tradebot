@@ -26,13 +26,21 @@ def enabled() -> bool:
 
 def plan_status() -> dict:
     import time
-    return {"key_set": bool(API_KEY), "blocked_s": max(0, round(_plan_blocked_until - time.time())), "last_error": _last_plan_error}
+    return {"key_set": bool(API_KEY), "blocked_s": max(0, round(_plan_blocked_until - time.time())), "last_error": _last_plan_error,
+            "cache": {"size": len(_cache), **stats}}
 
 
 async def get(path: str, params: dict, timeout: float = 8.0):
-    """GET {BASE}/{path} → `data` payload. Raises SolscanError on any non-success (401/403 = key/plan, 429 = quota)."""
+    """GET {BASE}/{path} → `data` payload. Raises SolscanError on any non-success (401/403 = key/plan, 429 = quota).
+    Cached per (path, params): success CACHE_OK_S, errors CACHE_ERR_S (negative cache) — never re-asks on the hot loop."""
     if not API_KEY:
         raise SolscanError(401, "no SOLSCAN_API_KEY")
+    key = (path, tuple(sorted((k, str(v)) for k, v in (params or {}).items())))
+    hit = _cache_get(key)
+    if hit is not None:
+        if isinstance(hit, SolscanError):
+            raise hit
+        return hit
     async with httpx.AsyncClient(timeout=timeout) as c:
         r = await c.get(f"{BASE}/{path}", params=params, headers={"token": API_KEY, "accept": "application/json"})
     try:
@@ -47,8 +55,39 @@ async def get(path: str, params: dict, timeout: float = 8.0):
             global _plan_blocked_until, _last_plan_error
             _plan_blocked_until, _last_plan_error = time.time() + PLAN_BACKOFF_S, msg
             logger.warning(f"solscan: plan does not cover {path} — provider paused {PLAN_BACKOFF_S:.0f}s ({msg})")
-        raise SolscanError(r.status_code, msg)
-    return body.get("data")
+        exc = SolscanError(r.status_code, msg)
+        _cache_put(key, exc, CACHE_ERR_S)
+        raise exc
+    data = body.get("data")
+    _cache_put(key, data, CACHE_OK_S)
+    return data
+
+
+CACHE_OK_S = 20 * 60.0
+CACHE_ERR_S = 60.0
+CACHE_CAP = 2000
+_cache: dict = {}            # key → (expires_at, value | SolscanError); insertion-ordered → oldest pruned first
+stats = {"hits": 0, "misses": 0}
+
+
+def _cache_get(key):
+    import time
+    ent = _cache.get(key)
+    if ent and ent[0] > time.time():
+        stats["hits"] += 1
+        return ent[1]
+    if ent:
+        _cache.pop(key, None)
+    stats["misses"] += 1
+    return None
+
+
+def _cache_put(key, value, ttl: float):
+    import time
+    _cache[key] = (time.time() + ttl, value)
+    if len(_cache) > CACHE_CAP:
+        for k in list(_cache)[: len(_cache) - CACHE_CAP]:
+            _cache.pop(k, None)
 
 
 async def account_detail(address: str) -> dict:
