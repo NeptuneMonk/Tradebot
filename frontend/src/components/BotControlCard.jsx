@@ -109,8 +109,13 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
           <span className={local.live_trading ? "text-red-400" : "text-neutral-500"}>LIVE</span>
           <Switch
             data-testid="live-trading-switch"
-            checked={local.live_trading}
-            onCheckedChange={(v) => setLocal({ ...local, live_trading: v })}
+            checked={!!local.live_trading}
+            onCheckedChange={(v) => {
+              if (v && !window.confirm("Enable SOL LIVE trading? Real SOL from the local wallet will buy Pump.fun / PumpSwap tokens that pass the gates. The daily kill switch and position caps apply.")) return;
+              flipKey("live_trading", v,
+                () => toast[v ? "warning" : "success"](v ? "SOL LIVE trading ON — real SOL in play" : "SOL live trading OFF — paper mode"),
+                (e) => e?.response?.data?.detail);
+            }}
           />
           <HelpHint label="LIVE toggle" side="left">
             <span className="block"><span className="text-red-300 font-semibold">LIVE</span> = sends real on-chain transactions with the local wallet's SOL. <span className="text-emerald-300 font-semibold">OFF</span> = paper-trade mode; signals fire and PnL is tracked but no funds are touched.</span>

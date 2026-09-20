@@ -2187,3 +2187,6 @@ User rule: turning a feed off is cheating — improve WHICH tokens we enter/exit
 - **RH**: `creator_audit_require_post_activity=true` + `_audit_rh` returned a hard **fail** for `post_activity` ("not observable on Robinhood Chain") → every RH creator failed the audit (published skips: `creator-audit` 69,987). FIXED: check is now `unavailable` (policy `creator_audit_unavailable` decides). Test `test_rh_post_activity_is_unavailable_not_fail`. Needs redeploy.
 - **Seasoned**: published config has `scanner_seasoned_entries_enabled=false` and there was no UI switch. ADDED "seasoned entries" checkbox in CONTROL → Momentum Scanner (`scanner-seasoned-entries-checkbox`, instant switch key).
 - Published status also shows RH `launch_rate_h: 0.0` (feed alive, buys flowing) — Robinhood launchpad is genuinely slow (~4 launches/h in preview), so RH volume will stay low even after the fix.
+
+## 2026-09-20 (e) — LIVE switch did not persist (bug)
+- `live_trading` was in `SWITCH_KEYS` (excluded from Save diff) but the header LIVE `Switch` only did `setLocal` → "Nothing to save" and paper mode continued. Now flips via `flipKey` (instant PUT, confirm dialog when arming, backend 409 wallet-integrity reason surfaced in the toast), same as `rh_live_trading`. Verified PUT live_trading true→200/false→200 on preview.
