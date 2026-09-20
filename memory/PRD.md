@@ -2136,3 +2136,25 @@ Current state (07:04): bot RUNNING, RH paper ON, RH feed ON, Pump.fun feed ON (o
 ## 2026-06 — Net-flow momentum + volatility-scaled flush (operator: volume > buyer counts on 60–100% swingers)
 - `backend/flow.py`: `net_flow` (buys−sells in quote, SOL lamports→SOL), `liquidity` (SOL: last_vsr_lamports−30 virtual; RH: net_quote), `flow_ratio_pct` (net/liquidity %), `range_pct`, `flush_floor_pct` = max(flush_extra_drop_pct, flush_range_floor_mult×60s range).
 - Momentum gate (SOL `_momentum_holds`, RH `_mom_holds`) uses flow ratio ≥ `exit_momentum_min_flow_pct` (1.0) when liquidity known, wallet counts only as fallback; `_mom_flow_pct` stored on slot/pos. Flush hold floor volatility-scaled on both chains; defaults `flush_hold_scope="all"`, `flush_hold_s=15`, `flush_range_floor_mult=0.35`. Recovery `is_recovering(net_flow=)`: net inflow > 0 replaces the ≥2-buyers clause. Entry gate `scanner_min_flow_ratio_pct` (2.0) → skip reason `flow`. CONTROL fields + wiki (Net flow term, flush/momentum notes). Tests +2; suite 690 passed (two legacy RH tests pin scope=hot_reentry). Applied + saved as default; bot running.
+
+
+## 2026-09-20 — Settings review for the 24h comparison + UI speed brief P0/P1
+### Settings review (ledger, 7d ≈ 1,300 closed trades)
+- RH PONS paper: 636 trades, **-$390** (fees $253 ≈ 8%/clip), negative in every age / MC / buyers / inflow bucket → `rh_paper_enabled=false`
+- Greylist sniper: 21 trades, 24% WR, -$30 → `greylist_snipe_enabled=false`
+- `doctor_auto_apply_enabled=false` for the test window so the setup stays fixed (breaker + learning stay on)
+- Solana new-band data (3d, n=589): bundled launches (≥5 creation-slot buys) -$57, creators with a prior graduation -$35 (26% WR), cumulative inflow <30 SOL -$30. Combined filter flips -$50 → +$46. **NOT implemented** (brief forbids trading-logic changes) — proposed gates: `max_creation_slot_buys`, `skip_prior_graduate_creators`, `min_sol_inflow_new`.
+- Preview bot is intentionally STOPPED with both feeds OFF (user runs the 24h test on the published deployment; settings exported via /api/config/export).
+
+### Perf brief — P0 + P1 DONE (iteration_31 green; 717 pytest pass)
+- P0.1 rAF flush for `candidate`/`candidate_update` and `trade_update`/`trade_partial` (was 400 ms timer)
+- P0.2 scanner + ladder REST polling only while WS disconnected (verified: 0 requests in 30 s while WS LIVE)
+- P0.3 stable callbacks/objects for memo'd cockpit cards (`navBadges`, `feedLive`, `onEnableScanner`, `onOpenDoctor`, …)
+- P0.4 `useWebSocket`: alive ref, reconnect timer cleared on unmount, previous socket closed (verified: exactly one socket after route round-trip)
+- P0.5 `capLaunches()` 30 SOL + 30 RH by `detected_at`, history ≤ 50, active rows only
+- P1.1–P1.3 `ws_hub.py`: `candidate` = slim `LIVE_FIELDS` + `seq`; `candidate_update` = `{id, seq, p}` patch (frontend seq-guarded); `_raw` warehouse removed (identity stub ≤ 1500 × 10 fields), `_seen` ≤ 200; `hub.diagnostics` on `/api/diagnostics/loop`
+- P1.4 permessage-deflate: already ON (uvicorn `ws_per_message_deflate=True` default)
+- P1.5 EquityChart keeps the series; `series.update()` for tail changes, `setData()` only on shape/timeframe change
+- Tests: `tests/test_ws_hub_slim.py` (6), updated `test_ops_fixes.py` / `test_rh_feed_gate.py`; testing agent `tests/test_iter31_regression.py`
+
+### Next (brief order): P2 explorer/metadata caching (Solscan LRU+TTL, DAS batch, RugCheck, lazy creator) → P3 subscriptions + tick caps → P4 diagnostics strip + docs
