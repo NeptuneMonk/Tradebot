@@ -26,7 +26,12 @@ def is_manual_hold(trade: dict | None) -> bool:
     """Operator-bought position (Buy Now / Graduate Ladder pin): R-only hold — no SL / trail / TP / clock / rip-cord /
     momentum kill. Exits at the scalp +target·R (or promotes to runner there when flow is strong) or by the operator."""
     t = trade or {}
-    return bool(t.get("manual")) or t.get("classifier_action") in MANUAL_ACTIONS
+    return bool(t.get("manual")) or bool(t.get("long_term_hold")) or t.get("classifier_action") in MANUAL_ACTIONS
+
+
+def is_long_term_hold(trade: dict | None) -> bool:
+    """LTH (operator toggle on any position): NO automatic exit of any kind — the ✕ is the only way out."""
+    return bool((trade or {}).get("long_term_hold"))
 
 
 def decide_manual(cfg, slot: dict, pct: float) -> ExitDecision:

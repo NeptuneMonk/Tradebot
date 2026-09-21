@@ -421,6 +421,15 @@ export default function Dashboard() {
     api.status().then((st) => st && setStatus(st)).catch(() => {});
   }, []);
   const onStart = useCallback(async () => { await api.start(); refreshAll(); }, [refreshAll]);
+  const onLthTrade = useCallback(async (id, on) => {
+    try {
+      await api.setLongTermHold(id, on);
+      setActiveTrades((prev) => prev.map((t) => (t.id === id ? { ...t, long_term_hold: on } : t)));
+      toast[on ? "warning" : "success"](on ? "Long-term hold ON — no automatic exit, ✕ only" : "Long-term hold OFF — exit engine back in charge");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "LTH toggle failed");
+    }
+  }, []);
   const onExitTrade = useCallback(async (id) => {
     try {
       await api.exitTrade(id);
@@ -552,7 +561,7 @@ export default function Dashboard() {
           <div key="live" className="space-y-4" data-testid="view-live">
             <div className="tile-in"><KpiStrip wallet={wallet} status={status} config={config} auto={auto} pl={pl} /></div>
             <div className="grid grid-cols-1 lg:grid-cols-[1.15fr_1fr] gap-4 items-stretch" data-testid="cockpit-grid">
-              <div className="tile-in" style={{ animationDelay: "60ms" }}><ActiveTradesCockpit trades={activeTrades} onExit={onExitTrade} /></div>
+              <div className="tile-in" style={{ animationDelay: "60ms" }}><ActiveTradesCockpit trades={activeTrades} onExit={onExitTrade} onLth={onLthTrade} /></div>
               <div className="tile-in" style={{ animationDelay: "120ms" }}><EquityPanel refreshKey={pl?.cumulative_usd} /></div>
               <div className="tile-in" style={{ animationDelay: "180ms" }}><CompactCandidates candidates={scanner} scannerEnabled={scannerEnabled} onEnableScanner={onEnableScanner} /></div>
               <div className="tile-in" style={{ animationDelay: "240ms" }}><CompactLadder ladder={ladder} /></div>

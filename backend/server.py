@@ -2010,6 +2010,37 @@ async def trades_history(limit: int = 100):
         [("exit_time", -1), ("entry_time", -1)]).to_list(min(limit, 200))
 
 
+class LTHBody(BaseModel):
+    on: bool = True
+
+
+@api.post("/trades/{trade_id}/lth")
+async def trades_long_term_hold(trade_id: str, body: LTHBody):
+    """Toggle LONG-TERM HOLD on any open position: every automatic exit (SL / trail / TP / clock / momentum / rip-cord /
+    ladder / runner) is suspended and the position leaves the max-positions count; the ✕ button is the only exit."""
+    trade = await db.trades.find_one({"_id": trade_id})
+    if not trade:
+        raise HTTPException(404, "Trade not found")
+    if trade.get("status") != "active":
+        raise HTTPException(400, "Trade not active")
+    on = bool(body.on)
+    await db.trades.update_one({"_id": trade_id}, {"$set": {"long_term_hold": on}})
+    mint = trade["mint"]
+    if trade.get("chain") == "rh":
+        pos = bot_state.rh_paper.positions.get(mint)
+        if pos and (pos.get("trade") or {}).get("id", trade_id) == trade_id:
+            pos["trade"]["long_term_hold"] = on
+    else:
+        slot = bot_state.active_trades.get(mint)
+        if slot and (slot.get("trade") or {}).get("id") in (None, trade_id):
+            slot["trade"]["long_term_hold"] = on
+            if on:
+                slot.pop("_recovery_watch", None)
+    logger.warning(f"LTH {'ON' if on else 'OFF'} for {trade.get('symbol')} {mint[:8]}… (trade {trade_id[:8]})")
+    await hub.broadcast("trade_update", {"id": trade_id, "mint": mint, "long_term_hold": on})
+    return {"ok": True, "long_term_hold": on}
+
+
 @api.post("/trades/{trade_id}/exit")
 async def trades_manual_exit(trade_id: str):
     trade = await db.trades.find_one({"_id": trade_id}, {"_id": 0})

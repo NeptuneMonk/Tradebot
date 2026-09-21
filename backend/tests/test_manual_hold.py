@@ -162,3 +162,14 @@ def test_recovering_uses_net_flow_when_known():
     now = 1000.0
     assert exits.is_recovering(now, 0.95, 0.90, now - 5, 0.92, 0, net_flow=0.2)       # lower low 5s ago but money net-entering
     assert not exits.is_recovering(now, 0.95, 0.90, now - 5, 0.92, 5, net_flow=-0.1)  # 5 buyers but net outflow → not recovering
+
+
+def test_long_term_hold_flags_and_rh_guard():
+    assert exits.is_long_term_hold({"long_term_hold": True}) and not exits.is_long_term_hold({})
+    assert exits.is_manual_hold({"classifier_action": "momentum_new", "long_term_hold": True})   # LTH gets every manual exemption
+    st = _state()
+    st.active_trades = {"a": _slot("momentum_new", long_term_hold=True), "b": _slot("momentum_new")}
+    assert st.counted_open() == 1
+    rh = RHPaperTrader.__new__(RHPaperTrader)
+    rh.positions = {"x": {"trade": {"classifier_action": "rh_pons_paper", "long_term_hold": True}}, "y": {"trade": {"classifier_action": "rh_pons_paper"}}}
+    assert rh.counted_open() == 1

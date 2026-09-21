@@ -24,6 +24,7 @@ export const api = {
   activeTrades: () => client.get("/trades/active").then(r => r.data),
   tradeHistory: (limit = 100) => client.get(`/trades/history?limit=${limit}`).then(r => r.data),
   exitTrade: (id) => client.post(`/trades/${id}/exit`).then(r => r.data),
+  setLongTermHold: (id, on) => client.post(`/trades/${id}/lth`, { on }).then(r => r.data),
   scannerManualBuy: (mint) => client.post(`/scanner/manual-buy/${mint}`).then(r => r.data),
   creatorAudit: (chain, mint, force = false) => client.get(`/creator-audit/${chain}/${mint}`, { params: { force } }).then(r => r.data),
   creatorAuditStats: () => client.get(`/creator-audit/stats`).then(r => r.data),

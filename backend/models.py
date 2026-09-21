@@ -576,6 +576,7 @@ class Launch(BaseModel):
     pin_strategy: Optional[str] = None         # tier at entry time
     pin_exited: bool = False                   # True after our trade exits
     pin_exited_at: Optional[datetime] = None
+    long_term_hold: bool = False                # operator LTH toggle: no automatic exit of any kind, ✕ only
 
 
 class Trade(BaseModel):

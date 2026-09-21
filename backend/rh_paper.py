@@ -1033,6 +1033,10 @@ class RHPaperTrader:
             return None
         if price > pos["peak_price"]:
             pos["peak_price"] = price
+        if t.get("long_term_hold"):
+            return None                                        # LTH: operator exit only
+        if price > pos["peak_price"]:
+            pos["peak_price"] = price
             pos["peak_ts"] = now
         from exits import search_dead_tape
         dead = search_dead_tape(cfg, "rh_pons", b, now, entry_ts=pos.get("opened"), trade=t)

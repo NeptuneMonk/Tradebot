@@ -1591,6 +1591,9 @@ class BotState:
     async def _run_ladder(self, mint: str, slot: dict, cur_price_sol: float, elapsed: float, tag: str = "") -> bool:
         """Evaluate the position's BOOK ladder (exits.py) once. Returns True when the slot was closed."""
         trade_doc = slot["trade"]
+        if exits.is_long_term_hold(trade_doc):
+            slot.pop("_recovery_watch", None)
+            return False                                       # LTH: operator ✕ is the only exit
         entry_p = float(trade_doc.get("entry_price_sol") or 0)
         if entry_p <= 0:
             return False

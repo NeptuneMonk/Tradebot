@@ -125,6 +125,7 @@ export const SECTIONS = [
         ["hunt (SOL)", "Bigger, pattern-backed entry (greylist snipe, second impulse). Ladder partials.", "SL 20% · +1R sell 35% · +2R sell 30% · trail 8% · no clock"],
         ["runner (SOL)", "A scalp/hunt winner promoted after banking a leg. Rides the trend.", "SL 25% from promotion · giveback trail 15% armed at +1R · +3R bank 25% · exits when flow dies (unless manual)"],
         ["manual hold (SOL)", "Anything you bought yourself (Buy Now / pin). R-only: nothing sells on the way down.", "no SL · no trailing stop · no TP · no clock · exits at the scalp target R (or promotes to runner when flow is strong) · ✕ to sell anytime"],
+        ["LTH (any position)", "Long-term hold. Click LTH on any Active Trades row (SOL or RH, auto or manual) to suspend every automatic exit.", "no SL · no trail · no TP · no clock · no momentum kill · no ladder / runner exits · leaves the max-positions count · ✕ is the only exit · click LTH again to hand it back to the engine"],
         ["ladder (SOL)", "Graduate Ladder: a graduated token climbing MC steps; each step is a leg with its own ratchet trail.", "structure stop closes every leg · half size (ladder_size_mult)"],
         ["rh_pons (RH)", "PONS curve entries on Robinhood Chain. Paper by default; live needs rh_live_trading.", "SL 12% · TP 20% (or target R) · trail 6% armed at +12% · clock 35s · graduated-while-held → R-trail ride (no TP, no clock)"],
       ] },

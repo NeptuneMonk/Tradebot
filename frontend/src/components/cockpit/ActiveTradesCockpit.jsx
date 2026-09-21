@@ -46,19 +46,22 @@ export function stageFor(t) {
   return { text: <>target {t.target_r ? `${t.target_r}R` : "—"} · SL {t.sl_pct ? `${t.sl_pct}%` : "—"}</>, pct: target > 0 ? clamp((pnl / target) * 100) : 0, hint: "scalp: single exit at +target·R or −1R, clock allowed" };
 }
 
-const isManualHold = (t) => t.manual === true || t.classifier_action === "manual" || t.classifier_action === "rh_pons_manual";
+const isManualHold = (t) => t.manual === true || t.long_term_hold === true || t.classifier_action === "manual" || t.classifier_action === "rh_pons_manual";
+const isLTH = (t) => t.long_term_hold === true;
 
-function Row({ t, onExit, onOpen }) {
+function Row({ t, onExit, onOpen, onLth }) {
   const pnl = t.unrealized_pnl_pct;
   const book = t.book || (t.chain === "rh" ? "rh_pons" : "scalp");
-  const st = stageFor(t);
+  const lth = isLTH(t);
+  const st = lth ? { text: <span className="text-sky-300">long-term hold · manual exit only</span>, pct: 0, hint: "LTH: every automatic exit is suspended (SL / trail / TP / clock / momentum / ladder / runner). Only ✕ sells." } : stageFor(t);
   const manual = isManualHold(t);
   return (
     <tr data-testid={`active-trade-row-${t.mint}`} onClick={(e) => { if (!e.target.closest("button")) onOpen({ chain: t.chain || "sol", mint: t.mint, symbol: t.symbol }); }}
       className={`border-b border-neutral-900 hover:bg-neutral-900/50 cursor-pointer transition-colors duration-100 ${manual ? "bg-fuchsia-950/10" : ""}`}
-      title={`${t.mode} · size $${Number(t.size_usd ?? t.entry_usd ?? 0).toFixed(2)} · R $${Number(t.r_usd ?? 0).toFixed(3)} · risk ${t.risk_score ?? "—"} · ${t.scorecard_cell || ""}${manual ? " · MANUAL HOLD: SL/TP/trail only — no clock, no momentum kill, not counted toward max positions" : ""}`}>
+      title={`${t.mode} · size $${Number(t.size_usd ?? t.entry_usd ?? 0).toFixed(2)} · R $${Number(t.r_usd ?? 0).toFixed(3)} · risk ${t.risk_score ?? "—"} · ${t.scorecard_cell || ""}${manual ? " · MANUAL HOLD: R-target only — no SL/TP/trail/clock, no momentum kill, not counted toward max positions" : ""}${lth ? " · LTH: manual exit only" : ""}`}>
       <td className="py-2 pl-3"><span className={`px-1.5 py-0.5 border text-[9px] font-mono uppercase tracking-[0.15em] ${BOOK_CLS[book] || BOOK_CLS.scalp}`}>{book.replace("_", " ")}</span>
-        {manual && <span className="ml-1 px-1 py-0.5 border border-fuchsia-700 text-fuchsia-300 text-[9px] font-mono" data-testid={`active-manual-badge-${t.mint}`}>HOLD</span>}
+        {lth ? <span className="ml-1 px-1 py-0.5 border border-sky-600 text-sky-300 text-[9px] font-mono" data-testid={`active-lth-badge-${t.mint}`}>LTH</span>
+             : manual && <span className="ml-1 px-1 py-0.5 border border-fuchsia-700 text-fuchsia-300 text-[9px] font-mono" data-testid={`active-manual-badge-${t.mint}`}>HOLD</span>}
         {t.mode === "live" && <span className="ml-1 px-1 py-0.5 border border-red-800 text-red-300 text-[9px] font-mono">LIVE</span>}</td>
       <td className="font-mono text-xs"><span className="text-neutral-100">{t.symbol || "—"}</span> <span className="text-neutral-600 text-[10px]">{t.chain === "rh" ? "rh" : "sol"}</span></td>
       <td className="font-mono text-xs text-right" data-testid={`active-pnl-${t.mint}`}>
@@ -67,7 +70,12 @@ function Row({ t, onExit, onOpen }) {
       </td>
       <td className="font-mono text-[11px] text-neutral-300 pl-4" title={st.hint} data-testid={`active-stage-${t.mint}`}>{st.text}</td>
       <td className="w-20"><span className="block h-1.5 w-16 bg-neutral-900 border border-neutral-800 overflow-hidden"><span className="block h-full bg-emerald-500/80" style={{ width: `${st.pct}%`, transition: "width 400ms ease" }} /></span></td>
-      <td className="text-right pr-3">
+      <td className="text-right pr-3 whitespace-nowrap">
+        <button onClick={() => onLth(t.id, !lth)} data-testid={`lth-trade-btn-${t.mint}`}
+          className={`px-1.5 py-0.5 mr-1 border text-[9px] font-mono tracking-[0.1em] transition-colors duration-100 ${lth ? "border-sky-500 bg-sky-950/60 text-sky-200 hover:bg-sky-900/60" : "border-neutral-700 text-neutral-500 hover:border-sky-600 hover:text-sky-300"}`}
+          title={lth ? "Long-term hold ON — click to hand the position back to the exit engine" : "Long-term hold: suspend every automatic exit; only ✕ sells"}>
+          LTH
+        </button>
         <button onClick={() => onExit(t.id)} data-testid={`exit-trade-btn-${t.mint}`} className="p-1 border border-red-900 text-red-300 hover:bg-red-950 transition-colors duration-100" title="manual exit">
           <X className="w-3 h-3" />
         </button>
@@ -76,7 +84,7 @@ function Row({ t, onExit, onOpen }) {
   );
 }
 
-function ActiveTradesCockpit({ trades, onExit }) {
+function ActiveTradesCockpit({ trades, onExit, onLth }) {
   const [detail, setDetail] = useState(null);
   const auto = trades.filter((t) => !isManualHold(t));
   const manual = trades.filter(isManualHold);
@@ -96,13 +104,13 @@ function ActiveTradesCockpit({ trades, onExit }) {
           </thead>
           <tbody>
             {trades.length === 0 && <tr><td colSpan="6" className="text-center py-8 text-[10px] uppercase tracking-[0.2em] text-neutral-600">no active positions</td></tr>}
-            {auto.map((t) => <Row key={t.id} t={t} onExit={onExit} onOpen={setDetail} />)}
+            {auto.map((t) => <Row key={t.id} t={t} onExit={onExit} onLth={onLth} onOpen={setDetail} />)}
             {manual.length > 0 && (
               <tr data-testid="manual-holds-divider"><td colSpan="6" className="py-1 pl-3 text-[9px] uppercase tracking-[0.2em] text-fuchsia-400/80 bg-fuchsia-950/20 border-y border-fuchsia-900/40"
-                title="Operator buys (Buy Now / Graduate Ladder). Long holds: SL / TP / trail only — no clock, no momentum kill, not counted toward max positions.">
-                manual holds · {manual.length} · outside max positions</td></tr>
+                title="Operator buys (Buy Now / Graduate Ladder) and LTH positions. R-only exits (manual) or ✕-only (LTH) — no clock, no momentum kill, not counted toward max positions.">
+                manual holds · {manual.length} · outside max positions{manual.some(isLTH) ? <span className="text-sky-400"> · {manual.filter(isLTH).length} LTH</span> : null}</td></tr>
             )}
-            {manual.map((t) => <Row key={t.id} t={t} onExit={onExit} onOpen={setDetail} />)}
+            {manual.map((t) => <Row key={t.id} t={t} onExit={onExit} onLth={onLth} onOpen={setDetail} />)}
           </tbody>
         </table>
       </div>

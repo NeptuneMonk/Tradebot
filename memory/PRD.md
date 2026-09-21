@@ -2195,3 +2195,7 @@ User rule: turning a feed off is cheating — improve WHICH tokens we enter/exit
 - User: TS fired on every pullback of 60–100%-swing tokens, missing +400% runs. Verified ARM is already measured from entry (not first-seen) — the mechanism, not the value, was the issue.
 - Manual holds (Buy Now / pin, `is_manual_hold`) now use `exits.decide_manual`: **no SL, no trailing stop, no TP, no clock, no rip-cord, no recovery watch**. Only exits: scalp `target_r` × 1R (→ sells, or promotes to runner when flow is strong — promo window extended to manual holds in any book) and the operator ✕. Runner phase unchanged. Auto scalps unchanged.
 - Sizing skip reason now prints the full R breakdown (`bankroll × risk = R ÷ (SL + slip) × mult`).
+
+## 2026-09-21 — LTH (long-term hold) toggle on every Active Trades row
+- `POST /api/trades/{id}/lth {on}` sets `trade.long_term_hold` (DB + live slot / RH position), broadcasts `trade_update`. Guards: `_run_ladder` returns early (SOL: SL/trail/TP/clock/ladder/runner all suspended), `rh_paper._decide_exit` returns None, `is_manual_hold` treats LTH as a manual hold (no momentum kill / dead-tape / pattern rip-cord, leaves max-positions count). ✕ is the only exit; click LTH again to hand back to the engine.
+- UI: LTH button + badge per row, stage text "long-term hold · manual exit only", divider shows LTH count; wiki entry. Verified end-to-end with a synthetic active row (toggle on/off, badge + divider + toast), tests `test_long_term_hold_flags_and_rh_guard`.
