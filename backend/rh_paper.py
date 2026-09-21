@@ -466,7 +466,9 @@ class RHPaperTrader:
         cfg = self.state.config
         b = self.state.rh_discovery.tracking.get(token)
         if not b:
-            return {"ok": False, "reason": "token not tracked"}
+            if not cfg.rh_feed_enabled:
+                return {"ok": False, "reason": "RH feed is OFF — the bot has no live curve/pool state for this token; switch the RH feed on first"}
+            return {"ok": False, "reason": "token no longer tracked by the RH feed (evicted or pod restarted) — it re-appears on its next on-chain trade; retry then"}
         if b.get("graduated") and not b.get("pool_live"):
             return {"ok": False, "reason": "graduated — curve closed, v4 pool not live yet"}
         if token in self.positions or token in self._pending_entries:

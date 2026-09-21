@@ -2432,6 +2432,43 @@ async def creator_info(creator: str):
     return doc
 
 
+@api.get("/token/{chain}/{mint}/candles")
+async def token_candles(chain: str, mint: str, tf_s: int = 60):
+    """OHLC candles built from OUR tick samples (tick_paths, 48h) — the chart source for venues DexScreener has no
+    candle data for (Robinhood Chain v4 pools) and a fallback for Solana. Price in the quote asset (SOL / ETH / USDG)."""
+    tf_s = max(5, min(3600, int(tf_s)))
+    doc = await db.tick_paths.find_one({"_id": f"{'rh' if chain == 'rh' else 'sol'}:{mint}"},
+                                       {"samples": 1, "quote_symbol": 1, "symbol": 1, "start": 1, "graduated": 1})
+    if not doc:
+        return {"candles": [], "quote": "ETH" if chain == "rh" else "SOL", "n_samples": 0}
+    candles: list[dict] = []
+    cur = None
+    for ts, px in doc.get("samples") or ():
+        if not px or px <= 0:
+            continue
+        bucket = int(ts // tf_s) * tf_s
+        if cur is None or cur["t"] != bucket:
+            if cur:
+                candles.append(cur)
+            cur = {"t": bucket, "o": px, "h": px, "l": px, "c": px, "n": 1}
+        else:
+            cur["h"] = max(cur["h"], px); cur["l"] = min(cur["l"], px); cur["c"] = px; cur["n"] += 1
+    if cur:
+        candles.append(cur)
+    trades = await db.trades.find({"mint": mint}, {"_id": 0, "entry_time": 1, "exit_time": 1, "entry_price_quote": 1, "entry_price_sol": 1,
+                                                    "exit_price_quote": 1, "exit_price_sol": 1, "pnl_pct": 1, "status": 1}).sort("entry_time", -1).limit(10).to_list(10)
+    marks = []
+    for t in trades:
+        for kind, tkey, pkeys in (("entry", "entry_time", ("entry_price_quote", "entry_price_sol")), ("exit", "exit_time", ("exit_price_quote", "exit_price_sol"))):
+            tv = t.get(tkey)
+            if not tv:
+                continue
+            ts = tv.timestamp() if hasattr(tv, "timestamp") else datetime.fromisoformat(str(tv).replace("Z", "+00:00")).timestamp()
+            marks.append({"t": int(ts), "kind": kind, "price": next((t.get(k) for k in pkeys if t.get(k)), None), "pnl_pct": t.get("pnl_pct") if kind == "exit" else None})
+    return {"candles": candles[-600:], "quote": doc.get("quote_symbol") or ("ETH" if chain == "rh" else "SOL"), "symbol": doc.get("symbol"),
+            "n_samples": len(doc.get("samples") or ()), "tf_s": tf_s, "marks": marks}
+
+
 # ---------- Re-entry watchlist ----------
 @api.get("/token/{chain}/{mint}")
 async def token_detail(chain: str, mint: str):
@@ -2808,7 +2845,7 @@ async def scanner_manual_buy(mint: str, runner: bool = False):
     gates (max positions + kill switches still apply). RH tokens route to the
     paper engine; SOL tokens follow the normal live/paper mode. `runner=true`
     (explicit operator flag) opens a graduated PumpSwap mint straight into the runner book."""
-    if mint in bot_state.rh_discovery.tracking:
+    if mint in bot_state.rh_discovery.tracking or mint.lower().startswith("0x"):
         res = await bot_state.rh_paper.manual_enter(mint)
     else:
         if (bot_state.tracking.get(mint) or {}).get("pinned"):

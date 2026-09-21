@@ -109,6 +109,7 @@ export const api = {
   // Helius credit budget
   heliusBudget: () => client.get("/diagnostics/helius-budget").then(r => r.data),
   diagnosticsLoop: () => client.get("/diagnostics/loop").then(r => r.data),
+  tokenCandles: (chain, mint, tfS) => client.get(`/token/${chain}/${mint}/candles`, { params: { tf_s: tfS } }).then(r => r.data),
   heliusBudgetReset: () => client.post("/diagnostics/helius-budget/reset").then(r => r.data),
   // Config sync (preview ↔ production)
   configExport: () => client.get("/config/export").then(r => r.data),

@@ -5,6 +5,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "
 import { CreatorAuditPanel } from "@/components/CreatorAuditPanel";
 import { ChainBadge } from "./ChainBadge";
 import { api, explainApiError } from "@/lib/api";
+import TokenChart from "./TokenChart";
 
 const fmtUsd = (n) => {
   const v = Number(n);
@@ -126,13 +127,25 @@ export function TokenDetailDialog({ token, onClose }) {
             )}
           </div>
 
-          <div className="min-h-[420px] lg:h-[calc(100vh-120px)] border border-neutral-800 bg-black" data-testid="token-detail-widget">
-            {m?.embed ? (
+          <div className="min-h-[420px] lg:h-[calc(100vh-120px)] border border-neutral-800 bg-black overflow-y-auto" data-testid="token-detail-widget">
+            {chain === "rh" ? (
+              <>
+                <TokenChart chain="rh" mint={mint} height={400} />
+                {m?.embed && (
+                  <details className="border-t border-neutral-800" data-testid="token-detail-dexscreener-details">
+                    <summary className="cursor-pointer px-2 py-1 text-[10px] font-mono uppercase tracking-[0.15em] text-neutral-500 hover:text-neutral-300">
+                      DexScreener widget · {m.dex} {(m.labels || []).join(" ")} · liq ${Number(m.liquidity_usd || 0).toLocaleString()} (their candle feed for Robinhood Chain is often empty)
+                    </summary>
+                    <iframe title="DexScreener" src={m.embed} className="w-full h-[460px]" allow="clipboard-write" loading="lazy" data-testid="token-detail-dexscreener" />
+                  </details>
+                )}
+              </>
+            ) : m?.embed ? (
               <iframe title="DexScreener" src={m.embed} className="w-full h-[460px] lg:h-full" allow="clipboard-write" loading="lazy" data-testid="token-detail-dexscreener" />
             ) : chain === "sol" ? (
               <iframe title="DexScreener" src={`https://dexscreener.com/solana/${mint}?embed=1&theme=dark&trades=0&info=0`} className="w-full h-[460px] lg:h-full" loading="lazy" />
             ) : (
-              <div className="p-3 text-[10px] font-mono text-neutral-500" data-testid="token-detail-no-chart">
+              <div className="p-3 text-[10px] font-mono text-neutral-500 hidden" data-testid="token-detail-no-chart">
                 {live?.graduated
                   ? "DexScreener has not indexed this Uniswap v4 pool yet (it usually appears a few minutes after graduation) — live pool numbers on the left come from our sequencer feed."
                   : "Still on the Robinhood launch curve — DexScreener only lists the Uniswap v4 pool after graduation. Live curve numbers on the left come from our sequencer feed."}

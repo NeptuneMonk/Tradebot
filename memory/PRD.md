@@ -2211,3 +2211,7 @@ User rule: turning a feed off is cheating — improve WHICH tokens we enter/exit
 
 ## 2026-09-21 (d) — RH tokens on DexScreener
 - DexScreener indexes Robinhood Chain (chainId `robinhood`, Uniswap v4 pools after graduation). `GET /api/token/{chain}/{mint}` now runs the DexScreener lookup for both chains (RH: prefer `robinhood` pairs, deepest liquidity), returns `market.chain_id/labels/pairs` and a chain-aware `embed` URL. TokenDetailDialog embeds the chart for RH; while un-indexed it explains curve-vs-pool and links a DexScreener search; RH header gets a DexScreener link. Verified live on CRAYON (v4 pool, $18.6K liq).
+
+## 2026-09-21 (e) — RH chart from our own feed + RH manual re-entry routing
+- DexScreener lists Robinhood v4 pairs but its embed returns "No data here" (no candle feed for the chain). Added `GET /api/token/{chain}/{mint}/candles?tf_s` (OHLC from `tick_paths` samples, quote units, + buy/sell marks from our trades) and `TokenChart.jsx` (lightweight-charts v5, 1m/5m/15m/1h, 15 s refresh, `createSeriesMarkers`). RH token dialog shows OUR chart first, DexScreener widget collapsed underneath.
+- Bug: RH "re-enter manually" fell into the SOL path ("not a valid Solana mint address") when the token was no longer in `rh_discovery.tracking` (RH feed off / restart). `/scanner/manual-buy` now routes any `0x…` address to the RH engine; RH `manual_enter` explains feed-off vs evicted.
