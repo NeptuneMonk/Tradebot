@@ -2208,3 +2208,6 @@ User rule: turning a feed off is cheating — improve WHICH tokens we enter/exit
 ## 2026-09-21 (c) — "+" add-to-position on LTH rows
 - `BotState.add_to_position(mint, usd)`: fresh curve/pool state → quote → live buy (`_live_buy`) or paper fill → folds into `entry_tokens/entry_sol/entry_usd/entry_price_sol` (weighted average), appends `trade.adds[]`, broadcasts `trade_update`. Refusals are explicit (curve complete / state unavailable / quote zero / classified tx error).
 - `POST /api/trades/{id}/add {usd}` (SOL only; 0 < usd ≤ max_trade_usd). UI: green **+** on LTH rows (SOL) → prompt for USD (remembers last amount) → toast with new total. Test `test_add_to_position_paper_folds_into_average`; UI verified with a synthetic LTH row (button → prompt → explicit refusal toast for a fake mint).
+
+## 2026-09-21 (d) — RH tokens on DexScreener
+- DexScreener indexes Robinhood Chain (chainId `robinhood`, Uniswap v4 pools after graduation). `GET /api/token/{chain}/{mint}` now runs the DexScreener lookup for both chains (RH: prefer `robinhood` pairs, deepest liquidity), returns `market.chain_id/labels/pairs` and a chain-aware `embed` URL. TokenDetailDialog embeds the chart for RH; while un-indexed it explains curve-vs-pool and links a DexScreener search; RH header gets a DexScreener link. Verified live on CRAYON (v4 pool, $18.6K liq).

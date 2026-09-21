@@ -45,7 +45,7 @@ export function TokenDetailDialog({ token, onClose }) {
 
   const live = data?.live, m = data?.market, rx = data?.reentry;
   const links = chain === "rh"
-    ? [["RH explorer", `https://explorer.mainnet.chain.robinhood.com/token/${mint}`]]
+    ? [["RH explorer", `https://explorer.mainnet.chain.robinhood.com/token/${mint}`], ["DexScreener", m?.url || `https://dexscreener.com/search?q=${mint}`]]
     : [["pump.fun", `https://pump.fun/coin/${mint}`], ["DexScreener", m?.url || `https://dexscreener.com/solana/${mint}`], ["Solscan", `https://solscan.io/token/${mint}`]];
 
   return (
@@ -127,14 +127,17 @@ export function TokenDetailDialog({ token, onClose }) {
           </div>
 
           <div className="min-h-[420px] lg:h-[calc(100vh-120px)] border border-neutral-800 bg-black" data-testid="token-detail-widget">
-            {chain === "sol" && m?.embed ? (
-              <iframe title="DexScreener" src={m.embed} className="w-full h-[460px] lg:h-full" allow="clipboard-write" loading="lazy" />
+            {m?.embed ? (
+              <iframe title="DexScreener" src={m.embed} className="w-full h-[460px] lg:h-full" allow="clipboard-write" loading="lazy" data-testid="token-detail-dexscreener" />
             ) : chain === "sol" ? (
               <iframe title="DexScreener" src={`https://dexscreener.com/solana/${mint}?embed=1&theme=dark&trades=0&info=0`} className="w-full h-[460px] lg:h-full" loading="lazy" />
             ) : (
-              <div className="p-3 text-[10px] font-mono text-neutral-500">
-                No public chart widget covers Robinhood Chain yet — live curve / pool numbers on the left come straight from our sequencer feed.
-                <a className="block mt-2 text-cyan-300 hover:underline" href={links[0][1]} target="_blank" rel="noreferrer">open in the RH explorer ↗</a>
+              <div className="p-3 text-[10px] font-mono text-neutral-500" data-testid="token-detail-no-chart">
+                {live?.graduated
+                  ? "DexScreener has not indexed this Uniswap v4 pool yet (it usually appears a few minutes after graduation) — live pool numbers on the left come from our sequencer feed."
+                  : "Still on the Robinhood launch curve — DexScreener only lists the Uniswap v4 pool after graduation. Live curve numbers on the left come from our sequencer feed."}
+                <a className="block mt-2 text-cyan-300 hover:underline" href={`https://dexscreener.com/search?q=${mint}`} target="_blank" rel="noreferrer">search on DexScreener ↗</a>
+                <a className="block mt-1 text-cyan-300 hover:underline" href={links[0][1]} target="_blank" rel="noreferrer">open in the RH explorer ↗</a>
               </div>
             )}
           </div>

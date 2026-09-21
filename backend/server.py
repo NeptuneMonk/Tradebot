@@ -2460,25 +2460,31 @@ async def token_detail(chain: str, mint: str):
         out["reentry"] = bot_state.reentry.exits.get(mint)
         out["watch"] = bot_state.reentry_watch.get(mint)
         try:
-            async with httpx.AsyncClient(timeout=6.0) as c:
-                r = await c.get(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
-                pairs = (r.json() or {}).get("pairs") or []
-            if pairs:
-                p = max(pairs, key=lambda x: float((x.get("liquidity") or {}).get("usd") or 0))
-                out["market"] = {"dex": p.get("dexId"), "pair": p.get("pairAddress"), "price_usd": p.get("priceUsd"), "mc_usd": p.get("marketCap") or p.get("fdv"),
-                                 "liquidity_usd": (p.get("liquidity") or {}).get("usd"), "vol_24h": (p.get("volume") or {}).get("h24"),
-                                 "vol_1h": (p.get("volume") or {}).get("h1"), "chg_1h": (p.get("priceChange") or {}).get("h1"),
-                                 "chg_24h": (p.get("priceChange") or {}).get("h24"), "txns_1h": (p.get("txns") or {}).get("h1"),
-                                 "url": p.get("url"), "embed": f"https://dexscreener.com/solana/{p.get('pairAddress')}?embed=1&theme=dark&trades=0&info=0",
-                                 "socials": ((p.get("info") or {}).get("socials") or []), "websites": ((p.get("info") or {}).get("websites") or []),
-                                 "image": (p.get("info") or {}).get("imageUrl")}
-        except Exception as e:
-            out["market_error"] = str(e)[:120]
-        try:
             import rugcheck
             out["rugcheck"] = await asyncio.wait_for(rugcheck.summary(mint), timeout=6.0)
         except Exception:
             out["rugcheck"] = None
+    # DexScreener indexes both venues: Solana (pump.fun / PumpSwap) and Robinhood Chain (chainId "robinhood", Uniswap v4
+    # pools after graduation). Best pair = deepest liquidity; the embed URL follows the pair's own chain.
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as c:
+            r = await c.get(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
+            pairs = (r.json() or {}).get("pairs") or []
+        if chain == "rh":
+            pairs = [x for x in pairs if x.get("chainId") == "robinhood"] or pairs
+        if pairs:
+            p = max(pairs, key=lambda x: float((x.get("liquidity") or {}).get("usd") or 0))
+            out["market"] = {"dex": p.get("dexId"), "chain_id": p.get("chainId"), "labels": p.get("labels") or [], "pair": p.get("pairAddress"),
+                             "price_usd": p.get("priceUsd"), "mc_usd": p.get("marketCap") or p.get("fdv"),
+                             "liquidity_usd": (p.get("liquidity") or {}).get("usd"), "vol_24h": (p.get("volume") or {}).get("h24"),
+                             "vol_1h": (p.get("volume") or {}).get("h1"), "chg_1h": (p.get("priceChange") or {}).get("h1"),
+                             "chg_24h": (p.get("priceChange") or {}).get("h24"), "txns_1h": (p.get("txns") or {}).get("h1"),
+                             "url": p.get("url"), "pairs": len(pairs),
+                             "embed": f"https://dexscreener.com/{p.get('chainId')}/{p.get('pairAddress')}?embed=1&theme=dark&trades=0&info=0",
+                             "socials": ((p.get("info") or {}).get("socials") or []), "websites": ((p.get("info") or {}).get("websites") or []),
+                             "image": (p.get("info") or {}).get("imageUrl")}
+    except Exception as e:
+        out["market_error"] = str(e)[:120]
     rows = await db.trades.find({"mint": mint}, {"_id": 0}).sort("entry_time", -1).limit(20).to_list(20)
     out["trades"] = [{k: t.get(k) for k in ("id", "book", "mode", "status", "entry_time", "exit_time", "entry_usd", "pnl_usd", "pnl_pct", "exit_reason",
                                              "reentry_trigger", "classifier_action", "peak_pnl_pct")} for t in rows]
