@@ -173,3 +173,13 @@ def test_long_term_hold_flags_and_rh_guard():
     rh = RHPaperTrader.__new__(RHPaperTrader)
     rh.positions = {"x": {"trade": {"classifier_action": "rh_pons_paper", "long_term_hold": True}}, "y": {"trade": {"classifier_action": "rh_pons_paper"}}}
     assert rh.counted_open() == 1
+
+
+def test_classify_buy_error_labels():
+    c = BotState.classify_buy_error
+    assert c("custom program error: 0x1772 slippage: TooMuchSolRequired").startswith("slippage")
+    assert c("Blockhash not found").startswith("rpc: blockhash")
+    assert c("HTTP 429 rate limit").startswith("rpc: rate-limited")
+    assert c("insufficient lamports 1200").startswith("wallet")
+    assert c("Custom:6023 BondingCurveComplete").startswith("curve")
+    assert c("weird failure XYZ") == "buy failed: weird failure XYZ"

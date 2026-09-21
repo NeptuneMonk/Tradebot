@@ -1,7 +1,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { ChainBadge } from "../ChainBadge";
 import { TokenDetailDialog } from "../TokenDetailDialog";
-import { api } from "@/lib/api";
+import { api, explainApiError } from "@/lib/api";
 import { toast } from "sonner";
 
 const BAND_CLS = { new: "text-amber-300", seasoned: "text-cyan-300", rh_new: "text-lime-300" };
@@ -51,9 +51,9 @@ function Row({ c, onOpen }) {
     setBuying(true);
     try {
       const r = await api.scannerManualBuy(c.mint);
-      toast.success(`Bought ${r.symbol || c.symbol || c.mint.slice(0, 6)} · ${r.book || "rh_pons"} · ${r.mode || "paper"}${r.queued ? " · fill queued" : ""} — manual hold (SL/TP/trail only)`);
+      toast.success(`Bought ${r.symbol || c.symbol || c.mint.slice(0, 6)} · ${r.book || "rh_pons"} · ${r.mode || "paper"}${r.queued ? " · fill queued" : ""} — manual hold (R-only exit)`);
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Entry refused");
+      toast.error(`Entry refused — ${explainApiError(err)}`, { duration: 9000 });
     } finally { setBuying(false); }
   };
   return (

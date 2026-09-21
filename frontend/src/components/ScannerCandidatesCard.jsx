@@ -5,7 +5,7 @@ import HelpHint from "./HelpHint";
 import { ChainBadge } from "./ChainBadge";
 import { TokenDetailDialog } from "./TokenDetailDialog";
 import { VirtualUl } from "./VirtualRows";
-import { api } from "@/lib/api";
+import { api, explainApiError } from "@/lib/api";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const fmtAge = (s) => {
@@ -128,7 +128,7 @@ function ManualBuyButton({ c, isRh }) {
       const r = await api.scannerManualBuy(c.mint);
       toast.success(`Bought ${r.symbol || short(c.mint)} · ${(r.mode || "").toUpperCase()}${r.chain === "rh" ? " · RH" : ""} — SL/TP now managing it`);
     } catch (err) {
-      toast.error(`Buy refused: ${err?.response?.data?.detail || err.message}`);
+      toast.error(`Buy refused — ${explainApiError(err)}`, { duration: 9000 });
     } finally {
       setBusy(false);
     }

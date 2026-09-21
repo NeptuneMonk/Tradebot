@@ -1124,6 +1124,7 @@ class BotState:
         trade_sol = trade_usd / sol_price if sol_price > 0 else 0
         sol_in_lamports = int(trade_sol * LAMPORTS_PER_SOL)
         if sol_in_lamports <= 0:
+            await self._refuse(mint, "reentry", "size-dust", f"${trade_usd:.2f} at SOL ${sol_price:,.0f} rounds to 0 lamports (SOL price unknown?)")
             return
         tokens_out, max_sol = (
             pumpswap.quote_buy_tokens(pumpswap_state, sol_in_lamports, eff_slip)
@@ -1131,6 +1132,7 @@ class BotState:
             else pumpfun.quote_buy_tokens(state, sol_in_lamports, eff_slip)
         )
         if tokens_out <= 0:
+            await self._refuse(mint, "reentry", "quote-zero", f"{protocol} quote returned 0 tokens for {sol_in_lamports / LAMPORTS_PER_SOL:.4f} SOL at {eff_slip} bps — stale curve/pool state or curve complete")
             return
         entry_price_sol = sol_in_lamports / tokens_out / LAMPORTS_PER_SOL
         mode = "live" if self.config.live_trading else "paper"
@@ -2160,6 +2162,37 @@ class BotState:
             return
         log.append((round(time.time(), 1), r, float(b.get("last_price_sol") or b.get("price_sol") or 0.0)))
 
+    @staticmethod
+    def classify_buy_error(err: str) -> str:
+        """Human label for a failed live buy so the operator sees WHAT refused, not just 'failed'."""
+        e = (err or "").lower()
+        if "slippage" in e or "6002" in e or "toomuchsol" in e or "exceeded" in e and "sol" in e:
+            return "slippage: curve moved past the max SOL in the window (price ran / bundle ahead of us)"
+        if "insufficient" in e or "0x1" == e.strip() or "insufficient lamports" in e or "custom:1" in e:
+            return "wallet: insufficient SOL for size + fees + rent"
+        if "blockhash" in e or "expired" in e:
+            return "rpc: blockhash expired before landing (tx dropped) — RPC latency / congestion"
+        if "timeout" in e or "timed out" in e or "confirm" in e:
+            return "rpc: send/confirm timed out — RPC congestion; the tx may still land"
+        if "429" in e or "rate" in e and "limit" in e:
+            return "rpc: rate-limited (429) by the RPC provider"
+        if "6023" in e or "6005" in e or "bondingcurvecomplete" in e or "complete" in e:
+            return "curve: bonding curve completed / migrating — no curve buys possible"
+        if "incorrectprogramid" in e or "accountnotfound" in e or "invalid account" in e:
+            return "state: token account / program mismatch (stale curve or pool state)"
+        if "simulat" in e:
+            return "rpc: simulation failed — " + err[:120]
+        return "buy failed: " + err[:140]
+
+    async def _refuse(self, mint: str, band: str, reason: str, detail: str):
+        """Entry-path refusal AFTER the gates (size dust, zero quote, pod lock, send failure): visible in the skip feed,
+        the skip tally, the candidate row's gate and the manual-buy toast — never a silent return."""
+        b = self.tracking.get(mint)
+        if b is not None:
+            b["entry_refusal"] = {"reason": reason, "detail": detail, "ts": time.time()}
+        logger.info(f"entry refused {mint[:8]}… [{band}] {reason} — {detail}")
+        await self._skip_event({"mint": mint, "band": band, "reason": reason, "details": [detail]})
+
     async def _skip_event(self, payload: dict):
         self._ledger_sol(payload.get("mint", ""), payload.get("reason") or "skip")
         b = self.tracking.get(payload.get("mint", ""))
@@ -2632,7 +2665,16 @@ class BotState:
                 logger.info(f"manual runner {mint[:8]}… opened (operator flag)")
             return {"ok": True, "mint": mint, "symbol": b.get("symbol"), "book": t.get("book"),
                     "mode": (t.get("mode") if isinstance(t, dict) else getattr(t, "mode", None))}
-        return {"ok": False, "reason": "entry did not open — check backend log (pool/curve state, quote, helius pause)"}
+        b2 = self.tracking.get(mint) or {}
+        ref = b2.get("entry_refusal") or {}
+        if ref and time.time() - float(ref.get("ts") or 0) < 30:
+            return {"ok": False, "reason": f"{ref['reason']}: {ref['detail']}"}
+        if b2.get("gate_reason"):
+            return {"ok": False, "reason": f"{b2['gate_reason']}: {b2.get('gate_detail') or ''}".strip(": ")}
+        from helius_gate import is_helius_paused
+        if is_helius_paused():
+            return {"ok": False, "reason": "helius/Pump feed paused — curve state unavailable, no buys until the feed resumes"}
+        return {"ok": False, "reason": "entry did not open — no gate refused it; check the backend log for the send path"}
 
     async def _enter(self, launch: Launch, risk_score: int, action: str):
         # Manual buy (operator clicked a candidate): bypass everything except
@@ -3184,7 +3226,9 @@ class BotState:
         ff_remaining_usd = max(0.0, planned_usd - trade_usd)
         trade_sol = trade_usd / sol_price if sol_price > 0 else 0
         sol_in_lamports = int(trade_sol * LAMPORTS_PER_SOL)
+        _band = "new" if is_new_band else "seasoned"
         if sol_in_lamports <= 0:
+            await self._refuse(launch.mint, _band, "size-dust", f"${trade_usd:.2f} at SOL ${sol_price:,.0f} rounds to 0 lamports (SOL price unknown?)")
             return
         tokens_out, max_sol = (
             pumpswap.quote_buy_tokens(pumpswap_state, sol_in_lamports, eff_slip)
@@ -3192,6 +3236,7 @@ class BotState:
             else pumpfun.quote_buy_tokens(state, sol_in_lamports, eff_slip)
         )
         if tokens_out <= 0:
+            await self._refuse(launch.mint, _band, "quote-zero", f"{protocol} quote returned 0 tokens for {sol_in_lamports / LAMPORTS_PER_SOL:.4f} SOL at {eff_slip} bps — stale curve/pool state or curve complete")
             return
 
         entry_price_sol = sol_in_lamports / tokens_out / LAMPORTS_PER_SOL
@@ -3292,7 +3337,7 @@ class BotState:
 
         # cross-pod entry lock: one buy per mint, taken BEFORE anything goes on-chain (unique _id in entry_locks)
         if not await self.claim_entry_lock(launch.mint):
-            logger.warning(f"entry {launch.mint[:8]}…: another pod holds the entry lock — aborted before send")
+            await self._refuse(launch.mint, _band, "pod-lock", "another pod holds the entry lock for this mint — aborted before send")
             return
         if mode == "live":
             try:
@@ -3305,6 +3350,7 @@ class BotState:
                     b_fail["scanner_veto_until"] = time.time() + 600.0   # don't burn another fee on this mint for 10 min
                 trade.status = "failed"
                 trade.exit_reason = f"buy failed: {e}"
+                await self._refuse(launch.mint, _band, "buy-failed", self.classify_buy_error(str(e)))
                 await self._persist_trade(trade)
                 # Cooldown the mint in the scanner so we don't retry the same
                 # broken tx every pass.
@@ -3321,6 +3367,7 @@ class BotState:
 
         await self._persist_trade(trade)
         if trade.status != "active":
+            await self._refuse(launch.mint, _band, "buy-not-active", f"tx status {trade.status}: {trade.exit_reason or 'no fill recorded'}")
             return
         if reentry_mult is not None:
             self.reentry.record_attempt(launch.mint)

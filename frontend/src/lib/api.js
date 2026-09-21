@@ -8,6 +8,16 @@ const client = axios.create({ baseURL: API, timeout: 15000, withCredentials: tru
 // confirmation (sell tx + getSignatureStatuses polling can take 25–40s).
 const longClient = axios.create({ baseURL: API, timeout: 60000, withCredentials: true });
 
+/** Turn an axios failure into an operator-readable reason: gate detail, timeout, or an unreachable backend. */
+export function explainApiError(err, fallback = "Entry refused") {
+  const detail = err?.response?.data?.detail;
+  if (detail) return typeof detail === "string" ? detail : JSON.stringify(detail);
+  if (err?.code === "ECONNABORTED" || /timeout/i.test(err?.message || "")) return "timed out waiting for the backend — a live buy may still land; check Active Trades in a few seconds";
+  if (err?.response) return `backend returned HTTP ${err.response.status} (${err.response.statusText || "no body"}) — pod busy or restarting`;
+  if (err?.request) return "backend unreachable (network / WS proxy) — the request never got a response";
+  return err?.message || fallback;
+}
+
 export const api = {
   wallet: () => client.get("/wallet").then(r => r.data),
   status: () => client.get("/bot/status").then(r => r.data),
@@ -25,7 +35,8 @@ export const api = {
   tradeHistory: (limit = 100) => client.get(`/trades/history?limit=${limit}`).then(r => r.data),
   exitTrade: (id) => client.post(`/trades/${id}/exit`).then(r => r.data),
   setLongTermHold: (id, on) => client.post(`/trades/${id}/lth`, { on }).then(r => r.data),
-  scannerManualBuy: (mint) => client.post(`/scanner/manual-buy/${mint}`).then(r => r.data),
+  // live buys wait for send + confirm → long timeout; the refusal text comes back as the 409 detail
+  scannerManualBuy: (mint) => longClient.post(`/scanner/manual-buy/${mint}`).then(r => r.data),
   creatorAudit: (chain, mint, force = false) => client.get(`/creator-audit/${chain}/${mint}`, { params: { force } }).then(r => r.data),
   creatorAuditStats: () => client.get(`/creator-audit/stats`).then(r => r.data),
   autopilotStatus: () => client.get("/autopilot/status").then(r => r.data),

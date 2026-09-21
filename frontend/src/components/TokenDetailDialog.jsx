@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { CreatorAuditPanel } from "@/components/CreatorAuditPanel";
 import { ChainBadge } from "./ChainBadge";
-import { api } from "@/lib/api";
+import { api, explainApiError } from "@/lib/api";
 
 const fmtUsd = (n) => {
   const v = Number(n);
@@ -40,7 +40,7 @@ export function TokenDetailDialog({ token, onClose }) {
       const r = await api.scannerManualBuy(mint);
       r?.ok === false ? toast.error(r.reason || "entry refused") : toast.success("Manual re-entry sent");
       load();
-    } catch (e) { toast.error(e?.response?.data?.detail || "entry failed"); } finally { setBusy(false); }
+    } catch (e) { toast.error(`Entry refused — ${explainApiError(e)}`, { duration: 9000 }); } finally { setBusy(false); }
   };
 
   const live = data?.live, m = data?.market, rx = data?.reentry;
