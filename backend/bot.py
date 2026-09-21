@@ -2630,19 +2630,39 @@ class BotState:
         if not b:
             try:
                 Pubkey.from_string(mint)
-                pool = await asyncio.wait_for(pumpswap.find_pool_for_mint(mint), timeout=8.0)
             except Exception:
-                pool = None
-            if not pool:
-                return {"ok": False, "reason": "mint not tracked (scanner no longer sees it) and no PumpSwap pool found"}
+                return {"ok": False, "reason": "not a valid Solana mint address"}
+            # 1) still on the Pump.fun curve (scanner evicted it or the pod restarted) → seed a curve bucket from chain
+            try:
+                curve = await asyncio.wait_for(pumpfun.fetch_bonding_curve_state(mint), timeout=8.0)
+            except Exception:
+                curve = None
+            pool = None
+            if not curve or curve.get("complete"):
+                # 2) graduated → PumpSwap pool
+                try:
+                    pool = await asyncio.wait_for(pumpswap.find_pool_for_mint(mint), timeout=8.0)
+                except Exception:
+                    pool = None
+                if not pool:
+                    why = ("bonding curve is complete (graduated) but no PumpSwap pool found yet — migration in progress, retry in a minute"
+                           if curve else "no Pump.fun bonding curve and no PumpSwap pool found for this mint — not a Pump token or RPC lookup failed")
+                    return {"ok": False, "reason": f"mint not tracked (scanner no longer sees it): {why}"}
+            doc = await self.db.launches.find_one({"mint": mint}, {"_id": 0, "creator": 1, "name": 1, "symbol": 1, "id": 1, "bonding_curve": 1}) or {}
+            on_curve = pool is None
+            real_sol = (curve or {}).get("real_sol_reserves", 0) / LAMPORTS_PER_SOL if on_curve else 0.0
             b = self.tracking[mint] = {
-                "launch_id": None, "creator": "", "start": time.time(), "protocol": "pumpswap", "pumpswap_pool": pool,
-                "graduated_at": time.time(), "buyers": set(), "buy_events": deque(maxlen=EVENT_KEEP), "sol_inflow_lamports": 0,
-                "buy_count": None, "curve_fill_pct": 100.0, "social_score": 0, "project_score": 0, "project_flags": {},
-                "last_persist": 0.0, "name": None, "symbol": None, "creator_rugs": 0, "first_seen_price_sol": 0.0,
+                "launch_id": doc.get("id"), "creator": doc.get("creator") or "", "start": time.time(),
+                "protocol": "pumpfun" if on_curve else "pumpswap", "pumpswap_pool": pool,
+                "graduated_at": None if on_curve else time.time(), "buyers": set(), "buy_events": deque(maxlen=EVENT_KEEP),
+                "sol_inflow_lamports": int(real_sol * LAMPORTS_PER_SOL) if on_curve else 0,
+                "buy_count": None, "curve_fill_pct": min(100.0, real_sol / 85.0 * 100.0) if on_curve else 100.0,
+                "social_score": 0, "project_score": 0, "project_flags": {},
+                "last_persist": 0.0, "name": doc.get("name"), "symbol": doc.get("symbol"), "creator_rugs": 0, "first_seen_price_sol": 0.0,
                 "last_price_sol": 0.0, "price_samples": deque(maxlen=120), "last_price_sample_ts": 0.0,
                 "scanner_eligible": False, "scanner_last_attempt": 0.0, "manual_seed": True,
             }
+            logger.info(f"manual buy {mint[:8]}…: re-seeded untracked mint from chain ({'curve' if on_curve else 'pumpswap pool'})")
         if mint in self.active_trades:
             return {"ok": False, "reason": "already in an active position"}
         if self.kill_switch_tripped:
