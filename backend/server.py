@@ -2041,6 +2041,28 @@ async def trades_long_term_hold(trade_id: str, body: LTHBody):
     return {"ok": True, "long_term_hold": on}
 
 
+class AddBody(BaseModel):
+    usd: float
+
+
+@api.post("/trades/{trade_id}/add")
+async def trades_add_to_position(trade_id: str, body: AddBody):
+    """Operator add-on: buy `usd` more of an open SOL position (live or paper) and fold it into the average entry."""
+    trade = await db.trades.find_one({"_id": trade_id})
+    if not trade:
+        raise HTTPException(404, "Trade not found")
+    if trade.get("status") != "active":
+        raise HTTPException(400, "Trade not active")
+    if trade.get("chain") == "rh":
+        raise HTTPException(400, "Add-on is SOL only for now (RH paper positions cannot be topped up)")
+    if not (0 < float(body.usd) <= float(bot_state.config.max_trade_usd or 100)):
+        raise HTTPException(400, f"amount must be between $0.01 and max trade ${float(bot_state.config.max_trade_usd or 100):,.0f}")
+    res = await bot_state.add_to_position(trade["mint"], float(body.usd))
+    if not res.get("ok"):
+        raise HTTPException(409, res.get("reason") or "add refused")
+    return res
+
+
 @api.post("/trades/{trade_id}/exit")
 async def trades_manual_exit(trade_id: str):
     trade = await db.trades.find_one({"_id": trade_id}, {"_id": 0})

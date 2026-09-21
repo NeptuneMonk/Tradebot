@@ -35,6 +35,7 @@ export const api = {
   tradeHistory: (limit = 100) => client.get(`/trades/history?limit=${limit}`).then(r => r.data),
   exitTrade: (id) => client.post(`/trades/${id}/exit`).then(r => r.data),
   setLongTermHold: (id, on) => client.post(`/trades/${id}/lth`, { on }).then(r => r.data),
+  addToPosition: (id, usd) => longClient.post(`/trades/${id}/add`, { usd }).then(r => r.data),
   // live buys wait for send + confirm → long timeout; the refusal text comes back as the 409 detail
   scannerManualBuy: (mint) => longClient.post(`/scanner/manual-buy/${mint}`).then(r => r.data),
   creatorAudit: (chain, mint, force = false) => client.get(`/creator-audit/${chain}/${mint}`, { params: { force } }).then(r => r.data),

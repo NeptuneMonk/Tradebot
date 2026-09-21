@@ -49,7 +49,7 @@ export function stageFor(t) {
 const isManualHold = (t) => t.manual === true || t.long_term_hold === true || t.classifier_action === "manual" || t.classifier_action === "rh_pons_manual";
 const isLTH = (t) => t.long_term_hold === true;
 
-function Row({ t, onExit, onOpen, onLth }) {
+function Row({ t, onExit, onOpen, onLth, onAdd }) {
   const pnl = t.unrealized_pnl_pct;
   const book = t.book || (t.chain === "rh" ? "rh_pons" : "scalp");
   const lth = isLTH(t);
@@ -71,6 +71,13 @@ function Row({ t, onExit, onOpen, onLth }) {
       <td className="font-mono text-[11px] text-neutral-300 pl-4" title={st.hint} data-testid={`active-stage-${t.mint}`}>{st.text}</td>
       <td className="w-20"><span className="block h-1.5 w-16 bg-neutral-900 border border-neutral-800 overflow-hidden"><span className="block h-full bg-emerald-500/80" style={{ width: `${st.pct}%`, transition: "width 400ms ease" }} /></span></td>
       <td className="text-right pr-3 whitespace-nowrap">
+        {lth && t.chain !== "rh" && (
+          <button onClick={() => onAdd(t)} data-testid={`add-trade-btn-${t.mint}`}
+            className="px-1.5 py-0.5 mr-1 border border-emerald-700 text-emerald-300 text-[10px] font-mono hover:bg-emerald-950 transition-colors duration-100"
+            title="Add to this position: buy a USD amount more at market and fold it into the average entry">
+            +
+          </button>
+        )}
         <button onClick={() => onLth(t.id, !lth)} data-testid={`lth-trade-btn-${t.mint}`}
           className={`px-1.5 py-0.5 mr-1 border text-[9px] font-mono tracking-[0.1em] transition-colors duration-100 ${lth ? "border-sky-500 bg-sky-950/60 text-sky-200 hover:bg-sky-900/60" : "border-neutral-700 text-neutral-500 hover:border-sky-600 hover:text-sky-300"}`}
           title={lth ? "Long-term hold ON — click to hand the position back to the exit engine" : "Long-term hold: suspend every automatic exit; only ✕ sells"}>
@@ -84,7 +91,7 @@ function Row({ t, onExit, onOpen, onLth }) {
   );
 }
 
-function ActiveTradesCockpit({ trades, onExit, onLth }) {
+function ActiveTradesCockpit({ trades, onExit, onLth, onAdd }) {
   const [detail, setDetail] = useState(null);
   const auto = trades.filter((t) => !isManualHold(t));
   const manual = trades.filter(isManualHold);
@@ -104,13 +111,13 @@ function ActiveTradesCockpit({ trades, onExit, onLth }) {
           </thead>
           <tbody>
             {trades.length === 0 && <tr><td colSpan="6" className="text-center py-8 text-[10px] uppercase tracking-[0.2em] text-neutral-600">no active positions</td></tr>}
-            {auto.map((t) => <Row key={t.id} t={t} onExit={onExit} onLth={onLth} onOpen={setDetail} />)}
+            {auto.map((t) => <Row key={t.id} t={t} onExit={onExit} onLth={onLth} onAdd={onAdd} onOpen={setDetail} />)}
             {manual.length > 0 && (
               <tr data-testid="manual-holds-divider"><td colSpan="6" className="py-1 pl-3 text-[9px] uppercase tracking-[0.2em] text-fuchsia-400/80 bg-fuchsia-950/20 border-y border-fuchsia-900/40"
                 title="Operator buys (Buy Now / Graduate Ladder) and LTH positions. R-only exits (manual) or ✕-only (LTH) — no clock, no momentum kill, not counted toward max positions.">
                 manual holds · {manual.length} · outside max positions{manual.some(isLTH) ? <span className="text-sky-400"> · {manual.filter(isLTH).length} LTH</span> : null}</td></tr>
             )}
-            {manual.map((t) => <Row key={t.id} t={t} onExit={onExit} onLth={onLth} onOpen={setDetail} />)}
+            {manual.map((t) => <Row key={t.id} t={t} onExit={onExit} onLth={onLth} onAdd={onAdd} onOpen={setDetail} />)}
           </tbody>
         </table>
       </div>

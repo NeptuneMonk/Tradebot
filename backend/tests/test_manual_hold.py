@@ -183,3 +183,36 @@ def test_classify_buy_error_labels():
     assert c("insufficient lamports 1200").startswith("wallet")
     assert c("Custom:6023 BondingCurveComplete").startswith("curve")
     assert c("weird failure XYZ") == "buy failed: weird failure XYZ"
+
+
+def test_add_to_position_paper_folds_into_average(monkeypatch):
+    import bot as botmod
+
+    class _Trades:
+        def __init__(self): self.sets = []
+        async def update_one(self, q, u): self.sets.append((q, u))
+
+    class _DB2:
+        def __init__(self): self.trades = _Trades()
+
+    st = BotState(_DB2()); st.config = BotConfig()
+    t = {"id": "T1", "mint": "M" * 44, "symbol": "ADD", "mode": "paper", "entry_tokens": 1_000_000, "entry_sol": 0.01, "entry_usd": 2.0,
+         "entry_price_sol": 1e-8, "long_term_hold": True, "protocol": "pumpfun"}
+    st.active_trades[t["mint"]] = {"trade": t, "protocol": "pumpfun"}
+    curve = {"virtual_sol_reserves": 30 * 10**9, "virtual_token_reserves": 10**15, "real_sol_reserves": 5 * 10**9, "complete": False}
+    async def _curve(m): return curve
+    async def _px(): return 200.0
+    async def _bc(*a, **k): return None
+    monkeypatch.setattr(botmod.pumpfun, "fetch_bonding_curve_state", _curve)
+    monkeypatch.setattr(botmod, "get_sol_usd_price", _px)
+    monkeypatch.setattr(botmod.hub, "broadcast", _bc)
+    monkeypatch.setattr(st, "_resolve_fees", lambda: (1000, 500, 0))
+    res = asyncio.run(st.add_to_position(t["mint"], 2.0))
+    assert res["ok"], res
+    assert abs(t["entry_usd"] - 4.0) < 1e-9 and t["entry_sol"] > 0.01 and t["entry_tokens"] > 1_000_000
+    assert len(t["adds"]) == 1 and t["adds"][0]["usd"] == 2.0 and t["adds"][0]["sig"] is None
+    assert st.db.trades.sets and "adds" in st.db.trades.sets[-1][1]["$set"]
+    curve["complete"] = True
+    res = asyncio.run(st.add_to_position(t["mint"], 1.0))
+    assert not res["ok"] and "complete" in res["reason"]
+    assert not asyncio.run(st.add_to_position("nope", 1.0))["ok"]

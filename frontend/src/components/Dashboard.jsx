@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
-import { api } from "@/lib/api";
+import { api, explainApiError } from "@/lib/api";
 import { useWebSocket } from "@/lib/useWebSocket";
 import StatusBanner from "@/components/StatusBanner";
 import HaltBanner from "@/components/HaltBanner";
@@ -430,6 +430,21 @@ export default function Dashboard() {
       toast.error(e?.response?.data?.detail || "LTH toggle failed");
     }
   }, []);
+  const onAddToTrade = useCallback(async (t) => {
+    const last = localStorage.getItem("lth_add_usd") || "1";
+    const raw = window.prompt(`Add to ${t.symbol || t.mint?.slice(0, 8)} — USD amount to buy at market (${t.mode === "live" ? "LIVE, real SOL" : "paper"}):`, last);
+    if (raw == null) return;
+    const usd = parseFloat(raw);
+    if (!(usd > 0)) { toast.error("Enter a USD amount > 0"); return; }
+    localStorage.setItem("lth_add_usd", String(usd));
+    try {
+      const r = await api.addToPosition(t.id, usd);
+      setActiveTrades((prev) => prev.map((x) => (x.id === t.id ? { ...x, entry_usd: r.entry_usd, entry_price_sol: r.avg_price_sol } : x)));
+      toast.success(`Added $${usd.toFixed(2)} to ${t.symbol || "position"} → $${Number(r.entry_usd).toFixed(2)} total${r.sig ? " (tx sent)" : ""}`);
+    } catch (e) {
+      toast.error(`Add refused — ${explainApiError(e, "add failed")}`, { duration: 9000 });
+    }
+  }, []);
   const onExitTrade = useCallback(async (id) => {
     try {
       await api.exitTrade(id);
@@ -561,7 +576,7 @@ export default function Dashboard() {
           <div key="live" className="space-y-4" data-testid="view-live">
             <div className="tile-in"><KpiStrip wallet={wallet} status={status} config={config} auto={auto} pl={pl} /></div>
             <div className="grid grid-cols-1 lg:grid-cols-[1.15fr_1fr] gap-4 items-stretch" data-testid="cockpit-grid">
-              <div className="tile-in" style={{ animationDelay: "60ms" }}><ActiveTradesCockpit trades={activeTrades} onExit={onExitTrade} onLth={onLthTrade} /></div>
+              <div className="tile-in" style={{ animationDelay: "60ms" }}><ActiveTradesCockpit trades={activeTrades} onExit={onExitTrade} onLth={onLthTrade} onAdd={onAddToTrade} /></div>
               <div className="tile-in" style={{ animationDelay: "120ms" }}><EquityPanel refreshKey={pl?.cumulative_usd} /></div>
               <div className="tile-in" style={{ animationDelay: "180ms" }}><CompactCandidates candidates={scanner} scannerEnabled={scannerEnabled} onEnableScanner={onEnableScanner} /></div>
               <div className="tile-in" style={{ animationDelay: "240ms" }}><CompactLadder ladder={ladder} /></div>

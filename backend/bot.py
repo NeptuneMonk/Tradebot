@@ -2829,6 +2829,63 @@ class BotState:
         ]
         return await pumpfun.send_versioned_tx(kp, ixs, priority_fee)
 
+    async def add_to_position(self, mint: str, usd: float) -> dict:
+        """Operator add-on (the + on an LTH row): buy `usd` more of an open SOL position at market and fold it into the
+        average entry. Live → real buy; paper → fill at the fresh quote. Returns {ok, reason|added}."""
+        slot = self.active_trades.get(mint)
+        if not slot:
+            return {"ok": False, "reason": "no open SOL position for this mint"}
+        t = slot["trade"]
+        if usd <= 0:
+            return {"ok": False, "reason": "amount must be > 0"}
+        protocol = slot.get("protocol") or t.get("protocol") or "pumpfun"
+        try:
+            if protocol == "pumpswap":
+                pool = slot.get("pumpswap_pool") or t.get("pumpswap_pool") or ""
+                if not pool:
+                    pool = await asyncio.wait_for(pumpswap.find_pool_for_mint(mint), timeout=8.0) or ""
+                    slot["pumpswap_pool"] = pool
+                state = await asyncio.wait_for(pumpswap.fetch_pool_state(pool), timeout=8.0) if pool else None
+            else:
+                state = await asyncio.wait_for(pumpfun.fetch_bonding_curve_state(mint), timeout=8.0)
+                if state and state.get("complete"):
+                    return {"ok": False, "reason": "bonding curve is complete — position is migrating to PumpSwap; add again once the pool exists"}
+        except Exception as e:
+            return {"ok": False, "reason": f"could not read {protocol} state: {e}"}
+        if not state:
+            return {"ok": False, "reason": f"{protocol} state unavailable (pool/curve not found)"}
+        try:
+            sol_price = await get_sol_usd_price()
+            priority, slip, _ = self._resolve_fees()
+            sol_in = int(usd / sol_price * LAMPORTS_PER_SOL) if sol_price > 0 else 0
+            if sol_in <= 0:
+                return {"ok": False, "reason": "SOL price unknown — cannot size the add"}
+            tokens_out, max_sol = (pumpswap.quote_buy_tokens(state, sol_in, slip) if protocol == "pumpswap"
+                                   else pumpfun.quote_buy_tokens(state, sol_in, slip))
+            if tokens_out <= 0:
+                return {"ok": False, "reason": "quote returned 0 tokens — stale state or curve complete"}
+            sig = None
+            if t.get("mode") == "live":
+                sig = await self._live_buy(mint, protocol, state, tokens_out, max_sol, t.get("creator"), priority)
+            old_lamports = float(t.get("entry_sol") or 0) * LAMPORTS_PER_SOL
+            new_tokens = int(t.get("entry_tokens") or 0) + tokens_out
+            fill_price = sol_in / tokens_out / LAMPORTS_PER_SOL
+            t["entry_tokens"] = new_tokens
+            t["entry_sol"] = (old_lamports + sol_in) / LAMPORTS_PER_SOL
+            t["entry_usd"] = float(t.get("entry_usd") or 0) + usd
+            t["entry_price_sol"] = (old_lamports + sol_in) / new_tokens / LAMPORTS_PER_SOL
+            adds = list(t.get("adds") or [])
+            adds.append({"at": now_utc().isoformat(), "usd": usd, "price_sol": fill_price, "tokens": tokens_out, "sig": sig})
+            t["adds"] = adds
+            await self.db.trades.update_one({"_id": t["id"]}, {"$set": {k: t[k] for k in ("entry_tokens", "entry_sol", "entry_usd", "entry_price_sol", "adds")}})
+            logger.warning(f"ADD {t.get('symbol')} {mint[:8]}… +${usd:.2f} ({'live' if sig else 'paper'}) at {fill_price:.3e} → ${t['entry_usd']:.2f}, avg {t['entry_price_sol']:.3e}")
+            await hub.broadcast("trade_update", {"id": t["id"], "mint": mint, "entry_usd": t["entry_usd"], "entry_price_sol": t["entry_price_sol"],
+                                                 "entry_tokens": new_tokens, "adds": adds})
+            return {"ok": True, "added_usd": usd, "entry_usd": t["entry_usd"], "avg_price_sol": t["entry_price_sol"], "sig": sig}
+        except Exception as e:
+            logger.exception(f"add-on failed for {mint[:8]}…: {e}")
+            return {"ok": False, "reason": self.classify_buy_error(str(e))}
+
     async def _fast_fail_add(self, mint: str, slot: dict, protocol: str, state: dict, cur_price_sol: float) -> None:
         """Hardwired fast-fail sizing, leg 2: the entry bought HALF the planned size; the other half is added the first
         time the position prints +5 %. A −100 % drain before that costs half; a winner ends up at full size."""
