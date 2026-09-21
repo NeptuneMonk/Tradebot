@@ -45,12 +45,21 @@ def test_scalp_clock_skipped_for_manual():
     assert d.kind is None
 
 
-def test_manual_still_stops_out():
+def test_manual_hold_is_r_only():
+    """Operator hold: no SL / trail / TP / clock — the only automatic exit is the scalp target R."""
     cfg = BotConfig()
-    cfg.book_exits = {"scalp": {**(cfg.book_exits or {}).get("scalp", {}), "hold_max_seconds": 10, "stop_loss_pct": 12}}
-    man = _slot("manual")
-    d = exits.decide_scalp(cfg, man, -15.0, 0.85, elapsed=1, sl_fire=lambda b, s: b, ts_fire=lambda b: b)
-    assert d.kind == "exit" and "stop-loss" in d.reason
+    cfg.book_exits = {"scalp": {**(cfg.book_exits or {}).get("scalp", {}), "hold_max_seconds": 10, "stop_loss_pct": 12,
+                                "target_r": 1.5, "trailing_stop_pct": 6, "trailing_arm_pct": 10}}
+    man = _slot("manual", sl_pct_with_slip=20.0)          # 1R = 20% → target = +30%
+    assert exits.decide_manual(cfg, man, -60.0).kind is None            # deep red: no stop
+    man["peak_price_sol"] = 1.25                                        # +25% peak then back to +5%: no trail
+    assert exits.decide_manual(cfg, man, 5.0).kind is None
+    assert exits.decide_manual(cfg, man, 29.0).kind is None             # under target: hold
+    d = exits.decide_manual(cfg, man, 31.0)
+    assert d.kind == "exit" and "target +1.5R" in d.reason and "manual hold" in d.reason
+    # a manual hold that lands in the hunt book still uses the SCALP target_r
+    hunt = _slot("manual", sl_pct_with_slip=20.0, book="hunt")
+    assert exits.decide_manual(cfg, hunt, 31.0).kind == "exit"
 
 
 def test_dead_tape_skipped_for_manual():

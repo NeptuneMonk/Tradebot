@@ -1613,6 +1613,9 @@ class BotState:
         if book == "runner":
             return await self._run_runner(mint, slot, cur_price_sol, sl_fire, ts_fire)
         w = slot.get("_recovery_watch")
+        if w and self._is_manual_hold(slot):
+            slot.pop("_recovery_watch", None)                  # a hold never had a stop to tighten
+            w = None
         if w:
             verdict, why = exits.recovery_watch_step(w, time.time(), cur_price_sol)
             if verdict == "exit":
@@ -1628,10 +1631,14 @@ class BotState:
             elif pct > -float(exits.levels(cfg, slot)["stop_loss_pct"]):
                 return False                       # holding: the hard SL below still applies through the normal path
         dead = exits.search_dead_tape(cfg, book, self.tracking.get(mint), time.time(), entry_ts=slot.get("_entry_ts_mono"), trade=trade_doc)
-        d = dead if dead is not None else (exits.decide_hunt(cfg, slot, pct, cur_price_sol, elapsed, sl_fire, ts_fire) if book == "hunt"
-                                           else exits.decide_scalp(cfg, slot, pct, cur_price_sol, elapsed, sl_fire, ts_fire))
-        # promotion → runner: scalp at its +target·R exit, hunt once the +1R leg is banked (never on a stop)
-        promo_window = (book == "scalp" and d.kind == "exit" and "target" in d.reason) or \
+        manual = self._is_manual_hold(slot)
+        if manual:
+            d = exits.decide_manual(cfg, slot, pct)            # operator hold: R only — no SL / trail / TP / clock
+        else:
+            d = dead if dead is not None else (exits.decide_hunt(cfg, slot, pct, cur_price_sol, elapsed, sl_fire, ts_fire) if book == "hunt"
+                                               else exits.decide_scalp(cfg, slot, pct, cur_price_sol, elapsed, sl_fire, ts_fire))
+        # promotion → runner: scalp (or any manual hold) at its +target·R exit, hunt once the +1R leg is banked (never on a stop)
+        promo_window = ((book == "scalp" or manual) and d.kind == "exit" and "target" in d.reason) or \
                        (book == "hunt" and int(slot.get("ladder_legs_done") or 0) >= 1 and d.kind != "exit"
                         and time.time() - float(slot.get("_promo_check_ts") or 0) >= 2.0)
         if promo_window:

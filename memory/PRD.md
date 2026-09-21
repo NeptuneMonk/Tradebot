@@ -2190,3 +2190,8 @@ User rule: turning a feed off is cheating — improve WHICH tokens we enter/exit
 
 ## 2026-09-20 (e) — LIVE switch did not persist (bug)
 - `live_trading` was in `SWITCH_KEYS` (excluded from Save diff) but the header LIVE `Switch` only did `setLocal` → "Nothing to save" and paper mode continued. Now flips via `flipKey` (instant PUT, confirm dialog when arming, backend 409 wallet-integrity reason surfaced in the toast), same as `rh_live_trading`. Verified PUT live_trading true→200/false→200 on preview.
+
+## 2026-09-20 (f) — Manual holds are R-only
+- User: TS fired on every pullback of 60–100%-swing tokens, missing +400% runs. Verified ARM is already measured from entry (not first-seen) — the mechanism, not the value, was the issue.
+- Manual holds (Buy Now / pin, `is_manual_hold`) now use `exits.decide_manual`: **no SL, no trailing stop, no TP, no clock, no rip-cord, no recovery watch**. Only exits: scalp `target_r` × 1R (→ sells, or promotes to runner when flow is strong — promo window extended to manual holds in any book) and the operator ✕. Runner phase unchanged. Auto scalps unchanged.
+- Sizing skip reason now prints the full R breakdown (`bankroll × risk = R ÷ (SL + slip) × mult`).

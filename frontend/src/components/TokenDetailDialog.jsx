@@ -103,7 +103,7 @@ export function TokenDetailDialog({ token, onClose }) {
               className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 border border-emerald-700 text-emerald-300 hover:bg-emerald-950/40 disabled:opacity-40 font-mono text-xs uppercase tracking-[0.2em]">
               <ShoppingCart className="w-3.5 h-3.5" /> {data?.summary?.active ? "position open" : busy ? "sending…" : "re-enter manually"}
             </button>
-            <div className="text-[9px] font-mono text-neutral-600">Manual entry bypasses the momentum gates; max positions, kill switches and the live/paper mode still apply.</div>
+            <div className="text-[9px] font-mono text-neutral-600">Manual entry bypasses the momentum gates; max positions, kill switches and the live/paper mode still apply. Manual holds exit on the scalp R target only (or promote to runner when flow is strong) — no SL, trailing stop, TP or clock; sell with ✕ anytime.</div>
 
             <CreatorAuditPanel key={`${chain}:${mint}`} chain={chain} mint={mint} initial={live?.creator_audit || null} />
             {chain === "sol" && data?.rugcheck !== undefined && (

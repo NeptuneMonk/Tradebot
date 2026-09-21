@@ -23,9 +23,19 @@ MANUAL_ACTIONS = ("manual", "rh_pons_manual")
 
 
 def is_manual_hold(trade: dict | None) -> bool:
-    """Operator-bought position (Buy Now / Graduate Ladder pin): long hold — SL / TP / trail only, no clock, no momentum kill."""
+    """Operator-bought position (Buy Now / Graduate Ladder pin): R-only hold — no SL / trail / TP / clock / rip-cord /
+    momentum kill. Exits at the scalp +target·R (or promotes to runner there when flow is strong) or by the operator."""
     t = trade or {}
     return bool(t.get("manual")) or t.get("classifier_action") in MANUAL_ACTIONS
+
+
+def decide_manual(cfg, slot: dict, pct: float) -> ExitDecision:
+    """Manual hold: the only automatic exit is the scalp target R (1R = the position's SL-with-slip distance)."""
+    target_r = float(exit_param(cfg, "scalp", "target_r") or 0.0)
+    target_pct = target_r * r_pct(slot) if target_r > 0 else 0.0
+    if target_pct > 0 and pct >= target_pct:
+        return ExitDecision("exit", f"target +{target_r:g}R hit (+{pct:.1f}%) [manual hold]")
+    return ExitDecision()
 
 
 def r_pct(slot: dict) -> float:
