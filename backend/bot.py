@@ -1635,7 +1635,7 @@ class BotState:
                 logger.info(f"RECOVERY WATCH {mint[:8]}… reclaimed {cur_price_sol:.3e} (from {w['from_pct']:+.1f}%) — back on the ladder, clock restarted")
             elif pct > -float(exits.levels(cfg, slot)["stop_loss_pct"]):
                 return False                       # holding: the hard SL below still applies through the normal path
-        dead = exits.search_dead_tape(cfg, book, self.tracking.get(mint), time.time(), entry_ts=slot.get("_entry_ts_mono"), trade=trade_doc)
+        dead = exits.search_dead_tape(cfg, book, self.tracking.get(mint), time.time(), entry_ts=slot.get("_entry_ts_mono"), trade=trade_doc, pct=pct)
         manual = self._is_manual_hold(slot)
         if manual:
             d = exits.decide_manual(cfg, slot, pct)            # operator hold: R only — no SL / trail / TP / clock
@@ -4020,9 +4020,13 @@ class BotState:
                     _ep = float((slot.get("trade") or {}).get("entry_price_sol") or 0)
                     _pk = float(slot.get("peak_price_sol") or 0)
                     _mfe = (_pk / _ep - 1.0) * 100.0 if _ep > 0 and _pk > 0 else 0.0
-                    if _mfe < self.config.no_momentum_min_mfe_pct:
-                        _b = self.tracking.get(mint) or {}
-                        _px = float(_b.get("last_price_sol") or slot.get("_last_price") or 0.0)
+                    _b = self.tracking.get(mint) or {}
+                    _px = float(_b.get("last_price_sol") or slot.get("_last_price") or 0.0)
+                    if _mfe < self.config.no_momentum_min_mfe_pct and 0 < _px <= _ep:
+                        # RED + no momentum → hold as dust. Momentum / velocity never sells a red position; only a
+                        # price-based exit (stop-loss, clock, rip-cord) may — see PRD 2026-09-21 (f).
+                        logger.info(f"no-momentum skipped {mint[:8]}…: red ({(_px / _ep - 1) * 100:+.1f}%) — holding until a price-based exit fires")
+                    elif _mfe < self.config.no_momentum_min_mfe_pct:
                         _now = time.time()
                         _rec = (
                             getattr(self.config, "recovery_watch_enabled", True) and 0 < _px < _ep

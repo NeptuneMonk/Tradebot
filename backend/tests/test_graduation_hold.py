@@ -343,40 +343,26 @@ def _rh_red_no_momentum(**cfg):
     return st, b, TOKEN, pos, t, entry, now
 
 
-def test_rh_no_momentum_on_recovering_red_tape_becomes_watch_then_reclaims():
+def test_rh_red_no_momentum_is_held_as_dust():
+    """Rule (2026-09-21): momentum / velocity never sells a RED position — no kill, no recovery watch; it waits for a
+    price-based exit (stop / clock)."""
     st, b, TOKEN, pos, t, entry, now = _rh_red_no_momentum()
     b["last_price_quote"] = entry * 0.92
-    assert st.rh_paper._decide_exit(pos, b, now) is None                      # watch armed, no kill
-    w = pos["_recovery_watch"]
-    assert abs(w["stop"] - entry * 0.88 * 0.97) < 1e-20 and abs(w["target"] - entry * 0.94) < 1e-20
+    assert st.rh_paper._decide_exit(pos, b, now) in (None, "max_hold")        # never no_momentum / recovery-*
+    assert "_recovery_watch" not in pos and pos["_nm_checked"] is True
     b["last_price_quote"] = entry * 0.93
-    assert st.rh_paper._decide_exit(pos, b, now + 10) is None                 # holding inside the box
-    b["last_price_quote"] = entry * 0.95
-    assert st.rh_paper._decide_exit(pos, b, now + 20) is None                 # reclaimed → back on the normal ladder
-    assert "_recovery_watch" not in pos and t["recovery_watch"] == "recovered"
-
-
-def test_rh_recovery_watch_exits_on_trough_breach_or_timeout():
-    st, b, TOKEN, pos, t, entry, now = _rh_red_no_momentum()
-    b["last_price_quote"] = entry * 0.92
-    assert st.rh_paper._decide_exit(pos, b, now) is None
-    b["last_price_quote"] = entry * 0.85                                       # through trough −3%
-    r = st.rh_paper._decide_exit(pos, b, now + 5)
-    assert r and r.startswith("recovery-stop") and t["recovery_watch"] == "failed"
-    st, b, TOKEN, pos, t, entry, now = _rh_red_no_momentum()
-    b["last_price_quote"] = entry * 0.92
-    assert st.rh_paper._decide_exit(pos, b, now) is None
-    b["last_price_quote"] = entry * 0.93
-    r = st.rh_paper._decide_exit(pos, b, now + 91)
-    assert r and r.startswith("recovery-timeout")
-
-
-def test_rh_flat_dead_red_tape_still_gets_no_momentum_kill():
+    assert st.rh_paper._decide_exit(pos, b, now + 91) == "max_hold"           # the book CLOCK (price-agnostic) is what finally closes it
+    # flat dead red tape: same — held
     st, b, TOKEN, pos, t, entry, now = _rh_red_no_momentum()
     b["price_samples"].clear()
-    b["price_samples"].extend([(now - 32, entry * 0.92), (now - 1, entry * 0.92)])   # flat vs 30s ago
+    b["price_samples"].extend([(now - 32, entry * 0.92), (now - 1, entry * 0.92)])
     b["last_price_quote"] = entry * 0.92
-    assert st.rh_paper._decide_exit(pos, b, now) == "no_momentum"
-    st, b, TOKEN, pos, t, entry, now = _rh_red_no_momentum(recovery_watch_enabled=False)
-    b["last_price_quote"] = entry * 0.92
+    assert st.rh_paper._decide_exit(pos, b, now) in (None, "max_hold")        # clock may fire; momentum never does
+    assert "_recovery_watch" not in pos
+
+
+def test_rh_green_low_mfe_no_momentum_still_kills():
+    st, b, TOKEN, pos, t, entry, now = _rh_red_no_momentum()
+    pos["peak_price"] = entry * 1.02
+    b["last_price_quote"] = entry * 1.01                                       # green but never reached min MFE
     assert st.rh_paper._decide_exit(pos, b, now) == "no_momentum"

@@ -1099,7 +1099,10 @@ class RHPaperTrader:
             and now - pos["opened"] >= cfg.no_momentum_after_s
         ):
             pos["_nm_checked"] = True
-            if peak_pct < cfg.no_momentum_min_mfe_pct:
+            if peak_pct < cfg.no_momentum_min_mfe_pct and pnl_pct <= 0:
+                # RED + no momentum → hold as dust; only a price-based exit (stop / clock) may close a red position
+                logger.info(f"rh_paper no-momentum skipped {t.get('symbol')}: red ({pnl_pct:+.1f}%) — holding until a price-based exit fires")
+            elif peak_pct < cfg.no_momentum_min_mfe_pct:
                 from exits import is_recovering, price_ago, start_recovery_watch
                 trough = float(pos.get("trough_price") or price)
                 new_buyers = len({w for ts, _q, w in (b.get("buy_events") or ()) if now - ts <= 30.0})

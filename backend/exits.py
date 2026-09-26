@@ -163,10 +163,14 @@ def after_partial(slot: dict, expected_exit_cost_pct: float) -> None:
     slot["ladder_stop_pct"] = round(max(float(slot.get("ladder_stop_pct") or 0.0), expected_exit_cost_pct), 2)
 
 
-def search_dead_tape(cfg, book: str, bucket: dict | None, now: float, *, entry_ts: float | None = None, trade: dict | None = None):
+def search_dead_tape(cfg, book: str, bucket: dict | None, now: float, *, entry_ts: float | None = None, trade: dict | None = None,
+                     pct: float | None = None):
     """Search-book time-stop: `book_exits.<book>.no_new_buyers_s` > 0 and no NEW unique buyer AND no inflow tick for
-    that long → exit "search-dead-tape". Default 0 = off. Runner and manual holds never use this."""
+    that long → exit "search-dead-tape". Default 0 = off. Runner and manual holds never use this, and it only fires
+    while the position is GREEN — a red position is held as dust until a price-based exit (stop / clock) fires."""
     if book == "runner" or not bucket or is_manual_hold(trade):
+        return None
+    if pct is not None and pct <= 0:
         return None
     win = float(((getattr(cfg, "book_exits", None) or {}).get(book) or {}).get("no_new_buyers_s") or 0)
     if win <= 0:
