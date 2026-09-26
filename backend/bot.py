@@ -1504,7 +1504,7 @@ class BotState:
                     f"(pnl {pnl_usd / r_usd:+.2f}R, stage {trade_doc['runner_stage']}); hunt cap now {self._hunt_cap()}")
         return True
 
-    async def _run_runner(self, mint: str, slot: dict, cur_price_sol: float, sl_fire, ts_fire) -> bool:
+    async def _run_runner(self, mint: str, slot: dict, cur_price_sol: float, sl_fire, ts_fire, elapsed: float = 0.0) -> bool:
         """One runner tick: flow → stage → decide_runner → (+3R chip | exit) → one add-on when graduated + retail."""
         trade_doc = slot["trade"]
         cfg, now = self.config, time.time()
@@ -1521,7 +1521,8 @@ class BotState:
             await hub.broadcast("trade_update", trade_doc)
         d = exits.decide_runner(cfg, slot, cur_price_sol, sl_fire, ts_fire, flow=flow,
                                 stage=("live" if stage == "exhausted" and self._is_manual_hold(slot) else stage),   # manual hold: flow death is not an exit
-                                pool_missing_s=(now - pool_missing_since) if pool_missing_since else 0.0)
+                                pool_missing_s=(now - pool_missing_since) if pool_missing_since else 0.0,
+                                elapsed=elapsed)
         if d.kind == "partial":
             slot["exit_in_progress"] = True
             try:
@@ -1616,7 +1617,7 @@ class BotState:
 
         book = trade_doc.get("book") or "scalp"
         if book == "runner":
-            return await self._run_runner(mint, slot, cur_price_sol, sl_fire, ts_fire)
+            return await self._run_runner(mint, slot, cur_price_sol, sl_fire, ts_fire, elapsed)
         w = slot.get("_recovery_watch")
         if w and self._is_manual_hold(slot):
             slot.pop("_recovery_watch", None)                  # a hold never had a stop to tighten

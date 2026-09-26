@@ -25,9 +25,13 @@ def test_levels_applies_ratchet_and_arms(monkeypatch):
     monkeypatch.setattr(exits, "exit_param", lambda cfg, book, k, reg=None: {"trailing_stop_pct": 10.0, "trailing_arm_pct": 20.0, "stop_loss_pct": 12.0}.get(k, 0.0))
     monkeypatch.setattr(exits, "trade_regime", lambda cfg, book, t: None)
     monkeypatch.setattr(exits, "r_pct", lambda slot: 12.0)
+    from types import SimpleNamespace
     slot = {"trade": {"book": "scalp", "entry_price_sol": 1.0}, "peak_price_sol": 1.32}
-    lv = exits.levels(None, slot)
+    lv = exits.levels(SimpleNamespace(trail_ratchet_enabled=True), slot)
     assert lv["trailing_stop_pct"] == 4.0 and lv["trailing_arm_pct"] == 15.0
+    # default: the ratchet is OFF — the configured trail / arm are used exactly as set
+    lv = exits.levels(SimpleNamespace(trail_ratchet_enabled=False), slot)
+    assert lv["trailing_stop_pct"] == 10.0 and lv["trailing_arm_pct"] == 20.0
 
 
 @pytest.mark.asyncio

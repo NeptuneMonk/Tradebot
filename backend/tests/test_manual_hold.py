@@ -216,3 +216,39 @@ def test_add_to_position_paper_folds_into_average(monkeypatch):
     res = asyncio.run(st.add_to_position(t["mint"], 1.0))
     assert not res["ok"] and "complete" in res["reason"]
     assert not asyncio.run(st.add_to_position("nope", 1.0))["ok"]
+
+
+def _cfg_exits(**books):
+    cfg = BotConfig()
+    cfg.trail_ratchet_enabled = False
+    be = dict(cfg.book_exits or {})
+    for b, p in books.items():
+        be[b] = {**be.get(b, {}), **p}
+    cfg.book_exits = be
+    return cfg
+
+
+def test_every_book_honours_clock_tp_and_target():
+    yes = lambda breached, *a: bool(breached)      # fire exactly when the level is breached
+    # scalp: TP % honoured
+    cfg = _cfg_exits(scalp={"take_profit_pct": 8.0, "target_r": 5.0, "hold_max_seconds": 0})
+    d = exits.decide_scalp(cfg, _slot("momentum_new", sl_pct_with_slip=12.0), 9.0, 1.09, elapsed=5, sl_fire=yes, ts_fire=yes)
+    assert d.kind == "exit" and "take-profit" in d.reason
+    # hunt: clock honoured (was hard "no clock"); target R when ladder legs are 0
+    cfg = _cfg_exits(hunt={"hold_max_seconds": 10, "ladder_1r_sell_pct": 0, "ladder_2r_sell_pct": 0, "target_r": 2.0, "trailing_stop_pct": 0})
+    h = _slot("reentry", sl_pct_with_slip=10.0, book="hunt")
+    assert exits.decide_hunt(cfg, h, 1.0, 1.01, elapsed=11, sl_fire=yes, ts_fire=yes).reason.startswith("hunt clock")
+    assert "target +2R" in exits.decide_hunt(cfg, h, 21.0, 1.21, elapsed=1, sl_fire=yes, ts_fire=yes).reason
+    # runner: clock, TP, target R and Arm % honoured (all from promotion)
+    cfg = _cfg_exits(runner={"hold_max_seconds": 10, "take_profit_pct": 0, "target_r": 0, "trailing_stop_pct": 15, "trailing_arm_pct": 0, "stop_loss_pct": 25})
+    r = _slot("momentum_new", sl_pct_with_slip=10.0, book="runner", promotion_price_sol=1.0)
+    flow = {"peak_price_sol": 1.02, "giveback_pct": 0.0}
+    assert exits.decide_runner(cfg, r, 1.01, yes, yes, flow=flow, stage="live", elapsed=11).reason.startswith("runner clock")
+    assert exits.decide_runner(cfg, r, 1.01, yes, yes, flow=flow, stage="live", elapsed=9).kind is None
+    cfg = _cfg_exits(runner={"hold_max_seconds": 0, "take_profit_pct": 30.0, "trailing_stop_pct": 15, "trailing_arm_pct": 0})
+    assert "take-profit" in exits.decide_runner(cfg, r, 1.31, yes, yes, flow={"peak_price_sol": 1.31, "giveback_pct": 0.0}, stage="live").reason
+    cfg = _cfg_exits(runner={"hold_max_seconds": 0, "take_profit_pct": 0, "trailing_stop_pct": 15, "trailing_arm_pct": 50.0})
+    # peak +20% (≥ 1R) with a 16% giveback: trail NOT armed because Arm % is 50 → no exit
+    assert exits.decide_runner(cfg, r, 1.0, yes, yes, flow={"peak_price_sol": 1.20, "giveback_pct": 16.0}, stage="live").kind is None
+    cfg = _cfg_exits(runner={"hold_max_seconds": 0, "take_profit_pct": 0, "trailing_stop_pct": 15, "trailing_arm_pct": 0})
+    assert "giveback" in exits.decide_runner(cfg, r, 1.0, yes, yes, flow={"peak_price_sol": 1.20, "giveback_pct": 16.0}, stage="live").reason

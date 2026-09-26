@@ -113,6 +113,7 @@ class BotConfig(BaseModel):
     # at `no_momentum_after_s`: if the position never reached
     # `no_momentum_min_mfe_pct`, exit. Snipes and partial-TP'd positions skip.
     no_momentum_exit_enabled: bool = True
+    trail_ratchet_enabled: bool = False          # hardwired trail tightening (+15% → ≤6%, +30% → ≤4%); off = your trail % is used as set
     no_momentum_after_s: int = 30
     no_momentum_min_mfe_pct: float = 5.0   # flattens a dead runner on any book (never a clock)
     # Net-flow momentum (buys − sells as % of curve liquidity): the size-aware replacement for wallet counts

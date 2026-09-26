@@ -11,18 +11,18 @@ export const BOOK_DEFAULTS = {
   runner: { stop_loss_pct: 25, target_r: 0, trailing_stop_pct: 15, trailing_arm_pct: 0, hold_max_seconds: 0, ladder_1r_sell_pct: 0, ladder_2r_sell_pct: 0 },
 };
 const BOOK_META = {
-  scalp: { label: "Scalp", hint: "momentum + manual · single exit at +target·R or −1R · trail once armed · clock allowed" },
-  hunt: { label: "Hunt", hint: "greylist snipe + re-entry · pattern rip-cord first · +1R sell leg 1 & stop → breakeven+cost · +2R sell leg 2 · trail the runner · NO clock (0 = disabled)" },
+  scalp: { label: "Scalp", hint: "momentum + manual · exits: SL (−1R) · TP % · +target·R · trail once armed at Arm % · clock (0 = off) · manual holds: target R only" },
+  hunt: { label: "Hunt", hint: "greylist snipe + re-entry · pattern rip-cord first · +1R / +2R sell legs (stop → breakeven+cost after leg 1) · trail (arms after leg 1 or at Arm %) · TP % · target R (only when both legs are 0) · clock (0 = off)" },
   rh_pons: { label: "RH · PONS", hint: "Robinhood Chain curves · own exits, never shares Solana values · cost gate + R sizing apply" },
-  runner: { label: "Runner", hint: "winners only — promoted from a live scalp/hunt at +1R with expanding flow, never opened cold · SL from the promotion price · trail 15% armed after +1R from promotion · +3R chip 25% · one add-on 0.5R when graduated + retail · exhausted after 90s of dead flow · NO clock · cap 1 (hunt cap → 1 while open)" },
+  runner: { label: "Runner", hint: "promoted winners · every % measured from the PROMOTION price · giveback trail (Trail %, armed at Arm % or +1R when 0) · SL · TP % · target R · +3R chip 25% · exhausted after dead flow · clock since entry (0 = off) · cap 1" },
 };
 const FIELDS = [
   ["stop_loss_pct", "SL %", "1R in price terms (plus expected exit slip). R sizing derives size from this."],
-  ["target_r", "Target R", "Scalp: full exit at +target·R. Hunt: cost gate uses +1R for the first leg; runner trails. RH: 0 = use TP %."],
-  ["take_profit_pct", "TP %", "RH only — legacy % target used when Target R is 0."],
-  ["trailing_stop_pct", "Trail %", "Give-back from peak that closes the runner."],
-  ["trailing_arm_pct", "Arm %", "Peak gain required before the trail arms (hunt arms after leg 1 regardless)."],
-  ["hold_max_seconds", "Clock s", "Scalp / RH clock stop. Hunt must stay 0 — a hunt is never killed by a timer."],
+  ["target_r", "Target R", "Full exit at +target·R (1R = SL + slip). Scalp / runner (from promotion) / hunt when both ladder legs are 0. RH: 0 = use TP %. 0 = off."],
+  ["take_profit_pct", "TP %", "Fixed % exit, every book (runner: % from promotion). 0 = off."],
+  ["trailing_stop_pct", "Trail %", "Give-back from peak that closes the position (runner: peak since promotion). Used exactly as set unless the trail ratchet switch is on."],
+  ["trailing_arm_pct", "Arm %", "Peak gain (from entry; runner: from promotion) before the trail arms. Hunt also arms after leg 1. Runner 0 = arm at +1R."],
+  ["hold_max_seconds", "Clock s", "Max hold since entry, every book. 0 = no clock. Manual / LTH holds ignore it."],
   ["ladder_1r_sell_pct", "+1R sell %", "Hunt ladder leg 1 size."],
   ["ladder_2r_sell_pct", "+2R sell %", "Hunt ladder leg 2 size."],
 ];

@@ -65,7 +65,7 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
   // Only the keys the user actually changed go over the wire. Sending the whole form snapshot re-wrote
   // stale values (a feed toggle flipped by another click / the Doctor) — that's why feeds "switched themselves off".
   // Operator switches only ever travel through their own toggle (flipKey) — never inside a form save.
-  const SWITCH_KEYS = new Set(["enabled", "helius_tracker_enabled", "rh_feed_enabled", "rh_paper_enabled", "rh_live_trading", "live_trading", "scanner_enabled", "scanner_seasoned_entries_enabled", "ladder_enabled"]);
+  const SWITCH_KEYS = new Set(["enabled", "helius_tracker_enabled", "rh_feed_enabled", "rh_paper_enabled", "rh_live_trading", "live_trading", "scanner_enabled", "scanner_seasoned_entries_enabled", "trail_ratchet_enabled", "ladder_enabled"]);
   const diff = (a, b) => Object.fromEntries(Object.entries(a || {}).filter(([k, v]) => !SWITCH_KEYS.has(k) && JSON.stringify(v) !== JSON.stringify((b || {})[k])));
   const save = async () => {
     try {
@@ -588,6 +588,11 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
               onChange={(e) => flipKey("scanner_enabled", e.target.checked, () => toast.success(e.target.checked ? "SOL scanner ON — auto-entries armed" : "SOL scanner OFF — no auto-entries"))}
             />
             enabled
+          </label>
+          <label className="flex items-center gap-1.5 text-[10px] font-mono uppercase text-neutral-400" title="Trail ratchet: once a trade is +15% the trail is capped at 6%, at +30% at 4% — overrides your Trail % / Arm %. OFF = your per-book values are used exactly as set.">
+            <input type="checkbox" data-testid="trail-ratchet-checkbox" checked={!!local.trail_ratchet_enabled}
+              onChange={(e) => flipKey("trail_ratchet_enabled", e.target.checked, () => toast.success(e.target.checked ? "Trail ratchet ON — trails tighten automatically at +15% / +30%" : "Trail ratchet OFF — per-book Trail % / Arm % used as set"))} />
+            trail ratchet
           </label>
           <label className="flex items-center gap-1.5 text-[10px] font-mono uppercase text-neutral-400" title="Seasoned-band (graduated PumpSwap pool) entries → hunt book. Off = new-band scalps only.">
             <input

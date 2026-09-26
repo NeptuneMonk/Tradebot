@@ -2218,3 +2218,7 @@ User rule: turning a feed off is cheating — improve WHICH tokens we enter/exit
 
 ## 2026-09-21 (f) — No-momentum only fires in GREEN
 - Rule: momentum / velocity never sells a RED position. SOL (`bot.py` no-momentum block): if MFE < min and price ≤ entry → log "no-momentum skipped … red — holding" and hold as dust (no kill, no recovery watch). `search_dead_tape` gets `pct` and returns None when ≤ 0. RH (`rh_paper._decide_exit`): same gate on `pnl_pct <= 0`. Only price-based exits (stop-loss, clock/max_hold, rip-cord, ladder) may close a red position. Tests rewritten: `test_rh_red_no_momentum_is_held_as_dust`, `test_rh_green_low_mfe_no_momentum_still_kills`; wiki updated.
+
+## 2026-09-26 — Exits-per-book: every knob honoured by every book
+- Audit found: runner ignored clock / TP % / target R / Arm % (arm hardwired at +1R, "NEVER a clock"); hunt ignored clock / TP % / target R; scalp ignored TP %; and a hardwired **trail ratchet** (+15% → trail ≤6%, +30% → ≤4%) silently overrode Trail %/Arm % on scalp & hunt — the real reason "TS fires no matter what I set".
+- Fixes (`exits.py`): scalp TP %; hunt TP %, target R (when both ladder legs are 0), clock; runner Arm % (0 = +1R), TP %, target R, clock (elapsed since entry, passed from `_run_ladder` → `_run_runner`); ratchet behind new `trail_ratchet_enabled` (default **off**, checkbox in CONTROL → Momentum Scanner row). Editor hints rewritten to state exactly what each book honours. Tests: `test_every_book_honours_clock_tp_and_target`, ratchet on/off test. Session token re-seeded (30 d).

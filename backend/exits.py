@@ -61,9 +61,11 @@ def levels(cfg, slot: dict) -> dict:
     p["book"] = book
     ep = float(t.get("entry_price_sol") or 0)
     peak_pct = (float(slot.get("peak_price_sol") or ep) - ep) / ep * 100 if ep > 0 else 0.0
-    p["trailing_stop_pct"] = ratchet_trail(p["trailing_stop_pct"], peak_pct)
-    if p["trailing_stop_pct"] > 0 and p["trailing_arm_pct"] > RATCHET_TIERS[0][0]:
-        p["trailing_arm_pct"] = RATCHET_TIERS[0][0]     # a ratcheted trail must be armed once the first tier is reached
+    p["take_profit_pct"] = float(exit_param(cfg, book, "take_profit_pct", reg) or 0.0)
+    if getattr(cfg, "trail_ratchet_enabled", False):
+        p["trailing_stop_pct"] = ratchet_trail(p["trailing_stop_pct"], peak_pct)
+        if p["trailing_stop_pct"] > 0 and p["trailing_arm_pct"] > RATCHET_TIERS[0][0]:
+            p["trailing_arm_pct"] = RATCHET_TIERS[0][0]     # a ratcheted trail must be armed once the first tier is reached
     return p
 
 
@@ -94,6 +96,8 @@ def _drop_from_peak(slot: dict, cur: float) -> tuple[float, float]:
 
 def decide_scalp(cfg, slot: dict, pct: float, cur: float, elapsed: float, sl_fire, ts_fire) -> ExitDecision:
     lv = levels(cfg, slot)
+    if lv["take_profit_pct"] > 0 and pct >= lv["take_profit_pct"]:
+        return ExitDecision("exit", f"take-profit +{lv['take_profit_pct']:g}% hit (+{pct:.1f}%)")
     if lv["target_pct"] > 0 and pct >= lv["target_pct"]:
         return ExitDecision("exit", f"target +{lv['target_r']:g}R hit (+{pct:.1f}%)")
     if sl_fire(pct <= -lv["stop_loss_pct"], -pct - lv["stop_loss_pct"]):
@@ -127,12 +131,20 @@ def decide_hunt(cfg, slot: dict, pct: float, cur: float, elapsed: float, sl_fire
     armed = legs >= 1 or (lv["trailing_arm_pct"] > 0 and peak_pct >= lv["trailing_arm_pct"])
     if lv["trailing_stop_pct"] > 0 and peak_pct > 0 and armed and ts_fire(drop >= lv["trailing_stop_pct"]):
         return ExitDecision("exit", f"trailing-stop hit (peak +{peak_pct:.1f}%, now +{pct:.1f}%)")
-    return ExitDecision()   # hunt has no clock — no_momentum_exit / rip-cord flatten dead runners
+    if lv["take_profit_pct"] > 0 and pct >= lv["take_profit_pct"]:
+        return ExitDecision("exit", f"take-profit +{lv['take_profit_pct']:g}% hit (+{pct:.1f}%)")
+    if lv["target_pct"] > 0 and lv["ladder_1r_sell_pct"] <= 0 and lv["ladder_2r_sell_pct"] <= 0 and pct >= lv["target_pct"]:
+        return ExitDecision("exit", f"target +{lv['target_r']:g}R hit (+{pct:.1f}%)")      # target R only when the ladder legs are off
+    if lv["hold_max_seconds"] > 0 and elapsed > lv["hold_max_seconds"] and not is_manual_hold(slot.get("trade")):
+        return ExitDecision("exit", f"hunt clock {int(lv['hold_max_seconds'])}s ({pct:+.1f}%)")
+    return ExitDecision()   # clock 0 = off: no_momentum_exit / rip-cord flatten dead runners
 
 
-def decide_runner(cfg, slot: dict, cur: float, sl_fire, ts_fire, *, flow: dict, stage: str, pool_missing_s: float = 0.0) -> ExitDecision:
-    """Runner (promoted winner): no-pool after grace → giveback from the peak-since-promotion (armed after +1R from the
-    promotion price) → stop from the promotion price → +3R chip → exhausted. NEVER a clock."""
+def decide_runner(cfg, slot: dict, cur: float, sl_fire, ts_fire, *, flow: dict, stage: str, pool_missing_s: float = 0.0,
+                  elapsed: float = 0.0) -> ExitDecision:
+    """Runner (promoted winner), all % from the PROMOTION price: no-pool after grace → giveback trail from the
+    peak-since-promotion (armed at trailing_arm_pct, or +1R when 0) → stop-loss → take-profit / target R (when > 0) →
+    +3R chip → exhausted → clock (hold_max_seconds since entry, 0 = off)."""
     t = slot.get("trade") or {}
     promo_p = float(t.get("promotion_price_sol") or t.get("entry_price_sol") or 0)
     if promo_p <= 0:
@@ -145,15 +157,25 @@ def decide_runner(cfg, slot: dict, cur: float, sl_fire, ts_fire, *, flow: dict, 
     peak_pct = (peak - promo_p) / promo_p * 100.0
     drop = float(flow.get("giveback_pct") or 0.0)
     trail = float(t.get("runner_trail_pct") or exit_param(cfg, "runner", "trailing_stop_pct"))
-    if trail > 0 and peak_pct >= one_r and ts_fire(drop >= trail):
+    arm = float(exit_param(cfg, "runner", "trailing_arm_pct") or 0.0) or one_r
+    if trail > 0 and peak_pct >= arm and ts_fire(drop >= trail):
         return ExitDecision("exit", f"runner giveback {drop:.1f}% ≥ {trail:g}% (peak +{peak_pct:.1f}% from promotion, now {pct:+.1f}%)")
     sl = exit_param(cfg, "runner", "stop_loss_pct")
     if sl > 0 and sl_fire(pct <= -sl, -pct - sl):
         return ExitDecision("exit", f"runner stop-loss {pct:+.1f}% from promotion")
+    tp = float(exit_param(cfg, "runner", "take_profit_pct") or 0.0)
+    if tp > 0 and pct >= tp:
+        return ExitDecision("exit", f"runner take-profit +{tp:g}% from promotion ({pct:+.1f}%)")
+    tr = float(exit_param(cfg, "runner", "target_r") or 0.0)
+    if tr > 0 and pct >= tr * one_r:
+        return ExitDecision("exit", f"runner target +{tr:g}R from promotion ({pct:+.1f}%)")
     if not t.get("runner_3r_done") and pct >= 3 * one_r:
         return ExitDecision("partial", f"runner +3R: bank 25% ({pct:+.1f}% from promotion), trail → {trail if trail < 10 else 10:g}%", 0.25)
     if stage == "exhausted":
         return ExitDecision("exit", f"runner-exhausted: {flow.get('reason') or 'flow died'} ({pct:+.1f}% from promotion)")
+    clock = float(exit_param(cfg, "runner", "hold_max_seconds") or 0.0)
+    if clock > 0 and elapsed > clock and not is_manual_hold(t):
+        return ExitDecision("exit", f"runner clock {int(clock)}s ({pct:+.1f}% from promotion)")
     return ExitDecision()
 
 
