@@ -48,7 +48,7 @@ import math
 import statistics
 from datetime import datetime, timedelta, timezone
 import time
-from typing import Any, Optional
+from typing import Optional
 
 logger = logging.getLogger("live_doctor")
 

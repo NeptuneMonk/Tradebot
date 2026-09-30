@@ -2,16 +2,13 @@
 Pump.fun launch/trade firehose — a logsSubscribe channel on the single shared Solana WSS (account_event_bus).
 Detects Create + Trade events for Pump.fun and emits them.
 """
-import os
 import json
-import asyncio
-import time
 import base64
 import struct
 import hashlib
 import logging
 
-from pumpfun import PUMP_PROGRAM_ID, CREATE_DISCRIMINATOR
+from pumpfun import PUMP_PROGRAM_ID
 
 logger = logging.getLogger("listener")
 

@@ -1111,6 +1111,7 @@ class RHDiscovery:
     def status(self) -> dict:
         return {
             **self.stats,
+            "feed_on": self._enabled(),      # operator toggle + doctor pause; `enabled` only says RH_RPC_URL is set
             "alive": self.alive(),
             "tracked": len(self.tracking),
             "next_from_block": self._next_from,

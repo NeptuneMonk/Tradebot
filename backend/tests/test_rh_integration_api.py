@@ -28,7 +28,7 @@ def test_rh_status_shape_and_advancement(s):
     for k in ["enabled", "paused", "head", "launches_seen", "tracked", "rpc_requests", "rpc_url_set", "eth_usd", "last_poll_ts"]:
         assert k in d1, f"missing {k}"
     assert d1["rpc_url_set"] is True
-    if not d1["enabled"] or d1["paused"]:
+    if not d1["enabled"] or d1["paused"] or not d1.get("feed_on", True):
         pytest.skip("operator has the RH feed off/paused — live advancement not testable right now")
     assert d1["head"] > 0
     assert d1["launches_seen"] > 0

@@ -2230,3 +2230,10 @@ User rule: turning a feed off is cheating — improve WHICH tokens we enter/exit
 - ✅ `bot._persist_metrics` now queues into `_metrics_pending`; new `_metrics_flush_loop` does ONE `launches.bulk_write` per 2 s instead of one `update_one` per tracked mint.
 - Tests: `test_singleton.py::test_ws_mirror_recreates_uncapped_collection_as_capped`, `tests/test_metrics_flush.py`. Full suite 745 passed (2 pre-existing live-data flakes: runner-rows history, RH head==0 right after restart).
 - Deferred by user: PUMP.BOT Lite mobile UI ("hold off"); sticky-to-leader WS routing (option b) not built.
+
+## Zero-rug cleanup (2026-09-30)
+- ✅ `/api/rh/status` now returns `feed_on` (operator toggle + doctor pause). `enabled` only meant "RH_RPC_URL set", so the RH liveness tests never skipped when the feed was off → false `head==0` failures. Both RH test guards use `feed_on`.
+- ✅ `/api/trades/history?book=` filter + **book filter buttons** (all/scalp/hunt/runner/RH) on the Trade History card (`history-book-<book>` testids). Runner rows were being pushed out of the 50/100-row window by scalp/RH churn — now fetched server-side per book. `test_trades_history_runner_rows` uses the filter.
+- ✅ ruff F-class clean across backend (unused imports/vars, dead `learning_busy`/`can` in strategy_doctor).
+- ✅ `frontend/yarn.lock` — committed the missing `@tanstack/react-virtual` entry (package.json had it, lockfile didn't).
+- Full suite: 746 passed / 65 skipped / 0 failed.

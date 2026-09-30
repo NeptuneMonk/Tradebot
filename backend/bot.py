@@ -11,7 +11,7 @@ import logging
 import time
 from collections import deque
 from tick_store import EVENT_KEEP
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from solders.pubkey import Pubkey
 
@@ -25,7 +25,7 @@ from wallet import get_keypair, get_pubkey
 from ws_hub import hub
 from pymongo import UpdateOne
 from pymongo.errors import DuplicateKeyError
-from creator_history import record_new_launch, mark_outcome, get_creator, derive_rug_count
+from creator_history import record_new_launch, mark_outcome, derive_rug_count
 from project_score import project_score
 from scanner import MomentumScanner, velocity_pct_strict
 from discovery import PumpfunDiscovery
@@ -3953,7 +3953,6 @@ class BotState:
         # Survives across this monitor's lifetime; reset if a new monitor takes over.
         if "monitor_price_samples" not in slot:
             slot["monitor_price_samples"] = []
-        last_extend_log = 0.0
 
         # === LaserStream WebSocket wake-up channel ===
         # Subscribe to the on-chain account that mutates on every buy/sell
@@ -4142,8 +4141,6 @@ class BotState:
                         continue
                     cur_price_sol = state["virtual_sol_reserves"] / state["virtual_token_reserves"] / LAMPORTS_PER_SOL
                     slot["_depth_sol"] = float(state.get("real_sol_reserves") or 0) / LAMPORTS_PER_SOL
-
-                pct_change = (cur_price_sol - trade_doc["entry_price_sol"]) / max(trade_doc["entry_price_sol"], 1e-18) * 100
 
                 # Cache last seen price on the slot so `/api/trades/active`
                 # can surface live PnL% to the UI without re-fetching curve

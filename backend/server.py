@@ -19,7 +19,7 @@ from pydantic import BaseModel
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-import wallet  # noqa: triggers key load
+import wallet  # noqa: F401  (triggers key load)
 from models import BotConfig, ClassifierRules, WalletInfo, BotStatus, now_utc
 from bot import BotState
 from listener import PumpFunListener
@@ -1289,7 +1289,6 @@ async def wallet_token_scan():
     return 502 to the UI.
     """
     import asyncio as _asyncio
-    from solders.pubkey import Pubkey
     from wallet import get_pubkey
     import pumpfun
     import pumpswap as _ps
@@ -2003,10 +2002,14 @@ HISTORY_OMIT = {"_id": 0, "entry_ctx": 0, "dip_forensics": 0, "snipe_pattern_ctx
 
 
 @api.get("/trades/history")
-async def trades_history(limit: int = 100):
+async def trades_history(limit: int = 100, book: str | None = None):
     """Most recently CLOSED first. Sorting by entry_time hid long-held positions the moment they closed (any 50
-    newer entries — e.g. RH paper churn — pushed them off the visible list right after the WS row appeared)."""
-    return await db.trades.find({"status": {"$ne": "active"}}, HISTORY_OMIT).sort(
+    newer entries — e.g. RH paper churn — pushed them off the visible list right after the WS row appeared).
+    `book=runner|scalp|hunt|rh_pons` narrows to one book so rare books stay reachable behind high-churn ones."""
+    q: dict = {"status": {"$ne": "active"}}
+    if book:
+        q["book"] = book
+    return await db.trades.find(q, HISTORY_OMIT).sort(
         [("exit_time", -1), ("entry_time", -1)]).to_list(min(limit, 200))
 
 

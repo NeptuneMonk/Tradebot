@@ -8,7 +8,6 @@ import os
 import time
 import httpx
 import asyncio
-from solders.pubkey import Pubkey
 
 RPC_URL = os.environ.get("SOLANA_RPC_URL") or os.environ["HELIUS_RPC_URL"]
 RPC_FALLBACK_URL = os.environ.get("SOLANA_RPC_FALLBACK_URL") or "https://api.mainnet-beta.solana.com"   # published env may lack the key: public node is the default fallback

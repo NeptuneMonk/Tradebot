@@ -8,7 +8,6 @@ Classifies each trade into one of four buckets based on `classifier_action`:
   - "legacy"    : historical blind-sniper trades (pre momentum-only refactor)
 """
 from datetime import datetime, timezone, timedelta
-from typing import Iterable
 
 
 SOURCE_LABELS = {

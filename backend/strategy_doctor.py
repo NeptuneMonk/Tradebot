@@ -36,13 +36,8 @@ import asyncio
 import time
 import hashlib
 import logging
-import math
-import os
-import statistics
 import uuid
-from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 from doctor_learning import LearningEngine
 
@@ -167,15 +162,11 @@ class StrategyDoctor:
         trades = await self._fetch_recent_trades()
 
         # LEARNING LOOP runs first (doctor_learning.py): book scoring, one
-        # structural proposal max, canary promote/revert. If it fired (or a
-        # canary is running) the legacy rules stay quiet this cycle.
+        # structural proposal max, canary promote/revert. The learning loop is the only proposer.
         learning_out: list[dict] = []
-        learning_busy = False
         try:
             trades_7d = await self._fetch_recent_trades(hours=24 * 7)
             learning_out = await self.learning.cycle(cfg_doc, trades, trades_7d)
-            can = await self.learning.canary()
-            learning_busy = bool(can and can.get("state") == "running")
         except Exception as e:
             logger.exception(f"learning engine failed: {e}")
 

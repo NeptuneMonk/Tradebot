@@ -23,7 +23,6 @@ import logging
 import time
 from typing import Optional
 
-import httpx
 
 from solana_client import LAMPORTS_PER_SOL
 

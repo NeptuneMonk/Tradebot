@@ -45,7 +45,7 @@ class TestRHStatus:
         r = sess.get(f"{BASE_URL}/api/rh/status", timeout=30)
         assert r.status_code == 200
         d = r.json()
-        if not d["enabled"]:
+        if not d["enabled"] or not d.get("feed_on", True):
             pytest.skip("operator has the RH feed off — liveness not testable right now")
         assert d["head"] > 55_000_000, f"head too low: {d['head']}"
         assert d["tracked"] >= 0

@@ -18,7 +18,6 @@ import os
 import random
 import struct
 import base64
-import httpx
 from solders.pubkey import Pubkey
 from solders.instruction import Instruction, AccountMeta
 from solders.transaction import VersionedTransaction

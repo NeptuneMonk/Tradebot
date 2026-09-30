@@ -58,11 +58,12 @@ def test_trades_active():
 
 
 def test_trades_history_runner_rows():
-    r = requests.get(f"{BASE}/api/trades/history", headers=H, timeout=15)
+    r = requests.get(f"{BASE}/api/trades/history?book=runner", headers=H, timeout=15)
     assert r.status_code == 200
     rows = r.json()
     assert isinstance(rows, list) and len(rows) > 0
     runners = [x for x in rows if x.get("book") == "runner"]
+    assert len(runners) == len(rows), "book filter leaked non-runner rows"
     print(f"runner rows: {len(runners)}, symbols: {[x.get('symbol') for x in runners]}")
     assert len(runners) >= 2, f"expected ≥2 runner rows, got {len(runners)}"
     for row in runners:

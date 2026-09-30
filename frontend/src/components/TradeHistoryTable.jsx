@@ -1,4 +1,4 @@
-import { memo, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { History, CircleDot, Search } from "lucide-react";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { ChainBadge } from "./ChainBadge";
@@ -7,6 +7,9 @@ import { TokenDetailDialog } from "./TokenDetailDialog";
 import { useVirtualTable, SpacerRow } from "./VirtualRows";
 import { openWiki, wikiTargetForExit } from "@/lib/wikiNav";
 import { BookOpen } from "lucide-react";
+import { api } from "@/lib/api";
+
+const BOOKS = ["all", "scalp", "hunt", "runner", "rh_pons"];
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const fmtTime = (iso) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—");
@@ -58,8 +61,18 @@ const reentryTitle = (t) => {
   ].join("\n");
 };
 
-function TradeHistoryTable({ history }) {
+function TradeHistoryTable({ history: liveHistory }) {
   const [detail, setDetail] = useState(null);
+  const [book, setBook] = useState("all");
+  const [bookRows, setBookRows] = useState([]);
+  // A single book (e.g. runner) can be pushed off the 50-row live list by scalp/RH churn — fetch it server-side.
+  useEffect(() => {
+    if (book === "all") return;
+    let live = true;
+    api.tradeHistory(50, book).then((rows) => live && setBookRows(rows || [])).catch(() => live && setBookRows([]));
+    return () => { live = false; };
+  }, [book, liveHistory.length]);
+  const history = book === "all" ? liveHistory : bookRows;
   const scrollRef = useRef(null);
   const vt = useVirtualTable(scrollRef, history.length, 34);
   const partialCount = history.filter((t) => t.partial_done).length;
@@ -70,6 +83,14 @@ function TradeHistoryTable({ history }) {
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-neutral-500">
           <History className="w-3 h-3" /> Trade History ({history.length})
+          <div className="flex items-center gap-px ml-2" data-testid="history-book-filter">
+            {BOOKS.map((b) => (
+              <button key={b} type="button" onClick={() => setBook(b)} data-testid={`history-book-${b}`}
+                className={`px-1.5 py-0.5 text-[9px] tracking-[0.15em] border transition-colors ${book === b ? "border-cyan-700 text-cyan-300 bg-cyan-950/40" : "border-neutral-800 text-neutral-500 hover:text-neutral-300"}`}>
+                {b === "rh_pons" ? "RH" : b}
+              </button>
+            ))}
+          </div>
         </div>
         {partialCount > 0 && (
           <div
@@ -98,7 +119,7 @@ function TradeHistoryTable({ history }) {
           </thead>
           <tbody>
             {history.length === 0 && (
-              <tr><td colSpan="9" className="text-center py-6 text-[10px] uppercase tracking-[0.2em] text-neutral-600">no trades yet</td></tr>
+              <tr><td colSpan="9" className="text-center py-6 text-[10px] uppercase tracking-[0.2em] text-neutral-600">{book === "all" ? "no trades yet" : `no ${book === "rh_pons" ? "RH" : book} trades yet`}</td></tr>
             )}
             <SpacerRow height={vt.padTop} colSpan={9} />
             {vt.rows.map((vr) => {
