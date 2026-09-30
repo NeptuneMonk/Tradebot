@@ -296,7 +296,7 @@ export default function Dashboard() {
   }, [navigate]);
 
   // Real-time WebSocket event handler
-  const { connected: wsConnected, statsRef: wsStatsRef } = useWebSocket(useCallback((evt) => {
+  const { connected: wsConnected, role: wsRole, statsRef: wsStatsRef } = useWebSocket(useCallback((evt) => {
     const { type, data } = evt || {};
     if (!type) return;
     switch (type) {
@@ -495,10 +495,11 @@ export default function Dashboard() {
               onChange={onAutopilotChange}
             />
           )}
-          <PodPill />
-          <span className="flex items-center gap-2" data-testid="ws-status">
-            <span className={`w-2 h-2 rounded-full ${wsConnected ? "bg-emerald-400 animate-pulse" : "bg-neutral-600"}`}></span>
-            <span className="text-neutral-400">{wsConnected ? "WS LIVE" : "WS OFFLINE"}</span>
+          <PodPill wsRole={wsRole} />
+          <span className="flex items-center gap-2" data-testid="ws-status"
+            title={wsRole === "follower" ? "feed mirrored through Mongo from the leader pod (~0.3 s behind) — probing for a direct leader socket every 30 s" : wsRole === "leader" ? "direct socket to the leader pod" : ""}>
+            <span className={`w-2 h-2 rounded-full ${wsConnected ? (wsRole === "follower" ? "bg-amber-400" : "bg-emerald-400") + " animate-pulse" : "bg-neutral-600"}`}></span>
+            <span className="text-neutral-400" data-testid="ws-status-label">{wsConnected ? (wsRole === "follower" ? "WS MIRROR" : "WS LIVE") : "WS OFFLINE"}</span>
           </span>
           {me && (
             <span className="hidden md:flex items-center gap-2 text-neutral-500" data-testid="auth-user">

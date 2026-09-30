@@ -30,6 +30,7 @@ from singleton import LeaderLease, CommandRelay, WSMirror
 singleton: LeaderLease | None = None
 relay: CommandRelay | None = None
 ws_mirror: WSMirror | None = None
+STICKY_STATS = {"http_bounced": 0, "ws_bounced": 0, "http_relayed": 0}   # sticky-to-leader routing counters
 from creator_history import get_creator
 from wallet_send import send_sol
 from pl_sources import compute_pl_by_source
@@ -3029,8 +3030,19 @@ async def ws_endpoint(websocket: WebSocket):
         await websocket.close(code=4401)
         return
 
+    follower = singleton is not None and not singleton.is_leader
+    if follower and singleton.leader_alive() and websocket.query_params.get("leader_only") == "1":
+        # sticky-to-leader: the browser re-rolls the load balancer until it lands on the leader's own hub
+        STICKY_STATS["ws_bounced"] += 1
+        await websocket.accept()
+        await websocket.close(code=4409, reason="follower")
+        return
+
     await hub.connect(websocket)
     try:
+        await websocket.send_json({"type": "pod", "data": {
+            "role": "follower" if follower else "leader", "pod_id": singleton.pod_id if singleton else "single",
+            "mirror": follower}})
         status = await bot_status()          # follower → leader snapshot from bot_runtime
         await websocket.send_json({"type": "status", "data": status.model_dump()})
     except Exception:
@@ -3087,6 +3099,7 @@ async def pods_info():
     info = singleton.info()
     info["relay"] = relay.stats if relay else None
     info["ws_mirror"] = ws_mirror.stats if ws_mirror else None
+    info["sticky"] = STICKY_STATS
     return info
 
 
@@ -3567,6 +3580,12 @@ async def creator_greylist_profile(creator: str):
 LOCAL_PATHS = {"/api/pods", "/api/"}
 
 
+def _bounce_to_leader(request: Request) -> bool:
+    """Client asked for the leader directly (X-Prefer-Leader) — answer 421 in ~1 ms so it can re-roll the load
+    balancer instead of paying the Mongo relay (0.4–0.6 s). The client drops the header on its last attempt."""
+    return request.headers.get("x-prefer-leader") == "1"
+
+
 @app.middleware("http")
 async def pod_relay_middleware(request: Request, call_next):
     """Follower pods do not answer /api from their own RAM: the request is executed by the leader through Mongo
@@ -3577,6 +3596,11 @@ async def pod_relay_middleware(request: Request, call_next):
             and not path.startswith("/api/auth") and path not in LOCAL_PATHS
             and request.headers.get("x-pod-relayed") != "1"):
         if singleton.leader_alive() and relay is not None:
+            if _bounce_to_leader(request):
+                STICKY_STATS["http_bounced"] += 1
+                return JSONResponse({"detail": "follower pod — retry to reach the leader"}, status_code=421,
+                                    headers={"X-Pod-Role": "follower", "X-Pod-Id": singleton.pod_id, "X-Pod-Retry": "1"})
+            STICKY_STATS["http_relayed"] += 1
             return await relay.submit(request)
         if request.method != "GET":
             return JSONResponse({"detail": "no leader pod is alive right now — retry in a few seconds"}, status_code=503,
@@ -3584,11 +3608,13 @@ async def pod_relay_middleware(request: Request, call_next):
     response = await call_next(request)
     if singleton is not None:
         response.headers["X-Pod-Role"] = "leader" if singleton.is_leader else "follower"
+        response.headers["X-Pod-Id"] = singleton.pod_id
     return response
 
 
 app.include_router(api)
 
+POD_HEADERS = ["X-Pod-Role", "X-Pod-Id", "X-Pod-Retry", "X-Pod-Relayed", "X-Pod-Leader"]
 _cors_env = os.environ.get("CORS_ORIGINS", "*").strip()
 if _cors_env == "*" or not _cors_env:
     # With credentials we cannot use wildcard origins; reflect any origin via regex.
@@ -3598,6 +3624,7 @@ if _cors_env == "*" or not _cors_env:
         allow_origin_regex=".*",
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=POD_HEADERS,
     )
 else:
     app.add_middleware(
@@ -3606,4 +3633,5 @@ else:
         allow_origins=[o.strip() for o in _cors_env.split(",") if o.strip()],
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=POD_HEADERS,
     )

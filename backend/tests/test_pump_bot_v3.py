@@ -57,14 +57,16 @@ class TestWebSocket:
         return asyncio.run(_run())
 
     def test_ws_connect_and_initial_status(self):
-        """On connect, server must immediately push a 'status' event."""
+        """On connect, server pushes a 'pod' hello (which pod / role) then immediately a 'status' event."""
         async def _run():
             async with websockets.connect(WS_URL, open_timeout=10) as ws:
-                msg = await asyncio.wait_for(ws.recv(), timeout=10)
-                return json.loads(msg)
-        first = asyncio.run(_run())
+                hello = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                status = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                return hello, status
+        hello, first = asyncio.run(_run())
+        assert hello.get("type") == "pod" and hello["data"].get("role") in ("leader", "follower"), hello
         assert isinstance(first, dict)
-        assert first.get("type") == "status", f"first event was {first.get('type')}: {first}"
+        assert first.get("type") == "status", f"second event was {first.get('type')}: {first}"
         data = first.get("data") or {}
         # Validate at least a few expected status fields
         for k in ("enabled", "listener_connected", "kill_switch_tripped"):

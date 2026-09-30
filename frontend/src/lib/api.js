@@ -1,4 +1,5 @@
 import axios from "axios";
+import { podRoute, HTTP_MAX_ATTEMPTS } from "./podRoute";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
@@ -7,6 +8,35 @@ const client = axios.create({ baseURL: API, timeout: 15000, withCredentials: tru
 // Recovery operations need a longer timeout because they wait for on-chain
 // confirmation (sell tx + getSignatureStatuses polling can take 25–40s).
 const longClient = axios.create({ baseURL: API, timeout: 60000, withCredentials: true });
+
+// Sticky-to-leader: ask for the leader pod first; a follower bounces with 421 so we re-roll the load balancer.
+export function installLeaderRouting(ax) {
+  ax.interceptors.request.use((cfg) => {
+    cfg.__attempt = (cfg.__attempt || 0) + 1;
+    cfg.headers = cfg.headers || {};
+    if (cfg.__attempt < HTTP_MAX_ATTEMPTS && podRoute.preferLeader() && !cfg.__relayOk) cfg.headers["X-Prefer-Leader"] = "1";
+    else delete cfg.headers["X-Prefer-Leader"];
+    return cfg;
+  });
+  ax.interceptors.response.use(
+    (res) => {
+      if (res.headers?.["x-pod-relayed"] === "1") podRoute.noteRelayed();
+      else if (res.headers?.["x-pod-role"] === "leader") podRoute.noteLeader();
+      return res;
+    },
+    (err) => {
+      const r = err?.response;
+      if (r?.status === 421 && r.headers?.["x-pod-retry"] === "1" && err.config) {
+        const pinned = podRoute.noteBounce(r.headers["x-pod-id"]);
+        if (pinned) err.config.__relayOk = true;
+        return ax.request(err.config);
+      }
+      return Promise.reject(err);
+    },
+  );
+}
+installLeaderRouting(client);
+installLeaderRouting(longClient);
 
 /** Turn an axios failure into an operator-readable reason: gate detail, timeout, or an unreachable backend. */
 export function explainApiError(err, fallback = "Entry refused") {

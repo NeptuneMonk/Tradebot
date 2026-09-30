@@ -2237,3 +2237,10 @@ User rule: turning a feed off is cheating — improve WHICH tokens we enter/exit
 - ✅ ruff F-class clean across backend (unused imports/vars, dead `learning_busy`/`can` in strategy_doctor).
 - ✅ `frontend/yarn.lock` — committed the missing `@tanstack/react-virtual` entry (package.json had it, lockfile didn't).
 - Full suite: 746 passed / 65 skipped / 0 failed.
+
+## Sticky-to-leader routing (2026-09-30)
+- ✅ **HTTP**: axios sends `X-Prefer-Leader: 1`; a follower pod answers **421** (`X-Pod-Retry`, `X-Pod-Id`) in ~1 ms instead of relaying through Mongo. Client re-rolls the LB up to 4 attempts, last attempt drops the header → normal relay. If the same pod id bounces 3× in a row the ingress is pinning us (cookie affinity) → `podRoute` marks affinity for 30 s and relays straight away. (`frontend/src/lib/podRoute.js`, `installLeaderRouting` in `api.js`).
+- ✅ **WS**: client connects with `?leader_only=1`; a follower closes with **4409** and the client reconnects after 120–300 ms (6 attempts) before accepting the follower's mirrored feed. On a mirror feed it probes for the leader every 30 s with a second socket and swaps in-place (no gap). Server sends a `{"type":"pod"}` hello first (role, pod_id, mirror) — `test_pump_bot_v3` updated for the new first frame.
+- ✅ UI: `WS LIVE` (direct) vs amber `WS MIRROR`; PodPill tooltip shows this-tab bounce/relay counters + per-pod `sticky` stats from `/api/pods`. CORS now exposes `X-Pod-*` headers.
+- Tests: `backend/tests/test_sticky_leader.py` (6, TestClient without lifespan + patched lease), `frontend/src/lib/__tests__/leaderRouting.test.js` (3, run with `yarn test:lib`). Backend suite 752 passed.
+- Preview is single-pod → only the leader path is observable live; follower bounce paths are covered by tests. Verify in prod via the PodPill tooltip counters after redeploy.

@@ -61,7 +61,8 @@
   "scripts": {
     "start": "craco start",
     "build": "craco build",
-    "test": "craco test"
+    "test": "craco test",
+    "test:lib": "NODE_ENV=test BABEL_ENV=test jest -c jest.lib.config.js"
   },
   "browserslist": {
     "production": [
