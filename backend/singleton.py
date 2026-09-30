@@ -284,12 +284,22 @@ class WSMirror:
         self.stats = {"written": 0, "forwarded": 0}
 
     async def ensure_collection(self):
+        """Guarantee `ws_events` is capped (50k docs / 32 MB) + indexed on `seq`. An uncapped copy (created by an
+        insert racing the first create) grows unbounded (seen at 2.4M docs in prod) and makes every 0.3 s tail scan
+        crawl — drop and recreate it: it is a transient mirror, nothing durable lives there."""
         try:
-            names = await self.db.list_collection_names()
-            if "ws_events" not in names:
+            infos = [c async for c in await self.db.list_collections(filter={"name": "ws_events"})]
+            if infos and not (infos[0].get("options") or {}).get("capped"):
+                n = await self.db.ws_events.estimated_document_count()
+                await self.db.ws_events.drop()
+                infos = []
+                logger.warning(f"ws_events was NOT capped ({n} docs) — dropped and recreating as capped")
+            if not infos:
                 await self.db.create_collection("ws_events", capped=True, size=32 * 1024 * 1024, max=50000)
+            await self.db.ws_events.create_index("seq")
+            await self.db.pod_commands.create_index("created_at")
         except Exception as e:
-            logger.debug(f"ws_events collection: {e}")
+            logger.warning(f"ws_events collection: {e}")
 
     async def write(self, event_type: str, data) -> None:
         if not self.lease.is_leader:

@@ -260,3 +260,21 @@ def test_relay_times_out_cleanly_without_a_leader(monkeypatch):
         assert (await db.pod_commands.find_one({}))["status"] == "expired"
         await db.client.drop_database(db.name)
     asyncio.run(run())
+
+
+def test_ws_mirror_recreates_uncapped_collection_as_capped():
+    async def run():
+        db = _db()
+        await db.ws_events.insert_many([{"seq": i, "type": "x", "data": {}} for i in range(3)])   # racing insert → uncapped
+        m = sg.WSMirror(db, _lease(db, "pod-m", [], [], ttl=30.0), None)
+        await m.ensure_collection()
+        info = [c async for c in await db.list_collections(filter={"name": "ws_events"})][0]
+        assert info["options"].get("capped") is True and info["options"].get("max") == 50000
+        assert await db.ws_events.count_documents({}) == 0
+        assert any(list(ix.get("key")) == [("seq", 1)] for ix in (await db.ws_events.index_information()).values())
+        await m.ensure_collection()   # idempotent: still capped, nothing dropped
+        await db.ws_events.insert_one({"seq": 1, "type": "x", "data": {}})
+        await m.ensure_collection()
+        assert await db.ws_events.count_documents({}) == 1
+        await db.client.drop_database(db.name)
+    asyncio.run(run())

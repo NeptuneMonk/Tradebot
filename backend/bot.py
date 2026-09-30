@@ -23,6 +23,7 @@ from solana_client import get_sol_usd_price, LAMPORTS_PER_SOL
 import solana_client
 from wallet import get_keypair, get_pubkey
 from ws_hub import hub
+from pymongo import UpdateOne
 from pymongo.errors import DuplicateKeyError
 from creator_history import record_new_launch, mark_outcome, get_creator, derive_rug_count
 from project_score import project_score
@@ -120,6 +121,7 @@ class BotState:
         self.stats: dict = {}                      # counters (flush_holds, …) — was missing: _flush_holds_sol crashed the fast exit path
         self.listener_connected = False
         self.tracking: dict[str, dict] = {}
+        self._metrics_pending: dict[str, dict] = {}   # launch_id -> $set, drained by _metrics_flush_loop
         # Re-entry watchlist: mint -> {exit_price_sol, exit_time, attempts, ...}
         self.reentry_watch: dict[str, dict] = {}
         self._reentry_task: asyncio.Task | None = None
@@ -420,7 +422,7 @@ class BotState:
         if first_load:
             self._bg_tasks = [asyncio.create_task(c()) for c in (
                 self._active_trades_reconciler_loop, self._held_bag_watcher_loop, self._readiness_watchdog_loop,
-                self._helius_autopause_loop, self._loop_lag_meter)]
+                self._helius_autopause_loop, self._loop_lag_meter, self._metrics_flush_loop)]
         # Surface the auto-disable to any WS clients listening — front-end
         # will show "Bot auto-disabled on restart" toast if connected.
         if was_running_before_restart and resumed:
@@ -2135,7 +2137,9 @@ class BotState:
         }
         if b.get("peak_mc_usd_at"):
             update["peak_mc_usd_at"] = b["peak_mc_usd_at"]
-        await self.db.launches.update_one({"_id": b["launch_id"]}, {"$set": update})
+        # Coalesced: one bulk_write per PERSIST_INTERVAL_S for every tracked mint instead of N round-trips
+        # (150 mints × 0.5 Hz = 75 remote-Atlas writes/s in prod). Last update per launch wins.
+        self._metrics_pending[b["launch_id"]] = update
         for r in self.recent_launches:
             if r.get("id") == b["launch_id"]:
                 r.update(update)
@@ -2151,6 +2155,27 @@ class BotState:
         if now_b - last_bcast >= 5.0:
             b["last_ws_broadcast"] = now_b
             await hub.broadcast("launch_update", {"id": b["launch_id"], "mint": mint, **update})
+
+    async def _flush_metrics(self) -> int:
+        pending, self._metrics_pending = self._metrics_pending, {}
+        if not pending:
+            return 0
+        ops = [UpdateOne({"_id": lid}, {"$set": upd}) for lid, upd in pending.items()]
+        try:
+            await self.db.launches.bulk_write(ops, ordered=False)
+        except Exception as e:
+            logger.debug(f"metrics bulk flush failed ({len(ops)} ops): {e}")
+        return len(ops)
+
+    async def _metrics_flush_loop(self):
+        while True:
+            await asyncio.sleep(PERSIST_INTERVAL_S)
+            try:
+                await self._flush_metrics()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"metrics flush loop: {e}")
 
     def _ledger_sol(self, mint: str, reason: str):
         """Decision ledger (Pump.fun): gate-verdict transitions per token → tick_paths.decisions → replay.gate_ledger."""
