@@ -463,11 +463,11 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
           </span>
         </label>
         <Field label="No-Mo Check (s)" testid="no-momentum-after-input"
-               hint="No-momentum exit: one-shot check this many seconds after entry (all books). If the position never reached the MFE floor below, exit as 'no-momentum'. Positions that already banked a ladder leg are exempt. This flattens a dead runner — it is not a clock. Set 0 to disable."
+               hint="No-momentum exit — ROLLING, all books. Every this-many seconds the position's peak gain must have improved by at least the No-Mo % below since the previous check (first check: since entry). If it hasn't, the position is stalled: GREEN → sold as 'no-momentum'; RED → held for the stop / clock. Manual buys, LTH and pinned positions are exempt. Set 0 to disable."
                value={local.no_momentum_after_s ?? 30}
                onChange={(v) => { const n = parseInt(v, 10) || 0; setLocal({ ...local, no_momentum_after_s: n, no_momentum_exit_enabled: n > 0 }); }} step="5" />
-        <Field label="No-Mo MFE (%)" testid="no-momentum-mfe-input"
-               hint="Minimum peak gain (max favourable excursion) the position must have shown by the check time to be allowed to keep running."
+        <Field label="No-Mo Gain (%)" testid="no-momentum-mfe-input"
+               hint="How much the peak gain must improve within each No-Mo window to count as 'still has momentum'. E.g. 10% / 2s: a position that peaked +12% and then drifts 6–12% for 2s is sold at the next check."
                value={local.no_momentum_min_mfe_pct ?? 5}
                onChange={(v) => setLocal({ ...local, no_momentum_min_mfe_pct: parseFloat(v) || 0 })} step="1" />
         <Field label="Recovery Watch (s)" testid="recovery-watch-input"

@@ -108,14 +108,13 @@ class BotConfig(BaseModel):
     # When set to anything other than "manual", the resolved values overwrite
     # priority_fee_microlamports / slippage_bps / exit_slippage_bps at runtime.
     speed_mode: str = "manual"
-    # No-momentum exit (2026-06 review): 20/81 paper trades sat flat
-    # (MFE <= 3%) then bled to the timeout for -$14 combined. One-shot check
-    # at `no_momentum_after_s`: if the position never reached
-    # `no_momentum_min_mfe_pct`, exit. Snipes and partial-TP'd positions skip.
+    # No-momentum exit — ROLLING (2026-10-01): every `no_momentum_after_s` the peak gain must have improved by
+    # `no_momentum_min_mfe_pct` since the previous check (first check: since entry). Stalled + green → exit;
+    # stalled + red → hold for a price-based exit. All books; manual / LTH / pinned exempt.
     no_momentum_exit_enabled: bool = True
     trail_ratchet_enabled: bool = False          # hardwired trail tightening (+15% → ≤6%, +30% → ≤4%); off = your trail % is used as set
     no_momentum_after_s: int = 30
-    no_momentum_min_mfe_pct: float = 5.0   # flattens a dead runner on any book (never a clock)
+    no_momentum_min_mfe_pct: float = 5.0
     # Net-flow momentum (buys − sells as % of curve liquidity): the size-aware replacement for wallet counts
     exit_momentum_min_flow_pct: float = 1.0     # momentum gate defers SL/TP only while net inflow ≥ this % of liquidity per window
     scanner_min_flow_ratio_pct: float = 2.0     # entry: net inflow over the last 30s ≥ this % of liquidity (0 = off)

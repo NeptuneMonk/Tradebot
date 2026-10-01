@@ -1092,27 +1092,13 @@ class RHPaperTrader:
             return None
         if pnl_pct <= -bx["stop_loss_pct"] and _mom_holds("sl"):
             return None
-        if (
-            cfg.no_momentum_exit_enabled
-            and not (b.get("pinned") or is_manual_hold(t))   # operator pin / manual buy = long hold: never a momentum kill
-            and not pos.get("_nm_checked")
-            and now - pos["opened"] >= cfg.no_momentum_after_s
-        ):
-            pos["_nm_checked"] = True
-            if peak_pct < cfg.no_momentum_min_mfe_pct and pnl_pct <= 0:
-                # RED + no momentum → hold as dust; only a price-based exit (stop / clock) may close a red position
-                logger.info(f"rh_paper no-momentum skipped {t.get('symbol')}: red ({pnl_pct:+.1f}%) — holding until a price-based exit fires")
-            elif peak_pct < cfg.no_momentum_min_mfe_pct:
-                from exits import is_recovering, price_ago, start_recovery_watch
-                trough = float(pos.get("trough_price") or price)
-                new_buyers = len({w for ts, _q, w in (b.get("buy_events") or ()) if now - ts <= 30.0})
-                if (getattr(cfg, "recovery_watch_enabled", True) and pnl_pct < 0
-                        and is_recovering(now, price, trough, pos.get("trough_ts"), price_ago(b.get("price_samples"), now, 30.0), new_buyers,
-                                          net_flow=flow.net_flow(b, now, 30.0, sol=False)[0])):
-                    pos["_recovery_watch"] = start_recovery_watch(cfg, now, entry, price, trough)
-                    w = pos["_recovery_watch"]
-                    logger.info(f"rh_paper RECOVERY WATCH {t.get('symbol')} {pnl_pct:+.1f}% recovering (peak {peak_pct:+.1f}%): stop {w['stop']:.3e}, "
-                                f"reclaim {w['target']:.3e}, {int(w['deadline'] - now)}s — no-momentum kill deferred")
+        if not (b.get("pinned") or is_manual_hold(t)):   # operator pin / manual buy / LTH = long hold: never a momentum kill
+            from exits import no_momentum_stalled
+            stall = no_momentum_stalled(cfg, pos, now, now - pos["opened"], entry, float(pos.get("peak_price") or 0))
+            if stall is not None:
+                if pnl_pct <= 0:
+                    # RED + no momentum → hold as dust; only a price-based exit (stop / clock) may close a red position
+                    logger.info(f"rh_paper no-momentum skipped {t.get('symbol')}: red ({pnl_pct:+.1f}%) — holding until a price-based exit fires")
                 else:
                     return "no_momentum"
         w = pos.get("_recovery_watch")

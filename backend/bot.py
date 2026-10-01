@@ -4029,49 +4029,28 @@ class BotState:
                 # cur_price_sol for the pattern check.
                 is_snipe = self._is_snipe(slot)
 
-                # No-momentum exit — one-shot at no_momentum_after_s: a position
-                # that never reached +min_mfe% is dead money on a micro-cap.
+                # No-momentum exit — ROLLING: every no_momentum_after_s the peak must have improved by
+                # no_momentum_min_mfe_pct since the last check (first check: since entry). All books; only operator
+                # buys / LTH / pinned positions are exempt. Stalled + green → exit; stalled + red → hold as dust.
                 is_runner = (slot.get("trade") or {}).get("book") == "runner"
-                _pinned = self._is_manual_hold(slot)   # operator buy / pin = long hold: never a momentum kill
-                if (
-                    self.config.no_momentum_exit_enabled
-                    and not is_runner
-                    and not _pinned
-                    and not slot.get("ladder_legs_done")
-                    and not slot.get("_no_momentum_checked")
-                    and elapsed >= self.config.no_momentum_after_s
-                ):
-                    slot["_no_momentum_checked"] = True
-                    _ep = float((slot.get("trade") or {}).get("entry_price_sol") or 0)
-                    _pk = float(slot.get("peak_price_sol") or 0)
-                    _mfe = (_pk / _ep - 1.0) * 100.0 if _ep > 0 and _pk > 0 else 0.0
+                _pinned = self._is_manual_hold(slot)
+                _ep = float((slot.get("trade") or {}).get("entry_price_sol") or 0)
+                _stall = None if _pinned else exits.no_momentum_stalled(
+                    self.config, slot, time.time(), elapsed, _ep, float(slot.get("peak_price_sol") or 0))
+                if _stall is not None:
                     _b = self.tracking.get(mint) or {}
                     _px = float(_b.get("last_price_sol") or slot.get("_last_price") or 0.0)
-                    if _mfe < self.config.no_momentum_min_mfe_pct and 0 < _px <= _ep:
+                    if 0 < _px <= _ep:
                         # RED + no momentum → hold as dust. Momentum / velocity never sells a red position; only a
                         # price-based exit (stop-loss, clock, rip-cord) may — see PRD 2026-09-21 (f).
                         logger.info(f"no-momentum skipped {mint[:8]}…: red ({(_px / _ep - 1) * 100:+.1f}%) — holding until a price-based exit fires")
-                    elif _mfe < self.config.no_momentum_min_mfe_pct:
-                        _now = time.time()
-                        _rec = (
-                            getattr(self.config, "recovery_watch_enabled", True) and 0 < _px < _ep
-                            and exits.is_recovering(_now, _px, float(slot.get("trough_price_sol") or _px), slot.get("trough_ts"),
-                                                    exits.price_ago(_b.get("price_samples"), _now, 30.0),
-                                                    len({w for ts, _q, w in (_b.get("buy_events") or ()) if _now - ts <= 30.0}),
-                                                    net_flow=flow.net_flow(_b, _now, 30.0, sol=True)[0] if _b.get("buy_events") else None)
-                        )
-                        if _rec:
-                            slot["_recovery_watch"] = exits.start_recovery_watch(self.config, _now, _ep, _px, float(slot.get("trough_price_sol") or _px))
-                            w = slot["_recovery_watch"]
-                            logger.info(f"RECOVERY WATCH {mint[:8]}… {w['from_pct']:+.1f}% recovering (peak {_mfe:+.1f}%): stop {w['stop']:.3e}, "
-                                        f"reclaim {w['target']:.3e}, {int(w['deadline'] - _now)}s — no-momentum kill deferred")
-                        else:
-                            slot["exit_in_progress"] = True
-                            try:
-                                await self._exit(mint, reason=f"no-momentum (peak {_mfe:+.1f}% after {int(elapsed)}s)")
-                                return
-                            finally:
-                                slot["exit_in_progress"] = False
+                    else:
+                        slot["exit_in_progress"] = True
+                        try:
+                            await self._exit(mint, reason=f"no-momentum (peak +{_stall:.1f}% in {int(self.config.no_momentum_after_s)}s, {(_px / _ep - 1) * 100:+.1f}% after {int(elapsed)}s)")
+                            return
+                        finally:
+                            slot["exit_in_progress"] = False
 
                 # Protocol-aware price polling — one state read per tick, shared by every check below.
                 # Push-first: a WSS push carries the account bytes (decoded locally, no RPC); while the

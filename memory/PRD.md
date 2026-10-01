@@ -2244,3 +2244,10 @@ User rule: turning a feed off is cheating — improve WHICH tokens we enter/exit
 - ✅ UI: `WS LIVE` (direct) vs amber `WS MIRROR`; PodPill tooltip shows this-tab bounce/relay counters + per-pod `sticky` stats from `/api/pods`. CORS now exposes `X-Pod-*` headers.
 - Tests: `backend/tests/test_sticky_leader.py` (6, TestClient without lifespan + patched lease), `frontend/src/lib/__tests__/leaderRouting.test.js` (3, run with `yarn test:lib`). Backend suite 752 passed.
 - Preview is single-pod → only the leader path is observable live; follower bounce paths are covered by tests. Verify in prod via the PodPill tooltip counters after redeploy.
+
+## Rolling no-momentum (2026-10-01)
+- User report: Scalp with No-Mo 10% / 2s held positions hovering +6–12% for ages. Root cause: the check was ONE-SHOT at `no_momentum_after_s` (peak-since-entry ≥ MFE% → passed forever).
+- ✅ `exits.no_momentum_stalled(cfg, pos, now, elapsed, entry, peak)` — rolling: every `no_momentum_after_s` the peak must improve by ≥ `no_momentum_min_mfe_pct` vs the previous check (first check = vs entry, same as before). Returns the shortfall gain % or None. State on the slot: `_nm_last_ts`, `_nm_peak_ref`, `_nm_checked`.
+- ✅ Wired into `bot._monitor_position` (Solana) and `rh_paper._decide_exit` (RH). Stalled + GREEN → exit `no-momentum (peak +x% in Ns, …)`; stalled + RED → hold for stop/clock (unchanged rule).
+- ✅ Scope per user: **all books incl. runner and ladder-banked positions**; only manual buys / LTH / pinned exempt. (Previous runner + `ladder_legs_done` exemptions removed.) Dead recovery-watch-start branch (unreachable since the red-hold rule) removed from both call sites; `recovery_watch_step` left intact.
+- ✅ UI hints rewritten (`No-Mo Check (s)`, `No-Mo Gain (%)`), models comment updated. Tests: `tests/test_no_momentum_rolling.py` (5). Suite 757 passed.

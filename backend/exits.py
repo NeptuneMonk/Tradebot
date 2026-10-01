@@ -232,6 +232,25 @@ def is_recovering(now: float, price: float, trough: float, trough_ts: float | No
     return no_lower_low or int(new_buyers_30s or 0) >= min_new_buyers
 
 
+def no_momentum_stalled(cfg, pos: dict, now: float, elapsed: float, entry: float, peak: float) -> float | None:
+    """Rolling no-momentum check (2026-10-01): every `no_momentum_after_s` seconds the peak must have improved by at
+    least `no_momentum_min_mfe_pct` since the previous check (first check: since entry — identical to the old one-shot).
+    Returns the improvement % when a check ran and it fell short (= stalled), None otherwise. Caller decides what to
+    do with a stall: green → exit, red → hold for a price-based exit. State lives on `pos` (`_nm_last_ts`, `_nm_peak_ref`)."""
+    after = float(getattr(cfg, "no_momentum_after_s", 0) or 0)
+    if not getattr(cfg, "no_momentum_exit_enabled", False) or after <= 0 or elapsed < after or entry <= 0:
+        return None
+    if now - float(pos.get("_nm_last_ts") or 0.0) < after:
+        return None
+    ref = float(pos.get("_nm_peak_ref") or entry)
+    peak = max(float(peak or 0.0), entry)
+    pos["_nm_last_ts"] = now
+    pos["_nm_peak_ref"] = max(ref, peak)
+    pos["_nm_checked"] = True
+    gain = (peak / ref - 1.0) * 100.0
+    return gain if gain < float(getattr(cfg, "no_momentum_min_mfe_pct", 0.0) or 0.0) else None
+
+
 def start_recovery_watch(cfg, now: float, entry: float, price: float, trough: float) -> dict:
     """Time-boxed watch that replaces a no-momentum kill: stop just under the trough, reclaim target part-way to entry."""
     below = float(getattr(cfg, "recovery_stop_below_trough_pct", 3.0) or 0.0) / 100.0
