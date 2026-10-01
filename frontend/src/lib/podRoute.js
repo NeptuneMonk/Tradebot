@@ -6,7 +6,7 @@
 export const HTTP_MAX_ATTEMPTS = 4;
 export const AFFINITY_TTL_MS = 30_000;
 
-const state = { affinityUntil: 0, lastPodId: null, samePodStreak: 0, stats: { bounced: 0, relayed: 0, affinity: 0 } };
+const state = { affinityUntil: 0, lastPodId: null, samePodStreak: 0, stats: { direct: 0, bounced: 0, relayed: 0, affinity: 0 } };
 
 export const podRoute = {
   preferLeader: () => Date.now() >= state.affinityUntil,
@@ -24,6 +24,6 @@ export const podRoute = {
     return false;
   },
   noteRelayed: () => { state.stats.relayed += 1; },
-  noteLeader: () => { state.samePodStreak = 0; },
+  noteLeader: () => { state.samePodStreak = 0; state.stats.direct += 1; },
   stats: () => ({ ...state.stats, pinned: Date.now() < state.affinityUntil }),
 };
