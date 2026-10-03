@@ -4040,14 +4040,16 @@ class BotState:
                 if _stall is not None:
                     _b = self.tracking.get(mint) or {}
                     _px = float(_b.get("last_price_sol") or slot.get("_last_price") or 0.0)
-                    if 0 < _px <= _ep:
-                        # RED + no momentum → hold as dust. Momentum / velocity never sells a red position; only a
-                        # price-based exit (stop-loss, clock, rip-cord) may — see PRD 2026-09-21 (f).
-                        logger.info(f"no-momentum skipped {mint[:8]}…: red ({(_px / _ep - 1) * 100:+.1f}%) — holding until a price-based exit fires")
+                    _pnl = (_px / _ep - 1) * 100 if _px > 0 else 0.0
+                    _floor = float(getattr(self.config, "no_momentum_min_profit_pct", 3.0) or 0.0)
+                    if _pnl < _floor:
+                        # Below the profit floor (red or barely green) → hold as dust. Momentum never sells here; only a
+                        # price-based exit (stop-loss, clock, rip-cord) may — see PRD 2026-09-21 (f) / 2026-10-03.
+                        logger.info(f"no-momentum skipped {mint[:8]}…: {_pnl:+.1f}% < {_floor:g}% profit floor — holding until a price-based exit fires")
                     else:
                         slot["exit_in_progress"] = True
                         try:
-                            await self._exit(mint, reason=f"no-momentum (peak +{_stall:.1f}% in {int(self.config.no_momentum_after_s)}s, {(_px / _ep - 1) * 100:+.1f}% after {int(elapsed)}s)")
+                            await self._exit(mint, reason=f"no-momentum (peak +{_stall:.1f}% in {int(self.config.no_momentum_after_s)}s, {_pnl:+.1f}% after {int(elapsed)}s)")
                             return
                         finally:
                             slot["exit_in_progress"] = False

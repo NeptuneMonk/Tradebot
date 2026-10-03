@@ -115,6 +115,7 @@ class BotConfig(BaseModel):
     trail_ratchet_enabled: bool = False          # hardwired trail tightening (+15% → ≤6%, +30% → ≤4%); off = your trail % is used as set
     no_momentum_after_s: int = 30
     no_momentum_min_mfe_pct: float = 5.0
+    no_momentum_min_profit_pct: float = 3.0   # a stalled position is only sold when it is up at least this much; below → held for stop/clock
     # Net-flow momentum (buys − sells as % of curve liquidity): the size-aware replacement for wallet counts
     exit_momentum_min_flow_pct: float = 1.0     # momentum gate defers SL/TP only while net inflow ≥ this % of liquidity per window
     scanner_min_flow_ratio_pct: float = 2.0     # entry: net inflow over the last 30s ≥ this % of liquidity (0 = off)

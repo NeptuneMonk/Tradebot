@@ -363,6 +363,18 @@ def test_rh_red_no_momentum_is_held_as_dust():
 
 def test_rh_green_low_mfe_no_momentum_still_kills():
     st, b, TOKEN, pos, t, entry, now = _rh_red_no_momentum()
+    pos["peak_price"] = entry * 1.04
+    b["last_price_quote"] = entry * 1.04                                       # +4% ≥ 3% profit floor, never reached min MFE
+    assert st.rh_paper._decide_exit(pos, b, now) == "no_momentum"
+
+
+def test_rh_green_below_profit_floor_is_held():
+    """2026-10-03: a stalled position under `no_momentum_min_profit_pct` (default 3%) is dust — held like a red one."""
+    st, b, TOKEN, pos, t, entry, now = _rh_red_no_momentum()
     pos["peak_price"] = entry * 1.02
-    b["last_price_quote"] = entry * 1.01                                       # green but never reached min MFE
+    b["last_price_quote"] = entry * 1.01                                       # +1% < 3%
+    assert st.rh_paper._decide_exit(pos, b, now) in (None, "max_hold") and pos["_nm_checked"] is True
+    st, b, TOKEN, pos, t, entry, now = _rh_red_no_momentum(no_momentum_min_profit_pct=0.0)
+    pos["peak_price"] = entry * 1.02
+    b["last_price_quote"] = entry * 1.01                                       # floor 0 → any green stall sells
     assert st.rh_paper._decide_exit(pos, b, now) == "no_momentum"

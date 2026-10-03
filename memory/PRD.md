@@ -2257,3 +2257,7 @@ User rule: turning a feed off is cheating — improve WHICH tokens we enter/exit
 - ✅ Preview `.env`: `SOLANA_RPC_URL` / `SOLANA_WSS_URL` → Helius (same values as `HELIUS_*`), public kept as fallback, MAX_RPS 10 (free plan). Backup at `/app/memory/.env.bak-*`. After switch: 186/186 Helius 200s, 0 `rpc 429`, WSS `up (beta.helius-rpc.com)`, account-bus `rpc_provider: helius`.
 - ⚠ Production: the same three secrets must be re-entered in the Deployment Panel (prod showed `SOL FEED: FALLBACK`).
 - Known: `api.helius.xyz` Enhanced Transactions (creator history/audit) 429s ~48% on the free tier — non-critical, cached.
+
+## No-Mo profit floor (2026-10-03)
+- ✅ `BotConfig.no_momentum_min_profit_pct` (default 3.0). A stalled position is only sold as `no-momentum` when pnl ≥ this %; below it (red OR barely green) it is held for stop/clock. Replaces the hard "red only" rule in `bot._monitor_position` and `rh_paper._decide_exit`. 0 = any green stall sells.
+- ✅ UI field `No-Mo Min Profit (%)` (`no-momentum-min-profit-input`) in Control → Exits, hints updated. Tests: `test_rh_green_below_profit_floor_is_held`, floor-adjusted `test_rh_green_low_mfe_no_momentum_still_kills`. Config round-trip verified via PUT /api/bot/config.

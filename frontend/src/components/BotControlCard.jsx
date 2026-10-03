@@ -463,13 +463,17 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
           </span>
         </label>
         <Field label="No-Mo Check (s)" testid="no-momentum-after-input"
-               hint="No-momentum exit — ROLLING, all books. Every this-many seconds the position's peak gain must have improved by at least the No-Mo % below since the previous check (first check: since entry). If it hasn't, the position is stalled: GREEN → sold as 'no-momentum'; RED → held for the stop / clock. Manual buys, LTH and pinned positions are exempt. Set 0 to disable."
+               hint="No-momentum exit — ROLLING, all books. Every this-many seconds the position's peak gain must have improved by at least the No-Mo Gain % since the previous check (first check: since entry). If it hasn't, the position is stalled: sold as 'no-momentum' when it is above the No-Mo Min Profit %; otherwise held for the stop / clock. Manual buys, LTH and pinned positions are exempt. Set 0 to disable."
                value={local.no_momentum_after_s ?? 30}
                onChange={(v) => { const n = parseInt(v, 10) || 0; setLocal({ ...local, no_momentum_after_s: n, no_momentum_exit_enabled: n > 0 }); }} step="5" />
         <Field label="No-Mo Gain (%)" testid="no-momentum-mfe-input"
                hint="How much the peak gain must improve within each No-Mo window to count as 'still has momentum'. E.g. 10% / 2s: a position that peaked +12% and then drifts 6–12% for 2s is sold at the next check."
                value={local.no_momentum_min_mfe_pct ?? 5}
                onChange={(v) => setLocal({ ...local, no_momentum_min_mfe_pct: parseFloat(v) || 0 })} step="1" />
+        <Field label="No-Mo Min Profit (%)" testid="no-momentum-min-profit-input"
+               hint="A stalled position is only sold when it is up at least this much (net of entry). Below it — red, or green but not worth the fees — it is held as dust until the stop-loss / clock fires. 0 = sell any green stall."
+               value={local.no_momentum_min_profit_pct ?? 3}
+               onChange={(v) => setLocal({ ...local, no_momentum_min_profit_pct: parseFloat(v) || 0 })} step="0.5" />
         <Field label="Recovery Watch (s)" testid="recovery-watch-input"
                hint="When the no-momentum check would kill a RED position whose tape is recovering (above its price 30s ago, and no new low for 20s or ≥2 fresh buyers), the kill becomes a time-boxed watch instead: stop just under the trough, this many seconds to reclaim part of the way back to entry, then it rejoins the normal ladder with a fresh clock. Flat or still-sliding tapes are still killed. 0 = off."
                value={local.recovery_watch_s ?? 90}

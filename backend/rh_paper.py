@@ -1096,9 +1096,10 @@ class RHPaperTrader:
             from exits import no_momentum_stalled
             stall = no_momentum_stalled(cfg, pos, now, now - pos["opened"], entry, float(pos.get("peak_price") or 0))
             if stall is not None:
-                if pnl_pct <= 0:
-                    # RED + no momentum → hold as dust; only a price-based exit (stop / clock) may close a red position
-                    logger.info(f"rh_paper no-momentum skipped {t.get('symbol')}: red ({pnl_pct:+.1f}%) — holding until a price-based exit fires")
+                floor = float(getattr(cfg, "no_momentum_min_profit_pct", 3.0) or 0.0)
+                if pnl_pct < floor:
+                    # below the profit floor (red or barely green) → hold as dust; only a price-based exit (stop / clock) may close it
+                    logger.info(f"rh_paper no-momentum skipped {t.get('symbol')}: {pnl_pct:+.1f}% < {floor:g}% profit floor — holding until a price-based exit fires")
                 else:
                     return "no_momentum"
         w = pos.get("_recovery_watch")
