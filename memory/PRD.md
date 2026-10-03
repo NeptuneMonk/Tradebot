@@ -2251,3 +2251,9 @@ User rule: turning a feed off is cheating — improve WHICH tokens we enter/exit
 - ✅ Wired into `bot._monitor_position` (Solana) and `rh_paper._decide_exit` (RH). Stalled + GREEN → exit `no-momentum (peak +x% in Ns, …)`; stalled + RED → hold for stop/clock (unchanged rule).
 - ✅ Scope per user: **all books incl. runner and ladder-banked positions**; only manual buys / LTH / pinned exempt. (Previous runner + `ladder_legs_done` exemptions removed.) Dead recovery-watch-start branch (unreachable since the red-hold rule) removed from both call sites; `recovery_watch_step` left intact.
 - ✅ UI hints rewritten (`No-Mo Check (s)`, `No-Mo Gain (%)`), models comment updated. Tests: `tests/test_no_momentum_rolling.py` (5). Suite 757 passed.
+
+## Helius audit + routing fix (2026-10-03, preview)
+- Finding: `SOLANA_RPC_URL` pointed at a dead QuickNode key (429 on 100% of calls) → every read fell through to the public RPC (19,957 calls, 253 × 429, one failed paper TP exit). `SOLANA_WSS_URL` was the public node; Helius RPC had 8 calls total. Helius itself probed healthy (RPC, WSS, getPriorityFeeEstimate).
+- ✅ Preview `.env`: `SOLANA_RPC_URL` / `SOLANA_WSS_URL` → Helius (same values as `HELIUS_*`), public kept as fallback, MAX_RPS 10 (free plan). Backup at `/app/memory/.env.bak-*`. After switch: 186/186 Helius 200s, 0 `rpc 429`, WSS `up (beta.helius-rpc.com)`, account-bus `rpc_provider: helius`.
+- ⚠ Production: the same three secrets must be re-entered in the Deployment Panel (prod showed `SOL FEED: FALLBACK`).
+- Known: `api.helius.xyz` Enhanced Transactions (creator history/audit) 429s ~48% on the free tier — non-critical, cached.
