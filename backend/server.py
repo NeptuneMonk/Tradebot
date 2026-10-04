@@ -5,6 +5,7 @@ import os
 import time
 import logging
 import asyncio
+import httpx
 from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -275,15 +276,25 @@ async def lifespan(app: FastAPI):
     follower_cfg = asyncio.create_task(_follower_config_refresh_loop())
     yield
     follower_cfg.cancel()
-    if singleton.is_leader:
-        await stop_leader_services("shutdown")
-    await singleton.release()
+    was_leader = singleton.is_leader
+    await singleton.release()                     # hand the lease over FIRST so a follower can take over while we wind down
     singleton.stop()
+    if was_leader:
+        await stop_leader_services("shutdown")
     mongo_client.close()
 
 
 app = FastAPI(lifespan=lifespan)
 api = APIRouter(prefix="/api", dependencies=[Depends(get_current_user)])
+
+
+@app.exception_handler(httpx.HTTPStatusError)
+async def _rpc_status_error(request: Request, exc: httpx.HTTPStatusError):
+    """A Solana RPC 429/5xx escaping a handler used to surface as a bare 500 'Exception in ASGI application'."""
+    code = exc.response.status_code if exc.response is not None else 0
+    host = exc.request.url.host if exc.request is not None else "rpc"
+    return JSONResponse({"detail": f"Solana RPC {host} answered {code} — {'rate-limited' if code == 429 else 'upstream error'}; nothing was sent, retry in a few seconds"},
+                        status_code=503, headers={"X-Upstream-Status": str(code)})
 
 
 @api.get("/")
@@ -3119,6 +3130,8 @@ async def pods_info():
     info["relay"] = relay.stats if relay else None
     info["ws_mirror"] = ws_mirror.stats if ws_mirror else None
     info["sticky"] = STICKY_STATS
+    import solana_client as _sc
+    info["rpc"] = _sc.rpc_snapshot()
     return info
 
 

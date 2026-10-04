@@ -243,8 +243,10 @@ def test_scorecard_runner_cell_counts_only_post_promotion_leg():
     assert scorecard.cell_for_trade({**t, "entry_time": "2026-06-01T10:00:00+00:00", "expected_cost_pct": 4.0}).startswith("runner|")
 
 
-def test_hunt_cap_drops_to_one_while_runner_open():
+def test_hunt_cap_drops_to_one_while_runner_open(monkeypatch):
     from models import Launch
+    import bot as bot_mod
+    monkeypatch.setattr(bot_mod.reputation, "configured", lambda: False)   # dev-reputation gate runs first when REPUTATION_BASE_URL is set
     st = _patched(_bot_stub())
     st.active_trades = {"a": {"trade": {"book": "hunt"}}, "r": {"trade": {"book": "runner"}}}
     async def _impl(*a, **k): st.calls.append(("enter_impl",))

@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 LEASE_TTL_S = 30.0
 RENEW_S = 10.0
 POD_STALE_S = 60.0
-RELAY_TIMEOUT_S = 12.0
+RELAY_TIMEOUT_S = 20.0        # prod relay latency bunches at 2–4 s behind a busy leader loop; 12 s was tripping on ordinary queueing
 RELAY_POLL_S = 0.15
 EXEC_POLL_S = 0.25
 WS_TAIL_S = 0.3
@@ -225,9 +225,15 @@ class CommandRelay:
                 return Response(content=base64.b64decode(doc.get("resp_body") or ""), status_code=int(doc.get("resp_code") or 500),
                                 media_type=doc.get("resp_ct") or "application/json",
                                 headers={"X-Pod-Role": "follower", "X-Pod-Relayed": "1", "X-Pod-Leader": str(doc.get("leader") or "")})
+            if not self.lease.leader_alive():
+                # the leader died while we waited (OOM / liveness kill): say so now instead of burning the whole budget
+                self.stats["timeouts"] += 1
+                await self.db.pod_commands.update_one({"_id": cid, "status": {"$in": ["pending", "running"]}}, {"$set": {"status": "expired"}})
+                return JSONResponse({"detail": "the leader pod restarted mid-request — a new leader takes over within ~30 s, retry then"}, status_code=503,
+                                    headers={"X-Pod-Role": "follower", "X-Pod-Relayed": "1", "X-Pod-Leader-Dead": "1"})
         self.stats["timeouts"] += 1
         await self.db.pod_commands.update_one({"_id": cid, "status": "pending"}, {"$set": {"status": "expired"}})
-        return JSONResponse({"detail": "the leader pod did not answer in time — retry in a few seconds"}, status_code=503,
+        return JSONResponse({"detail": f"the leader pod did not answer in {int(RELAY_TIMEOUT_S)} s (busy or restarting) — retry in a few seconds"}, status_code=503,
                             headers={"X-Pod-Role": "follower", "X-Pod-Relayed": "1"})
 
     async def _execute(self, client: httpx.AsyncClient, cmd: dict):

@@ -265,6 +265,8 @@ async def test_rpc_quota_429_switches_to_fallback(monkeypatch):
     hits: list[str] = []
 
     class _Client:
+        is_closed = False
+
         def __init__(self, *a, **kw):
             pass
 
@@ -274,11 +276,13 @@ async def test_rpc_quota_429_switches_to_fallback(monkeypatch):
         async def __aexit__(self, *a):
             return False
 
-        async def post(self, url, json=None):
+        async def post(self, url, json=None, timeout=None):
             hits.append(url)
             return _Resp(url)
 
     monkeypatch.setattr(sc.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(sc, "_http", None)
+    monkeypatch.setattr(sc, "_cool_until", {})
     monkeypatch.setattr(sc, "RPC_URL", "https://primary")
     monkeypatch.setattr(sc, "RPC_FALLBACK_URL", "https://fallback")
     monkeypatch.setattr(sc, "RPC_MAX_RPS", 0.0)

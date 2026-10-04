@@ -347,8 +347,10 @@ def test_ripcord_fire_is_a_full_exit_without_ladder():
     assert fired is True and "rip-cord" in reason.lower()
 
 
-def test_third_hunt_snipe_refused_by_hunt_cap():
+def test_third_hunt_snipe_refused_by_hunt_cap(monkeypatch):
     from models import Launch
+    import bot as bot_mod
+    monkeypatch.setattr(bot_mod.reputation, "configured", lambda: False)   # the dev-reputation gate runs first when REPUTATION_BASE_URL is set
     st = _bot_stub()
     st.active_trades = {"a": {"trade": {"book": "hunt"}}, "b": {"trade": {"book": "hunt"}}}
     async def _impl(*a, **k): st.calls.append(("enter_impl",))

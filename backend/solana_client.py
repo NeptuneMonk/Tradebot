@@ -80,11 +80,42 @@ class WssRouter:
 
 wss_router = WssRouter(WSS_URL, WSS_FALLBACK_URLS)
 RPC_MAX_RPS = float(os.environ.get("SOLANA_RPC_MAX_RPS") or 0)   # 0 = unpaced; QuickNode Discover allows 15 req/s
+RPC_MAX_INFLIGHT = int(os.environ.get("SOLANA_RPC_MAX_INFLIGHT") or 8)   # concurrent RPC calls per pod (bursts are what trip 429s)
 LAMPORTS_PER_SOL = 1_000_000_000
 QUOTA_DEAD_S = 300.0          # after a plan-quota 429 the primary is skipped this long (fallback serves directly)
+RATE_COOL_S = 1.5             # a per-second 429 parks that endpoint briefly; the call moves on instead of sleeping on it
+QUOTA_MARKERS = ("monthly", "daily", "credit", "max usage", "quota", "upgrade your plan", "exceeded your")   # plan exhausted, not a burst
+BURST_MARKERS = ("/second", "per second", "per-second", "rate limit exceeded")                              # per-second limit: never quota-dead
 _primary_dead_until = 0.0
+_cool_until: dict[str, float] = {}      # endpoint → cooldown end after a 429
+_inflight: asyncio.Semaphore | None = None
+_http: httpx.AsyncClient | None = None
+stats = {"calls": 0, "ok": 0, "429_primary": 0, "429_fallback": 0, "5xx": 0, "net_err": 0, "failed": 0, "cooled": 0, "quota_dead": 0}
 
 _pace_next = 0.0
+
+
+def _client() -> httpx.AsyncClient:
+    """One pooled client per process: a fresh AsyncClient per call paid a TLS handshake every time — real CPU on a 250m pod."""
+    global _http
+    if _http is None or _http.is_closed:
+        _http = httpx.AsyncClient(timeout=10.0, limits=httpx.Limits(max_connections=RPC_MAX_INFLIGHT + 4, max_keepalive_connections=RPC_MAX_INFLIGHT))
+    return _http
+
+
+def _sem() -> asyncio.Semaphore:
+    global _inflight
+    if _inflight is None:
+        _inflight = asyncio.Semaphore(max(1, RPC_MAX_INFLIGHT))
+    return _inflight
+
+
+def rpc_snapshot() -> dict:
+    now = time.time()
+    return {**stats, "primary": rpc_provider(), "fallback": RPC_FALLBACK_URL.split("//", 1)[-1].split("/", 1)[0] if RPC_FALLBACK_URL else None,
+            "primary_quota_dead_s": round(max(0.0, _primary_dead_until - now), 1),
+            "cooling": {u.split("//", 1)[-1].split("/", 1)[0]: round(t - now, 1) for u, t in _cool_until.items() if t > now},
+            "max_inflight": RPC_MAX_INFLIGHT, "max_rps": RPC_MAX_RPS}
 
 
 async def _pace():
@@ -109,59 +140,83 @@ def rpc_provider() -> str:
     return host
 
 
+def _pick_url(now: float) -> tuple[str | None, float]:
+    """First endpoint not in a 429 cooldown (primary first unless quota-dead). Returns (url, seconds until one frees up)."""
+    order = []
+    if not (RPC_FALLBACK_URL and now < _primary_dead_until):
+        order.append(RPC_URL)
+    if RPC_FALLBACK_URL and RPC_FALLBACK_URL != RPC_URL:
+        order.append(RPC_FALLBACK_URL)
+    free = [u for u in order if _cool_until.get(u, 0.0) <= now]
+    if free:
+        return free[0], 0.0
+    if not order:
+        return None, 0.0
+    return None, max(0.0, min(_cool_until.get(u, now) for u in order) - now)
+
+
 async def rpc_call(method: str, params: list, timeout: float = 10.0,
                    max_retries: int = 3) -> dict:
-    """JSON-RPC call with transient-failure retry.
+    """JSON-RPC call with transient-failure retry over a shared connection pool.
 
-    Retries on ConnectTimeout / ReadTimeout / 5xx / 429 (the only failure
-    modes that are safe to retry — rate-limits and edge-node cold-starts
-    produce these intermittently). Backoff: 0.25s, 0.5s, 1.0s. After the
-    primary's retries are spent, `SOLANA_RPC_FALLBACK_URL` gets one attempt."""
+    Retries on ConnectTimeout / ReadTimeout / 5xx / 429 (the only failure modes that are safe to retry). A 429 does NOT
+    block the call on that endpoint: the endpoint is parked for RATE_COOL_S (or Retry-After, ≤3 s) and the next attempt
+    goes to whichever endpoint is free — so a rate-limited provider never turns into a retry storm that starves the
+    event loop. A plan-quota 429 (monthly credits / max usage) skips the primary for QUOTA_DEAD_S. In-flight calls per pod
+    are capped at RPC_MAX_INFLIGHT."""
     payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
     last_exc: Exception | None = None
     global _primary_dead_until
-    primary_dead = RPC_FALLBACK_URL and time.time() < _primary_dead_until
-    urls = ([RPC_FALLBACK_URL] * max_retries) if primary_dead else ([RPC_URL] * max_retries + ([RPC_FALLBACK_URL] if RPC_FALLBACK_URL else []))
-    for attempt, url in enumerate(urls):
-        try:
-            await _pace()
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                r = await client.post(url, json=payload)
+    stats["calls"] += 1
+    attempts = max_retries + (1 if RPC_FALLBACK_URL else 0)
+    async with _sem():
+        for attempt in range(attempts):
+            now = time.time()
+            url, wait_s = _pick_url(now)
+            if url is None:
+                stats["cooled"] += 1
+                if attempt == attempts - 1 or wait_s > 1.0:
+                    break                     # every endpoint is rate-limited right now: fail fast, the caller's own retry cadence takes over
+                await asyncio.sleep(wait_s or 0.1)
+                continue
+            try:
+                await _pace()
+                r = await _client().post(url, json=payload, timeout=timeout)
                 if r.status_code == 429 or 500 <= r.status_code < 600:
-                    # transient — retry
-                    last_exc = httpx.HTTPStatusError(
-                        f"rpc {r.status_code}", request=r.request, response=r
-                    )
+                    last_exc = httpx.HTTPStatusError(f"rpc {r.status_code}", request=r.request, response=r)
                     if r.status_code == 429:
-                        body = r.text[:200].lower()
-                        if url == RPC_URL and RPC_FALLBACK_URL and ("limit reached" in body or "max usage" in body or "quota" in body):
-                            # plan quota exhausted (not a per-second limit): skip the primary for a while, go straight to the fallback
-                            _primary_dead_until = time.time() + QUOTA_DEAD_S
-                            urls[attempt + 1:] = [RPC_FALLBACK_URL] * max_retries
-                            continue
+                        stats["429_primary" if url == RPC_URL else "429_fallback"] += 1
+                        body = r.text[:300].lower()
+                        if url == RPC_URL and RPC_FALLBACK_URL and any(m in body for m in QUOTA_MARKERS) and not any(m in body for m in BURST_MARKERS):
+                            _primary_dead_until = time.time() + QUOTA_DEAD_S      # plan exhausted (not a per-second burst)
+                            stats["quota_dead"] += 1
                         try:
                             retry_after = float(r.headers.get("retry-after") or 0)
                         except ValueError:
                             retry_after = 0.0
-                        await asyncio.sleep(min(3.0, max(0.5 * (2 ** attempt), retry_after)))
+                        _cool_until[url] = time.time() + min(3.0, max(RATE_COOL_S, retry_after))
+                        continue              # no inline sleep: next attempt picks a free endpoint or fails fast
+                    stats["5xx"] += 1
                 elif r.status_code == 413:
                     return r.json()      # plan-limit JSON-RPC error (e.g. QuickNode batch cap) — let the caller adapt
                 else:
                     r.raise_for_status()
+                    stats["ok"] += 1
                     try:
                         from helius_budget import record_rpc_call
                         record_rpc_call(method)
                     except Exception:
                         pass
                     return r.json()
-        except (httpx.ConnectTimeout, httpx.ReadTimeout,
-                httpx.ConnectError, httpx.RemoteProtocolError) as e:
-            last_exc = e
-        # Backoff before next attempt (skip on last iteration)
-        if attempt < len(urls) - 1:
-            await asyncio.sleep(0.25 * (2 ** min(attempt, 2)))
-    # All retries exhausted
-    assert last_exc is not None
+            except (httpx.ConnectTimeout, httpx.ReadTimeout,
+                    httpx.ConnectError, httpx.RemoteProtocolError, httpx.PoolTimeout) as e:
+                last_exc = e
+                stats["net_err"] += 1
+            if attempt < attempts - 1:
+                await asyncio.sleep(0.25 * (2 ** min(attempt, 2)))
+    stats["failed"] += 1
+    if last_exc is None:
+        last_exc = RuntimeError(f"rpc 429: every Solana RPC endpoint is rate-limited — {method} not sent")
     raise last_exc
 
 
@@ -242,15 +297,14 @@ async def get_sol_usd_price() -> float:
     ]
     for name, url, params, parser in sources:
         try:
-            async with httpx.AsyncClient(timeout=6.0) as client:
-                r = await client.get(url, params=params)
-                if r.status_code != 200:
-                    continue
-                price = parser(r.json())
-                if price > 0:
-                    _sol_price_cache["price"] = price
-                    _sol_price_cache["ts"] = now
-                    return price
+            r = await _client().get(url, params=params, timeout=6.0)
+            if r.status_code != 200:
+                continue
+            price = parser(r.json())
+            if price > 0:
+                _sol_price_cache["price"] = price
+                _sol_price_cache["ts"] = now
+                return price
         except Exception:
             continue
     return _sol_price_cache["price"] or 150.0

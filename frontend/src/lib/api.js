@@ -4,7 +4,8 @@ import { podRoute, HTTP_MAX_ATTEMPTS } from "./podRoute";
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
 
-const client = axios.create({ baseURL: API, timeout: 15000, withCredentials: true });
+// 30 s: a follower relays actions to the leader pod through Mongo (up to 20 s budget) before answering.
+const client = axios.create({ baseURL: API, timeout: 30000, withCredentials: true });
 // Recovery operations need a longer timeout because they wait for on-chain
 // confirmation (sell tx + getSignatureStatuses polling can take 25–40s).
 const longClient = axios.create({ baseURL: API, timeout: 60000, withCredentials: true });
