@@ -2261,3 +2261,16 @@ User rule: turning a feed off is cheating — improve WHICH tokens we enter/exit
 ## No-Mo profit floor (2026-10-03)
 - ✅ `BotConfig.no_momentum_min_profit_pct` (default 3.0). A stalled position is only sold as `no-momentum` when pnl ≥ this %; below it (red OR barely green) it is held for stop/clock. Replaces the hard "red only" rule in `bot._monitor_position` and `rh_paper._decide_exit`. 0 = any green stall sells.
 - ✅ UI field `No-Mo Min Profit (%)` (`no-momentum-min-profit-input`) in Control → Exits, hints updated. Tests: `test_rh_green_below_profit_floor_is_held`, floor-adjusted `test_rh_green_low_mfe_no_momentum_still_kills`. Config round-trip verified via PUT /api/bot/config.
+
+## Cut the Fat — Phase 1 (2026-10-04)
+Approved plan: remove every data source / book with zero edge; keep scanner → scalp → runner / re-entry, exits, cost gate, R-sizing, WS path.
+- ✅ **LadderBook** no longer starts (`bot.py` start_loops); `/api/ladder*` routes removed; LADDER tab + `GraduateLadderCard`/`CompactLadder` removed from Dashboard. Module file kept (history rows `book=ladder` still render).
+- ✅ **SCAN tab removed**; scanner engine untouched (WS `scanner_snapshot` still feeds LIVE → Candidates). Launch tape (`RecentLaunchesFeed`) moved onto LIVE grid. NavBar: LIVE / DOCTOR / BOOKS / CONTROL / WIKI.
+- ✅ **Greylist sniper** task removed from `on_launch`; greylist scoring on launch disabled (`if False and …`); **wallet-graph hunter, failure sweeper, greylist inactivity prune** no longer started in `start_leader_services`. Greylist panel + Sniper/Research/serial-gate/creator-audit sections removed from UI. Read-only `/api/creator-greylist*` + `/api/creator-audit*` routes left (not hot path). Mongo collections untouched.
+- ✅ **Creator-history Enhanced-API backfill + serial-creator gate** removed from `_enter_impl` (classifier gets `serial_creator_gate_enabled=False`).
+- ✅ **Lazy metadata**: `BotState._ensure_metadata(mint)` (one-shot `_compute_social` + `_fetch_pumpfun_socials`) called only from scanner gate-pass (`scanner.py` scored loop) and `_enter_impl`; no longer per launch.
+- ✅ **Tracker**: `MAX_TRACKED_MINTS` 500 → 150. `_persist_metrics` queues Mongo writes only for gate-pass / `_meta_requested` / held mints. `_launch_gc_loop` (hourly) deletes `launches` older than 48 h (ISO-string `detected_at`, so no TTL index) — first run 181k → 2.9k rows.
+- ✅ **Doctor** `DEFAULT_INTERVAL_MINUTES` 30 → 15 (learning + autopsy ride the same cycle; LiveDoctor breakers stay real-time).
+- Tests: suite green (751+); RH/scanner live tests now skip when operator has feed/bot off. `test_metrics_flush.py` +1 (non-candidates not persisted).
+- Remaining load note (not in plan): `discovery.py` seasoned feed polls `pump.fun/coins/{mint}` per tracked discovered token every 60 s (~50 calls/min) — candidate for Phase 3 trimming.
+- Phase 2 (six-control CONTROL + Advanced drawer + Safe-paper preset) and Phase 3 (reputation adapter dark, lite-mode watchdog, one-chain default) NOT started.

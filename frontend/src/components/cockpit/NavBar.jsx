@@ -1,9 +1,7 @@
 import { Square, Play } from "lucide-react";
 
 export const VIEWS = [
-  { id: "live", label: "LIVE", hint: "cockpit — positions, equity, candidates, ladder" },
-  { id: "scan", label: "SCAN", hint: "launch feed, tracked tokens, greylist" },
-  { id: "ladder", label: "LADDER", hint: "graduate ladder — full watch list" },
+  { id: "live", label: "LIVE", hint: "cockpit — positions, equity, candidates, launch tape" },
   { id: "doctor", label: "DOCTOR", hint: "strategy doctor, autopilot, costs" },
   { id: "books", label: "BOOKS", hint: "P/L by source, scorecard, classifier, book exits" },
   { id: "control", label: "CONTROL", hint: "bot control, wallets, gates" },

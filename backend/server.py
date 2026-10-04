@@ -142,22 +142,21 @@ async def _build_services():
 
 async def start_leader_services():
     """Lease gained: this pod runs the bot. Everything that trades, listens or writes state starts here."""
-    from creator_greylist import inactivity_prune_loop
     bot_state.leader_ok = True
     await bot_state.load()                       # config + start_loops(): restart-resume, position restore, feeds
     await ensure_indexes()                       # after the duplicate-active sweep in start_loops
     listener.start()
     _leader_tasks[:] = [asyncio.create_task(_status_broadcaster()),
-                        asyncio.create_task(inactivity_prune_loop(db, lambda: bot_state.config.creator_greylist_inactive_days)),
-                        asyncio.create_task(_config_watch_loop())]
+                        asyncio.create_task(_config_watch_loop()),
+                        asyncio.create_task(_launch_gc_loop())]
     bot_state.bankroll.start()
     bot_state.rh_feed.start()
     bot_state.sweeper.start()
     bot_state.tick_store.start()
     await _svc["doctor"].start()
     await _svc["live_doc"].start()
-    _svc["hunter"].start()
-    _svc["failure"].start()
+    # cut-the-fat (2026-10-03): wallet-graph hunter, greylist failure sweeper and greylist inactivity prune no longer
+    # run — they fed the greylist sniper, which never produced a trade. Their collections stay in Mongo untouched.
     logger.warning(f"pod {singleton.pod_id}: leader services started")
 
 
@@ -177,6 +176,22 @@ async def stop_leader_services(reason: str = "shutdown"):
     await _svc["live_doc"].stop()
     await _svc["doctor"].stop()
     logger.error(f"pod {singleton.pod_id}: leader services stopped ({reason})")
+
+
+async def _launch_gc_loop():
+    """Leader: expire launch rows older than 48 h (detected_at is an ISO string, so a TTL index can't do it). Hourly."""
+    from datetime import timedelta
+    while True:
+        try:
+            cutoff = (now_utc() - timedelta(hours=48)).isoformat()
+            r = await db.launches.delete_many({"detected_at": {"$lt": cutoff}})
+            if r.deleted_count:
+                logger.info(f"launch GC: removed {r.deleted_count} rows older than 48h")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug(f"launch GC: {e}")
+        await asyncio.sleep(3600)
 
 
 async def _config_watch_loop():
@@ -2538,40 +2553,7 @@ async def token_detail(chain: str, mint: str):
     return out
 
 
-@api.get("/ladder")
-async def ladder_snapshot():
-    return bot_state.ladder.payload()
-
-
-class LadderManualIn(BaseModel):
-    address: str
-    quote: str | None = None      # ETH · stock symbol · pair-token address; auto-detected when omitted
-
-
-@api.post("/ladder/manual")
-async def ladder_add_manual(body: LadderManualIn):
-    """Operator pins an established RH token for the Graduate Ladder — no age gate, no MC gate, staircase + retry as usual."""
-    try:
-        return await bot_state.ladder.add_manual(body.address, body.quote)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.warning(f"ladder manual add failed: {e}")
-        raise HTTPException(status_code=502, detail=f"RPC lookup failed: {e}")
-
-
-@api.delete("/ladder/{key}")
-async def ladder_remove(key: str):
-    d = bot_state.ladder.tokens.get(key)
-    if d is not None and d.get("manual"):
-        res = await bot_state.ladder.remove_manual(key)
-        if not res["removed"]:
-            raise HTTPException(status_code=409, detail=res["reason"])
-        return res
-    d = bot_state.ladder.tokens.pop(key, None)
-    if d is not None:
-        await db.ladder_tokens.update_one({"key": key}, {"$set": {"state": "dead"}})
-    return {"removed": d is not None}
+# cut-the-fat (2026-10-03): /ladder routes removed with the graduate LadderBook (0 legs ever)
 
 
 @api.get("/reentry/watchlist")

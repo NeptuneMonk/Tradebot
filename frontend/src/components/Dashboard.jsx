@@ -17,9 +17,6 @@ import RecentLaunchesFeed from "@/components/RecentLaunchesFeed";
 import TradeHistoryTable from "@/components/TradeHistoryTable";
 import ClassifierRulesEditor from "@/components/ClassifierRulesEditor";
 import ReentryWatchCard from "@/components/ReentryWatchCard";
-import GraduateLadderCard from "@/components/GraduateLadderCard";
-import ScannerCandidatesCard from "@/components/ScannerCandidatesCard";
-import CreatorGreylistPanel from "@/components/CreatorGreylistPanel";
 import PLBySourceCard from "@/components/PLBySourceCard";
 import CollapsibleSection from "@/components/CollapsibleSection";
 import { AutopilotSwitch } from "@/components/AutopilotCard";
@@ -30,7 +27,6 @@ import KpiStrip from "@/components/cockpit/KpiStrip";
 import ActiveTradesCockpit from "@/components/cockpit/ActiveTradesCockpit";
 import EquityPanel from "@/components/cockpit/EquityPanel";
 import CompactCandidates from "@/components/cockpit/CompactCandidates";
-import CompactLadder from "@/components/cockpit/CompactLadder";
 import SkipTicker from "@/components/cockpit/SkipTicker";
 import NavBar from "@/components/cockpit/NavBar";
 import DoctorWorkspace from "@/components/cockpit/DoctorWorkspace";
@@ -70,7 +66,6 @@ export default function Dashboard() {
   const [pl, setPl] = useState({ series: [], daily_pnl_usd: 0, cumulative_usd: 0 });
   const [reentry, setReentry] = useState([]);
   const [scanner, setScanner] = useState([]);
-  const [ladder, setLadder] = useState(null);
   const [plSourceRefresh, setPlSourceRefresh] = useState(0);
   const [view, setView] = useState(() => (window.location.hash.startsWith("#wiki") ? "wiki" : localStorage.getItem("ui.view") || "live"));
   const [auto, setAuto] = useState(null);           // /api/autopilot/status — bankroll, search ledger, canary
@@ -111,7 +106,7 @@ export default function Dashboard() {
   // Initial full pull + slow polling fallback (every 20s)
   const refreshAll = useCallback(async () => {
     try {
-      const [w, s, c, r, l, a, h, p, re, sc, ld] = await Promise.all([
+      const [w, s, c, r, l, a, h, p, re, sc] = await Promise.all([
         api.wallet().catch(() => null),
         api.status().catch(() => null),
         api.config().catch(() => null),
@@ -122,7 +117,6 @@ export default function Dashboard() {
         api.plSummary(7).catch(() => ({ series: [], daily_pnl_usd: 0, cumulative_usd: 0 })),
         api.reentryWatchlist().catch(() => []),
         api.scannerCandidates().catch(() => []),
-        api.ladder().catch(() => null),
       ]);
       if (w) setWallet(w);
       if (s) setStatus(s);
@@ -134,7 +128,6 @@ export default function Dashboard() {
       setPl(p);
       setReentry(re || []);
       setScanner(sc || []);
-      if (ld) setLadder(ld);
     } catch (e) { /* swallow */ }
   }, []);
 
@@ -326,8 +319,6 @@ export default function Dashboard() {
       case "scanner_skip":
         skipFeedRef.current(type, data, resolveToken);
         break;
-      case "ladder":
-        setLadder(data);
         break;
       case "trade_enter":
         setActiveTrades((prev) => [data, ...prev.filter((t) => t.id !== data.id)].filter(isActiveRow));
@@ -399,7 +390,6 @@ export default function Dashboard() {
     if (wsConnected) return undefined;
     const tick = () => {
       api.scannerCandidates().then((sc) => setScanner(sc || [])).catch(() => {});
-      api.ladder().then((ld) => ld && setLadder(ld)).catch(() => {});
     };
     const id = setInterval(tick, 5000);
     return () => clearInterval(id);
@@ -460,7 +450,6 @@ export default function Dashboard() {
   const onRulesSave = useCallback(async (r) => { setRules(await api.updateRules(r)); }, []);
   const onDoctorApplied = useCallback(() => api.config().then(setConfig).catch(() => {}), []);
   const onReentryRefresh = useCallback(() => api.reentryWatchlist().then(setReentry).catch(() => {}), []);
-  const onLadderRefresh = useCallback(() => api.ladder().then(setLadder).catch(() => {}), []);
   const onStop = useCallback(async () => { await api.stop(); refreshAll(); }, [refreshAll]);
   // Stable props for the memo'd cockpit cards — an inline arrow / object literal here would defeat React.memo
   // and repaint every card on each 3s status tick.
@@ -469,10 +458,9 @@ export default function Dashboard() {
   const onReloadAuto = useCallback(() => api.autopilotStatus().then(setAuto).catch(() => {}), []);
   const onAutopilotChange = useCallback(async () => { try { setConfig(await api.config()); } catch { /* noop */ } refreshAll(); }, [refreshAll]);
   const onResetKill = useCallback(async () => { await api.resetKillSwitch(); refreshAll(); }, [refreshAll]);
-  const ladderHolding = useMemo(() => (ladder?.tokens || []).filter((t) => t.state === "holding").length, [ladder]);
   const navBadges = useMemo(() => ({
-    live: activeTrades.length || null, scan: launches.length || null, ladder: ladderHolding || null, doctor: pendingDoc || null,
-  }), [activeTrades.length, launches.length, ladderHolding, pendingDoc]);
+    live: activeTrades.length || null, doctor: pendingDoc || null,
+  }), [activeTrades.length, pendingDoc]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const feedLive = useMemo(() => ({ sol: !!status?.listener_connected, rh: !!status?.rh_feed_alive }), [status?.listener_connected, status?.rh_feed_alive]);
   const scannerEnabled = config?.scanner_enabled ?? true;
@@ -580,7 +568,11 @@ export default function Dashboard() {
               <div className="tile-in" style={{ animationDelay: "60ms" }}><ActiveTradesCockpit trades={activeTrades} onExit={onExitTrade} onLth={onLthTrade} onAdd={onAddToTrade} /></div>
               <div className="tile-in" style={{ animationDelay: "120ms" }}><EquityPanel refreshKey={pl?.cumulative_usd} /></div>
               <div className="tile-in" style={{ animationDelay: "180ms" }}><CompactCandidates candidates={scanner} scannerEnabled={scannerEnabled} onEnableScanner={onEnableScanner} /></div>
-              <div className="tile-in" style={{ animationDelay: "240ms" }}><CompactLadder ladder={ladder} /></div>
+              <div className="tile-in" style={{ animationDelay: "240ms" }}>
+                <MinimizableCard id="launch-feed" title="Live launch feed" stat={`${launches.length} tracked`}>
+                  <RecentLaunchesFeed launches={launches} feedLive={feedLive} />
+                </MinimizableCard>
+              </div>
             </div>
             <div className="tile-in" style={{ animationDelay: "300ms" }}><DoctorStrip status={status} auto={auto} pending={pendingDoc} onOpenDoctor={onOpenDoctor} /></div>
 
@@ -596,14 +588,6 @@ export default function Dashboard() {
             >
               <ReentryWatchCard watchlist={reentry} onRefresh={onReentryRefresh} />
             </CollapsibleSection>
-          </div>
-        )}
-
-        {view === "ladder" && (
-          <div key="ladder" className="space-y-4 tile-in" data-testid="view-ladder">
-            <div className="control-card">
-              <GraduateLadderCard ladder={ladder} config={config} onConfigPatch={onConfigPatch} onRefresh={onLadderRefresh} />
-            </div>
           </div>
         )}
 
@@ -638,38 +622,6 @@ export default function Dashboard() {
                 <ClassifierRulesEditor rules={rules} onSave={onRulesSave} />
               </CollapsibleSection>
             </div>
-          </div>
-        )}
-
-        {view === "scan" && (
-          <div key="scan" className="space-y-4" data-testid="view-scan">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-              <div className="tile-in">
-                <MinimizableCard id="launch-feed" title="Live launch feed" stat={`${launches.length} tracked`}>
-                  <RecentLaunchesFeed launches={launches} feedLive={feedLive} />
-                </MinimizableCard>
-              </div>
-              <div className="tile-in" style={{ animationDelay: "80ms" }}>
-                <CollapsibleSection
-                  title="Scanner Candidates"
-                  description="live tokens being tracked towards entry"
-                  storageKey="ui.section.scanner"
-                  testId="section-scanner"
-                  defaultOpen
-                  badge={scanner?.length ? String(scanner.length) : null}
-                >
-                  <ScannerCandidatesCard candidates={scanner} config={config} />
-                </CollapsibleSection>
-              </div>
-            </div>
-            <CollapsibleSection
-              title="Creator Greylist"
-              description="creator scoring · pattern analytics · sniper targets"
-              storageKey="ui.section.greylist"
-              testId="section-greylist"
-            >
-              <CreatorGreylistPanel config={config} onConfigUpdate={setConfig} />
-            </CollapsibleSection>
           </div>
         )}
 

@@ -468,6 +468,7 @@ class MomentumScanner:
                     continue
                 for _m, _b, _mm, _r, _band in scored:
                     st.prerank_skip(_band, _Verdict(_b)("pass"))
+                    st._ensure_metadata(_m)          # lazy socials/image: only gate-passing mints earn the HTTP fetch
                 await self._push_snapshot(st, now)
 
                 scored.sort(key=lambda x: x[3], reverse=True)

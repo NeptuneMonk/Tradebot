@@ -65,6 +65,11 @@ class TestRHStatus:
 
 # --- /api/launches/recent ---
 class TestLaunchesRecent:
+    @pytest.fixture(autouse=True)
+    def _rh_feed_on(self, sess):
+        if not sess.get(f"{BASE_URL}/api/rh/status", timeout=30).json().get("feed_on", True):
+            pytest.skip("operator has the RH feed off — RH rows not testable right now")
+
     def test_both_chains_present(self, sess):
         r = sess.get(f"{BASE_URL}/api/launches/recent?limit=30", timeout=30)
         assert r.status_code == 200

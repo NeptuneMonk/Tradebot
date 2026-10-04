@@ -51,7 +51,7 @@ DISMISS_COOLDOWN_HOURS = 24
 # Suggestions auto-expire after this if neither applied nor dismissed
 SUGGESTION_TTL_HOURS = 72
 # Default loop interval
-DEFAULT_INTERVAL_MINUTES = 30
+DEFAULT_INTERVAL_MINUTES = 15
 
 
 def _now_iso() -> str:

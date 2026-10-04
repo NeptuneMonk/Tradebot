@@ -266,6 +266,9 @@ class TestScannerCandidatesEndpoint:
     def test_candidates_accumulate_within_60s(self, client):
         """Wait up to ~75s and verify the scanner accumulates >=5 candidates,
         with at least one having non-zero growth_pct or recent_inflow_sol."""
+        st = client.get(f"{API}/bot/status", timeout=15).json()
+        if not st.get("enabled") or not st.get("listener_connected"):
+            pytest.skip("operator has the bot stopped / feed off — scanner accumulation not testable right now")
         deadline = time.time() + 75
         best = []
         while time.time() < deadline:

@@ -58,7 +58,7 @@ FEED_FINAL_SKIP_MARKERS = ("late chase", "prior failed launches", "serial creato
 TRACK_DURATION_S = 60.0       # short-window heavy tracking (for fresh-launch classifier)
 SCANNER_TRACK_HOURS = 4       # how long we keep light tracking for the scanner
 PERSIST_INTERVAL_S = 2.0      # how often to flush tracker metrics to DB
-MAX_TRACKED_MINTS = 500       # cap memory
+MAX_TRACKED_MINTS = 150       # cap memory (cut-the-fat 2026-10-03: was 500 — the tracker dict is the RAM hog on a 512Mi pod)
 MONITOR_SAFETY_POLL_S = 3.0   # HTTP re-read cadence per open position while its WSS subscription is live (was every 0.8 s tick)
 FAST_FAIL_ADD_AT_PCT = 5.0    # hardwired: second half of the planned size is bought once the position first prints this
 
@@ -403,7 +403,7 @@ class BotState:
         # Robinhood Chain watch-only feed (no Helius, no entries)
         self.rh_discovery.start()
         self.rh_paper.start()
-        self.ladder.start()
+        # cut-the-fat (2026-10-03): the graduate LadderBook (1,089 watches, 0 legs ever) no longer starts
         # Start priority-fee auto-tuner (only consulted when speed_mode='auto')
         auto_tuner.start()
         # Start the account-event bus: one persistent Helius WSS that
@@ -1237,19 +1237,10 @@ class BotState:
             signature=launch_data.get("signature"),
         )
 
-        # Record into creator history & get rug count
+        # Record into creator history & get rug count (Mongo-only; no greylist scoring on the launch path — cut 2026-10-03)
         creator_doc = await record_new_launch(self.db, launch.creator, launch.mint)
         creator_rugs = derive_rug_count(creator_doc)
-
-        # Phase 2.8 / user feedback — refresh the creator's greylist score on
-        # every observed launch. Without this, creators sitting in the F-band
-        # (5 ≤ tokens_failed < 80) only get scored when (a) they graduate,
-        # (b) we close a trade on them, or (c) the 6h failure-sweep cycle
-        # touches one of their new failures. For creators we've NEVER traded
-        # — which is most of them — that meant they were absent from the
-        # greylist surface despite being prime candidates. Now every fresh
-        # launch keeps the score current. Cheap — Mongo-only.
-        if (creator_doc and self.config.creator_greylist_enabled
+        if False and (creator_doc and self.config.creator_greylist_enabled
                 and (creator_doc.get("tokens_failed") or 0) >= int(self.config.creator_greylist_min_fails)):
             try:
                 from creator_greylist import update_creator_score
@@ -1345,15 +1336,19 @@ class BotState:
                 oldest = min(evictable, key=lambda kv: kv[1].get("graduated_at") or kv[1]["start"])[0]
                 self.tracking.pop(oldest, None)
 
-        asyncio.create_task(self._compute_social(launch.mint))
-        asyncio.create_task(self._fetch_pumpfun_socials(launch.mint))
+        # Metadata / socials are fetched lazily — only when the scanner passes the mint or we buy it (`_ensure_metadata`).
+        # Cut-the-fat (2026-10-03): no greylist sniper on the launch path.
         asyncio.create_task(self._assess_and_enter(launch, creator_rugs))
         asyncio.create_task(self._tracker_cleanup(launch.mint))
-        # Greylist Sniper — fires for greylisted creators regardless of
-        # momentum (the WHOLE point of the greylist is sniping these
-        # predictable-pattern creators on their curve, NOT waiting for
-        # them to pump organically — which they rarely do).
-        asyncio.create_task(self._attempt_greylist_snipe(launch, creator_doc))
+
+    def _ensure_metadata(self, mint: str) -> None:
+        """Kick off the (one-time) socials + project-score fetch for a mint that earned it: scanner gate pass or entry."""
+        b = self.tracking.get(mint)
+        if not b or b.get("_meta_requested"):
+            return
+        b["_meta_requested"] = True
+        asyncio.create_task(self._compute_social(mint))
+        asyncio.create_task(self._fetch_pumpfun_socials(mint))
 
     async def on_trade(self, trade_data: dict):
         """A buy/sell event was observed on Pump.fun."""
@@ -2137,9 +2132,10 @@ class BotState:
         }
         if b.get("peak_mc_usd_at"):
             update["peak_mc_usd_at"] = b["peak_mc_usd_at"]
-        # Coalesced: one bulk_write per PERSIST_INTERVAL_S for every tracked mint instead of N round-trips
-        # (150 mints × 0.5 Hz = 75 remote-Atlas writes/s in prod). Last update per launch wins.
-        self._metrics_pending[b["launch_id"]] = update
+        # Coalesced: one bulk_write per PERSIST_INTERVAL_S. Cut-the-fat (2026-10-03): only candidates (gate pass) and
+        # mints we hold / bought are written to Mongo — the other ~500 launches live in RAM + the WS tape only.
+        if b.get("gate_reason") == "pass" or b.get("_meta_requested") or mint in self.active_trades:
+            self._metrics_pending[b["launch_id"]] = update
         for r in self.recent_launches:
             if r.get("id") == b["launch_id"]:
                 r.update(update)
@@ -2949,6 +2945,7 @@ class BotState:
         """The actual entry pipeline. Called from `_enter` after the
         position-count reservation has been taken atomically."""
         t_decide = time.time()
+        self._ensure_metadata(launch.mint)          # a bought mint always gets its socials/image
         # cross-pod idempotency: one active row per mint, whichever pod raced us to it
         if await self.db.trades.find_one({"mint": launch.mint, "status": "active"}, {"_id": 1}):
             logger.info(f"entry skipped for {launch.mint[:8]}…: an active row already exists")
@@ -3171,17 +3168,9 @@ class BotState:
                 "project_score": b.get("project_score", 0),
                 "creator_prior_launches": int(b.get("creator_prior_launches") or 0), "creator_graduated_before": int(b.get("creator_tokens_graduated") or 0) >= 1,
             }
-            try:
-                from creator_history import ensure_backfill
-                cdoc = await ensure_backfill(self.db, launch.creator) if launch.creator else None
-                if cdoc:
-                    b["creator_prior_launches"] = int(cdoc.get("tokens_created") or 0)
-                    b["creator_tokens_graduated"] = int(cdoc.get("tokens_graduated") or 0)
-                    metrics["creator_prior_launches"] = b["creator_prior_launches"]
-                    metrics["creator_graduated_before"] = b["creator_tokens_graduated"] >= 1
-            except Exception as e:
-                logger.debug(f"creator backfill skipped: {e}")
-            verdict = classify(metrics, self._rules_for_classify())
+            # Cut-the-fat (2026-10-03): no creator-history backfill (Helius Enhanced API) and no serial-creator gate on the
+            # entry path — the classifier sees only what the tracker measured on this launch.
+            verdict = classify(metrics, {**self._rules_for_classify(), "serial_creator_gate_enabled": False})
             # scalp needs a scalp verdict: "skip" (late chase / dead / rug history) and "hunt" (patterned
             # creator — belongs to the greylist sniper, not a momentum scalp) both refuse the entry
             veto_reason = None

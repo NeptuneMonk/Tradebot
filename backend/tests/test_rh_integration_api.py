@@ -45,6 +45,8 @@ def test_rh_status_shape_and_advancement(s):
 
 # --- /api/launches/recent ---
 def test_launches_recent_contains_both_chains(s):
+    if not s.get(f"{BASE_URL}/api/rh/status", timeout=15).json().get("feed_on", True):
+        pytest.skip("operator has the RH feed off — RH rows not testable right now")
     r = s.get(f"{BASE_URL}/api/launches/recent?limit=10", timeout=15)
     assert r.status_code == 200, r.text
     rows = r.json()
