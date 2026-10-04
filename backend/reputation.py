@@ -1,5 +1,9 @@
 """Outsourced dev-reputation adapter (cut-the-fat Phase 3b). Dark until REPUTATION_BASE_URL is set.
 
+reputation.family (2026-10): the site is a JS SPA but ships an undocumented JSON API — `/api/token/{mint}` returns
+`dev.rank` (CRAZY/PROVEN/GOOD/UNKNOWN/FARMER) and a top-level `fake` bool (+ `fakeReason`); 404 → unknown mint.
+Working config: REPUTATION_BASE_URL=https://reputation.family/api/token/{mint}  REPUTATION_TIER_PATH=dev.rank  REPUTATION_FAKE_CHART_PATH=fake
+
 Env:
   REPUTATION_BASE_URL   e.g. https://api.example/rep/{mint}  — `{mint}` / `{creator}` placeholders; no placeholder → `/{mint}` appended
   REPUTATION_API_KEY    sent as `Authorization: Bearer …` and `x-api-key` (optional)
@@ -95,7 +99,8 @@ class ReputationClient:
             self.stats["hits"] += 1
             return hit[1]
         self.stats["lookups"] += 1
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", "User-Agent": "pump.bot/1.0 (+reputation adapter; one lookup per mint, cached 15m)",
+                   "Referer": "https://reputation.family/"}
         key = os.environ.get("REPUTATION_API_KEY", "").strip()
         if key:
             headers["Authorization"] = f"Bearer {key}"

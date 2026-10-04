@@ -68,3 +68,16 @@ def test_lookup_caches_and_sends_key(monkeypatch):
         assert c.stats["lookups"] == 2                      # negative result cached too
         assert c.snapshot()["configured"] is True
     asyncio.run(run())
+
+
+def test_reputation_family_token_shape(monkeypatch):
+    """Real payload shape from reputation.family /api/token/{mint} (captured 2026-10-04) with the documented env paths."""
+    monkeypatch.setenv("REPUTATION_TIER_PATH", "dev.rank")
+    monkeypatch.setenv("REPUTATION_FAKE_CHART_PATH", "fake")
+    doc = {"mint": "3jWq…pump", "platform": "pump", "fake": False, "fakeReason": None,
+           "copyOf": {"mint": "AfUz…pump", "ticker": True}, "socials": {"x": None},
+           "dev": {"rank": "FARMER", "score": 5, "launches": 17, "graduated": 0}}
+    assert parse(doc) == {"tier": "FARMER", "fake_chart": False, "raw_tier": "FARMER"}
+    assert parse({**doc, "fake": True, "dev": {"rank": "GOOD"}})["fake_chart"] is True
+    assert parse({**doc, "dev": {"rank": "UNKNOWN"}})["tier"] == "UNKNOWN"
+    assert parse(None) == {"tier": "UNKNOWN", "fake_chart": False, "raw_tier": None}     # 404 body is `null`
