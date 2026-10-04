@@ -596,7 +596,7 @@ export default function Dashboard() {
             <div className="tile-in">
               <CollapsibleSection
                 title="P/L by Source"
-                description="harvest vs search — momentum_new · momentum_seasoned · greylist_snipe · reentry"
+                description="harvest vs search — momentum_new · momentum_seasoned · reentry"
                 storageKey="ui.section.pl-by-source"
                 testId="section-pl-by-source"
                 defaultOpen

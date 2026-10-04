@@ -119,7 +119,6 @@ async def _build_services():
     from profit_sweep import ProfitSweeper
     from tick_store import TickStore
     from live_doctor import LiveDoctor
-    from wallet_graph import WalletGraphHunter, set_hunter
     from failure_sweep import FailureSweeper
     bot_state.bankroll = BankrollEngine(bot_state, db)
     bot_state.rh_feed = RHSequencerFeed(bot_state)
@@ -133,11 +132,9 @@ async def _build_services():
     live_doc = LiveDoctor(db=db, bot_state=bot_state, hub=hub)
     app.state.live_doctor = live_doc
     bot_state.live_doctor = live_doc
-    hunter = WalletGraphHunter(db=db)
-    set_hunter(hunter)
     failure = FailureSweeper(db=db)
     app.state.failure_sweeper = failure
-    _svc.update(doctor=doctor, live_doc=live_doc, hunter=hunter, failure=failure)
+    _svc.update(doctor=doctor, live_doc=live_doc, failure=failure)   # cut-the-fat: no wallet-graph hunter
 
 
 async def start_leader_services():
@@ -171,7 +168,6 @@ async def stop_leader_services(reason: str = "shutdown"):
     _leader_tasks.clear()
     for obj in (bot_state.bankroll, bot_state.rh_feed, bot_state.sweeper, bot_state.tick_store):
         _cancel_task_attrs(obj)
-    _svc["hunter"].stop()
     _svc["failure"].stop()
     await _svc["live_doc"].stop()
     await _svc["doctor"].stop()

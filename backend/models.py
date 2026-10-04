@@ -3,7 +3,7 @@ Pydantic models for API contracts and MongoDB persistence.
 """
 from datetime import datetime, timezone
 from typing import Literal, Optional
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 import uuid
 
 
@@ -218,7 +218,7 @@ class BotConfig(BaseModel):
     min_buyers_for_entry_new: int = 8
     # Serial-creator gate (data: creators with ≥3 prior launches and NO graduation run 4–8× less often than first launches;
     # serial creators WITH a graduation launch near first-launch quality). Both knobs Doctor-tunable.
-    serial_creator_gate_enabled: bool = True
+    serial_creator_gate_enabled: bool = False   # retired 2026-10-04 (cut-the-fat) — no longer read on the entry path
     serial_creator_min_launches: int = 3   # "serial" = this many prior launches or more (0 = off)
     serial_creator_requires_graduation: bool = True
     # Momentum scanner — 81% of recent profitable trades came from here
@@ -315,7 +315,7 @@ class BotConfig(BaseModel):
     # creator-solvency + dump gate (hunt / seasoned / rh_pons only — never the new-band scalp tape by default)
     creator_solvency_enabled: bool = True
     # Creator Wallet Audit — optional MASTER gate, runs last (after every other gate), cached 1h per creator
-    creator_audit_enabled: bool = False
+    creator_audit_enabled: bool = False         # retired 2026-10-04 (cut-the-fat) — audit call removed from _enter_impl
     creator_audit_unavailable: str = "pass"        # "pass" = judge on the checks we could run · "skip" = fail-closed
     creator_audit_min_funding_lead_h: float = 1.0  # main funding transfer landed ≥ this long before the deploy
     creator_audit_min_wallet_age_h: float = 24.0   # first wallet activity ≥ this long before the deploy
@@ -520,7 +520,13 @@ class BotConfig(BaseModel):
     # Sized like any hunt entry (R sizing + cost gate); flagged is_research_snipe for the scorecard.
     greylist_snipe_research_mode: bool = False
     greylist_snipe_research_min_score: float = 35.0      # lower bar — these are blacklisted creators
-    wallet_graph_enabled: bool = True          # 2-hop hunter on/off
+    wallet_graph_enabled: bool = False         # retired 2026-10-04 (cut-the-fat) — hunter no longer started
+
+    @model_validator(mode="after")
+    def _retired_gates_off(self):
+        # cut-the-fat (2026-10-04): these code paths are gone; a persisted True must never read as "on" anywhere
+        self.creator_audit_enabled = self.wallet_graph_enabled = self.serial_creator_gate_enabled = self.greylist_snipe_enabled = False
+        return self
     # Live PnL reset cutoff: when set, daily_pnl_usd(mode='live') only sums
     # trades closed at-or-after this ISO timestamp instead of today's 00:00 UTC.
     # Used by /api/pnl/reset-live to wipe poisoned counters (e.g., pre-fix

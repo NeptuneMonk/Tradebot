@@ -39,11 +39,11 @@ export default function HelpHint({ children, label = "help", side = "top", class
   return (
     <Popover open={open} onOpenChange={(o) => { setOpen(o); if (!o) pinned.current = false; }}>
       <PopoverTrigger asChild>
-        <button type="button" aria-label={label} data-testid={`help-${label.replace(/^help:\s*/i, "").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
+        <span role="button" tabIndex={0} aria-label={label} data-testid={`help-${label.replace(/^help:\s*/i, "").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
           onClick={toggle} onMouseEnter={hoverOpen} onMouseLeave={hoverClose}
           className={`inline-flex items-center align-middle text-neutral-600 hover:text-neutral-300 transition-colors cursor-help ${className}`}>
           <HelpCircle className="w-3 h-3" strokeWidth={2} />
-        </button>
+        </span>
       </PopoverTrigger>
       <PopoverContent side={side} onMouseEnter={hoverOpen} onMouseLeave={hoverClose} onClick={(e) => e.stopPropagation()}
         className="max-w-[300px] w-auto bg-neutral-900 border border-neutral-700 text-neutral-200 font-mono text-[11px] leading-relaxed px-2.5 py-2 whitespace-normal shadow-xl">

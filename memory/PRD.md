@@ -2274,3 +2274,9 @@ Approved plan: remove every data source / book with zero edge; keep scanner → 
 - Tests: suite green (751+); RH/scanner live tests now skip when operator has feed/bot off. `test_metrics_flush.py` +1 (non-candidates not persisted).
 - Remaining load note (not in plan): `discovery.py` seasoned feed polls `pump.fun/coins/{mint}` per tracked discovered token every 60 s (~50 calls/min) — candidate for Phase 3 trimming.
 - Phase 2 (six-control CONTROL + Advanced drawer + Safe-paper preset) and Phase 3 (reputation adapter dark, lite-mode watchdog, one-chain default) NOT started.
+
+### Phase 1 follow-up after testing agent (iteration_33)
+- ✅ Creator-audit call removed from `_enter_impl`; `WalletGraphHunter` no longer imported/instantiated in server.py.
+- ✅ `BotConfig` model_validator forces `creator_audit_enabled / wallet_graph_enabled / serial_creator_gate_enabled / greylist_snipe_enabled` to False on every construction (persisted True can never read as on).
+- ✅ HelpHint trigger is now `<span role=button>` (was a `<button>` inside the toggle buttons → nested-button hydration warning). BOOKS P/L-by-source text drops `greylist_snipe`.
+- ✅ Live verification (paper, 100 s window): 0 lines for api.helius.xyz / audit / greylist / LADDER / wallet_graph / solscan; tracked_mints 148 (cap 150); socials fetches 52 for ~80 candidates (was every launch). Suite 750 passed.

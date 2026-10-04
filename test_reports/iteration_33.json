@@ -1,0 +1,56 @@
+{
+  "summary": "Cut-the-Fat Phase 1 validation. NavBar correctly shows exactly LIVE/DOCTOR/BOOKS/CONTROL/WIKI; view-tab-scan and view-tab-ladder (and legacy view-scan/view-ladder) are absent. GET /api/ladder returns 404; GET /api/scanner/candidates returns 200 with 80 items while running. LIVE view shows Active Trades, Equity, Candidates, and 'Live launch feed' (RecentLaunchesFeed with data-testid='recent-launches'). Trade history table renders with history-book-all/scalp/hunt/runner/rh_pons filter buttons and 26+ rows. CONTROL view: BotControlCard renders without crash; greylist-sniper-section, serial-creator-section, creator-audit-section testids are all gone; no-momentum-after-input, no-momentum-mfe-input, no-momentum-min-profit-input all present. PUT /api/bot/config round-trips no_momentum_min_profit_pct 3->3.5->3 correctly. Bot start/stop lifecycle verified in PAPER mode: after enabling helius_tracker_enabled for test window, within ~90s listener_connected=true, 20 fresh Solana launches in last 5m, 80 candidates, tracked_mints=121 (<=150 cap OK). /api/pods role=leader. /api/diagnostics/loop healthy. Operator state restored at end (bot stopped, helius_tracker_enabled=false, rh_feed_enabled untouched).",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "hot path (bot._enter_impl ~L3301 and server.start_leader_services ~L136)",
+        "issue": "Cut-the-Fat Phase 1 removal is INCOMPLETE. During the 2m test window with the bot running, 5 calls to api.helius.xyz/v0/addresses were observed in backend.err.log — the acceptance criteria require ZERO such calls. Root causes: (a) creator_audit is still wired into bot._enter_impl (lines 3301-3313) and runs whenever config.creator_audit_enabled is True, which it currently is by default (/api/bot/config returns creator_audit_enabled=true, wallet_graph_enabled=true, serial_creator_gate_enabled=true). (b) WalletGraphHunter is still instantiated and set as a global in server.py:136-137. Either the code paths must be removed, or the config defaults must be forced to False and the UI/config stripped so operators cannot flip them back. The record_new_launch call in bot.py:1241 is OK (comment confirms the Helius Enhanced backfill was moved to a lazy ensure_backfill()).",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "/api/bot/config schema",
+        "issue": "Stale config keys for the removed features still exist in bot config schema and ship enabled=True by default: creator_audit_enabled, wallet_graph_enabled, serial_creator_gate_enabled. If the features are truly cut, these keys should be removed from the model or defaulted to false and marked deprecated."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Dashboard LIVE view (header strip, before NavBar)",
+        "issue": "Hydration warning: '<button> cannot be a descendant of <button>' logged on every page load. Nested button in the top status/header area. Not blocking but should be fixed for SSR hydration cleanliness.",
+        "selector": "nav/header buttons above view-tabs",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "BOOKS view - P/L by Source",
+        "issues": ["Description string still references removed feature: 'harvest vs search — momentum_new · momentum_seasoned · greylist_snipe · reentry' (see Dashboard.jsx ~L599). 'greylist_snipe' should be dropped since greylist sniper was removed."]
+      }
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_33.json"],
+  "action_items": [
+    "Finish Cut-the-Fat Phase 1: remove creator_audit call from bot._enter_impl (bot.py L3301-L3313) OR force creator_audit_enabled default to False and remove UI toggle. Same for WalletGraphHunter instantiation in server.py L122/136-137. Validation: with bot running 2+ min, zero lines matching 'api.helius.xyz' in backend.err.log.",
+    "Drop stale config keys (creator_audit_enabled, wallet_graph_enabled, serial_creator_gate_enabled) from BotConfig model or default them to False.",
+    "Fix nested <button> hydration warning on the header strip above NavBar.",
+    "Update BOOKS P/L-by-Source description to drop 'greylist_snipe' (Dashboard.jsx ~L599)."
+  ],
+  "critical_code_review_comments": [
+    "bot.py is 5210 lines — exceeds the 700-line maintainability threshold; should be split into modules (entry/exit/gates/metadata).",
+    "server.py is 3620 lines — same split-required concern.",
+    "Dead/dormant code: bot.py L1243 'if False and (creator_doc and self.config.creator_greylist_enabled ...)' — delete the whole block instead of guarding it with False.",
+    "creator_audit.py / creator_history.py / wallet_graph.py still live in the backend although 'removed from hot path' — if truly cut, delete the modules or move behind an import-only path with an off-by-default flag."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "90% (7/8 behavioural checks pass; only helius-call-silence fails)", "frontend": "100% (all nav, LIVE, CONTROL, trade-history asserts pass)"},
+  "test_credentials": "Reused seeded session token from /app/memory/.tok (user_49e7ea1b703c, email nbobby79@gmail.com).",
+  "seed_data_creation": "None. Only toggled helius_tracker_enabled true->false for the test window and started/stopped the bot in PAPER mode; final state matches initial operator state (enabled=false, helius_tracker_enabled=false, rh_feed_enabled=false, live_trading=false).",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Operator state restored. To re-verify Phase 1 cut: (1) seed token in /app/memory/.tok, (2) PUT helius_tracker_enabled=true, (3) POST /api/bot/start, (4) sleep 90s, (5) grep -c 'api.helius.xyz' on the tail of /var/log/supervisor/backend.err.log since start — must be 0, (6) POST /api/bot/stop, (7) PUT helius_tracker_enabled=false. UI side effects already covered in this iteration. frontend-api-v3.pump.fun/coins lazy socials fetch count during the window was 110 vs 300+ launches seen in /api/launches/recent — lazy fetch is working correctly (far fewer than launches).",
+  "rca of the issue": "Phase 1 'Cut the Fat' refactor removed UI surfaces and nav tabs cleanly, but server-side modules (creator_audit, wallet_graph) remain wired into the hot path through still-enabled config flags. Hot-path invocation at bot.py:3301-3313 reaches creator_audit.audit() for every gate-passing mint, which inside performs httpx.get('https://api.helius.xyz/v0/addresses/{creator}/transactions', limit=100). Mitigation: either (a) default and lock creator_audit_enabled/wallet_graph_enabled to False and drop the import/instantiation, or (b) delete the lingering call sites and modules entirely. Preferred: (b), because leaving dead modules in-tree is what triggered this incomplete-refactor finding."
+}
