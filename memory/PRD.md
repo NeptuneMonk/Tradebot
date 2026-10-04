@@ -2280,3 +2280,4 @@ Approved plan: remove every data source / book with zero edge; keep scanner → 
 - ✅ `BotConfig` model_validator forces `creator_audit_enabled / wallet_graph_enabled / serial_creator_gate_enabled / greylist_snipe_enabled` to False on every construction (persisted True can never read as on).
 - ✅ HelpHint trigger is now `<span role=button>` (was a `<button>` inside the toggle buttons → nested-button hydration warning). BOOKS P/L-by-source text drops `greylist_snipe`.
 - ✅ Live verification (paper, 100 s window): 0 lines for api.helius.xyz / audit / greylist / LADDER / wallet_graph / solscan; tracked_mints 148 (cap 150); socials fetches 52 for ~80 candidates (was every launch). Suite 750 passed.
+- Kept by operator request (2026-10-04): on-demand Creator Audit panel in TokenDetailDialog (`/api/creator-audit/{creator}`, opened-dialog only, cached) — used to judge manual holds on questionable launches. Only the automatic per-entry audit was removed.
