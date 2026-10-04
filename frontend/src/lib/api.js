@@ -151,6 +151,8 @@ export const api = {
   inventory: () => client.get("/inventory").then(r => r.data),
   readiness: () => client.get("/readiness").then(r => r.data),
   pods: () => client.get("/pods").then(r => r.data),
+  reputationBatch: (mints) => client.post("/reputation/batch", { mints }).then(r => r.data),
+  reputationStatus: () => client.get("/reputation/status").then(r => r.data),
   brainExportUrl: (groups) => `${API}/brain/export?groups=${encodeURIComponent(groups.join(","))}`,
   brainImportBegin: (filename, size) => client.post("/brain/import/begin", { filename, size }).then(r => r.data),
   brainImportChunk: (uploadId, index, bytes) =>

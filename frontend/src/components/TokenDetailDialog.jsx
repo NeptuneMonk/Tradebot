@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ExternalLink, RefreshCw, ShoppingCart } from "lucide-react";
 import { toast } from "sonner";
+import { RepBadge } from "./RepBadge";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { CreatorAuditPanel } from "@/components/CreatorAuditPanel";
 import { ChainBadge } from "./ChainBadge";
@@ -56,6 +57,7 @@ export function TokenDetailDialog({ token, onClose }) {
           <SheetTitle className="flex items-center gap-2 font-mono text-base">
             <ChainBadge chain={chain} protocol={live?.protocol} mint={mint} />
             {token?.symbol || live?.symbol || "?"}
+            {chain !== "rh" && <RepBadge mint={mint} />}
             <span className="text-neutral-500 text-xs font-normal truncate">{token?.name || live?.name}</span>
             <span className="ml-auto flex items-center gap-2">
               {links.map(([l, h]) => (

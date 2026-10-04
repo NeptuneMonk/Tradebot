@@ -26,6 +26,7 @@ from listener import PumpFunListener
 from solana_client import get_sol_balance, get_sol_usd_price
 from ws_hub import hub
 from singleton import LeaderLease, CommandRelay, WSMirror
+import reputation
 
 singleton: LeaderLease | None = None
 relay: CommandRelay | None = None
@@ -1105,6 +1106,22 @@ async def book_exits_restore_defaults():
 async def reputation_status():
     """Phase 3b adapter: configured? + lookup / skip counters. Dark (configured=false) until REPUTATION_BASE_URL is set."""
     return bot_state.reputation.snapshot()
+
+
+@api.post("/reputation/batch")
+async def reputation_batch(body: dict = Body(...)):
+    """Dev rank for up to 40 Solana mints (UI badges). Cached 15 m per mint server-side; 5 concurrent upstream calls max.
+    Returns {} when the adapter is dark so the UI renders nothing."""
+    if not reputation.configured():
+        return {}
+    mints = [m for m in (body.get("mints") or []) if isinstance(m, str) and not m.startswith("0x")][:40]
+    sem = asyncio.Semaphore(5)
+
+    async def one(m):
+        async with sem:
+            r = await bot_state.reputation.lookup(m)
+            return m, {"tier": r.get("tier"), "fake_chart": bool(r.get("fake_chart")), "ok": bool(r.get("ok"))}
+    return dict(await asyncio.gather(*(one(m) for m in mints)))
 
 
 @api.post("/lite-mode")

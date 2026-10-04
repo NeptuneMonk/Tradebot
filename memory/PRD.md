@@ -2305,3 +2305,8 @@ Approved plan: remove every data source / book with zero edge; keep scanner → 
 - ✅ No scraper needed. Adapter sends a polite UA + Referer. Preview `.env`: `REPUTATION_BASE_URL=https://reputation.family/api/token/{mint}`, `REPUTATION_TIER_PATH=dev.rank`, `REPUTATION_FAKE_CHART_PATH=fake` (same three go into Deployment Panel secrets for prod).
 - Live check: FARMER mint → `reputation:FARMER` on every book; unknown → hunt `reputation:UNKNOWN`, scalp passes. `/api/reputation/status` configured=true. Lookups only fire on entry attempts (seats were full during verification → 0 lookups in the running bot so far).
 - Risk: unofficial endpoint, no key, unknown rate limits — cached 15 m / mint; if it changes, the adapter degrades to UNKNOWN (hunt stops entering, scalp unaffected). Test: `test_reputation_family_token_shape`.
+
+## Reputation badges (2026-10-04)
+- ✅ `POST /api/reputation/batch {mints[]}` (≤40, 5 concurrent upstream, server cache 15 m; `{}` when adapter dark). `GET /api/reputation/status` exists.
+- ✅ Frontend `lib/useReputation.js` (rAF-coalesced batch cache, 15 m TTL, goes quiet when the server says dark) + `RepBadge.jsx` (CRAZY cyan / PROVEN emerald / GOOD lime / UNKNOWN grey / FARMER red, + amber FAKE chip; tooltips explain the rank and what the bot does with it). Compact single-letter form on Candidates rows (`cockpit-cand-*`) and Active Trades rows (Solana only); full form in TokenDetailDialog header next to the symbol. testid `rep-badge-<mint>`.
+- Verified live: 14 badges rendered on LIVE, dialog shows FARMER with explanation.
