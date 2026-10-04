@@ -1,0 +1,26 @@
+{
+  "summary": "Full validation of the new CRAZY-dev watch feature + regressions. Backend GET /api/bot/status.dev_watch is wired correctly (configured=true, stake_usd=25 == min_trade_usd, counters present). State transitions verified live: autopilot ON -> state='autopilot'; autopilot OFF with dashboard WS open -> state='watching'; both via /api/autopilot/on and /api/autopilot/off (restored to original OFF). Mongo collection operator_presence has {_id:'dashboard', clients:1, pod:..., ts:...} fresh (~8s old, inside the 15s window). Frontend header renders data-testid='dev-watch-badge' with data-state='watching' and text 'CRAZY WATCH'; title tooltip includes stake, crazy_seen/fired/tagged_open and skipped counters; header layout is intact. Regression: POST /api/scanner/manual-buy/{mint} on a live SOL candidate returned 200 ok (paper), opened an active row (long_term_hold=false, dev_watch=false as expected for non-dev-watch entry), and POST /api/trades/{id}/exit closed it cleanly (0 active after). Pytest suite 'test_dev_watch.py test_manual_hold.py test_reputation.py test_iter30_manual_holds_api.py' passed 34 passed, 3 skipped in 6.42s. GET /api/trades/active returns 200 with no 500s.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_dev_watch.py",
+    "/app/backend/tests/test_manual_hold.py",
+    "/app/backend/tests/test_reputation.py",
+    "/app/backend/tests/test_iter30_manual_holds_api.py"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "NOTE: The agent-to-agent context note stated 'autopilot was ON' but observed initial state was autopilot_enabled=false (dev_watch.state='watching'). Final state was restored to OFF, matching what was found. If the main agent expected it ON, the operator will need to re-arm via POST /api/autopilot/on.",
+    "bot.py (5000+ lines) and server.py (3600+ lines) still exceed the 700-line maintainability threshold flagged in prior iterations — not blocking but recommend module split.",
+    "Dev-watch firing path (CRAZY lookup -> operator buy with no gates, long_term_hold+dev_watch markers, operator exits via x) cannot be exercised end-to-end without a live CRAZY launch; pytest already covers via monkeypatched lookup. The status/presence/badge/toast surface area is wired correctly."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (status schema, state transitions, presence heartbeat, manual-buy, exit, pytest regression)", "frontend": "100% (dev-watch-badge testid, data-state, label 'CRAZY WATCH', tooltip counters, header layout)"},
+  "test_credentials": "Reused seeded session token from /app/memory/.tok (user_49e7ea1b703c, nbobby79@gmail.com). TTL fine for this session.",
+  "seed_data_creation": "Transient: opened 1 paper position via /api/scanner/manual-buy on mint NiZ7...Spump and closed it via /api/trades/{id}/exit within ~5s. Autopilot toggled on then off (final=off, matching initial). No lingering state. operator_presence doc remains (owned by whatever dashboard WS is connected).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Autopilot is OFF (final). Bot is RUNNING in PAPER mode. min_trade_usd=25, so dev_watch.stake_usd=25. operator_presence doc exists with clients=1 because another authenticated WS session is open in this preview — presence/state will stay 'watching' until that disconnects for >15s (then should flip to 'away'). To force an 'away' observation: ensure no authenticated WS is connected and wait ~20s; or test by closing the browser session that owns it. 'dark' only when autopilot=true AND present=false (never observed naturally in preview with constant dashboard activity).",
+  "rca of the issue": "No bug found. All seven review-request items verified green."
+}
