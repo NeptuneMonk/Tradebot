@@ -26,6 +26,8 @@ from ws_hub import hub
 from pymongo import UpdateOne
 from pymongo.errors import DuplicateKeyError
 from lite_mode import LiteMode, LITE_TRACKED_MINTS
+import reputation
+from reputation import ReputationClient
 from creator_history import record_new_launch, mark_outcome, derive_rug_count
 from project_score import project_score
 from scanner import MomentumScanner, velocity_pct_strict
@@ -123,6 +125,7 @@ class BotState:
         self.listener_connected = False
         self.tracking: dict[str, dict] = {}
         self.lite = LiteMode()                        # Phase 3 watchdog: degrades non-essential work before the pod OOMs
+        self.reputation = ReputationClient()          # Phase 3b: dark until REPUTATION_BASE_URL is set
         self._metrics_pending: dict[str, dict] = {}   # launch_id -> $set, drained by _metrics_flush_loop
         # Re-entry watchlist: mint -> {exit_price_sol, exit_time, attempts, ...}
         self.reentry_watch: dict[str, dict] = {}
@@ -776,6 +779,7 @@ class BotState:
 
     loop_lag_ms: dict = {"last": 0.0, "max_1m": 0.0, "samples": 0}
     lite: LiteMode = LiteMode()   # class default; __init__ gives each state its own instance
+    reputation: ReputationClient = ReputationClient()
 
     async def _loop_lag_meter(self):
         """Event-loop lag: how late a 1 s sleep wakes up. >200 ms means something is blocking the loop."""
@@ -2783,6 +2787,17 @@ class BotState:
             await self._skip_event({"mint": launch.mint, "symbol": launch.symbol, "band": _band, "reason": f"book-off:{book}",
                                     "details": [f"{book} book is switched off in Controls"]})
             return
+        if not is_manual and reputation.configured():
+            # Phase 3b: outsourced dev reputation. FARMER / fake-chart = master skip on every book; hunt needs an allow-tier.
+            rep = await self.reputation.lookup(launch.mint, launch.creator)
+            why = self.reputation.gate(rep, book)
+            if why:
+                _band = "seasoned" if (self.tracking.get(launch.mint) or {}).get("protocol") == "pumpswap" else "new"
+                self.prerank_skip(_band, why)
+                await self._skip_event({"mint": launch.mint, "symbol": launch.symbol, "band": _band, "reason": why,
+                                        "details": [f"dev reputation {rep.get('tier')}{' · fake chart' if rep.get('fake_chart') else ''}"
+                                                    + ("" if rep.get("ok") else " (lookup missed — hunt requires a known allow-tier)")]})
+                return
         if not is_manual and self.inventory.active():
             logger.info(f"inventory halt: skipping {launch.mint[:8]}… ({self.inventory.snapshot()})")
             return

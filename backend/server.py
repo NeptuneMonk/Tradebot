@@ -1101,6 +1101,12 @@ async def book_exits_restore_defaults():
     return {"ok": True, "book_exits": bx}
 
 
+@api.get("/reputation/status")
+async def reputation_status():
+    """Phase 3b adapter: configured? + lookup / skip counters. Dark (configured=false) until REPUTATION_BASE_URL is set."""
+    return bot_state.reputation.snapshot()
+
+
 @api.post("/lite-mode")
 async def set_lite_mode(body: dict = Body(...)):
     """Operator override for the watchdog: {"forced": true|false|null} — null = automatic."""
