@@ -666,6 +666,8 @@ class Trade(BaseModel):
     # Strategy Doctor uses this to bucket research vs primary snipes
     # separately for promotion analysis.
     is_research_snipe: bool = False
+    long_term_hold: bool = False     # LTH: no automatic exit of any kind — operator ✕ only (set at entry by dev_watch, or toggled later)
+    dev_watch: bool = False          # CRAZY-dev watch entry: min stake, no gates, parked for the operator to exit by hand
     # R sizing + cost gate + entry policy (persisted at entry)
     r_usd: Optional[float] = None            # ACTUAL cash at risk after the operator cap: size × (SL + exit slip)
     r_usd_nominal: Optional[float] = None    # bankroll × risk_per_trade_pct (shows the cap's distortion)
@@ -714,6 +716,7 @@ class BotStatus(BaseModel):
     live_trading: bool
     kill_switch_tripped: bool
     lite_mode: Optional[dict] = None     # watchdog snapshot: active / reason / rss_mb / lag_ms
+    dev_watch: Optional[dict] = None     # CRAZY-dev watch: state watching/away/autopilot/dark + counters
     books_paused: dict[str, float] = {}  # live-doctor breaker: book → lift_after ts (entries blocked for that book)
     listener_connected: bool            # ACTUAL Pump.fun WS
     helius_paused: dict = {}            # gate snapshot: paused / manual / auto / auto_reason

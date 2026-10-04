@@ -91,11 +91,12 @@ class ReputationClient:
         self._cache: dict[str, tuple[float, dict]] = {}
         self.stats = {"lookups": 0, "hits": 0, "misses": 0, "errors": 0, "skips_farmer": 0, "skips_hunt": 0}
 
-    async def lookup(self, mint: str, creator: str | None = None) -> dict:
-        """Returns {"tier", "fake_chart", "ok"}; ok=False on miss / error / timeout (cached NEG_TTL_S)."""
+    async def lookup(self, mint: str, creator: str | None = None, fresh: bool = False) -> dict:
+        """Returns {"tier", "fake_chart", "ok"}; ok=False on miss / error / timeout (cached NEG_TTL_S).
+        `fresh=True` re-queries past a cached miss (the site indexes a launch a second or two after creation)."""
         now = time.time()
         hit = self._cache.get(mint)
-        if hit and hit[0] > now:
+        if hit and hit[0] > now and not (fresh and not hit[1].get("ok")):
             self.stats["hits"] += 1
             return hit[1]
         self.stats["lookups"] += 1
@@ -132,6 +133,11 @@ class ReputationClient:
             self.stats["skips_hunt"] += 1
             return f"reputation:{rep.get('tier') or 'UNKNOWN'}"
         return None
+
+    @staticmethod
+    def is_crazy(rep: dict) -> bool:
+        """Dev-watch trigger: CRAZY rank with no fake-chart flag."""
+        return bool(rep.get("ok")) and rep.get("tier") == "CRAZY" and not rep.get("fake_chart")
 
     def snapshot(self) -> dict:
         return {"configured": configured(), "url_set": bool(os.environ.get("REPUTATION_BASE_URL")), "key_set": bool(os.environ.get("REPUTATION_API_KEY")),

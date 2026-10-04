@@ -28,7 +28,7 @@ def in_scope(cfg, action: str, protocol: str) -> bool:
     """Hunt-style and seasoned Pump entries only; the new-band scalp tape is untouched unless explicitly enabled."""
     if not getattr(cfg, "creator_solvency_enabled", True):
         return False
-    if action == "manual":
+    if action in ("manual", "dev_watch"):
         return False
     if action == "momentum_new":
         return bool(getattr(cfg, "creator_sol_gate_new_band", False))

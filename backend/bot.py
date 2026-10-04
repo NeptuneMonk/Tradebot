@@ -62,6 +62,9 @@ TRACK_DURATION_S = 60.0       # short-window heavy tracking (for fresh-launch cl
 SCANNER_TRACK_HOURS = 4       # how long we keep light tracking for the scanner
 PERSIST_INTERVAL_S = 2.0      # how often to flush tracker metrics to DB
 MAX_TRACKED_MINTS = 150       # cap memory (cut-the-fat 2026-10-03: was 500 — the tracker dict is the RAM hog on a 512Mi pod)
+MANUAL_ENTRY_ACTIONS = ("manual", "dev_watch")   # operator-class entries: bypass the strategy gates, never consume a scanner slot
+DEV_WATCH_LOOKUP_DELAYS_S = (2.0, 4.0, 9.0)      # cumulative ~2s / 6s / 15s — reputation.family indexes a launch a moment after creation
+OPERATOR_PRESENCE_TTL_S = 45.0                   # dashboard WS heartbeat (any pod) younger than this = operator logged in
 MONITOR_SAFETY_POLL_S = 3.0   # HTTP re-read cadence per open position while its WSS subscription is live (was every 0.8 s tick)
 FAST_FAIL_ADD_AT_PCT = 5.0    # hardwired: second half of the planned size is bought once the position first prints this
 
@@ -126,6 +129,8 @@ class BotState:
         self.tracking: dict[str, dict] = {}
         self.lite = LiteMode()                        # Phase 3 watchdog: degrades non-essential work before the pod OOMs
         self.reputation = ReputationClient()          # Phase 3b: dark until REPUTATION_BASE_URL is set
+        self.dev_watch: dict = {"crazy_seen": 0, "fired": 0, "tagged_open": 0, "skipped_autopilot": 0, "skipped_away": 0,
+                                "skipped_kill": 0, "last_fire": None, "last_symbol": None}
         self._metrics_pending: dict[str, dict] = {}   # launch_id -> $set, drained by _metrics_flush_loop
         # Re-entry watchlist: mint -> {exit_price_sol, exit_time, attempts, ...}
         self.reentry_watch: dict[str, dict] = {}
@@ -1354,6 +1359,72 @@ class BotState:
         # Cut-the-fat (2026-10-03): no greylist sniper on the launch path.
         asyncio.create_task(self._assess_and_enter(launch, creator_rugs))
         asyncio.create_task(self._tracker_cleanup(launch.mint))
+        if reputation.configured():
+            asyncio.create_task(self._crazy_dev_watch(launch))
+
+    async def operator_present(self) -> bool:
+        """Operator logged in = an authenticated dashboard WS on this pod, or a fresh presence heartbeat from any pod."""
+        if hub.clients:
+            return True
+        try:
+            doc = await self.db.operator_presence.find_one({"_id": "dashboard"}, {"_id": 0, "ts": 1})
+        except Exception:
+            return False
+        return bool(doc) and time.time() - float(doc.get("ts") or 0) < OPERATOR_PRESENCE_TTL_S
+
+    async def dev_watch_snapshot(self) -> dict:
+        present = await self.operator_present()
+        autopilot = bool(getattr(self.config, "autopilot_enabled", False))
+        configured = reputation.configured()
+        state = "dark" if not configured else "autopilot" if autopilot else "away" if not present else "watching"
+        return {"state": state, "present": present, "autopilot": autopilot, "configured": configured,
+                "stake_usd": float(self.config.min_trade_usd), **self.dev_watch}
+
+    async def _crazy_dev_watch(self, launch: Launch) -> None:
+        """CRAZY-dev watch: a new launch whose dev reputation.family ranks CRAZY is bought at min stake with no strategy
+        gates and parked as a long-term hold for the operator to exit by hand — only while the operator is logged in
+        and the Doctor is not driving (Autopilot). Autopilot/away launches still run the normal entry path."""
+        rep: dict = {}
+        for delay in DEV_WATCH_LOOKUP_DELAYS_S:
+            await asyncio.sleep(delay)
+            rep = await self.reputation.lookup(launch.mint, launch.creator, fresh=True)
+            if rep.get("ok"):
+                break
+        if not ReputationClient.is_crazy(rep):
+            return
+        self.dev_watch["crazy_seen"] += 1
+        tag = f"{launch.symbol or '?'} {launch.mint[:8]}…"
+        if launch.mint in self.active_trades:
+            slot = self.active_trades[launch.mint]
+            t = slot.get("trade") or {}
+            if not t.get("long_term_hold"):
+                t["long_term_hold"] = True
+                t["dev_watch"] = True
+                self.dev_watch["tagged_open"] += 1
+                if t.get("id"):
+                    await self.db.trades.update_one({"_id": t["id"]}, {"$set": {"long_term_hold": True, "dev_watch": True}})
+                    await hub.broadcast("trade_update", {"id": t["id"], "mint": launch.mint, "long_term_hold": True, "dev_watch": True})
+                logger.warning(f"DEV WATCH: {tag} dev ranks CRAZY — open position flipped to LTH (operator exit only)")
+            return
+        if getattr(self.config, "autopilot_enabled", False):
+            self.dev_watch["skipped_autopilot"] += 1
+            logger.info(f"dev watch: {tag} dev ranks CRAZY — Autopilot is driving, leaving it to the normal entry path")
+            return
+        if not await self.operator_present():
+            self.dev_watch["skipped_away"] += 1
+            logger.info(f"dev watch: {tag} dev ranks CRAZY — operator not logged in, no auto-buy")
+            return
+        if self.kill_switch_tripped:
+            self.dev_watch["skipped_kill"] += 1
+            return
+        logger.warning(f"DEV WATCH: {tag} dev ranks CRAZY — buying ${float(self.config.min_trade_usd):.2f} with no gates, LTH on")
+        launch.classifier_action = "dev_watch"
+        await self._enter(launch, 50, "dev_watch")
+        if launch.mint in self.active_trades:
+            self.dev_watch["fired"] += 1
+            self.dev_watch["last_fire"] = time.time()
+            self.dev_watch["last_symbol"] = launch.symbol
+            await hub.broadcast("dev_watch_fired", {"mint": launch.mint, "symbol": launch.symbol, "stake_usd": float(self.config.min_trade_usd)})
 
     def _ensure_metadata(self, mint: str) -> None:
         """Kick off the (one-time) socials + project-score fetch for a mint that earned it: scanner gate pass or entry."""
@@ -2735,7 +2806,7 @@ class BotState:
     async def _enter(self, launch: Launch, risk_score: int, action: str):
         # Manual buy (operator clicked a candidate): bypass everything except
         # the Helius kill-switch, the daily kill switch and max positions.
-        is_manual = action == "manual"
+        is_manual = action in MANUAL_ENTRY_ACTIONS
         if not await self.leader_fence(f"entry {launch.mint[:8]}…"):
             return
         if not is_manual and action != "reentry":
@@ -3069,7 +3140,7 @@ class BotState:
         book = book_for_action(action)
         is_research_snipe = (action == "greylist_snipe"
                              and getattr(self, "_snipe_research_flags", {}).get(launch.mint, False))
-        if book_size_mult(self.config, book) <= 0:
+        if book_size_mult(self.config, book) <= 0 and action != "dev_watch":
             logger.info(f"skip {launch.mint[:8]} — book {book} disabled (size_mult=0)")
             return
 
@@ -3107,7 +3178,7 @@ class BotState:
 
         # Resolve band-specific gates: "new" (action=momentum_new) uses tighter
         # thresholds, "seasoned" (action=scanner_momentum) uses base thresholds.
-        is_new_band = action == "momentum_new" or (action == "manual" and protocol == "pumpfun")
+        is_new_band = action == "momentum_new" or (action in MANUAL_ENTRY_ACTIONS and protocol == "pumpfun")
         # Greylist Sniper bypasses MOMENTUM-side gates entirely. The whole
         # point of the greylist is sniping creators on predictable curves,
         # so growth/inflow/buyer/velocity gates would defeat the strategy.
@@ -3115,7 +3186,7 @@ class BotState:
         # cooldowns, doctor pause). Pool state checks above also already ran.
         is_greylist_snipe = action == "greylist_snipe"
         # Manual buys (operator override) skip the same momentum-side gates.
-        bypass_gates = is_greylist_snipe or action == "manual"
+        bypass_gates = is_greylist_snipe or action in MANUAL_ENTRY_ACTIONS
         if is_greylist_snipe:
             logger.info(
                 f"greylist_snipe: bypassing momentum gates for {launch.mint[:8]}… "
@@ -3135,7 +3206,7 @@ class BotState:
         # haven't had time to accumulate liquidity but the snipe is on the
         # creator pattern, not the curve depth.
         real_sol = state["real_sol_reserves"] / LAMPORTS_PER_SOL
-        effective_min_liq = 0.1 if bypass_gates else min_liq
+        effective_min_liq = 0.0 if action == "dev_watch" else 0.1 if bypass_gates else min_liq
         if real_sol < effective_min_liq:
             logger.info(f"skip {launch.mint} [{action}]: liquidity {real_sol:.2f} SOL < min {effective_min_liq}")
             return
@@ -3322,11 +3393,18 @@ class BotState:
         eff_slip = entry_slip_bps(protocol, pool_depth_sol(pumpswap_state if protocol == "pumpswap" else state, protocol), eff_slip)
 
         reentry_mult = self._reentry_gate_mult.pop(launch.mint, None)
-        plan = await self._plan_entry(launch.mint, book, protocol, eff_slip, eff_priority, sol_price,
-                                      depth_sol=pool_depth_sol(pumpswap_state if protocol == "pumpswap" else state, protocol),
-                                      use_doctor=action != "manual", pattern=greylist_ctx.get("pattern"),
-                                      band="new" if is_new_band else "seasoned",
-                                      book_mult_override=(book_size_mult(self.config, book) * reentry_mult) if reentry_mult is not None else None)
+        if action == "dev_watch":
+            # CRAZY-dev watch: fixed min stake, no R-sizing / cost gate / doctor — the operator exits by hand
+            _dw_usd = float(self.config.min_trade_usd)
+            plan = {"size_usd": _dw_usd * 2, "size_mult": 1.0,
+                    "trade_fields": {"size_usd": _dw_usd, "r_usd": 0.0, "r_usd_nominal": 0.0, "size_clamped": False, "cost_gate_pass": True,
+                                     "doctor_decision": "bypass", "scorecard_cell": "dev_watch"}}
+        else:
+            plan = await self._plan_entry(launch.mint, book, protocol, eff_slip, eff_priority, sol_price,
+                                          depth_sol=pool_depth_sol(pumpswap_state if protocol == "pumpswap" else state, protocol),
+                                          use_doctor=action not in MANUAL_ENTRY_ACTIONS, pattern=greylist_ctx.get("pattern"),
+                                          band="new" if is_new_band else "seasoned",
+                                          book_mult_override=(book_size_mult(self.config, book) * reentry_mult) if reentry_mult is not None else None)
         if not plan:
             return
         # cut-the-fat (2026-10-04): creator wallet audit (Helius Enhanced / Solscan) removed from the entry path
@@ -3334,7 +3412,7 @@ class BotState:
         planned_usd = plan["size_usd"]
         # Hardwired fast-fail sizing: buy half now, the other half after the first +5 % (see _fast_fail_add)
         trade_usd = max(float(self.config.min_trade_usd), planned_usd * 0.5)
-        ff_remaining_usd = max(0.0, planned_usd - trade_usd)
+        ff_remaining_usd = 0.0 if action == "dev_watch" else max(0.0, planned_usd - trade_usd)
         trade_sol = trade_usd / sol_price if sol_price > 0 else 0
         sol_in_lamports = int(trade_sol * LAMPORTS_PER_SOL)
         _band = "new" if is_new_band else "seasoned"
@@ -3417,6 +3495,8 @@ class BotState:
                        "project_flags": (self.tracking.get(launch.mint) or {}).get("project_flags") or {},
                        "band": "new" if action == "momentum_new" else "seasoned"},
             is_research_snipe=is_research_snipe,
+            long_term_hold=action == "dev_watch",
+            dev_watch=action == "dev_watch",
             **plan["trade_fields"],
             # Persist the snipe ctx on the trade doc itself so a restart
             # can restore the slot without losing the pattern frame of
@@ -5092,7 +5172,8 @@ class BotState:
         try:
             import search_ledger
             asyncio.create_task(search_ledger.refresh(self.db, self.config))
-            await self.scorecard.record(trade_doc)
+            if not trade_doc.get("dev_watch"):     # operator-watched CRAZY-dev holds never grade a strategy cell
+                await self.scorecard.record(trade_doc)
             if self.inventory.record_close(reason):
                 logger.warning(f"INVENTORY HALT: last {self.inventory.snapshot()['trigger_n']} Solana closes were stop-outs/rugs — "
                                f"no new Solana entries until {datetime.fromtimestamp(self.inventory.halted_until, timezone.utc).isoformat()}")

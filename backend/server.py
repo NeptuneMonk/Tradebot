@@ -218,6 +218,8 @@ async def _follower_config_refresh_loop():
                 cfg = await db.bot_config.find_one({"_id": "current"}, {"_id": 0})
                 if cfg:
                     bot_state.config = BotConfig(**cfg)
+                if hub.clients:   # presence heartbeat: a dashboard WS mirrored on this follower still means the operator is logged in
+                    await db.operator_presence.update_one({"_id": "dashboard"}, {"$set": {"ts": time.time(), "pod": singleton.pod_id, "clients": len(hub.clients)}}, upsert=True)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -880,6 +882,7 @@ async def bot_status():
         kill_switch_tripped=bot_state.kill_switch_tripped,
         books_paused=dict(bot_state.live_doctor.book_paused_until) if getattr(bot_state, "live_doctor", None) else {},
         lite_mode=bot_state.lite.snapshot(),
+        dev_watch=await bot_state.dev_watch_snapshot(),
         listener_connected=listener.connected,
         helius_paused=_gate_snapshot(),
         listener_last_error=listener.last_error,
@@ -3084,6 +3087,10 @@ async def _status_broadcaster():
             import regime as _rg
             _rg.note_sol_price(float(getattr(w, "sol_price_usd", 0) or 0))
             n += 1
+            # operator presence heartbeat: a dashboard WS on ANY pod keeps the CRAZY-dev watch armed on the leader
+            if hub.clients and n % 4 == 1:
+                await db.operator_presence.update_one({"_id": "dashboard"}, {"$set": {"ts": time.time(), "pod": singleton.pod_id if singleton else "single",
+                                                                                      "clients": len(hub.clients)}}, upsert=True)
             # leader heartbeat snapshot: followers answer from this when no leader can execute for them
             await db.bot_runtime.update_one({"_id": "runtime"}, {"$set": {
                 "ts": time.time(), "leader": singleton.pod_id if singleton else None,

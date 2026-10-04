@@ -19,7 +19,7 @@ class ExitDecision:
     fraction: float = 1.0
 
 
-MANUAL_ACTIONS = ("manual", "rh_pons_manual")
+MANUAL_ACTIONS = ("manual", "rh_pons_manual", "dev_watch")
 
 
 def is_manual_hold(trade: dict | None) -> bool:

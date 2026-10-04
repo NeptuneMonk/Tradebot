@@ -61,7 +61,9 @@ function Row({ t, onExit, onOpen, onLth, onAdd }) {
       className={`border-b border-neutral-900 hover:bg-neutral-900/50 cursor-pointer transition-colors duration-100 ${manual ? "bg-fuchsia-950/10" : ""}`}
       title={`${t.mode} · size $${Number(t.size_usd ?? t.entry_usd ?? 0).toFixed(2)} · R $${Number(t.r_usd ?? 0).toFixed(3)} · risk ${t.risk_score ?? "—"} · ${t.scorecard_cell || ""}${manual ? " · MANUAL HOLD: R-target only — no SL/TP/trail/clock, no momentum kill, not counted toward max positions" : ""}${lth ? " · LTH: manual exit only" : ""}`}>
       <td className="py-2 pl-3"><span className={`px-1.5 py-0.5 border text-[9px] font-mono uppercase tracking-[0.15em] ${BOOK_CLS[book] || BOOK_CLS.scalp}`}>{book.replace("_", " ")}</span>
-        {lth ? <span className="ml-1 px-1 py-0.5 border border-sky-600 text-sky-300 text-[9px] font-mono" data-testid={`active-lth-badge-${t.mint}`}>LTH</span>
+        {lth ? <span className={`ml-1 px-1 py-0.5 border text-[9px] font-mono ${t.dev_watch || t.classifier_action === "dev_watch" ? "border-cyan-600 text-cyan-300" : "border-sky-600 text-sky-300"}`} data-testid={`active-lth-badge-${t.mint}`}
+                 title={t.dev_watch || t.classifier_action === "dev_watch" ? "CRAZY-dev watch: auto-bought at min stake with no gates — long-term hold, you exit with ✕" : undefined}>
+                 {t.dev_watch || t.classifier_action === "dev_watch" ? "DEV WATCH" : "LTH"}</span>
              : manual && <span className="ml-1 px-1 py-0.5 border border-fuchsia-700 text-fuchsia-300 text-[9px] font-mono" data-testid={`active-manual-badge-${t.mint}`}>HOLD</span>}
         {t.mode === "live" && <span className="ml-1 px-1 py-0.5 border border-red-800 text-red-300 text-[9px] font-mono">LIVE</span>}</td>
       <td className="font-mono text-xs"><span className="text-neutral-100">{t.symbol || "—"}</span> <span className="text-neutral-600 text-[10px]">{t.chain === "rh" ? "rh" : "sol"}</span> {t.chain !== "rh" && <RepBadge mint={t.mint} compact />}</td>

@@ -16,6 +16,7 @@ import DailyLossMeter from "@/components/DailyLossMeter";
 import RecentLaunchesFeed from "@/components/RecentLaunchesFeed";
 import SimpleControls from "@/components/SimpleControls";
 import LiteModeBadge from "@/components/LiteModeBadge";
+import DevWatchBadge from "@/components/DevWatchBadge";
 import TradeHistoryTable from "@/components/TradeHistoryTable";
 import ClassifierRulesEditor from "@/components/ClassifierRulesEditor";
 import ReentryWatchCard from "@/components/ReentryWatchCard";
@@ -336,6 +337,9 @@ export default function Dashboard() {
       case "scanner_snapshot":
         if (Array.isArray(data?.items)) setScanner(data.items);
         break;
+      case "dev_watch_fired":
+        toast.message(`CRAZY dev · ${data.symbol || data.mint?.slice(0, 8)} bought $${Number(data.stake_usd || 0).toFixed(2)} — long-term hold, exit by hand`, { duration: 12000 });
+        break;
       case "trade_exit":
         tradeUpdateBufRef.current.delete(data.id);
         setActiveTrades((prev) => prev.filter((t) => t.id !== data.id));
@@ -487,6 +491,7 @@ export default function Dashboard() {
             />
           )}
           <LiteModeBadge lite={status?.lite_mode} />
+          <DevWatchBadge watch={status?.dev_watch} />
           <PodPill wsRole={wsRole} />
           <span className="flex items-center gap-2" data-testid="ws-status"
             title={wsRole === "follower" ? "feed mirrored through Mongo from the leader pod (~0.3 s behind) — probing for a direct leader socket every 30 s" : wsRole === "leader" ? "direct socket to the leader pod" : ""}>
