@@ -1448,7 +1448,7 @@ class BotState:
         trade_doc = slot["trade"]
         book = trade_doc.get("book") or "scalp"
         r_usd = float(trade_doc.get("r_usd") or 0.0)
-        if r_usd <= 0 or self.active_trades.get(mint) is not slot:
+        if r_usd <= 0 or self.active_trades.get(mint) is not slot or not self.config.book_runner_enabled:
             return False
         if self._runner_open() >= runner.RUNNER_CAP:
             if not slot.get("_runner_cap_skipped"):
@@ -2767,6 +2767,12 @@ class BotState:
         # all race past max_concurrent_positions. Holds the lock only for the
         # gate check + reservation (microseconds), not the tx.
         book = book_for_action(action)
+        if not is_manual and not getattr(self.config, f"book_{book}_enabled", True):
+            _band = "seasoned" if (self.tracking.get(launch.mint) or {}).get("protocol") == "pumpswap" else "new"
+            self.prerank_skip(_band, f"book-off:{book}")
+            await self._skip_event({"mint": launch.mint, "symbol": launch.symbol, "band": _band, "reason": f"book-off:{book}",
+                                    "details": [f"{book} book is switched off in Controls"]})
+            return
         if not is_manual and self.inventory.active():
             logger.info(f"inventory halt: skipping {launch.mint[:8]}… ({self.inventory.snapshot()})")
             return

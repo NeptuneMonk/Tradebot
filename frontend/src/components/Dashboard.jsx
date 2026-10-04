@@ -14,6 +14,7 @@ import Wiki from "@/components/wiki/Wiki";
 import PLSummaryCard from "@/components/PLSummaryCard";
 import DailyLossMeter from "@/components/DailyLossMeter";
 import RecentLaunchesFeed from "@/components/RecentLaunchesFeed";
+import SimpleControls from "@/components/SimpleControls";
 import TradeHistoryTable from "@/components/TradeHistoryTable";
 import ClassifierRulesEditor from "@/components/ClassifierRulesEditor";
 import ReentryWatchCard from "@/components/ReentryWatchCard";
@@ -636,6 +637,14 @@ export default function Dashboard() {
 
         {view === "control" && (
           <div key="control" className="space-y-4" data-testid="view-control">
+            <SimpleControls config={config} status={status} wallet={wallet} pl={pl} onPatch={onConfigPatch} onStart={onStart} onStop={onStop} />
+            <CollapsibleSection
+              title="Advanced"
+              description="wallets · P/L · bands · gates · exits · doctor settings — everything beyond the six controls"
+              storageKey="ui.section.advanced"
+              testId="section-advanced"
+              defaultOpen={false}
+            >
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
               <div className="tile-in">
                 <MinimizableCard id="wallet" title="Wallet" stat={wallet ? `${wallet.sol_balance.toFixed(4)} SOL` : "—"}>
@@ -658,7 +667,7 @@ export default function Dashboard() {
             </MinimizableCard>
             <CollapsibleSection
               title="Bot Control"
-              description="Start/Stop · bands · gates · greylist sniper config"
+              description="bands · gates · exits · feeds · doctor settings"
               storageKey="ui.section.bot-control"
               testId="section-bot-control"
               defaultOpen
@@ -672,6 +681,7 @@ export default function Dashboard() {
                 onStart={onStart}
                 onStop={onStop}
               />
+            </CollapsibleSection>
             </CollapsibleSection>
           </div>
         )}

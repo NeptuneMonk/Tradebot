@@ -19,6 +19,11 @@ class BotConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = False
     live_trading: bool = False
+    # Operator book switches (Phase 2 simple controls, 2026-10-04). Off = no new entries / promotions into that book;
+    # open positions keep running their exits. RH uses `rh_paper_enabled` / `rh_live_trading`.
+    book_scalp_enabled: bool = True
+    book_hunt_enabled: bool = True
+    book_runner_enabled: bool = True
     # Master Helius kill-switch. When False, the bot pauses ALL traffic that
     # consumes Helius credits:
     #   - logsSubscribe listener disconnects (largest credit consumer)
