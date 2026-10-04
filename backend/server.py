@@ -124,6 +124,7 @@ async def _build_services():
     bot_state.rh_feed = RHSequencerFeed(bot_state)
     bot_state.sweeper = ProfitSweeper(bot_state, db, bot_state.bankroll)
     doctor = StrategyDoctor(db=db, hub=hub)
+    doctor.bot_state = bot_state
     doctor.reload_cb = bot_state.load
     doctor.learning.reload_cb = bot_state.load
     bot_state.tick_store = TickStore(bot_state)
@@ -877,6 +878,7 @@ async def bot_status():
         live_trading=bot_state.config.live_trading,
         kill_switch_tripped=bot_state.kill_switch_tripped,
         books_paused=dict(bot_state.live_doctor.book_paused_until) if getattr(bot_state, "live_doctor", None) else {},
+        lite_mode=bot_state.lite.snapshot(),
         listener_connected=listener.connected,
         helius_paused=_gate_snapshot(),
         listener_last_error=listener.last_error,
@@ -1097,6 +1099,15 @@ async def book_exits_restore_defaults():
     await db.strategy_suggestions.insert_one({"category": "book_exits", "title": "book_exits restored to defaults", "actions": {"book_exits": bx},
                                               "status": "applied", "applied_at": datetime.now(timezone.utc).isoformat(), "auto_applied": False})
     return {"ok": True, "book_exits": bx}
+
+
+@api.post("/lite-mode")
+async def set_lite_mode(body: dict = Body(...)):
+    """Operator override for the watchdog: {"forced": true|false|null} — null = automatic."""
+    forced = body.get("forced", None)
+    bot_state.lite.forced = None if forced is None else bool(forced)
+    bot_state.lite.evaluate(bot_state.config, (bot_state.loop_lag_ms or {}).get("avg_1m", 0.0))
+    return bot_state.lite.snapshot()
 
 
 @api.get("/diagnostics/loop")

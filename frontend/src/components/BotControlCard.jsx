@@ -474,6 +474,14 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
                hint="A stalled position is only sold when it is up at least this much (net of entry). Below it — red, or green but not worth the fees — it is held as dust until the stop-loss / clock fires. 0 = sell any green stall."
                value={local.no_momentum_min_profit_pct ?? 3}
                onChange={(v) => setLocal({ ...local, no_momentum_min_profit_pct: parseFloat(v) || 0 })} step="0.5" />
+        <Field label="Lite-mode RAM (MB)" testid="lite-mode-rss-input"
+               hint="Watchdog: when the backend's memory passes this, non-essential work (socials/images, Doctor cycle, seasoned refresh, launch persistence) pauses and the tracker shrinks to 60 mints until RAM drops back under 85% of it for 60 s. Trading and exits never pause. 0 = watchdog off. Basic hosting tier is 512 MB."
+               value={local.lite_mode_rss_mb ?? 400}
+               onChange={(v) => { const n = parseFloat(v) || 0; setLocal({ ...local, lite_mode_rss_mb: n, lite_mode_enabled: n > 0 }); }} step="25" />
+        <Field label="Lite-mode lag (ms)" testid="lite-mode-lag-input"
+               hint="Same watchdog, second trigger: 1-minute average event-loop lag above this means the bot is CPU-starved."
+               value={local.lite_mode_lag_ms ?? 500}
+               onChange={(v) => setLocal({ ...local, lite_mode_lag_ms: parseFloat(v) || 0 })} step="50" />
         <Field label="Recovery Watch (s)" testid="recovery-watch-input"
                hint="When the no-momentum check would kill a RED position whose tape is recovering (above its price 30s ago, and no new low for 20s or ≥2 fresh buyers), the kill becomes a time-boxed watch instead: stop just under the trough, this many seconds to reclaim part of the way back to entry, then it rejoins the normal ladder with a fresh clock. Flat or still-sliding tapes are still killed. 0 = off."
                value={local.recovery_watch_s ?? 90}

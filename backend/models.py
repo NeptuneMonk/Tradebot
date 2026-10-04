@@ -24,6 +24,10 @@ class BotConfig(BaseModel):
     book_scalp_enabled: bool = True
     book_hunt_enabled: bool = True
     book_runner_enabled: bool = True
+    # Lite-mode watchdog (Phase 3): degrade non-essential work before the pod is OOM-killed
+    lite_mode_enabled: bool = True
+    lite_mode_rss_mb: float = 400.0
+    lite_mode_lag_ms: float = 500.0
     # Master Helius kill-switch. When False, the bot pauses ALL traffic that
     # consumes Helius credits:
     #   - logsSubscribe listener disconnects (largest credit consumer)
@@ -709,6 +713,7 @@ class BotStatus(BaseModel):
     enabled: bool                       # master run — entries allowed
     live_trading: bool
     kill_switch_tripped: bool
+    lite_mode: Optional[dict] = None     # watchdog snapshot: active / reason / rss_mb / lag_ms
     books_paused: dict[str, float] = {}  # live-doctor breaker: book → lift_after ts (entries blocked for that book)
     listener_connected: bool            # ACTUAL Pump.fun WS
     helius_paused: dict = {}            # gate snapshot: paused / manual / auto / auto_reason

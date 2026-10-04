@@ -119,6 +119,7 @@ class StrategyDoctor:
         self.db = db
         self.hub = hub  # broadcast new suggestions over WS if available
         self.reload_cb = None  # set by server: bot_state.load (re-entrant)
+        self.bot_state = None  # set by server: lite-mode watchdog hook
         self.learning = LearningEngine(db, hub=hub)
         self._task: asyncio.Task | None = None
         self.interval_minutes = DEFAULT_INTERVAL_MINUTES
@@ -143,7 +144,10 @@ class StrategyDoctor:
         await asyncio.sleep(60)
         while True:
             try:
-                await self.run_once()
+                if getattr(getattr(self.bot_state, "lite", None), "active", False):
+                    logger.info("doctor cycle skipped — lite mode (RAM/lag over the line)")
+                else:
+                    await self.run_once()
             except asyncio.CancelledError:
                 raise
             except Exception as e:

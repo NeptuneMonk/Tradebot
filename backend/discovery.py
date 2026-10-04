@@ -182,7 +182,10 @@ class PumpfunDiscovery:
         await asyncio.sleep(REFRESH_INTERVAL_S)
         while True:
             try:
-                await self._refresh_once()
+                if getattr(getattr(self.state, "lite", None), "active", False):
+                    logger.debug("discovery refresh skipped — lite mode")
+                else:
+                    await self._refresh_once()
             except asyncio.CancelledError:
                 raise
             except Exception as e:

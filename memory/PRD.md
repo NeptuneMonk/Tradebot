@@ -2287,3 +2287,9 @@ Approved plan: remove every data source / book with zero edge; keep scanner → 
 - ✅ Everything else (wallet cards, daily loss, P/L, BotControlCard) lives in `section-advanced` CollapsibleSection, collapsed by default (`ui.section.advanced`).
 - ✅ Backend: `BotConfig.book_scalp_enabled / book_hunt_enabled / book_runner_enabled` (default on). `_enter_impl` skips with `book-off:<book>` (ticker + prerank skip) for non-manual entries; `_try_promote` returns False when runner is off. `onConfigPatch` now returns the saved config. Tests: `tests/test_book_switches.py`.
 - Testing agent iteration_34: 7/8 → fixed the max-trade clamp (min_trade_usd floor) and now toast the server-applied value; verified live in preview, operator values restored.
+
+## Cut the Fat — Phase 3a: Lite-mode watchdog (2026-10-04)
+- ✅ `lite_mode.py` `LiteMode`: every 5 s (inside `_loop_lag_meter`) checks live RSS (`/proc/self/statm`) vs `lite_mode_rss_mb` (400) and 1-min avg loop lag vs `lite_mode_lag_ms` (500). Trips immediately; clears after 60 s under 85 % RAM / 50 % lag. `lite_mode_enabled` (0 MB in UI = off). Operator override `POST /api/lite-mode {"forced": true|false|null}`.
+- While active: `_ensure_metadata` no-op, `_persist_metrics` writes nothing, Doctor `_loop` skips `run_once`, discovery `_refresh_loop` skips, tracker cap 150 → 60 (sheds non-held, non-pinned oldest). Listener / scanner / monitors / exits / WS untouched.
+- ✅ `BotStatus.lite_mode` snapshot → header `LiteModeBadge` (grey `NNNmb` when armed, amber pulsing `LITE MODE` when active, tooltip explains). Tunables `Lite-mode RAM (MB)` / `Lite-mode lag (ms)` in Advanced → Bot Control.
+- Tests: `tests/test_lite_mode.py` (3). Verified live: forced on → badge + log line, forced null → auto.

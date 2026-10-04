@@ -25,6 +25,7 @@ from wallet import get_keypair, get_pubkey
 from ws_hub import hub
 from pymongo import UpdateOne
 from pymongo.errors import DuplicateKeyError
+from lite_mode import LiteMode, LITE_TRACKED_MINTS
 from creator_history import record_new_launch, mark_outcome, derive_rug_count
 from project_score import project_score
 from scanner import MomentumScanner, velocity_pct_strict
@@ -121,6 +122,7 @@ class BotState:
         self.stats: dict = {}                      # counters (flush_holds, …) — was missing: _flush_holds_sol crashed the fast exit path
         self.listener_connected = False
         self.tracking: dict[str, dict] = {}
+        self.lite = LiteMode()                        # Phase 3 watchdog: degrades non-essential work before the pod OOMs
         self._metrics_pending: dict[str, dict] = {}   # launch_id -> $set, drained by _metrics_flush_loop
         # Re-entry watchlist: mint -> {exit_price_sol, exit_time, attempts, ...}
         self.reentry_watch: dict[str, dict] = {}
@@ -773,6 +775,7 @@ class BotState:
             await asyncio.sleep(10.0)
 
     loop_lag_ms: dict = {"last": 0.0, "max_1m": 0.0, "samples": 0}
+    lite: LiteMode = LiteMode()   # class default; __init__ gives each state its own instance
 
     async def _loop_lag_meter(self):
         """Event-loop lag: how late a 1 s sleep wakes up. >200 ms means something is blocking the loop."""
@@ -785,6 +788,11 @@ class BotState:
             hist = [(ts, v) for ts, v in hist if now - ts <= 60.0] + [(now, lag)]
             self.loop_lag_ms = {"last": round(lag, 1), "max_1m": round(max(v for _, v in hist), 1),
                                 "avg_1m": round(sum(v for _, v in hist) / len(hist), 1), "samples": len(hist)}
+            if len(hist) % 5 == 0:   # lite-mode watchdog: RAM + lag check every 5 s
+                try:
+                    self.lite.evaluate(self.config, self.loop_lag_ms["avg_1m"])
+                except Exception as e:
+                    logger.debug(f"lite watchdog: {e}")
 
     async def _active_trades_reconciler_loop(self):
         """Every 15s, find DB rows with status=active whose mint is NOT in
@@ -1329,12 +1337,14 @@ class BotState:
             "website": "",
             "uri": (launch_data.get("uri") or "").strip(),   # CreateEvent metadata URI — first (on-chain) source of socials
         }
-        # LRU-style cap: drop oldest if over the limit
-        if len(self.tracking) > MAX_TRACKED_MINTS:
-            evictable = [kv for kv in self.tracking.items() if not kv[1].get("pinned")]   # operator ladder pins never age out
-            if evictable:
-                oldest = min(evictable, key=lambda kv: kv[1].get("graduated_at") or kv[1]["start"])[0]
-                self.tracking.pop(oldest, None)
+        # LRU-style cap: drop oldest if over the limit (lite mode shrinks the cap and sheds the excess)
+        cap = LITE_TRACKED_MINTS if self.lite.active else MAX_TRACKED_MINTS
+        while len(self.tracking) > cap:
+            evictable = [kv for kv in self.tracking.items() if not kv[1].get("pinned") and kv[0] not in self.active_trades]
+            if not evictable:
+                break
+            oldest = min(evictable, key=lambda kv: kv[1].get("graduated_at") or kv[1]["start"])[0]
+            self.tracking.pop(oldest, None)
 
         # Metadata / socials are fetched lazily — only when the scanner passes the mint or we buy it (`_ensure_metadata`).
         # Cut-the-fat (2026-10-03): no greylist sniper on the launch path.
@@ -1344,7 +1354,7 @@ class BotState:
     def _ensure_metadata(self, mint: str) -> None:
         """Kick off the (one-time) socials + project-score fetch for a mint that earned it: scanner gate pass or entry."""
         b = self.tracking.get(mint)
-        if not b or b.get("_meta_requested"):
+        if not b or b.get("_meta_requested") or self.lite.active:   # lite mode: no socials/image HTTP at all
             return
         b["_meta_requested"] = True
         asyncio.create_task(self._compute_social(mint))
@@ -2134,7 +2144,7 @@ class BotState:
             update["peak_mc_usd_at"] = b["peak_mc_usd_at"]
         # Coalesced: one bulk_write per PERSIST_INTERVAL_S. Cut-the-fat (2026-10-03): only candidates (gate pass) and
         # mints we hold / bought are written to Mongo — the other ~500 launches live in RAM + the WS tape only.
-        if b.get("gate_reason") == "pass" or b.get("_meta_requested") or mint in self.active_trades:
+        if (b.get("gate_reason") == "pass" or b.get("_meta_requested") or mint in self.active_trades) and not self.lite.active:
             self._metrics_pending[b["launch_id"]] = update
         for r in self.recent_launches:
             if r.get("id") == b["launch_id"]:

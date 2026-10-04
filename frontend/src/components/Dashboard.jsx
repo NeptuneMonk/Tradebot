@@ -15,6 +15,7 @@ import PLSummaryCard from "@/components/PLSummaryCard";
 import DailyLossMeter from "@/components/DailyLossMeter";
 import RecentLaunchesFeed from "@/components/RecentLaunchesFeed";
 import SimpleControls from "@/components/SimpleControls";
+import LiteModeBadge from "@/components/LiteModeBadge";
 import TradeHistoryTable from "@/components/TradeHistoryTable";
 import ClassifierRulesEditor from "@/components/ClassifierRulesEditor";
 import ReentryWatchCard from "@/components/ReentryWatchCard";
@@ -485,6 +486,7 @@ export default function Dashboard() {
               onChange={onAutopilotChange}
             />
           )}
+          <LiteModeBadge lite={status?.lite_mode} />
           <PodPill wsRole={wsRole} />
           <span className="flex items-center gap-2" data-testid="ws-status"
             title={wsRole === "follower" ? "feed mirrored through Mongo from the leader pod (~0.3 s behind) — probing for a direct leader socket every 30 s" : wsRole === "leader" ? "direct socket to the leader pod" : ""}>
