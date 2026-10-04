@@ -1,0 +1,41 @@
+{
+  "summary": "Phase 2 'simple control surface' validated end-to-end. CONTROL tab renders data-testid=simple-controls at top and Advanced section (data-testid=section-advanced) is collapsed by default; expanding it reveals bot-control-card. All simple controls work and round-trip through /api/bot/config except simple-max-trade (silent clamp — see issue below). Bot was left RUNNING throughout. All config mutations were restored to the pre-test snapshot.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "PUT /api/bot/config (server.py L551-552)",
+        "issue": "max_trade_usd silently clamped UP to min_trade_usd — operator currently has min_trade_usd=50, so SimpleControls' Max trade input successfully lowers rh_max_trade_usd to 12 but max_trade_usd stays at 50 while the frontend toasts success. API returns 200 with no warning. Either (a) lower min_trade_usd together with max_trade_usd in the simple-max-trade commit (so the ceiling can actually come down), or (b) return 422 when max<min, or (c) surface the clamp in the response so the UI can toast a 'floored to $50 by min_trade_usd' warning."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "SimpleControls Max trade (data-testid=simple-max-trade)",
+        "issue": "After typing 12 + Enter the UI shows 'Max trade $12' success toast and resets the input back to 50 (because config echo returns the clamped value), but there is no error toast indicating max_trade_usd did not actually change. User sees contradictory UX. Root cause is backend clamp (above).",
+        "selector": "[data-testid='simple-max-trade']",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_book_switches.py", "/app/test_reports/iteration_34.json"],
+  "action_items": [
+    "Fix simple-max-trade so lowering the ceiling actually lowers it: in SimpleControls.jsx onCommit, also PATCH min_trade_usd when the new value is below current min_trade_usd (e.g. send min_trade_usd=min(current_min, n)), OR change server.py L551-552 to clamp min DOWN to max instead of clamping max UP to min, OR raise 422. Currently the simple panel's headline 'Max trade' control is a no-op when min_trade_usd>=the typed value."
+  ],
+  "critical_code_review_comments": [
+    "server.py:547-552 — if cfg.max_trade_usd < cfg.min_trade_usd the server silently raises max_trade_usd to min_trade_usd. That's safe for the engine but hides a failed PUT from the client; return it in the response payload or 422.",
+    "SimpleControls.jsx:30 — commit() returns early if parsed n == value, but after a clamped PUT the backend echo rewrites config.max_trade_usd back to the clamped value and the Money useEffect resets v; the stale success toast still fires. Consider echoing the server value and toasting the actual applied figure.",
+    "bot.py / server.py are still 5000+ / 3600+ lines (noted in iter 33). Phase 2 added a tiny well-scoped SimpleControls.jsx but the back-end megamodules did not shrink."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% on the book-switch spec (PUT book_hunt_enabled false/true round-trip; existing pytest test_book_switches.py 2/2 pass)", "frontend": "88% (7/8 simple-controls flows pass; simple-max-trade is the one failing path, driven by backend clamp)"},
+  "test_credentials": "Reused seeded token from /app/memory/.tok (user_49e7ea1b703c, email nbobby79@gmail.com).",
+  "seed_data_creation": "None. All PUTs restored. Pre/post snapshot: enabled=true, live_trading=false, rh_live_trading=false, max_trade_usd=50, rh_max_trade_usd=25, daily_kill_switch_usd=261, all book_*_enabled=true, rh_paper_enabled=true, speed_mode=normal, max_concurrent_positions=4, autopilot_enabled=false, min_trade_usd=50.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Bot is left RUNNING in PAPER mode. Operator's min_trade_usd=50 — so any test that tries to lower max_trade_usd below 50 via /api/bot/config will see max_trade_usd stay at 50 and only rh_max_trade_usd move. Also noticed one Playwright run hit a transient 15s connect timeout against /api/bot/config mid-sequence (nav tab was changed from CONTROL to another layout briefly after the mode-live arm click); not a backend fault, just preview-ingress hiccup. simple-mode-live first-click behaviour was confirmed (label 'LIVE'→'ARM LIVE?', live_trading stays false, no second click issued).",
+  "rca of the issue": "server.py:551-552 enforces max_trade_usd >= min_trade_usd by raising max up to min. SimpleControls' Money commit sends only {max_trade_usd:n, rh_max_trade_usd:n} without touching min_trade_usd. When operator's min_trade_usd=50 and user types 12, the server quietly clamps max_trade_usd back to 50, breaking the headline 'Max trade' control. Fix: either (a) in SimpleControls, when the typed value < current min_trade_usd, also send min_trade_usd:n in the same PATCH; (b) swap the clamp direction server-side (clamp min down to max); or (c) return a 400/422 so the UI toasts an error. Recommended: (a) because the 'simple' panel should be self-contained."
+}

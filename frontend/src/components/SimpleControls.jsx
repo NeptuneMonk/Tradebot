@@ -55,7 +55,9 @@ function SimpleControls({ config, status, wallet, pl, onPatch, onStart, onStop }
   useEffect(() => { if (!arm) return; const t = setTimeout(() => setArm(null), 6000); return () => clearTimeout(t); }, [arm]);
   if (!config) return <div className="control-card text-neutral-500 text-sm">Loading…</div>;
   const running = !!status?.enabled;
-  const patch = (p, okMsg) => onPatch(p).then(() => okMsg && toast.success(okMsg)).catch((e) => toast.error(explainApiError?.(e) || "Save failed"));
+  const patch = (p, okMsg) => onPatch(p).then((saved) => okMsg && toast.success(typeof okMsg === "function" ? okMsg(saved || {}) : okMsg)).catch((e) => toast.error(explainApiError?.(e) || "Save failed"));
+  // the server floors max_trade_usd at min_trade_usd — bring the floor down with the ceiling so the cap really applies
+  const capPatch = (n) => ({ max_trade_usd: n, rh_max_trade_usd: n, ...(Number(config.min_trade_usd) > n ? { min_trade_usd: n } : {}) });
   const pickMode = (m) => {
     if (m === "paper") return patch({ live_trading: false }, "Paper mode");
     if (arm !== "live") { setArm("live"); toast.message("Click LIVE again to arm real-money trading"); return; }
@@ -63,7 +65,7 @@ function SimpleControls({ config, status, wallet, pl, onPatch, onStart, onStop }
   };
   const applyPreset = () => {
     if (arm !== "preset") { setArm("preset"); toast.message("Click again to apply Safe paper (settings only — wallets and open positions untouched)"); return; }
-    setArm(null); patch(SAFE_PAPER_PRESET, "Safe paper preset applied");
+    setArm(null); patch({ ...SAFE_PAPER_PRESET, ...(Number(config.min_trade_usd) > 8 ? { min_trade_usd: 8 } : {}) }, "Safe paper preset applied");
   };
   const speed = config.speed_mode;
   const speedOpts = [["eco", "Eco"], ["normal", "Normal"], ...(speed !== "eco" && speed !== "normal" ? [[speed, `custom · ${speed}`]] : [])];
@@ -83,7 +85,7 @@ function SimpleControls({ config, status, wallet, pl, onPatch, onStart, onStop }
           <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">Mode</span>
           <Seg options={[["paper", "Paper"], ["live", arm === "live" ? "Arm live?" : "Live"]]} value={config.live_trading ? "live" : "paper"} onPick={pickMode} testid="simple-mode" danger="live" />
         </div>
-        <Money label="Max trade" value={config.max_trade_usd} onCommit={(n) => patch({ max_trade_usd: n, rh_max_trade_usd: n }, `Max trade $${n}`)} testid="simple-max-trade"
+        <Money label="Max trade" value={config.max_trade_usd} onCommit={(n) => patch(capPatch(n), (saved) => `Max trade $${saved.max_trade_usd ?? n}`)} testid="simple-max-trade"
           hint="Per-trade cap in USD (Solana and Robinhood). R-sizing still decides the actual size underneath — this is the ceiling." />
         <Money label="Daily stop" value={config.daily_kill_switch_usd} onCommit={(n) => patch({ daily_kill_switch_usd: n }, `Daily stop $${n}`)} testid="simple-daily-stop"
           hint="Realised loss today that trips the kill switch and stops new entries." />

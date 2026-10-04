@@ -410,6 +410,7 @@ export default function Dashboard() {
     const saved = await api.updateConfig(patch);
     setConfig(saved);
     api.status().then((st) => st && setStatus(st)).catch(() => {});
+    return saved;
   }, []);
   const onStart = useCallback(async () => { await api.start(); refreshAll(); }, [refreshAll]);
   const onLthTrade = useCallback(async (id, on) => {
