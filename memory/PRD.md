@@ -2325,3 +2325,6 @@ Approved plan: remove every data source / book with zero edge; keep scanner → 
 - ✅ `singleton`: RELAY_TIMEOUT_S 12 → 20; follower bails early with a clear 503 when the leader heartbeat dies mid-wait. `server.lifespan`: lease released BEFORE stopping services (faster hand-over on SIGTERM). `@app.exception_handler(httpx.HTTPStatusError)` → 503 with a readable detail. Frontend axios timeout 15 → 30 s.
 - Tests: `tests/test_rpc_breaker.py` (4) + full suite green (816 passed). Two tests were env-dependent on REPUTATION_BASE_URL (hunt-cap asserted before the reputation gate) — now patch `reputation.configured`.
 - USER ACTIONS (prod): raise tier above tier_0; in the Deployment Panel set `SOLANA_RPC_URL` (Helius), `SOLANA_WSS_URL`, `HELIUS_WSS_URL`, optionally `SOLANA_RPC_FALLBACK_URL` to a second PAID endpoint (default is the public node), `SOLANA_RPC_MAX_RPS` to the plan's per-second limit; then redeploy.
+
+## Crazy-dev watch switch (2026-10-05)
+- ✅ `BotConfig.dev_watch_enabled` (default ON). Off → `_crazy_dev_watch` does no lookups/buys/LTH flips; snapshot state `off`. Controls: "Crazy dev → LTH on/off" button (`simple-dev-watch`); header badge shows `WATCH · OFF`. Test added (11 in test_dev_watch.py). Verified via PUT /bot/config + UI click.

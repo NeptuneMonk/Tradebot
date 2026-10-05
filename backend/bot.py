@@ -1376,8 +1376,9 @@ class BotState:
         present = await self.operator_present()
         autopilot = bool(getattr(self.config, "autopilot_enabled", False))
         configured = reputation.configured()
-        state = "dark" if not configured else "autopilot" if autopilot else "away" if not present else "watching"
-        return {"state": state, "present": present, "autopilot": autopilot, "configured": configured,
+        enabled = bool(getattr(self.config, "dev_watch_enabled", True))
+        state = "dark" if not configured else "off" if not enabled else "autopilot" if autopilot else "away" if not present else "watching"
+        return {"state": state, "present": present, "autopilot": autopilot, "configured": configured, "enabled": enabled,
                 "stake_usd": float(self.config.min_trade_usd), **self.dev_watch}
 
     async def _crazy_dev_watch(self, launch: Launch) -> None:
@@ -1387,6 +1388,8 @@ class BotState:
         rep: dict = {}
         for delay in DEV_WATCH_LOOKUP_DELAYS_S:
             await asyncio.sleep(delay)
+            if not getattr(self.config, "dev_watch_enabled", True):
+                return                                   # switched off in Controls: no lookups, no buys, no LTH flips
             rep = await self.reputation.lookup(launch.mint, launch.creator, fresh=True)
             if rep.get("ok"):
                 break

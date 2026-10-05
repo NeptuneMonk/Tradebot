@@ -1,10 +1,11 @@
 import { Eye, EyeOff } from "lucide-react";
 
-const LABEL = { watching: "crazy watch", away: "watch · away", autopilot: "watch · autopilot", dark: "watch · dark" };
+const LABEL = { watching: "crazy watch", away: "watch · away", autopilot: "watch · autopilot", off: "watch · off", dark: "watch · dark" };
 const CLS = {
   watching: "border-cyan-700 bg-cyan-950/40 text-cyan-200",
   away: "border-neutral-800 text-neutral-500",
   autopilot: "border-neutral-800 text-neutral-500",
+  off: "border-neutral-800 text-neutral-600",
   dark: "border-transparent text-neutral-700",
 };
 
@@ -18,6 +19,7 @@ export default function DevWatchBadge({ watch }) {
     watching: `CRAZY-dev watch ARMED — every new Pump.fun launch whose dev ranks CRAZY is bought for $${Number(watch.stake_usd || 0).toFixed(2)} with no gates and parked as a long-term hold (you exit with ✕).`,
     away: "CRAZY-dev watch dormant — no dashboard session seen on the trading pod. Keep this tab open to arm it.",
     autopilot: "CRAZY-dev watch paused — Autopilot is driving; CRAZY launches go through the normal entry path instead.",
+    off: "CRAZY-dev watch switched OFF in Controls — CRAZY launches go through the normal entry path.",
     dark: "CRAZY-dev watch dark — REPUTATION_BASE_URL is not set on the backend.",
   }[s] + `\nCRAZY devs seen ${watch.crazy_seen || 0} · auto-bought ${watch.fired || 0} · open positions flipped to LTH ${watch.tagged_open || 0}` +
     `\nskipped: away ${watch.skipped_away || 0} · autopilot ${watch.skipped_autopilot || 0} · kill-switch ${watch.skipped_kill || 0}` +

@@ -169,6 +169,18 @@ def test_crazy_dev_on_already_open_position_flips_lth(monkeypatch):
     assert st.dev_watch["tagged_open"] == 1
 
 
+def test_switch_off_blocks_watch_and_reports_off(monkeypatch):
+    import bot as bot_mod
+    monkeypatch.setattr(bot_mod.hub, "clients", set())
+    st = _state(presence={"ts": time.time()})
+    st.config.dev_watch_enabled = False
+    lookups, entered = _wire(st, monkeypatch)
+    asyncio.run(st._crazy_dev_watch(_launch()))
+    assert lookups == [] and entered == []                 # no lookups, no buys while switched off
+    snap = asyncio.run(st.dev_watch_snapshot())
+    assert snap["state"] == "off" and snap["enabled"] is False
+
+
 def test_snapshot_states(monkeypatch):
     import bot as bot_mod
     monkeypatch.setattr(bot_mod.hub, "clients", set())

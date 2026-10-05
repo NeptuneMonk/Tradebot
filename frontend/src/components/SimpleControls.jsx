@@ -99,6 +99,14 @@ function SimpleControls({ config, status, wallet, pl, onPatch, onStart, onStop }
           </div>
         </div>
         <div className="flex flex-col gap-1">
+          <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500" title="reputation.family CRAZY-ranked devs: buy min stake with no gates, park as long-term hold — only while this dashboard is open and Autopilot is off">Crazy dev</span>
+          <button type="button" onClick={() => patch({ dev_watch_enabled: config.dev_watch_enabled === false }, config.dev_watch_enabled === false ? "Crazy-dev watch ON — CRAZY devs go straight to LTH" : "Crazy-dev watch OFF")}
+            data-testid="simple-dev-watch" aria-pressed={config.dev_watch_enabled !== false}
+            className={`px-3 py-1.5 text-[11px] uppercase tracking-[0.18em] border transition-colors ${config.dev_watch_enabled !== false ? "border-cyan-700 bg-cyan-950/40 text-cyan-200" : "border-neutral-800 text-neutral-500 hover:text-neutral-200"}`}>
+            {config.dev_watch_enabled !== false ? "→ LTH on" : "→ LTH off"}
+          </button>
+        </div>
+        <div className="flex flex-col gap-1">
           <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">Speed</span>
           <Seg options={speedOpts} value={speed} onPick={(v) => patch({ speed_mode: v }, `Speed ${v}`)} testid="simple-speed" />
         </div>

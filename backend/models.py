@@ -406,6 +406,8 @@ class BotConfig(BaseModel):
     doctor_auto_apply_live: bool = False
     # ---- Autopilot: fund it, the Doctor drives ----
     autopilot_enabled: bool = False
+    # CRAZY-dev watch: reputation.family CRAZY rank → min-stake, no-gate buy parked as LTH (operator exits by hand)
+    dev_watch_enabled: bool = True
     bankroll_sizing_enabled: bool = False
     paper_bankroll_usd: float = 1000.0     # bankroll used for sizing in paper mode (+ realised paper P/L)
     risk_per_trade_pct: float = 2.0        # stake = bankroll × this (Doctor may steer 0.5–5)
