@@ -107,6 +107,11 @@ function SimpleControls({ config, status, wallet, pl, onPatch, onStart, onStop }
           </button>
         </div>
         <div className="flex flex-col gap-1">
+          <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500" title="Inventory halt: after N stop-out/rug closes inside the window, no new Solana entries until it rolls off (or you LIFT it on the banner). Count and window are in Advanced.">Inv. halt</span>
+          <Book k="inventory-halt" label={config.inventory_halt_enabled !== false ? `on · ${config.inventory_halt_n ?? 5}×` : "off"} on={config.inventory_halt_enabled !== false}
+            onFlip={(v) => patch({ inventory_halt_enabled: v }, v ? "Inventory halt ON" : "Inventory halt OFF — streaks of stop-outs no longer pause Solana entries")} />
+        </div>
+        <div className="flex flex-col gap-1">
           <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">Speed</span>
           <Seg options={speedOpts} value={speed} onPick={(v) => patch({ speed_mode: v }, `Speed ${v}`)} testid="simple-speed" />
         </div>

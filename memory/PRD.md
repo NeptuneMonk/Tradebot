@@ -2328,3 +2328,9 @@ Approved plan: remove every data source / book with zero edge; keep scanner → 
 
 ## Crazy-dev watch switch (2026-10-05)
 - ✅ `BotConfig.dev_watch_enabled` (default ON). Off → `_crazy_dev_watch` does no lookups/buys/LTH flips; snapshot state `off`. Controls: "Crazy dev → LTH on/off" button (`simple-dev-watch`); header badge shows `WATCH · OFF`. Test added (11 in test_dev_watch.py). Verified via PUT /bot/config + UI click.
+
+## Inventory halt: switch + lift + knobs (2026-10-05)
+- User: halt mislabels volatile low-MC launches as rugs and had no bypass. Kept default ON (user choice) but made it operator-controlled.
+- ✅ `BotConfig.inventory_halt_enabled` (True) / `inventory_halt_n` (5) / `inventory_halt_window_min` (90). `InventoryHalt.configure(cfg)`, `lift()` (clears halt + streak), snapshot has `lifted`. Entry gate + Helius autopause honour the switch; manual buys / dev_watch never blocked.
+- ✅ `POST /api/inventory/lift`; `GET /api/inventory` adds `enabled`. UI: banner LIFT button (`lift-inventory-halt`), Controls "Inv. halt" toggle (`simple-book-inventory-halt`), Advanced fields `inventory-halt-n-input` / `inventory-halt-window-input`.
+- Tests: `tests/test_inventory_halt.py` (4). Verified via API (lift, knob PUT) + UI toggle screenshot.

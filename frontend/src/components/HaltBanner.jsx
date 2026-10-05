@@ -29,12 +29,22 @@ export default function HaltBanner() {
   const paused = Object.entries(inv.book_paused_until || {}).filter(([, ts]) => ts > now);
   const runnerFull = (inv.runner_open || 0) >= (inv.runner_cap || 1);
   if (!inv.halted && paused.length === 0 && !runnerFull) return null;
+  const haltOff = inv.enabled === false;
   return (
     <div className="border-b border-amber-900/70 bg-amber-950/40 px-6 py-2 flex flex-wrap items-center gap-x-6 gap-y-1 text-[11px] font-mono" data-testid="halt-banner">
       {inv.halted && (
-        <span className="inline-flex items-center gap-1.5 text-amber-200" data-testid="inventory-halt">
+        <span className={`inline-flex items-center gap-1.5 ${haltOff ? "text-neutral-500" : "text-amber-200"}`} data-testid="inventory-halt">
           <OctagonAlert className="w-3.5 h-3.5" />
-          INVENTORY HALT — last {inv.trigger_n} Solana closes were stop-outs/rugs · no new Solana entries for {fmtLeft(inv.halted_until)}
+          INVENTORY HALT — last {inv.trigger_n} Solana closes were stop-outs/rugs · {haltOff ? "switched OFF in Controls — not blocking entries" : `no new Solana entries for ${fmtLeft(inv.halted_until)}`}
+          <button
+            type="button"
+            data-testid="lift-inventory-halt"
+            title="Lift the inventory halt now — the streak resets, the next stop-out starts a fresh count. Manual buys and the CRAZY-dev watch were never blocked."
+            onClick={() => api.inventoryLift().then(() => { toast.success("Inventory halt lifted"); load(); }).catch((e) => toast.error(e?.response?.data?.detail || e.message))}
+            className="ml-1 px-1.5 border border-amber-800 hover:bg-amber-900/40 uppercase text-[9px] inline-flex items-center gap-1"
+          >
+            <Unlock className="w-3 h-3" /> lift
+          </button>
         </span>
       )}
       {runnerFull && (

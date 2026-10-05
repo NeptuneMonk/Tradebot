@@ -474,6 +474,14 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
                hint="A stalled position is only sold when it is up at least this much (net of entry). Below it — red, or green but not worth the fees — it is held as dust until the stop-loss / clock fires. 0 = sell any green stall."
                value={local.no_momentum_min_profit_pct ?? 3}
                onChange={(v) => setLocal({ ...local, no_momentum_min_profit_pct: parseFloat(v) || 0 })} step="0.5" />
+        <Field label="Inv. halt trigger (closes)" testid="inventory-halt-n-input"
+               hint="Inventory halt fires when this many consecutive Solana closes inside the window were stop-outs / rugs. Switch it on/off in Controls; LIFT on the banner clears an active halt."
+               value={local.inventory_halt_n ?? 5}
+               onChange={(v) => setLocal({ ...local, inventory_halt_n: Math.max(2, parseInt(v) || 5) })} step="1" />
+        <Field label="Inv. halt window (min)" testid="inventory-halt-window-input"
+               hint="Only closes inside this many minutes count toward the streak, and a halt lasts until the window rolls off the first loss."
+               value={local.inventory_halt_window_min ?? 90}
+               onChange={(v) => setLocal({ ...local, inventory_halt_window_min: Math.max(1, parseInt(v) || 90) })} step="5" />
         <Field label="Lite-mode RAM (MB)" testid="lite-mode-rss-input"
                hint="Watchdog: when the backend's memory passes this, non-essential work (socials/images, Doctor cycle, seasoned refresh, launch persistence) pauses and the tracker shrinks to 60 mints until RAM drops back under 85% of it for 60 s. Trading and exits never pause. 0 = watchdog off. Basic hosting tier is 512 MB."
                value={local.lite_mode_rss_mb ?? 400}

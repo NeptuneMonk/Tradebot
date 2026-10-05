@@ -406,6 +406,11 @@ class BotConfig(BaseModel):
     doctor_auto_apply_live: bool = False
     # ---- Autopilot: fund it, the Doctor drives ----
     autopilot_enabled: bool = False
+    # Inventory halt: the last N Solana closes were stop-outs/rugs inside the window → no new Solana entries until it
+    # rolls off. Manual buys and the CRAZY-dev watch are never blocked; the banner's LIFT clears it instantly.
+    inventory_halt_enabled: bool = True
+    inventory_halt_n: int = 5
+    inventory_halt_window_min: int = 90
     # CRAZY-dev watch: reputation.family CRAZY rank → min-stake, no-gate buy parked as LTH (operator exits by hand)
     dev_watch_enabled: bool = True
     bankroll_sizing_enabled: bool = False

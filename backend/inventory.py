@@ -21,15 +21,27 @@ class InventoryHalt:
     def __init__(self):
         self._closes: list[tuple[float, bool]] = []   # (ts, was_loss_exit)
         self.halted_until: float = 0.0
+        self.n, self.window_s = HALT_N, HALT_WINDOW_S
+        self.lifted = 0
+
+    def configure(self, cfg) -> None:
+        self.n = max(2, int(getattr(cfg, "inventory_halt_n", HALT_N) or HALT_N))
+        self.window_s = max(60, int(getattr(cfg, "inventory_halt_window_min", 90) or 90) * 60)
 
     def record_close(self, reason: str | None) -> bool:
         now = time.time()
-        self._closes = [(ts, l) for ts, l in self._closes if now - ts <= HALT_WINDOW_S] + [(now, is_loss_exit(reason))]
-        recent = self._closes[-HALT_N:]
-        if len(recent) == HALT_N and all(l for _, l in recent):
-            self.halted_until = recent[0][0] + HALT_WINDOW_S
+        self._closes = [(ts, l) for ts, l in self._closes if now - ts <= self.window_s] + [(now, is_loss_exit(reason))]
+        recent = self._closes[-self.n:]
+        if len(recent) == self.n and all(l for _, l in recent):
+            self.halted_until = recent[0][0] + self.window_s
             return True
         return False
+
+    def lift(self) -> None:
+        """Operator override: clear the halt now and forget the streak, so the next close starts a fresh count."""
+        self.halted_until = 0.0
+        self._closes.clear()
+        self.lifted += 1
 
     def active(self) -> bool:
         return time.time() < self.halted_until
@@ -37,5 +49,5 @@ class InventoryHalt:
     def snapshot(self) -> dict:
         now = time.time()
         return {"halted": self.active(), "halted_until": self.halted_until if self.active() else None,
-                "recent_loss_closes": sum(1 for ts, l in self._closes if l and now - ts <= HALT_WINDOW_S),
-                "window_min": HALT_WINDOW_S // 60, "trigger_n": HALT_N}
+                "recent_loss_closes": sum(1 for ts, l in self._closes if l and now - ts <= self.window_s),
+                "window_min": self.window_s // 60, "trigger_n": self.n, "lifted": self.lifted}

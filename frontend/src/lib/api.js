@@ -150,6 +150,7 @@ export const api = {
   scorecard: () => client.get("/scorecard").then(r => r.data),
   scorecardCell: (cell, disabled) => client.post("/scorecard/cell", { cell, disabled }).then(r => r.data),
   inventory: () => client.get("/inventory").then(r => r.data),
+  inventoryLift: () => client.post("/inventory/lift").then(r => r.data),
   readiness: () => client.get("/readiness").then(r => r.data),
   pods: () => client.get("/pods").then(r => r.data),
   reputationBatch: (mints) => client.post("/reputation/batch", { mints }).then(r => r.data),

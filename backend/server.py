@@ -1179,10 +1179,21 @@ async def inventory_snapshot():
                 "promoted_from": (sl.get("trade") or {}).get("promoted_from")}
                for m, sl in bot_state.active_trades.items() if (sl.get("trade") or {}).get("book") == "runner"]
     from helius_gate import snapshot as gate_snapshot
-    return {**bot_state.inventory.snapshot(), "hunt_slot_cap": HUNT_SLOT_CAP, "hunt_cap_now": bot_state._hunt_cap(), "helius_gate": gate_snapshot(),
+    return {**bot_state.inventory.snapshot(), "enabled": bool(bot_state.config.inventory_halt_enabled),
+            "hunt_slot_cap": HUNT_SLOT_CAP, "hunt_cap_now": bot_state._hunt_cap(), "helius_gate": gate_snapshot(),
             "runner_cap": _runner.RUNNER_CAP, "runner_open": len(runners), "runners": runners,
             "book_paused_until": dict(ld.book_paused_until) if ld else {}, "book_breakers": getattr(ld, "last_book_breakers", {}) if ld else {},
             "breakers": dict(ld.breakers) if ld else {}, "breakers_fail_closed": ld.breakers_fail_closed() if ld else False}
+
+
+@api.post("/inventory/lift")
+async def inventory_lift():
+    """Operator override: clear the inventory halt now (the streak resets; the next close starts a fresh count)."""
+    was = bot_state.inventory.active()
+    bot_state.inventory.lift()
+    logger.warning(f"INVENTORY HALT lifted by operator (was {'active' if was else 'inactive'})")
+    await hub.broadcast("inventory_halt", bot_state.inventory.snapshot())
+    return {"ok": True, "was_halted": was, **bot_state.inventory.snapshot()}
 
 
 @api.get("/brain/summary")

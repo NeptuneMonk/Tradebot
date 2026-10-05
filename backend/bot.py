@@ -763,7 +763,7 @@ class BotState:
         if not bool(getattr(self.config, "feed_autopause_on_doctor", False)):
             return False, ""   # operator wants the tape (and the Doctor's learning) to keep flowing while books are paused
         both = ld is not None and ld.book_paused("scalp") and ld.book_paused("hunt")
-        halt = self.inventory.active()
+        halt = self.inventory.active() and bool(self.config.inventory_halt_enabled)
         sol_open = any((sl.get("trade") or {}).get("chain") != "rh" for sl in self.active_trades.values())
         if sol_open or not (both or halt):
             return False, ""
@@ -2872,7 +2872,7 @@ class BotState:
                                         "details": [f"dev reputation {rep.get('tier')}{' · fake chart' if rep.get('fake_chart') else ''}"
                                                     + ("" if rep.get("ok") else " (lookup missed — hunt requires a known allow-tier)")]})
                 return
-        if not is_manual and self.inventory.active():
+        if not is_manual and self.config.inventory_halt_enabled and self.inventory.active():
             logger.info(f"inventory halt: skipping {launch.mint[:8]}… ({self.inventory.snapshot()})")
             return
         if not is_manual and self.live_doctor is not None and self.live_doctor.book_benched(book, bool(self.config.live_trading)):
@@ -5177,7 +5177,8 @@ class BotState:
             asyncio.create_task(search_ledger.refresh(self.db, self.config))
             if not trade_doc.get("dev_watch"):     # operator-watched CRAZY-dev holds never grade a strategy cell
                 await self.scorecard.record(trade_doc)
-            if self.inventory.record_close(reason):
+            self.inventory.configure(self.config)
+            if self.inventory.record_close(reason) and self.config.inventory_halt_enabled:
                 logger.warning(f"INVENTORY HALT: last {self.inventory.snapshot()['trigger_n']} Solana closes were stop-outs/rugs — "
                                f"no new Solana entries until {datetime.fromtimestamp(self.inventory.halted_until, timezone.utc).isoformat()}")
                 await hub.broadcast("inventory_halt", self.inventory.snapshot())
