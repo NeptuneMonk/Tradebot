@@ -410,6 +410,9 @@ class BotConfig(BaseModel):
     # Inventory halt: the last N Solana closes were stop-outs/rugs inside the window → no new Solana entries until it
     # rolls off. Manual buys and the CRAZY-dev watch are never blocked; the banner's LIFT clears it instantly.
     inventory_halt_enabled: bool = True
+    # Live-Doctor ENTRY filter (winner- vs exit-liquidity likeness → skip / half / full). Independent of Autopilot.
+    # Off = every launch that passes the gates is sized full; the breakers and the hour profile keep running.
+    live_doctor_entry_filter: bool = True
     inventory_halt_n: int = 5
     inventory_halt_window_min: int = 90
     # CRAZY-dev watch: reputation.family CRAZY rank → min-stake, no-gate buy parked as LTH (operator exits by hand)

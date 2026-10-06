@@ -2364,3 +2364,7 @@ Approved plan: remove every data source / book with zero edge; keep scanner → 
 - User: catch the second leg on brand-new tiny-MC launches (first inflow → drawback → bounce); tight SL + short clock; +3 % no-momentum floor; low holders / no liquidity floor; 20-min window.
 - ✅ `BOUNCE_PRESET` + `BOUNCE_SCALP_EXITS` in SimpleControls (button `simple-preset-bounce`, two-click arm): band_new 0.5–20 min, scanner_min_age 2 min / window 1 h, second_impulse ON dip ≥ 25 %, min_buyers_new 3, liquidity_new 0, growth_new 0, inflow_new 0.5 SOL / 120 s, new_buyers_new 2, no_momentum floor 3 % / after 20 s / MFE 3 %; scalp exits SL 8 % · 1.5R · trail 5 % armed +8 % · clock 60 s. Books, sizes, mode, inventory halt untouched (user keeps halt ON).
 - Verified: PUT round-trip persists every key incl. merged `book_exits.scalp`; UI arm/apply toast OK. Note: Autopilot (Doctor) will keep tuning from these as a baseline.
+
+## Live-Doctor entry filter switch (2026-10-06)
+- Prod symptom: "live-doctor skip" on most Bounce entries with Autopilot OFF. Cause: the Doctor's ENTRY likeness filter (winner vs recent exit liquidity → skip/half) runs independently of Autopilot and flags exactly the drawdown launches Bounce buys.
+- ✅ `BotConfig.live_doctor_entry_filter` (default ON); `_plan_entry` consults `score_launch` only when on. Controls toggle "Doctor filter" (`simple-book-doctor-filter`); Bounce preset sets it OFF. Breakers (book pauses, lift via `/doctor/live/lift/{book}`) and hour profile unaffected. Test added.

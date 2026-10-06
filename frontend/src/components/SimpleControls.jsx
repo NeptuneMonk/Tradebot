@@ -16,6 +16,7 @@ export const BOUNCE_PRESET = {
   scanner_min_growth_pct_new: 0, scanner_min_recent_inflow_sol_new: 0.5, scanner_min_new_buyers_new: 2,
   scanner_recent_inflow_window_s: 120, scanner_holder_velocity_window_s: 60,
   no_momentum_min_profit_pct: 3, no_momentum_after_s: 20, no_momentum_min_mfe_pct: 3,
+  live_doctor_entry_filter: false,   // the Doctor's likeness filter skips launches that look like recent exit liquidity — exactly the drawbacks Bounce buys
 };
 export const BOUNCE_SCALP_EXITS = { stop_loss_pct: 8, target_r: 1.5, trailing_stop_pct: 5, trailing_arm_pct: 8, hold_max_seconds: 60 };
 
@@ -131,6 +132,11 @@ function SimpleControls({ config, status, wallet, pl, onPatch, onStart, onStop }
           <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500" title="Inventory halt: after N stop-out/rug closes inside the window, no new Solana entries until it rolls off (or you LIFT it on the banner). Count and window are in Advanced.">Inv. halt</span>
           <Book k="inventory-halt" label={config.inventory_halt_enabled !== false ? `on · ${config.inventory_halt_n ?? 5}×` : "off"} on={config.inventory_halt_enabled !== false}
             onFlip={(v) => patch({ inventory_halt_enabled: v }, v ? "Inventory halt ON" : "Inventory halt OFF — streaks of stop-outs no longer pause Solana entries")} />
+        </div>
+        <div className="flex flex-col gap-1">
+          <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500" title="Live-Doctor entry filter: scores each launch against recent winners vs recent exit liquidity and skips / half-sizes the look-alikes ('live-doctor skip'). Runs even with Autopilot OFF. Turn it off for drawback strategies like Bounce — breakers and the hour profile keep running.">Doctor filter</span>
+          <Book k="doctor-filter" label={config.live_doctor_entry_filter !== false ? "on" : "off"} on={config.live_doctor_entry_filter !== false}
+            onFlip={(v) => patch({ live_doctor_entry_filter: v }, v ? "Doctor entry filter ON — look-alikes of recent exit liquidity are skipped / half-sized" : "Doctor entry filter OFF — every launch that passes the gates is sized full")} />
         </div>
         <div className="flex flex-col gap-1">
           <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">Speed</span>

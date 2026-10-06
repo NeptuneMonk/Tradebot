@@ -194,3 +194,32 @@ def test_snapshot_states(monkeypatch):
     assert snap["state"] == "away" and snap["stake_usd"] == 7.0
     monkeypatch.setattr(bot_mod.reputation, "configured", lambda: False)
     assert asyncio.run(st.dev_watch_snapshot())["state"] == "dark"
+
+
+def test_live_doctor_entry_filter_switch(monkeypatch):
+    """Doctor entry filter OFF → the likeness scorer is never consulted (no 'live-doctor skip'); ON → it is."""
+    import bot as bot_mod
+    st = _state()
+    st.config.live_doctor_entry_filter = False
+    st.config.min_trade_usd = 1.0
+    asked = []
+
+    class _LD:
+        async def score_launch(self, mint, book):
+            asked.append(mint)
+            return {"winner_likeness_pct": 1.0, "exit_liquidity_likeness_pct": 90.0, "doctor_decision": "skip", "doctor_size_mult": 0.0}
+
+        def book_adjust(self, book, live):
+            return 1.0, 1.0
+    st.live_doctor = _LD()
+    skips = []
+
+    async def skip_event(ev):
+        skips.append(ev["reason"])
+    monkeypatch.setattr(st, "_skip_event", skip_event)
+    monkeypatch.setattr(bot_mod.r_sizer, "size_trade", lambda **k: {"skip": True, "reason": "sized-out", "size_usd": 0, "r_usd": 0, "r_usd_nominal": 0, "size_clamped": False, "sl_pct_with_slip": 10.0})
+    asyncio.run(st._plan_entry("M" * 44, "scalp", "pumpfun", 500, 1000, 150.0, use_doctor=True))
+    assert asked == [] and "live-doctor skip" not in skips
+    st.config.live_doctor_entry_filter = True
+    asyncio.run(st._plan_entry("M" * 44, "scalp", "pumpfun", 500, 1000, 150.0, use_doctor=True))
+    assert asked == ["M" * 44] and skips[-1] == "live-doctor skip"

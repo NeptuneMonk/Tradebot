@@ -1781,7 +1781,7 @@ class BotState:
             await self._skip_event({"mint": mint, "band": band or book, "reason": reason, "details": [str(details or "")]})
 
         doctor = {"winner_likeness_pct": None, "exit_liquidity_likeness_pct": None, "doctor_decision": "full", "doctor_size_mult": 1.0}
-        if use_doctor and self.live_doctor is not None:
+        if use_doctor and self.live_doctor is not None and getattr(cfg, "live_doctor_entry_filter", True):
             try:
                 doctor = await self.live_doctor.score_launch(mint, book)
             except Exception as e:
