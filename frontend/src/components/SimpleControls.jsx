@@ -1,9 +1,24 @@
 import { memo, useEffect, useState } from "react";
-import { Play, Square, ShieldCheck } from "lucide-react";
+import { Play, Square, ShieldCheck, Activity } from "lucide-react";
 import { toast } from "sonner";
 import { explainApiError } from "@/lib/api";
 
 // Phase 2 (cut-the-fat): the six controls a first-time operator needs. Everything else lives in the Advanced drawer.
+// "Bounce" preset — catch the second leg on brand-new, tiny-MC launches: a first inflow, a drawback, then the bounce.
+// Entry = new band ≤ 20 min, dip ≥ 25 % from the tracked peak that is recovering with buyers still expanding; holders,
+// liquidity and inflow floors set low for the sub-$10k tape. Exits = tight SL, short clock, +3 % momentum floor so a
+// red/flat position is never sold on "no momentum" (3 % ≈ the Pump.fun round trip). Books/sizes/mode are left alone.
+export const BOUNCE_PRESET = {
+  band_new_min_age_min: 0.5, band_new_max_age_min: 20,
+  scanner_min_age_minutes: 2, scanner_window_hours: 1,
+  scanner_second_impulse_enabled: true, scanner_second_impulse_dip_pct: 25,
+  min_buyers_for_entry_new: 3, min_curve_liquidity_sol_new: 0,
+  scanner_min_growth_pct_new: 0, scanner_min_recent_inflow_sol_new: 0.5, scanner_min_new_buyers_new: 2,
+  scanner_recent_inflow_window_s: 120, scanner_holder_velocity_window_s: 60,
+  no_momentum_min_profit_pct: 3, no_momentum_after_s: 20, no_momentum_min_mfe_pct: 3,
+};
+export const BOUNCE_SCALP_EXITS = { stop_loss_pct: 8, target_r: 1.5, trailing_stop_pct: 5, trailing_arm_pct: 8, hold_max_seconds: 60 };
+
 export const SAFE_PAPER_PRESET = {
   live_trading: false, rh_live_trading: false, max_trade_usd: 8, rh_max_trade_usd: 8, max_concurrent_positions: 2,
   book_scalp_enabled: true, book_hunt_enabled: true, book_runner_enabled: true, rh_paper_enabled: true, autopilot_enabled: false,
@@ -67,6 +82,12 @@ function SimpleControls({ config, status, wallet, pl, onPatch, onStart, onStop }
     if (arm !== "preset") { setArm("preset"); toast.message("Click again to apply Safe paper (settings only — wallets and open positions untouched)"); return; }
     setArm(null); patch({ ...SAFE_PAPER_PRESET, ...(Number(config.min_trade_usd) > 8 ? { min_trade_usd: 8 } : {}) }, "Safe paper preset applied");
   };
+  const applyBounce = () => {
+    if (arm !== "bounce") { setArm("bounce"); toast.message("Click again to apply the Bounce preset (gates + scalp exits only — books, sizes and mode untouched)"); return; }
+    setArm(null);
+    const bx = { ...(config.book_exits || {}), scalp: { ...((config.book_exits || {}).scalp || {}), ...BOUNCE_SCALP_EXITS } };
+    patch({ ...BOUNCE_PRESET, book_exits: bx }, "Bounce preset applied — new launches ≤20 min, dip ≥25 % then recovering, SL 8 %, clock 60 s, +3 % momentum floor");
+  };
   const speed = config.speed_mode;
   const speedOpts = [["eco", "Eco"], ["normal", "Normal"], ...(speed !== "eco" && speed !== "normal" ? [[speed, `custom · ${speed}`]] : [])];
   const dailyPnl = pl?.daily_pnl_usd ?? 0;
@@ -116,6 +137,11 @@ function SimpleControls({ config, status, wallet, pl, onPatch, onStart, onStop }
           <Seg options={speedOpts} value={speed} onPick={(v) => patch({ speed_mode: v }, `Speed ${v}`)} testid="simple-speed" />
         </div>
         <div className="flex items-center gap-2 ml-auto">
+          <button type="button" onClick={applyBounce} data-testid="simple-preset-bounce"
+            title={"Bounce preset: catch the second leg on brand-new tiny-MC launches.\nNew band 0.5–20 min · dip ≥ 25 % from peak and recovering · buyers ≥ 3 · no liquidity floor · inflow ≥ 0.5 SOL / 2 min\nScalp exits: SL 8 % · target 1.5R · trail 5 % armed at +8 % · clock 60 s · no-momentum only above +3 %"}
+            className={`flex items-center gap-1.5 px-3 py-2 text-[11px] uppercase tracking-[0.18em] border transition-colors ${arm === "bounce" ? "border-amber-700 text-amber-200" : "border-neutral-800 text-neutral-400 hover:text-neutral-100"}`}>
+            <Activity className="w-3.5 h-3.5" /> {arm === "bounce" ? "Apply bounce?" : "Bounce"}
+          </button>
           <button type="button" onClick={applyPreset} data-testid="simple-preset-safe-paper"
             className={`flex items-center gap-1.5 px-3 py-2 text-[11px] uppercase tracking-[0.18em] border transition-colors ${arm === "preset" ? "border-amber-700 text-amber-200" : "border-neutral-800 text-neutral-400 hover:text-neutral-100"}`}>
             <ShieldCheck className="w-3.5 h-3.5" /> {arm === "preset" ? "Apply safe paper?" : "Safe paper"}

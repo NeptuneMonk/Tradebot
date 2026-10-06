@@ -2359,3 +2359,8 @@ Approved plan: remove every data source / book with zero edge; keep scanner → 
 - ✅ `ReputationClient.lookup(mint, creator)`: dev-wallet endpoint first (tier; cached per creator 15 m — farmers launch hundreds of coins), token endpoint second (fake-chart flag when indexed). `REPUTATION_DEV_URL` optional (derived from REPUTATION_BASE_URL). Stats: dev_hits/dev_misses; result carries `source` (dev / token / dev+token).
 - ✅ `/api/reputation/batch` accepts `creators{mint→wallet}` and falls back to tracking/active-trade creators; `useReputation(mint, creator)` + `RepBadge creator=` wired in candidates / active / dialog.
 - Verified: 1-second-old launches resolve PROVEN / FARMER by wallet; test added (test_reputation.py, 6 passing).
+
+## Bounce preset (2026-10-06)
+- User: catch the second leg on brand-new tiny-MC launches (first inflow → drawback → bounce); tight SL + short clock; +3 % no-momentum floor; low holders / no liquidity floor; 20-min window.
+- ✅ `BOUNCE_PRESET` + `BOUNCE_SCALP_EXITS` in SimpleControls (button `simple-preset-bounce`, two-click arm): band_new 0.5–20 min, scanner_min_age 2 min / window 1 h, second_impulse ON dip ≥ 25 %, min_buyers_new 3, liquidity_new 0, growth_new 0, inflow_new 0.5 SOL / 120 s, new_buyers_new 2, no_momentum floor 3 % / after 20 s / MFE 3 %; scalp exits SL 8 % · 1.5R · trail 5 % armed +8 % · clock 60 s. Books, sizes, mode, inventory halt untouched (user keeps halt ON).
+- Verified: PUT round-trip persists every key incl. merged `book_exits.scalp`; UI arm/apply toast OK. Note: Autopilot (Doctor) will keep tuning from these as a baseline.
