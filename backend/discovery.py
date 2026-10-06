@@ -44,6 +44,12 @@ HTTP_TIMEOUT = 12.0
 GRADUATED_INTERVAL_S = 60    # recently-graduated feed poll cadence (Seasoned supply)
 GRADUATED_PAGE_SIZE = 100
 GRADUATED_PER_CYCLE = 30
+# Window discovery (alive = inflow): Pump.fun's coin index tells us WHICH tokens in the age band traded recently, not how
+# much. DexScreener's batched pair stats (30 mints / call, pump.fun curves + PumpSwap pools) give volume and buy/sell
+# counts per window — buy inflow ≈ volume × buy share. Only tokens whose inflow over the scanner inflow window clears
+# the bot's own `scanner_min_recent_inflow_sol` get seeded; the rest never reach the tracker or the dashboard.
+DEX_BATCH = 30
+DEX_URL = "https://api.dexscreener.com/tokens/v1/solana/{mints}"
 
 
 class PumpfunDiscovery:
@@ -413,7 +419,27 @@ class PumpfunDiscovery:
                     price_samples.append((now, cur_price))
                 # Be polite to Pump.fun's per-mint endpoint
                 await asyncio.sleep(0.15)
+        self._evict_quiet(now)
         logger.debug(f"discovery refresh: updated {len(targets)} tokens")
+
+    def _evict_quiet(self, now: float) -> int:
+        """Alive-only tracker: a discovered CURVE token with no print for 6× the inflow window (≥ 30 min) is dropped —
+        the next discovery cycle re-seeds it the moment it has inflow again. Held / pinned tokens and PumpSwap pools
+        (whose last-trade stamp the curve API no longer tracks) are never evicted here."""
+        st = self.state
+        quiet_s = max(1800.0, 6.0 * float(getattr(st.config, "scanner_recent_inflow_window_s", 300) or 300))
+        gone = 0
+        for mint, b in list(st.tracking.items()):
+            if not b.get("discovered") or b.get("pinned") or mint in st.active_trades or b.get("protocol") == "pumpswap":
+                continue
+            last = max(float(b.get("last_trade_ms") or 0) / 1000.0, float(b.get("start") or 0))
+            if last and now - last > quiet_s:
+                st.tracking.pop(mint, None)
+                gone += 1
+        if gone:
+            self.evicted_quiet = getattr(self, "evicted_quiet", 0) + gone
+            logger.info(f"discovery: evicted {gone} quiet discovered tokens (no print for {quiet_s / 60:.0f} min)")
+        return gone
 
     async def run_once(self) -> int:
         """Returns the number of newly seeded tokens."""
@@ -436,9 +462,8 @@ class PumpfunDiscovery:
         skipped_idle = 0
         max_idle_ms = cfg.scanner_discovery_max_idle_minutes * 60 * 1000
         now_ms = now * 1000
+        cands: list[tuple[dict, float, bool]] = []
         for c in coins:
-            if seeded >= COINS_PER_CYCLE:
-                break
             mint = c.get("mint")
             if not mint:
                 continue
@@ -452,26 +477,96 @@ class PumpfunDiscovery:
             # Graduated tokens trade on PumpSwap AMM. We still want them — they're
             # often the biggest movers — so just tag the protocol.
             is_pumpswap = bool(c.get("complete"))
-            # Freshness gate: skip tokens whose last trade is too stale.
-            # IMPORTANT: graduated tokens trade on PumpSwap AMM, and Pump.fun's
-            # `last_trade_timestamp` only tracks bonding-curve trades — it goes
-            # stale the moment the token graduates. Skip the gate for those so
-            # we don't systematically exclude all high-MC graduated movers.
+            # Freshness pre-filter (cheap): skip tokens whose last curve trade is too stale.
+            # Pump.fun's `last_trade_timestamp` only tracks bonding-curve trades — it goes
+            # stale the moment the token graduates, so graduated tokens skip this gate.
             if not is_pumpswap and max_idle_ms > 0:
                 last_trade_ms = c.get("last_trade_timestamp") or 0
                 if not last_trade_ms or now_ms - last_trade_ms > max_idle_ms:
                     skipped_idle += 1
                     continue
+            cands.append((c, created_s, is_pumpswap))
+        alive_coins, alive_stats = await self._alive_by_inflow([c for c, _, _ in cands])
+        alive_mints = {c["mint"] for c in alive_coins}
+        for c, created_s, is_pumpswap in cands:
+            if seeded >= COINS_PER_CYCLE:
+                break
+            if c["mint"] not in alive_mints:
+                continue
             try:
                 await self._seed_token(c, created_s, is_pumpswap)
+                b = st.tracking.get(c["mint"])
+                if b is not None and "_alive_inflow_sol" in c:
+                    b["alive_inflow_sol"] = round(c["_alive_inflow_sol"], 3)
                 seeded += 1
             except Exception as e:
-                logger.debug(f"seed failed for {mint}: {e}")
+                logger.debug(f"seed failed for {c['mint']}: {e}")
 
-        logger.info(f"discovery: {len(coins)} in band, seeded {seeded}, skipped_idle {skipped_idle}")
+        self.last_stats = {"ts": now, "in_band": len(coins), "candidates": len(cands), "seeded": seeded, "skipped_idle": skipped_idle, **alive_stats}
+        logger.info(f"discovery: {len(coins)} in band, {len(cands)} candidates, alive {alive_stats['alive']} "
+                    f"(inflow ≥ {alive_stats['floor_sol']:g} SOL / {alive_stats['window']}), below floor {alive_stats['below_floor']}, "
+                    f"no pair {alive_stats['no_pair']}, seeded {seeded}, skipped_idle {skipped_idle}")
         if seeded:
-            await hub.broadcast("discovery", {"seeded": seeded, "ts": now})
+            await hub.broadcast("discovery", {"seeded": seeded, "ts": now, **alive_stats})
         return seeded
+
+    async def _alive_by_inflow(self, coins: list[dict]) -> tuple[list[dict], dict]:
+        """Alive = buy inflow over the scanner inflow window ≥ `scanner_min_recent_inflow_sol` (the existing gate floor).
+        DexScreener pair stats, batched 30 mints per call; a DexScreener outage fails OPEN (legacy freshness-only seeding)."""
+        cfg = self.state.config
+        win = "m5" if int(getattr(cfg, "scanner_recent_inflow_window_s", 300) or 300) <= 600 else "h1"
+        floor_sol = float(getattr(cfg, "scanner_min_recent_inflow_sol", 0.0) or 0.0)
+        stats = {"alive": 0, "below_floor": 0, "no_pair": 0, "window": win, "floor_sol": floor_sol, "dex_errors": 0}
+        if not coins or floor_sol <= 0:
+            stats["alive"] = len(coins)
+            return coins, stats
+        try:
+            from solana_client import get_sol_usd_price
+            sol_usd = float(await get_sol_usd_price() or 0.0)
+        except Exception:
+            sol_usd = 0.0
+        if sol_usd <= 0:
+            stats["alive"] = len(coins)
+            return coins, stats
+        by_mint = {c["mint"]: c for c in coins}
+        mints = list(by_mint)
+        alive: list[dict] = []
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            for i in range(0, len(mints), DEX_BATCH):
+                chunk = mints[i:i + DEX_BATCH]
+                try:
+                    r = await client.get(DEX_URL.format(mints=",".join(chunk)), headers={"accept": "application/json"})
+                    r.raise_for_status()
+                    pairs = r.json() or []
+                except Exception as e:
+                    stats["dex_errors"] += 1
+                    logger.warning(f"discovery: DexScreener batch failed ({e}); seeding {len(chunk)} on freshness only")
+                    alive.extend(by_mint[m] for m in chunk)
+                    stats["alive"] += len(chunk)
+                    continue
+                inflow_usd: dict[str, float] = {}
+                for p in pairs if isinstance(pairs, list) else []:
+                    m = ((p.get("baseToken") or {}).get("address"))
+                    if m not in by_mint:
+                        continue
+                    tx = (p.get("txns") or {}).get(win) or {}
+                    buys, sells = int(tx.get("buys") or 0), int(tx.get("sells") or 0)
+                    vol = float((p.get("volume") or {}).get(win) or 0.0)
+                    inflow_usd[m] = inflow_usd.get(m, 0.0) + (vol * buys / (buys + sells) if buys + sells else 0.0)
+                for m in chunk:
+                    if m not in inflow_usd:
+                        stats["no_pair"] += 1          # no indexed pair → no volume evidence → not alive
+                        continue
+                    sol = inflow_usd[m] / sol_usd
+                    by_mint[m]["_alive_inflow_sol"] = sol
+                    if sol >= floor_sol:
+                        alive.append(by_mint[m])
+                        stats["alive"] += 1
+                    else:
+                        stats["below_floor"] += 1
+                if i + DEX_BATCH < len(mints):
+                    await asyncio.sleep(0.2)
+        return alive, stats
 
     async def _fetch_aged_coins(self, lo_ts: float, hi_ts: float) -> list[dict]:
         """Pull tokens via TWO sort orders and merge:

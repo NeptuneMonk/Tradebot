@@ -2348,3 +2348,8 @@ Approved plan: remove every data source / book with zero edge; keep scanner → 
 - ✅ Incremental launch index (`_launch_index`: curve→launch log + grads, pruned to window): full read once / when window grows, then only new head blocks. Window cap lifted to 7 d (`WINDOW_MAX_S`; UI Max Age ≤ 10080).
 - ✅ Inactivity eviction in `_gc`: no print within the alive lookback (after 10-min grace, never held/pinned) → evicted (`evicted_quiet` stat); window discovery re-adds on new inflow (same deterministic launch_id → one DB row).
 - Live preview: 30-min tape 145 traded curves → 12 alive at $350 floor, 73 below floor, 60 outside 1200-min window; 3-day window extended the index with 2 scans. Tests: test_rh_window_discovery.py (3) + RH suites green.
+
+## SOL window discovery — alive = inflow (2026-10-06)
+- `discovery.run_once` (Pump.fun coin index, band [scanner_min_age_minutes, scanner_window_hours]) now filters candidates through `_alive_by_inflow`: DexScreener `tokens/v1/solana/{30 mints}` pair stats → buy inflow ≈ volume[m5|h1] × buys/(buys+sells); window = m5 when `scanner_recent_inflow_window_s` ≤ 600 else h1; floor = existing `scanner_min_recent_inflow_sol` (SOL via live price). No pair → not alive; DexScreener outage fails OPEN (freshness-only). Stats in `discovery.last_stats` + `discovery` WS event; bucket gets `alive_inflow_sol`.
+- `_evict_quiet` in the refresh loop: discovered CURVE tokens with no print for max(30 min, 6× inflow window) are dropped (never held/pinned/PumpSwap); re-seeded when alive again.
+- Live: 170 in band → 56 alive at 3 SOL/m5 (113 below floor) → seeded; next cycle 130 candidates / 33 alive. Tests: `tests/test_sol_window_discovery.py` (4).
