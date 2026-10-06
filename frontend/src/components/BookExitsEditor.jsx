@@ -5,10 +5,10 @@ import HelpHint from "./HelpHint";
 
 // Defaults mirror backend/book_params.BOOK_DEFAULTS — the ONLY exit parameters; there are no global TP/SL keys.
 export const BOOK_DEFAULTS = {
-  scalp: { stop_loss_pct: 12, target_r: 1.5, trailing_stop_pct: 6, trailing_arm_pct: 12, hold_max_seconds: 40, ladder_1r_sell_pct: 0, ladder_2r_sell_pct: 0 },
-  hunt: { stop_loss_pct: 20, target_r: 2.0, trailing_stop_pct: 8, trailing_arm_pct: 0, hold_max_seconds: 0, ladder_1r_sell_pct: 35, ladder_2r_sell_pct: 30 },
+  scalp: { stop_loss_pct: 12, target_r: 1.5, take_profit_pct: 0, trailing_stop_pct: 6, trailing_arm_pct: 12, hold_max_seconds: 40, ladder_1r_sell_pct: 0, ladder_2r_sell_pct: 0 },
+  hunt: { stop_loss_pct: 20, target_r: 2.0, take_profit_pct: 0, trailing_stop_pct: 8, trailing_arm_pct: 0, hold_max_seconds: 0, ladder_1r_sell_pct: 35, ladder_2r_sell_pct: 30 },
   rh_pons: { stop_loss_pct: 12, target_r: 0, take_profit_pct: 20, trailing_stop_pct: 6, trailing_arm_pct: 12, hold_max_seconds: 35 },
-  runner: { stop_loss_pct: 25, target_r: 0, trailing_stop_pct: 15, trailing_arm_pct: 0, hold_max_seconds: 0, ladder_1r_sell_pct: 0, ladder_2r_sell_pct: 0 },
+  runner: { stop_loss_pct: 25, target_r: 0, take_profit_pct: 0, trailing_stop_pct: 15, trailing_arm_pct: 0, hold_max_seconds: 0, ladder_1r_sell_pct: 0, ladder_2r_sell_pct: 0 },
 };
 const BOOK_META = {
   scalp: { label: "Scalp", hint: "momentum + manual · exits: SL (−1R) · TP % · +target·R · trail once armed at Arm % · clock (0 = off) · manual holds: target R only" },
@@ -19,7 +19,7 @@ const BOOK_META = {
 const FIELDS = [
   ["stop_loss_pct", "SL %", "1R in price terms (plus expected exit slip). R sizing derives size from this."],
   ["target_r", "Target R", "Full exit at +target·R (1R = SL + slip). Scalp / runner (from promotion) / hunt when both ladder legs are 0. RH: 0 = use TP %. 0 = off."],
-  ["take_profit_pct", "TP %", "Fixed % exit, every book (runner: % from promotion). 0 = off."],
+  ["take_profit_pct", "TP %", "Fixed % exit on every book — fires before the R target (runner: % from promotion). 0 = off."],
   ["trailing_stop_pct", "Trail %", "Give-back from peak that closes the position (runner: peak since promotion). Used exactly as set unless the trail ratchet switch is on."],
   ["trailing_arm_pct", "Arm %", "Peak gain (from entry; runner: from promotion) before the trail arms. Hunt also arms after leg 1. Runner 0 = arm at +1R."],
   ["hold_max_seconds", "Clock s", "Max hold since entry, every book. 0 = no clock. Manual / LTH holds ignore it."],
@@ -62,7 +62,7 @@ export default function BookExitsEditor({ local, setLocal, onRestored }) {
                 <td className="py-1 text-neutral-200" title={BOOK_META[book].hint}>{BOOK_META[book].label}</td>
                 {FIELDS.map(([k]) => {
                   const dflt = BOOK_DEFAULTS[book][k];
-                  const na = dflt === undefined || (book !== "rh_pons" && k === "take_profit_pct") || (book !== "hunt" && k.startsWith("ladder"));
+                  const na = dflt === undefined || (book !== "hunt" && k.startsWith("ladder"));
                   const cur = (bx[book] || {})[k];
                   return (
                     <td key={k} className="text-right px-1">
