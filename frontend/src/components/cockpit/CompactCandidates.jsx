@@ -61,7 +61,7 @@ function Row({ c, onOpen }) {
     <tr data-testid={`cockpit-cand-${c.mint}`} onClick={() => onOpen({ chain: c.chain || "sol", mint: c.mint, symbol: c.symbol, name: c.name })}
       className={`border-b border-neutral-900 cursor-pointer hover:bg-neutral-900/50 transition-colors duration-100 ${c.passes ? "" : "opacity-60"}`} title="Click for live market data, our record and a manual buy">
       <td className="py-1.5 pl-3"><span className={`font-mono text-[10px] uppercase tracking-[0.15em] ${BAND_CLS[c.band] || "text-neutral-500"}`}>{BAND_LABEL[c.band] || c.band}</span></td>
-      <td className="font-mono text-xs"><ChainBadge chain={c.chain} mint={c.mint} /> <span className="text-neutral-100 ml-1">{c.symbol || "?"}</span> <RepBadge mint={c.mint} compact /></td>
+      <td className="font-mono text-xs"><ChainBadge chain={c.chain} mint={c.mint} /> <span className="text-neutral-100 ml-1">{c.symbol || "?"}</span> <RepBadge mint={c.mint} creator={c.creator} compact /></td>
       <td className="font-mono text-xs text-right"><span className={growth >= 0 ? "text-emerald-300" : "text-red-300"}>{growth >= 0 ? "+" : ""}{growth.toFixed(0)}%</span></td>
       <td className="text-right pr-3" data-testid={`cockpit-cand-gate-${c.mint}`}>
         {c.passes ? (

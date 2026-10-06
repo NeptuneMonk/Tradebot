@@ -89,11 +89,29 @@ def _url(mint: str, creator: str | None) -> str:
 class ReputationClient:
     def __init__(self):
         self._cache: dict[str, tuple[float, dict]] = {}
+        self._dev_cache: dict[str, tuple[float, str]] = {}     # creator wallet → tier (farmers launch hundreds of coins)
         self.stats = {"lookups": 0, "hits": 0, "misses": 0, "errors": 0, "skips_farmer": 0, "skips_hunt": 0}
 
+    def _dev_url(self, creator: str) -> str | None:
+        """reputation.family ranks the DEV WALLET: /api/dev/{creator} answers the second a launch lands, while
+        /api/token/{mint} only exists once the coin has traction (fresh launches 404 for minutes or forever)."""
+        base = os.environ.get("REPUTATION_DEV_URL", "").strip()
+        if base:
+            return base.replace("{creator}", creator)
+        tok = os.environ.get("REPUTATION_BASE_URL", "").strip()
+        if "/api/token/" in tok:
+            return tok.split("/api/token/", 1)[0] + f"/api/dev/{creator}"
+        return None
+
+    async def _get(self, url: str, headers: dict) -> tuple[int, Any]:
+        async with httpx.AsyncClient(timeout=TIMEOUT_S) as c:
+            r = await c.get(url, headers=headers)
+        return r.status_code, (r.json() if r.status_code == 200 else None)
+
     async def lookup(self, mint: str, creator: str | None = None, fresh: bool = False) -> dict:
-        """Returns {"tier", "fake_chart", "ok"}; ok=False on miss / error / timeout (cached NEG_TTL_S).
-        `fresh=True` re-queries past a cached miss (the site indexes a launch a second or two after creation)."""
+        """Returns {"tier", "fake_chart", "ok", "source"}; ok=False on miss / error / timeout (cached NEG_TTL_S).
+        Tier comes from the dev-wallet endpoint (instant); the token endpoint only adds the fake-chart flag once the
+        coin is indexed. `fresh=True` re-queries past a cached miss."""
         now = time.time()
         hit = self._cache.get(mint)
         if hit and hit[0] > now and not (fresh and not hit[1].get("ok")):
@@ -106,15 +124,33 @@ class ReputationClient:
         if key:
             headers["Authorization"] = f"Bearer {key}"
             headers["x-api-key"] = key
-        result = {"tier": "UNKNOWN", "fake_chart": False, "ok": False}
+        result = {"tier": "UNKNOWN", "fake_chart": False, "ok": False, "source": None}
+        dev_url = self._dev_url(creator) if creator else None
         try:
-            async with httpx.AsyncClient(timeout=TIMEOUT_S) as c:
-                r = await c.get(_url(mint, creator), headers=headers)
-            if r.status_code == 200:
-                parsed = parse(r.json())
-                result = {**parsed, "ok": parsed["tier"] != "UNKNOWN" or parsed["fake_chart"]}
+            if dev_url:
+                dhit = self._dev_cache.get(creator)
+                if dhit and dhit[0] > now:
+                    tier = dhit[1]
+                else:
+                    code, doc = await self._get(dev_url, headers)
+                    tier = normalize_tier(_find_key(doc, _TIER_KEYS)) if code == 200 and doc else "UNKNOWN"
+                    if code == 200 and doc:
+                        self._dev_cache[creator] = (now + POS_TTL_S, tier)
+                        self.stats["dev_hits"] = self.stats.get("dev_hits", 0) + 1
+                    else:
+                        self.stats["dev_misses"] = self.stats.get("dev_misses", 0) + 1
+                if tier != "UNKNOWN":
+                    result.update(tier=tier, ok=True, source="dev")
+            code, doc = await self._get(_url(mint, creator), headers)
+            if code == 200 and doc:
+                parsed = parse(doc)
+                if parsed["tier"] != "UNKNOWN":
+                    result["tier"] = parsed["tier"]
+                result["fake_chart"] = parsed["fake_chart"]
+                result["ok"] = result["tier"] != "UNKNOWN" or parsed["fake_chart"]
+                result["source"] = "dev+token" if result["source"] else "token"
             else:
-                self.stats["misses"] += 1
+                self.stats["misses"] += 1          # coin not indexed (yet): the dev rank alone still decides the gate
         except Exception as e:
             self.stats["errors"] += 1
             logger.debug(f"reputation lookup {mint[:8]}…: {e}")

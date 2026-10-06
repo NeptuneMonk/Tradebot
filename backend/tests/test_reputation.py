@@ -81,3 +81,41 @@ def test_reputation_family_token_shape(monkeypatch):
     assert parse({**doc, "fake": True, "dev": {"rank": "GOOD"}})["fake_chart"] is True
     assert parse({**doc, "dev": {"rank": "UNKNOWN"}})["tier"] == "UNKNOWN"
     assert parse(None) == {"tier": "UNKNOWN", "fake_chart": False, "raw_tier": None}     # 404 body is `null`
+
+
+def test_dev_wallet_rank_decides_before_the_coin_is_indexed(monkeypatch):
+    """Fresh launches 404 on /api/token for minutes; /api/dev/{creator} answers instantly — the gate must use it."""
+    import asyncio
+    import reputation as rep_mod
+    monkeypatch.setenv("REPUTATION_BASE_URL", "https://reputation.family/api/token/{mint}")
+    monkeypatch.delenv("REPUTATION_DEV_URL", raising=False)
+    c = rep_mod.ReputationClient()
+    calls = []
+
+    class _R:
+        def __init__(self, code, body=None): self.status_code, self._b = code, body
+        def json(self): return self._b
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, headers=None):
+            calls.append(url)
+            if "/api/dev/" in url:
+                w = url.rsplit("/", 1)[-1]
+                return _R(200, {"dev": {"wallet": w, "rank": {"FARM": "FARMER", "GOOD": "PROVEN"}.get(w[:4], "UNKNOWN"), "launches": 3}})
+            return _R(404)                                     # coin not indexed yet
+    monkeypatch.setattr(rep_mod.httpx, "AsyncClient", _Client)
+    r = asyncio.run(c.lookup("MintA", creator="FARMxxxx"))
+    assert r["tier"] == "FARMER" and r["ok"] and r["source"] == "dev" and r["fake_chart"] is False
+    assert c.gate(r, "scalp") == "reputation:FARMER"
+    r2 = asyncio.run(c.lookup("MintB", creator="GOODyyyy"))
+    assert r2["tier"] == "PROVEN" and c.gate(r2, "hunt") is None
+    r3 = asyncio.run(c.lookup("MintC", creator="NEWzzzzz"))
+    assert r3["tier"] == "UNKNOWN" and not r3["ok"] and c.gate(r3, "hunt") == "reputation:UNKNOWN"
+    assert calls[0].endswith("/api/dev/FARMxxxx") and calls[1].endswith("/api/token/MintA")
+    n = len(calls)
+    asyncio.run(c.lookup("MintD", creator="FARMxxxx"))         # same farmer wallet again: dev tier served from the wallet cache
+    assert not any("/api/dev/" in u for u in calls[n:])
+    assert c.stats["dev_hits"] == 3 and c.stats["misses"] == 4

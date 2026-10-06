@@ -16,8 +16,8 @@ const HINT = {
 };
 
 // Dev-reputation chip for a Solana mint. Renders nothing while the adapter is dark or the lookup is in flight.
-export function RepBadge({ mint, compact = false }) {
-  const rep = useReputation(mint);
+export function RepBadge({ mint, creator, compact = false }) {
+  const rep = useReputation(mint, creator);
   if (!rep || rep.dark) return null;
   const tier = rep.tier || "UNKNOWN";
   const label = compact ? tier.slice(0, 1) : tier;

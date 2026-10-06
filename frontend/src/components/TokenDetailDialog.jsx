@@ -57,7 +57,7 @@ export function TokenDetailDialog({ token, onClose }) {
           <SheetTitle className="flex items-center gap-2 font-mono text-base">
             <ChainBadge chain={chain} protocol={live?.protocol} mint={mint} />
             {token?.symbol || live?.symbol || "?"}
-            {chain !== "rh" && <RepBadge mint={mint} />}
+            {chain !== "rh" && <RepBadge mint={mint} creator={token?.creator || live?.creator} />}
             <span className="text-neutral-500 text-xs font-normal truncate">{token?.name || live?.name}</span>
             <span className="ml-auto flex items-center gap-2">
               {links.map(([l, h]) => (

@@ -2353,3 +2353,9 @@ Approved plan: remove every data source / book with zero edge; keep scanner → 
 - `discovery.run_once` (Pump.fun coin index, band [scanner_min_age_minutes, scanner_window_hours]) now filters candidates through `_alive_by_inflow`: DexScreener `tokens/v1/solana/{30 mints}` pair stats → buy inflow ≈ volume[m5|h1] × buys/(buys+sells); window = m5 when `scanner_recent_inflow_window_s` ≤ 600 else h1; floor = existing `scanner_min_recent_inflow_sol` (SOL via live price). No pair → not alive; DexScreener outage fails OPEN (freshness-only). Stats in `discovery.last_stats` + `discovery` WS event; bucket gets `alive_inflow_sol`.
 - `_evict_quiet` in the refresh loop: discovered CURVE tokens with no print for max(30 min, 6× inflow window) are dropped (never held/pinned/PumpSwap); re-seeded when alive again.
 - Live: 170 in band → 56 alive at 3 SOL/m5 (113 below floor) → seeded; next cycle 130 candidates / 33 alive. Tests: `tests/test_sol_window_discovery.py` (4).
+
+## Reputation: dev-wallet-first lookups (2026-10-06)
+- Finding: reputation.family `/api/token/{mint}` 404s for fresh launches (even 7–9 min old; only coins with traction get indexed) → every Hunt candidate was `reputation:UNKNOWN`. `/api/dev/{creator}` answers instantly for any wallet (rank, launches, graduated).
+- ✅ `ReputationClient.lookup(mint, creator)`: dev-wallet endpoint first (tier; cached per creator 15 m — farmers launch hundreds of coins), token endpoint second (fake-chart flag when indexed). `REPUTATION_DEV_URL` optional (derived from REPUTATION_BASE_URL). Stats: dev_hits/dev_misses; result carries `source` (dev / token / dev+token).
+- ✅ `/api/reputation/batch` accepts `creators{mint→wallet}` and falls back to tracking/active-trade creators; `useReputation(mint, creator)` + `RepBadge creator=` wired in candidates / active / dialog.
+- Verified: 1-second-old launches resolve PROVEN / FARMER by wallet; test added (test_reputation.py, 6 passing).

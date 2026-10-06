@@ -1129,11 +1129,16 @@ async def reputation_batch(body: dict = Body(...)):
     if not reputation.configured():
         return {}
     mints = [m for m in (body.get("mints") or []) if isinstance(m, str) and not m.startswith("0x")][:40]
+    creators = body.get("creators") if isinstance(body.get("creators"), dict) else {}
     sem = asyncio.Semaphore(5)
+
+    def _creator(m: str) -> str | None:
+        c = creators.get(m) or (bot_state.tracking.get(m) or {}).get("creator") or ((bot_state.active_trades.get(m) or {}).get("trade") or {}).get("creator")
+        return c if isinstance(c, str) and c else None
 
     async def one(m):
         async with sem:
-            r = await bot_state.reputation.lookup(m)
+            r = await bot_state.reputation.lookup(m, _creator(m))
             return m, {"tier": r.get("tier"), "fake_chart": bool(r.get("fake_chart")), "ok": bool(r.get("ok"))}
     return dict(await asyncio.gather(*(one(m) for m in mints)))
 

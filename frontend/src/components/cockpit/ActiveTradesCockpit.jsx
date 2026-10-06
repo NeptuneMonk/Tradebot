@@ -66,7 +66,7 @@ function Row({ t, onExit, onOpen, onLth, onAdd }) {
                  {t.dev_watch || t.classifier_action === "dev_watch" ? "DEV WATCH" : "LTH"}</span>
              : manual && <span className="ml-1 px-1 py-0.5 border border-fuchsia-700 text-fuchsia-300 text-[9px] font-mono" data-testid={`active-manual-badge-${t.mint}`}>HOLD</span>}
         {t.mode === "live" && <span className="ml-1 px-1 py-0.5 border border-red-800 text-red-300 text-[9px] font-mono">LIVE</span>}</td>
-      <td className="font-mono text-xs"><span className="text-neutral-100">{t.symbol || "—"}</span> <span className="text-neutral-600 text-[10px]">{t.chain === "rh" ? "rh" : "sol"}</span> {t.chain !== "rh" && <RepBadge mint={t.mint} compact />}</td>
+      <td className="font-mono text-xs"><span className="text-neutral-100">{t.symbol || "—"}</span> <span className="text-neutral-600 text-[10px]">{t.chain === "rh" ? "rh" : "sol"}</span> {t.chain !== "rh" && <RepBadge mint={t.mint} creator={t.creator} compact />}</td>
       <td className="font-mono text-xs text-right" data-testid={`active-pnl-${t.mint}`}>
         {pnl == null ? <span className="text-neutral-600">—</span> : <span className={pnl >= 0 ? "text-emerald-300" : "text-red-300"}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(1)}%</span>}
         {t.drawdown_from_peak_pct > 5 && <span className="ml-1 text-[9px] text-neutral-500">↓{t.drawdown_from_peak_pct.toFixed(0)}</span>}
