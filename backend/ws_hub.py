@@ -21,7 +21,7 @@ LIVE_FIELDS = frozenset((
     "id", "mint", "chain", "symbol", "name", "detected_at", "creator", "creator_eth", "creator_sol", "creator_sold_pct",
     "creator_tokens_created", "creator_tokens_graduated", "creator_tokens_failed", "creator_prior_launches",
     "creator_graduated_before", "classifier_action", "classifier_risk", "entry_action", "entered", "scanner_eligible",
-    "gate", "gate_detail", "rh_gate", "rh_gate_detail", "graduated", "protocol", "quote_symbol", "quote_inflow",
+    "gate", "gate_detail", "rh_gate", "rh_gate_detail", "backfilled", "graduated", "protocol", "quote_symbol", "quote_inflow",
     "unique_buyers", "sol_inflow", "buy_count", "curve_fill_pct", "usd_market_cap", "price_quote", "peak_mc_usd",
     "project_score", "project_flags", "project_meta_seen", "social_score", "live_pnl_pct", "live_drawdown_from_peak_pct",
     "exit_pnl_pct", "exit_reason", "pinned", "pin_strategy", "pin_exited", "bonding_curve", "dropped",

@@ -52,6 +52,15 @@ LAUNCH_TTL_H = 24
 WS_THROTTLE_S = 5.0
 MC_SAMPLE_KEEP = 60
 POOL_WATCH_MAX = 60             # graduated (v4 pool) tokens whose Swap logs ride along in the poll's getLogs filter
+# Window discovery: the poll only sees launches from the moment this process started. Every REDISCOVER_INTERVAL_S the
+# chain-wide curve tape of the last ACTIVITY_SPAN_BLOCKS is scanned and every curve with ≥ ACTIVE_MIN_TRADES prints that
+# was launched inside `rh_max_age_min` is pulled into tracking (seeded from that tape) — so a 1200-minute window really
+# means "every token launched in the last 20 h that is trading now", not "new launches we happened to witness".
+REDISCOVER_INTERVAL_S = 600
+ACTIVITY_SPAN_BLOCKS = 18000    # 30 min; the primary RPC caps address-less eth_getLogs at 30k blocks (~2.8 MB / 3.5k logs)
+ACTIVE_MIN_TRADES = 5
+ACTIVE_MAX_CURVES = 150
+LAUNCH_SCAN_CHUNK = 90000       # factory-filtered eth_getLogs with 3 topic values: the primary caps the span at 100k blocks
 TOKEN_SUPPLY = 1_000_000_000
 # PONS V2 curve = exact constant product with a VIRTUAL quote reserve:
 #   (net_quote + V) · token_reserve = V · TOKEN_SUPPLY      spot price = (net_quote + V) / token_reserve
@@ -271,6 +280,81 @@ class RHDiscovery:
             self._task = asyncio.create_task(self._loop())
         if getattr(self, "_meta_task", None) is None or self._meta_task.done():
             self._meta_task = asyncio.create_task(self._meta_loop())
+        if getattr(self, "_rediscover_task", None) is None or self._rediscover_task.done():
+            self._rediscover_task = asyncio.create_task(self._rediscover_loop())
+
+    async def rediscover(self) -> dict:
+        """Window discovery: track every curve that is ACTIVE now (≥ ACTIVE_MIN_TRADES prints in the last 30 min) and was
+        launched inside the `rh_max_age_min` window, seeded from that tape so MC / buyers / inflow are real before the
+        first live print. The regular poll keeps catching brand-new launches; this catches the ones that pre-date it."""
+        from collections import Counter
+        cfg = self.state.config
+        window_blocks = int(float(getattr(cfg, "rh_max_age_min", 15.0) or 15.0) * 60 / BLOCK_TIME_S)
+        (head_hex,) = await self._rpc([("eth_blockNumber", [])])
+        head = int(head_hex, 16)
+        span = min(ACTIVITY_SPAN_BLOCKS, window_blocks)
+        (trade_logs,) = await self._rpc([("eth_getLogs", [{"fromBlock": hex(max(1, head - span)), "toBlock": hex(head), "topics": [[T_BUY, T_SELL]]}])])
+        trade_logs = trade_logs or []
+        counts = Counter(l["address"].lower() for l in trade_logs)
+        active = {c for c, n in counts.most_common(ACTIVE_MAX_CURVES) if n >= ACTIVE_MIN_TRADES}
+        missing = {c for c in active if c not in self._curve_to_token}
+        out = {"ts": time.time(), "head": head, "window_min": window_blocks * BLOCK_TIME_S / 60, "tape_logs": len(trade_logs),
+               "active_curves": len(active), "already_tracked": len(active) - len(missing), "added": 0, "launch_scans": 0}
+        if not missing:
+            self.stats["rediscover"] = out
+            return out
+        launch_logs: list[dict] = []
+        fr = max(1, head - window_blocks)
+        while fr <= head:
+            to = min(head, fr + LAUNCH_SCAN_CHUNK - 1)
+            (logs,) = await self._rpc([("eth_getLogs", [{"address": FACTORY, "fromBlock": hex(fr), "toBlock": hex(to),
+                                                         "topics": [[T_LAUNCHED, T_SWEPT, T_GRADUATED]]}])])
+            launch_logs.extend(logs or [])
+            out["launch_scans"] += 1
+            fr = to + 1
+        now = time.time()
+        launched = [l for l in launch_logs if l["topics"][0].lower() == T_LAUNCHED and _addr(l["topics"][2]) in missing]
+        tokens = {_addr(l["topics"][1]) for l in launched}
+        grads = [l for l in launch_logs if l["topics"][0].lower() in (T_SWEPT, T_GRADUATED) and _addr(l["topics"][1]) in tokens]
+        new_tokens = await self._ingest_factory_logs(launched + grads, head, now)
+        seeded = 0
+        for log in sorted((l for l in trade_logs if l["address"].lower() in missing),
+                          key=lambda l: (int(l["blockNumber"], 16), int(l.get("logIndex", "0x0"), 16))):
+            token = self._curve_to_token.get(log["address"].lower())
+            b = self.tracking.get(token) if token else None
+            if not b:
+                continue
+            blk = int(log["blockNumber"], 16)
+            self.apply_trade(b, decode_trade(log, b["quote_decimals"]), now - (head - blk) * BLOCK_TIME_S)
+            b["backfilled"] = True
+            self._dirty.add(token)
+            seeded += 1
+        self._meta_pending = self._meta_pending + new_tokens
+        out.update(added=len(new_tokens), seeded_trades=seeded, unmatched_active=len(missing) - len(new_tokens))
+        self.stats["rediscover"] = out
+        if new_tokens:
+            logger.info(f"RH window discovery: +{len(new_tokens)} active curves from the last {out['window_min']:.0f} min "
+                        f"({out['active_curves']} active, {seeded} prints seeded, {out['launch_scans']} launch scans)")
+        return out
+
+    async def _rediscover_loop(self):
+        await asyncio.sleep(8.0)
+        last_window = None
+        last_run = 0.0
+        while True:
+            try:
+                window = float(getattr(self.state.config, "rh_max_age_min", 15.0) or 15.0)
+                due = time.time() - last_run >= REDISCOVER_INTERVAL_S or (last_window is not None and window > last_window)
+                if self._enabled() and due:
+                    await self.rediscover()
+                    last_run, last_window = time.time(), window
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                last_run = time.time() - REDISCOVER_INTERVAL_S + 60.0     # a failed scan (fallback RPC caps the span) retries in a minute
+                self.stats["rediscover_error"] = str(e)[:200]
+                logger.warning(f"RH window discovery failed: {e!r}")
+            await asyncio.sleep(5.0)
 
     async def _meta_loop(self):
         """name()/symbol() lookups run OFF the poll path: with the public RPC at ~1 s per call (429 cool-offs) they
@@ -945,6 +1029,7 @@ class RHDiscovery:
             # cleared (or are close to clearing) the PONS entry gates — "tracking" alone never reaches the UI
             "rh_gate": gate,
             "rh_gate_detail": b.get("gate_detail") if gate not in (None, "pass") else None,
+            "backfilled": bool(b.get("backfilled")),      # pulled in by window discovery (launched before this process saw the chain)
             "creator_eth": b.get("creator_eth"),
             "creator_sold_pct": b.get("creator_sold_pct"),
             "classifier_action": "rh_pons" if gate == "pass" else "tracking",
