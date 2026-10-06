@@ -943,8 +943,10 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
                  value={local.rh_max_positions ?? 3} onChange={(v) => setLocal({ ...local, rh_max_positions: parseInt(v, 10) || 0 })} step="1" />
           <Field label="Min Age (s)" testid="rh-min-age-input" hint="Skip the launch window. Snipe tax is 99% at t=0 and zero after 3s."
                  value={local.rh_min_age_s ?? 5} onChange={(v) => setLocal({ ...local, rh_min_age_s: parseInt(v, 10) || 0 })} step="1" />
-          <Field label="Max Age (m)" testid="rh-max-age-input" hint="Oldest launch (minutes since TokenLaunched) still eligible."
-                 value={local.rh_max_age_min ?? 15} onChange={(v) => setLocal({ ...local, rh_max_age_min: parseFloat(v) || 0 })} step="1" />
+          <Field label="Max Age (m)" testid="rh-max-age-input" hint="Window: oldest launch (minutes since TokenLaunched) still eligible — up to 10080 (7 days). Window discovery pulls in every token launched inside it that is ALIVE now (buy inflow over the alive lookback ≥ Min Inflow $), and drops tokens that go quiet."
+                 value={local.rh_max_age_min ?? 15} onChange={(v) => setLocal({ ...local, rh_max_age_min: Math.min(10080, parseFloat(v) || 0) })} step="1" />
+          <Field label="Alive lookback (m)" testid="rh-alive-lookback-input" hint="A token counts as alive when its buy inflow over this many minutes clears Min Inflow $ (5–60; one chain-wide tape read per 30 min)."
+                 value={local.rh_alive_lookback_min ?? 30} onChange={(v) => setLocal({ ...local, rh_alive_lookback_min: Math.max(5, Math.min(60, parseInt(v, 10) || 30)) })} step="5" />
           <Field label="Min Growth %" testid="rh-min-growth-input" hint="Price growth from the first curve trade we observed."
                  value={local.rh_min_growth_pct ?? 30} onChange={(v) => setLocal({ ...local, rh_min_growth_pct: parseFloat(v) || 0 })} step="5" />
           <Field label="Max Growth % (chased)" testid="rh-max-growth-input" hint="Skip as 'chased' once the price has already run this far from the first print we saw — early buyers are sitting on the gain and a new entry is their exit liquidity. Default 400% (5×)."

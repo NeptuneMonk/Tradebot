@@ -53,14 +53,18 @@ WS_THROTTLE_S = 5.0
 MC_SAMPLE_KEEP = 60
 POOL_WATCH_MAX = 60             # graduated (v4 pool) tokens whose Swap logs ride along in the poll's getLogs filter
 # Window discovery: the poll only sees launches from the moment this process started. Every REDISCOVER_INTERVAL_S the
-# chain-wide curve tape of the last ACTIVITY_SPAN_BLOCKS is scanned and every curve with ≥ ACTIVE_MIN_TRADES prints that
-# was launched inside `rh_max_age_min` is pulled into tracking (seeded from that tape) — so a 1200-minute window really
-# means "every token launched in the last 20 h that is trading now", not "new launches we happened to witness".
+# chain-wide curve tape of the last `rh_alive_lookback_min` is scanned; every curve whose BUY INFLOW in that lookback
+# clears the bot's own `rh_min_inflow_usd` floor and whose launch sits inside `rh_max_age_min` is pulled into tracking
+# (seeded from that tape) — "every token launched in the window that has volume now", not "launches we witnessed".
+# Tokens that go quiet for a lookback are evicted again (window discovery re-adds them when they wake), so the tracker,
+# the 300-curve trade filter and the dashboard only ever hold alive tokens.
 REDISCOVER_INTERVAL_S = 600
-ACTIVITY_SPAN_BLOCKS = 18000    # 30 min; the primary RPC caps address-less eth_getLogs at 30k blocks (~2.8 MB / 3.5k logs)
-ACTIVE_MIN_TRADES = 5
-ACTIVE_MAX_CURVES = 150
+TAPE_CHUNK_BLOCKS = 18000       # 30 min; the primary RPC caps address-less eth_getLogs at 30k blocks (~2.8 MB / 3.5k logs)
+ALIVE_LOOKBACK_MAX_MIN = 60     # two tape chunks at most per cycle (RAM on the 512Mi tier)
+ALIVE_MAX_CURVES = 150
+INACTIVE_GRACE_S = 600.0        # brand-new launches get this long before the no-volume eviction applies
 LAUNCH_SCAN_CHUNK = 90000       # factory-filtered eth_getLogs with 3 topic values: the primary caps the span at 100k blocks
+WINDOW_MAX_S = 7 * 86400.0
 TOKEN_SUPPLY = 1_000_000_000
 # PONS V2 curve = exact constant product with a VIRTUAL quote reserve:
 #   (net_quote + V) · token_reserve = V · TOKEN_SUPPLY      spot price = (net_quote + V) / token_reserve
@@ -283,42 +287,92 @@ class RHDiscovery:
         if getattr(self, "_rediscover_task", None) is None or self._rediscover_task.done():
             self._rediscover_task = asyncio.create_task(self._rediscover_loop())
 
+    def _window_s(self) -> float:
+        return min(WINDOW_MAX_S, max(60.0, float(getattr(self.state.config, "rh_max_age_min", 15.0) or 15.0) * 60.0))
+
+    def _alive_lookback_s(self) -> float:
+        return max(5, min(ALIVE_LOOKBACK_MAX_MIN, int(getattr(self.state.config, "rh_alive_lookback_min", 30) or 30))) * 60.0
+
+    async def _launch_logs_in(self, lo: int, hi: int) -> list[dict]:
+        out: list[dict] = []
+        fr = lo
+        while fr <= hi:
+            to = min(hi, fr + LAUNCH_SCAN_CHUNK - 1)
+            (logs,) = await self._rpc([("eth_getLogs", [{"address": FACTORY, "fromBlock": hex(fr), "toBlock": hex(to),
+                                                         "topics": [[T_LAUNCHED, T_SWEPT, T_GRADUATED]]}])])
+            out.extend({"topics": l["topics"], "data": l.get("data", "0x"), "blockNumber": l["blockNumber"], "logIndex": l.get("logIndex", "0x0")}
+                       for l in (logs or []))
+            fr = to + 1
+        return out
+
+    async def _refresh_launch_index(self, head: int, window_blocks: int) -> int:
+        """Incremental factory-log index over the age window: one full read the first time (or when the window grows),
+        then only the blocks since the last refresh. Entries older than the window are pruned."""
+        lo = max(1, head - window_blocks)
+        idx = getattr(self, "_launch_index", None)
+        if idx is None:
+            idx = self._launch_index = {"from": None, "to": None, "launch": {}, "grads": []}
+        scans = 0
+        if idx["from"] is None or idx["from"] > lo:
+            logs = await self._launch_logs_in(lo, (idx["from"] - 1) if idx["from"] else head)
+            scans += 1
+        else:
+            logs = []
+        if idx["to"] is not None and idx["to"] < head:
+            logs += await self._launch_logs_in(idx["to"] + 1, head)
+            scans += 1
+        for l in logs:
+            t0 = l["topics"][0].lower()
+            if t0 == T_LAUNCHED:
+                idx["launch"][_addr(l["topics"][2])] = l                 # curve → launch log
+            elif t0 in (T_SWEPT, T_GRADUATED):
+                idx["grads"].append(l)
+        idx["from"], idx["to"] = lo, head
+        idx["launch"] = {c: l for c, l in idx["launch"].items() if int(l["blockNumber"], 16) >= lo}
+        idx["grads"] = [l for l in idx["grads"] if int(l["blockNumber"], 16) >= lo]
+        return scans
+
     async def rediscover(self) -> dict:
-        """Window discovery: track every curve that is ACTIVE now (≥ ACTIVE_MIN_TRADES prints in the last 30 min) and was
-        launched inside the `rh_max_age_min` window, seeded from that tape so MC / buyers / inflow are real before the
-        first live print. The regular poll keeps catching brand-new launches; this catches the ones that pre-date it."""
+        """Window discovery: every curve whose buy inflow over `rh_alive_lookback_min` clears `rh_min_inflow_usd` and whose
+        launch sits inside `rh_max_age_min` is tracked and seeded from that tape. The poll keeps catching brand-new
+        launches; this catches alive tokens that pre-date the process (or were evicted while quiet)."""
         from collections import Counter
+        from reentry_logic import recent_buyers_and_inflow
         cfg = self.state.config
-        window_blocks = int(float(getattr(cfg, "rh_max_age_min", 15.0) or 15.0) * 60 / BLOCK_TIME_S)
+        window_s = self._window_s()
+        window_blocks = int(window_s / BLOCK_TIME_S)
+        lookback_s = min(self._alive_lookback_s(), window_s)
+        floor_usd = float(getattr(cfg, "rh_min_inflow_usd", 300.0) or 0.0)
         (head_hex,) = await self._rpc([("eth_blockNumber", [])])
         head = int(head_hex, 16)
-        span = min(ACTIVITY_SPAN_BLOCKS, window_blocks)
-        (trade_logs,) = await self._rpc([("eth_getLogs", [{"fromBlock": hex(max(1, head - span)), "toBlock": hex(head), "topics": [[T_BUY, T_SELL]]}])])
-        trade_logs = trade_logs or []
-        counts = Counter(l["address"].lower() for l in trade_logs)
-        active = {c for c, n in counts.most_common(ACTIVE_MAX_CURVES) if n >= ACTIVE_MIN_TRADES}
-        missing = {c for c in active if c not in self._curve_to_token}
-        out = {"ts": time.time(), "head": head, "window_min": window_blocks * BLOCK_TIME_S / 60, "tape_logs": len(trade_logs),
-               "active_curves": len(active), "already_tracked": len(active) - len(missing), "added": 0, "launch_scans": 0}
+        tape: list[dict] = []
+        lo = max(1, head - int(lookback_s / BLOCK_TIME_S) + 1)
+        fr = lo
+        while fr <= head:
+            to = min(head, fr + TAPE_CHUNK_BLOCKS - 1)
+            (logs,) = await self._rpc([("eth_getLogs", [{"fromBlock": hex(fr), "toBlock": hex(to), "topics": [[T_BUY, T_SELL]]}])])
+            tape.extend(logs or [])
+            fr = to + 1
+        counts = Counter(l["address"].lower() for l in tape)
+        traded = [c for c, _ in counts.most_common(ALIVE_MAX_CURVES)]
+        missing = [c for c in traded if c not in self._curve_to_token]
+        out = {"ts": time.time(), "head": head, "window_min": round(window_s / 60), "lookback_min": round(lookback_s / 60),
+               "floor_usd": floor_usd, "tape_logs": len(tape), "traded_curves": len(counts), "already_tracked": len(traded) - len(missing),
+               "added": 0, "below_floor": 0, "outside_window": 0, "launch_scans": 0}
         if not missing:
             self.stats["rediscover"] = out
             return out
-        launch_logs: list[dict] = []
-        fr = max(1, head - window_blocks)
-        while fr <= head:
-            to = min(head, fr + LAUNCH_SCAN_CHUNK - 1)
-            (logs,) = await self._rpc([("eth_getLogs", [{"address": FACTORY, "fromBlock": hex(fr), "toBlock": hex(to),
-                                                         "topics": [[T_LAUNCHED, T_SWEPT, T_GRADUATED]]}])])
-            launch_logs.extend(logs or [])
-            out["launch_scans"] += 1
-            fr = to + 1
-        now = time.time()
-        launched = [l for l in launch_logs if l["topics"][0].lower() == T_LAUNCHED and _addr(l["topics"][2]) in missing]
+        out["launch_scans"] = await self._refresh_launch_index(head, window_blocks)
+        idx = self._launch_index
+        launched = [idx["launch"][c] for c in missing if c in idx["launch"]]
+        out["outside_window"] = len(missing) - len(launched)
         tokens = {_addr(l["topics"][1]) for l in launched}
-        grads = [l for l in launch_logs if l["topics"][0].lower() in (T_SWEPT, T_GRADUATED) and _addr(l["topics"][1]) in tokens]
+        grads = [l for l in idx["grads"] if _addr(l["topics"][1]) in tokens]
+        now = time.time()
         new_tokens = await self._ingest_factory_logs(launched + grads, head, now)
+        want = set(missing)
         seeded = 0
-        for log in sorted((l for l in trade_logs if l["address"].lower() in missing),
+        for log in sorted((l for l in tape if l["address"].lower() in want),
                           key=lambda l: (int(l["blockNumber"], 16), int(l.get("logIndex", "0x0"), 16))):
             token = self._curve_to_token.get(log["address"].lower())
             b = self.tracking.get(token) if token else None
@@ -326,15 +380,31 @@ class RHDiscovery:
                 continue
             blk = int(log["blockNumber"], 16)
             self.apply_trade(b, decode_trade(log, b["quote_decimals"]), now - (head - blk) * BLOCK_TIME_S)
-            b["backfilled"] = True
-            self._dirty.add(token)
             seeded += 1
-        self._meta_pending = self._meta_pending + new_tokens
-        out.update(added=len(new_tokens), seeded_trades=seeded, unmatched_active=len(missing) - len(new_tokens))
+        alive: list[str] = []
+        for token in new_tokens:
+            b = self.tracking.get(token)
+            if not b:
+                continue
+            _, inflow_q = recent_buyers_and_inflow(b["buy_events"], now, lookback_s)
+            inflow_usd = inflow_q * (self._quote_usd(b["quote_symbol"]) or 0.0)
+            b["alive_inflow_usd"] = round(inflow_usd, 2)
+            if (floor_usd > 0 and inflow_usd >= floor_usd) or (floor_usd <= 0 and b["buy_count"] > 0):
+                b["backfilled"] = True
+                self._dirty.add(token)
+                alive.append(token)
+            else:
+                out["below_floor"] += 1
+                self.tracking.pop(token, None)
+                self._curve_to_token.pop(b["curve"], None)
+                self._dirty.discard(token)
+        self._meta_pending = self._meta_pending + alive
+        out.update(added=len(alive), seeded_trades=seeded)
         self.stats["rediscover"] = out
-        if new_tokens:
-            logger.info(f"RH window discovery: +{len(new_tokens)} active curves from the last {out['window_min']:.0f} min "
-                        f"({out['active_curves']} active, {seeded} prints seeded, {out['launch_scans']} launch scans)")
+        if alive:
+            logger.info(f"RH window discovery: +{len(alive)} alive tokens (inflow ≥ ${floor_usd:.0f} over {out['lookback_min']} min) "
+                        f"from a {out['window_min']}-min window; {out['below_floor']} below floor, {out['outside_window']} outside window, "
+                        f"{seeded} prints seeded, {out['launch_scans']} launch scans")
         return out
 
     async def _rediscover_loop(self):
@@ -1091,9 +1161,19 @@ class RHDiscovery:
         paper = getattr(self.state, "rh_paper", None)
         held = set(paper.positions.keys()) if paper is not None else set()   # never evict a token we hold
         held |= {t for t, b in self.tracking.items() if b.get("pinned")}      # operator-pinned ladder tokens: no age, no TTL
-        # keep curve tokens at least as long as the RH max-age window says they are still eligible (≤ 24 h)
-        ttl = min(86400.0, max(float(TRACK_MAX_AGE_S), float(getattr(self.state.config, "rh_max_age_min", 15.0) or 0) * 60.0))
+        # keep curve tokens as long as the RH max-age window says they are still eligible (≤ 7 d)…
+        ttl = max(float(TRACK_MAX_AGE_S), self._window_s())
         stale = [t for t, b in self.tracking.items() if now - b["start"] > ttl and t not in held]
+        # …but only while they are ALIVE: no print inside the alive lookback (after a grace for brand-new launches) →
+        # evicted; window discovery re-adds a token the moment it has inflow again. Keeps the tracker / trade filter on live tokens.
+        lookback_s = self._alive_lookback_s()
+        for t, b in self.tracking.items():
+            if t in held or t in stale or now - b["start"] < INACTIVE_GRACE_S:
+                continue
+            last_ts = (b.get("last_trade_ms") or 0) / 1000.0
+            if now - max(last_ts, b["start"]) > lookback_s:
+                stale.append(t)
+                self.stats["evicted_quiet"] = self.stats.get("evicted_quiet", 0) + 1
         if len(self.tracking) - len(stale) > MAX_TRACKED:
             extra = sorted(
                 (t for t in self.tracking if t not in stale and t not in held),

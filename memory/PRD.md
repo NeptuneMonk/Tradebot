@@ -2341,3 +2341,10 @@ Approved plan: remove every data source / book with zero edge; keep scanner → 
 - ✅ Row flag `backfilled` (ws_hub LIVE_FIELDS) → violet `WINDOW` badge on RH launch rows. `stop_loops` cancels `_rediscover_task`.
 - Verified live: +31 active curves (5–20 h old, up to $31k MC) tracked within 60 s; candidates list now shows RH PONS rows with real gate verdicts (buyers / chased / mc). Tests: `tests/test_rh_window_discovery.py` (2); RH suites green.
 - PROD facts (deployer RCA_3737f664): poller healthy; the feed showed zero because `rh_feed_enabled`/`rh_paper_enabled`/`enabled` were switched OFF at 01:11 and prod gates are tight (rh_min_mc_usd 12000, rh_min_unique_buyers 12 vs launches at $4.5–8k MC). RH sequencer WS 403-rate-limited (REST poll unaffected).
+
+## RH window discovery v2 — alive = inflow (2026-10-06)
+- User: "bring in tokens that have volume if alive within the window (even days); use the existing min-inflow settings".
+- ✅ Alive test = buy inflow over `rh_alive_lookback_min` (new, default 30, 5–60) ≥ `rh_min_inflow_usd` (existing); below-floor tokens are dropped before publish (`below_floor` stat). Tape read in 18k-block chunks (≤2).
+- ✅ Incremental launch index (`_launch_index`: curve→launch log + grads, pruned to window): full read once / when window grows, then only new head blocks. Window cap lifted to 7 d (`WINDOW_MAX_S`; UI Max Age ≤ 10080).
+- ✅ Inactivity eviction in `_gc`: no print within the alive lookback (after 10-min grace, never held/pinned) → evicted (`evicted_quiet` stat); window discovery re-adds on new inflow (same deterministic launch_id → one DB row).
+- Live preview: 30-min tape 145 traded curves → 12 alive at $350 floor, 73 below floor, 60 outside 1200-min window; 3-day window extended the index with 2 scans. Tests: test_rh_window_discovery.py (3) + RH suites green.

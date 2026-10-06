@@ -68,7 +68,8 @@ class BotConfig(BaseModel):
     rh_rug_sell_curve_pct: float = 15.0    # ...or ≥ this % of the curve's quote reserves
     rh_max_positions: int = 3
     rh_min_age_s: int = 5                 # snipe tax is 0 after 3s
-    rh_max_age_min: float = 15.0
+    rh_max_age_min: float = 15.0          # window: how old a launch may be and still be eligible (up to 7 days with window discovery)
+    rh_alive_lookback_min: int = 30       # window discovery: a token is ALIVE when its buy inflow over this many minutes ≥ rh_min_inflow_usd
     rh_seasoned_max_age_min: float = 60.0   # post-pool entries: minutes since the PONS sweep
     rh_grad_handoff_r_trail: bool = True    # graduated while held → hand off to an R-based trail (no fixed TP, no clock)
     rh_grad_trail_r: float = 1.0            # giveback from the post-sweep peak that closes the ride, in R (1R = the trade's SL% with slip)

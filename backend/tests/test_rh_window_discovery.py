@@ -64,28 +64,37 @@ def _disc(monkeypatch, head, launches, trades):
     return d, calls
 
 
-def test_rediscover_tracks_old_active_curves_and_seeds_tape(monkeypatch):
+def test_rediscover_tracks_old_alive_curves_and_seeds_tape(monkeypatch):
     head = 1_000_000
     old_tok, old_curve = "0x" + "a1" * 20, "0x" + "c1" * 20
-    dead_tok, dead_curve = "0x" + "a2" * 20, "0x" + "c2" * 20
-    out_tok, out_curve = "0x" + "a3" * 20, "0x" + "c3" * 20          # launched outside the 1200-min window
+    quiet_tok, quiet_curve = "0x" + "a2" * 20, "0x" + "c2" * 20   # trades, but inflow below rh_min_inflow_usd
+    out_tok, out_curve = "0x" + "a3" * 20, "0x" + "c3" * 20       # launched outside the 1200-min window
     launches = [_launch_log(old_tok, old_curve, "0x" + "d1" * 20, head - 300_000),      # ~8 h old
-                _launch_log(dead_tok, dead_curve, "0x" + "d2" * 20, head - 200_000),
+                _launch_log(quiet_tok, quiet_curve, "0x" + "d2" * 20, head - 200_000),
                 _launch_log(out_tok, out_curve, "0x" + "d3" * 20, head - 900_000)]
-    trades = [_trade_log(old_curve, head - 100 - i, i, "0x" + f"{i:02x}" * 20, 10**17, 10**24) for i in range(8)]   # 8 prints
-    trades += [_trade_log(dead_curve, head - 50, 0, "0x" + "ee" * 20, 10**17, 10**24)]                            # 1 print: inactive
+    trades = [_trade_log(old_curve, head - 100 - i, i, "0x" + f"{i:02x}" * 20, 10**17, 10**24) for i in range(8)]   # 8 × 0.1 ETH
+    trades += [_trade_log(quiet_curve, head - 50, 0, "0x" + "ee" * 20, 10**14, 10**24)]                            # 0.0001 ETH
     trades += [_trade_log(out_curve, head - 60 - i, i, "0x" + f"{i + 40:02x}" * 20, 10**17, 10**24) for i in range(6)]
     d, calls = _disc(monkeypatch, head, launches, trades)
+    monkeypatch.setattr(d, "_quote_usd", lambda sym: 3000.0)
+    d.state.config.rh_min_inflow_usd = 300.0
     res = asyncio.run(d.rediscover())
-    assert res["active_curves"] == 2 and res["added"] == 1 and res["unmatched_active"] == 1    # out-of-window curve has no launch in range
+    assert res["traded_curves"] == 3 and res["added"] == 1 and res["below_floor"] == 1 and res["outside_window"] == 1
     b = d.tracking[old_tok]
     assert d._curve_to_token[old_curve] == old_tok
     assert b["backfilled"] is True and len(b["buyers"]) == 8 and b["buy_count"] == 8 and b["net_quote"] > 0
+    assert b["alive_inflow_usd"] == pytest.approx(0.8 * 3000.0)
     age_h = (time.time() - b["start"]) / 3600
     assert 8.0 <= age_h <= 8.5                                   # start estimated from the launch block, not "now"
-    assert old_tok in d._meta_pending and dead_tok not in d.tracking and out_tok not in d.tracking
+    assert old_tok in d._meta_pending and quiet_tok not in d.tracking and out_tok not in d.tracking
     spans = [int(p[0]["toBlock"], 16) - int(p[0]["fromBlock"], 16) for m, p in calls if m == "eth_getLogs" and p[0].get("address") == FACTORY]
     assert spans and max(spans) < rd.LAUNCH_SCAN_CHUNK           # chunked factory scans
+    # second cycle: launch index is incremental — only the new head blocks are read, not the whole window again
+    n_factory = len(spans)
+    d._curve_to_token.pop(quiet_curve, None)
+    asyncio.run(d.rediscover())
+    spans2 = [int(p[0]["toBlock"], 16) - int(p[0]["fromBlock"], 16) for m, p in calls if m == "eth_getLogs" and p[0].get("address") == FACTORY]
+    assert len(spans2) - n_factory <= 1 and (len(spans2) == n_factory or spans2[-1] < 10)
 
 
 def test_rediscover_is_idempotent_for_tracked_curves(monkeypatch):
@@ -94,8 +103,32 @@ def test_rediscover_is_idempotent_for_tracked_curves(monkeypatch):
     launches = [_launch_log(tok, curve, "0x" + "d1" * 20, head - 1000)]
     trades = [_trade_log(curve, head - 10 - i, i, "0x" + f"{i:02x}" * 20, 10**17, 10**24) for i in range(6)]
     d, calls = _disc(monkeypatch, head, launches, trades)
+    monkeypatch.setattr(d, "_quote_usd", lambda sym: 3000.0)
     asyncio.run(d.rediscover())
     n_calls = len(calls)
     res = asyncio.run(d.rediscover())
     assert res["added"] == 0 and res["already_tracked"] == 1
     assert len(calls) - n_calls == 2                              # blockNumber + tape only: no launch scan when nothing is missing
+
+
+def test_quiet_tokens_are_evicted_after_grace_and_window_cap_lifted(monkeypatch):
+    d = RHDiscovery(_State())
+    d.state.config.rh_max_age_min = 3 * 24 * 60                   # 3 days
+    d.state.config.rh_alive_lookback_min = 30
+    now = time.time()
+    launch = _launch_log("0x" + "f1" * 20, "0x" + "e1" * 20, "0x" + "d1" * 20, 100)
+    from rh_discovery import decode_launch
+    dd = decode_launch(launch)
+    old_alive = d._new_bucket(dd, start=now - 2 * 86400); old_alive["last_trade_ms"] = int((now - 60) * 1000)
+    d.tracking["old_alive"] = old_alive; d._curve_to_token[old_alive["curve"]] = "old_alive"
+    dd2 = dict(dd, token="0x" + "f2" * 20, curve="0x" + "e2" * 20)
+    quiet = d._new_bucket(dd2, start=now - 3600); quiet["last_trade_ms"] = int((now - 45 * 60) * 1000)
+    d.tracking["quiet"] = quiet; d._curve_to_token[quiet["curve"]] = "quiet"
+    dd3 = dict(dd, token="0x" + "f3" * 20, curve="0x" + "e3" * 20)
+    fresh = d._new_bucket(dd3, start=now - 120)                   # brand-new, no print yet: grace period
+    d.tracking["fresh"] = fresh; d._curve_to_token[fresh["curve"]] = "fresh"
+    d._gc(now)
+    assert "old_alive" in d.tracking                              # 2 days old but alive: kept (24 h cap is gone)
+    assert "quiet" not in d.tracking and quiet["curve"] not in d._curve_to_token
+    assert "fresh" in d.tracking
+    assert d.stats["evicted_quiet"] == 1
