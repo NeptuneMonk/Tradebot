@@ -43,8 +43,11 @@ export function stageFor(t) {
     return { text: <>curve {fill.toFixed(0)}% · pool <Check ok={false} /></>, pct: clamp(fill), hint: "PONS bonding curve — graduation sweeps the position into the v4 pool" };
   }
   if (t.venue_stage && t.venue_stage !== "pumpswap") return { text: <>curve→pool · {t.venue_stage}</>, pct: 50, hint: "Pump.fun curve complete — waiting for the PumpSwap pool before any PnL is booked" };
-  const target = Number(t.target_r || 0) * Number(t.sl_pct || 0);
-  return { text: <>target {t.target_r ? `${t.target_r}R` : "—"} · SL {t.sl_pct ? `${t.sl_pct}%` : "—"}</>, pct: target > 0 ? clamp((pnl / target) * 100) : 0, hint: "scalp: single exit at +target·R or −1R, clock allowed" };
+  // 1R on the backend = SL% + expected exit slip (`sl_pct_with_slip`) — the bar must track the real trigger, not SL alone
+  const oneR = Number(t.sl_pct_with_slip || t.sl_pct || 0);
+  const target = Number(t.target_r || 0) * oneR;
+  return { text: <>target {t.target_r ? `${t.target_r}R${target > 0 ? ` = +${target.toFixed(1)}%` : ""}` : "—"} · SL {t.sl_pct ? `${t.sl_pct}%` : "—"}</>, pct: target > 0 ? clamp((pnl / target) * 100) : 0,
+           hint: `scalp: single exit at +target·R or −1R, clock allowed. 1R = SL ${Number(t.sl_pct || 0)}% + exit slip ${(oneR - Number(t.sl_pct || 0)).toFixed(1)}% = ${oneR.toFixed(1)}%` };
 }
 
 const isManualHold = (t) => t.manual === true || t.long_term_hold === true || t.classifier_action === "manual" || t.classifier_action === "rh_pons_manual";
