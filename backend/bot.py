@@ -1561,7 +1561,7 @@ class BotState:
             "tracked": len(self.tracking),
             "gate": {"lo_min": float(cfg.band_new_min_age_min), "hi_min": float(cfg.band_new_max_age_min),
                      "floor_sol": float(getattr(cfg, "scanner_min_recent_inflow_sol", 0.0) or 0.0),
-                     "floor_window": "m5" if int(getattr(cfg, "scanner_recent_inflow_window_s", 300) or 300) <= 600 else "h1",
+                     "floor_window": (lambda w: f"{w}s" if w < 120 else f"{w // 60}m")(int(getattr(cfg, "scanner_recent_inflow_window_s", 300) or 300)),
                      "seasoned_hi_min": float(cfg.band_seasoned_max_age_min), "seasoned_on": bool(getattr(cfg, "scanner_seasoned_entries_enabled", True))},
             "pull": {k: pull.get(k) for k in ("ts", "in_band", "candidates", "alive", "below_floor", "no_pair", "seeded", "skipped_scope", "skipped_idle", "floor_sol", "window")},
             "stream": self.stream_floor.snapshot(),

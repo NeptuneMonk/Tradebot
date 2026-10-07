@@ -200,7 +200,7 @@ function FloorInput({ value, win }) {
       .finally(() => setDraft(null));
   };
   return (
-    <span className="inline-flex items-center gap-1" title="Minimum buy inflow (SOL over the inflow window) a token needs to clear to enter the window. Edit and press Enter — saved to the bot immediately.">
+    <span className="inline-flex items-center gap-1" title={`Minimum buy inflow a token needs over the last ${win} (your scanner inflow window, Advanced → Scanner) to enter the window. The live tape measures exactly this; the 60 s Pump.fun backstop pull can only use DexScreener's 5-min volume. Edit and press Enter — saved to the bot immediately.`}>
       <span className="text-neutral-600">≥</span>
       <input type="number" min="0" step="0.5" value={shown} data-testid="window-readout-floor-input"
         onChange={(e) => setDraft(e.target.value)} onBlur={commit}
