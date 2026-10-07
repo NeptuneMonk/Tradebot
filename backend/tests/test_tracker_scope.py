@@ -202,7 +202,10 @@ async def test_window_feed_announces_tokens_as_they_age_into_and_out_of_the_wind
     sent: list[tuple] = []
 
     async def fake_broadcast(ev, data, **k):
-        sent.append((ev, data))
+        if ev == "launch_update":
+            sent.append((ev, data))
+        else:
+            assert ev == "window_feed" and {"in_window", "entered_1m", "left_1m", "launches_1m", "pull", "gate"} <= set(data)
     monkeypatch.setattr(bot_mod.hub, "broadcast", fake_broadcast)      # whatever hub object bot.py holds right now
     st = BotState(_FeedDB())
     st.config = BotConfig(band_new_min_age_min=20, band_new_max_age_min=40, band_seasoned_max_age_min=60, rh_min_age_s=30, rh_max_age_min=15)

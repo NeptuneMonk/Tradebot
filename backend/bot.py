@@ -170,6 +170,8 @@ class BotState:
         self.reentry = ReentryLedger()
         self._reentry_gate_mult: dict[str, float] = {}
         self._in_band: dict[str, dict] = {}            # window feed: mint → {band, id} last announced to the dashboard
+        self._window_flow: deque = deque()             # (ts, entered, left) per window-feed tick, last 60 s
+        self._evict_marks: deque = deque()             # (ts, cumulative evictions) for the per-minute eviction rate
         # Greylist Sniper rate cap — rolling per-hour fire counter so a wave
         # of greylist launches can't blow through the wallet. Cleared by
         # `_gc_greylist_snipe_counter` every minute.
@@ -1520,7 +1522,34 @@ class BotState:
                 logger.debug(f"window feed persist failed for {mint}: {e}")
             await hub.broadcast("launch_update", {"id": prev["id"], "mint": mint, "in_band": False, "band": None})
             left += 1
+        self._window_flow.append((now, entered, left))
+        while self._window_flow and now - self._window_flow[0][0] > 60.0:
+            self._window_flow.popleft()
+        await hub.broadcast("window_feed", self.window_feed_snapshot(len(rows)))
         return {"in_window": len(rows), "entered": entered, "left": left}
+
+    def window_feed_snapshot(self, in_window: int | None = None) -> dict:
+        """Feed-header readout: what is inside the window now, the flow through it over the last minute, and what the
+        last Pump.fun pull saw (tokens in the age window vs cleared the inflow floor)."""
+        now = time.time()
+        cfg = self.config
+        evicted = sum(v for k, v in self.stats.items() if k.startswith("evicted_"))
+        self._evict_marks.append((now, evicted))
+        while len(self._evict_marks) > 1 and now - self._evict_marks[0][0] > 60.0:
+            self._evict_marks.popleft()
+        pull = dict(getattr(getattr(self, "discovery", None), "last_stats", None) or {})
+        return {
+            "ts": now,
+            "in_window": len(self._in_band) if in_window is None else in_window,
+            "entered_1m": sum(e for _, e, _ in self._window_flow),
+            "left_1m": sum(l for _, _, l in self._window_flow),
+            "launches_1m": sum(1 for t in getattr(self, "_launch_ts", []) if now - t <= 60.0),
+            "evicted_1m": evicted - self._evict_marks[0][1],
+            "tracked": len(self.tracking),
+            "gate": {"lo_min": float(cfg.band_new_min_age_min), "hi_min": float(cfg.band_new_max_age_min),
+                     "seasoned_hi_min": float(cfg.band_seasoned_max_age_min), "seasoned_on": bool(getattr(cfg, "scanner_seasoned_entries_enabled", True))},
+            "pull": {k: pull.get(k) for k in ("ts", "in_band", "candidates", "alive", "below_floor", "no_pair", "seeded", "skipped_scope", "skipped_idle", "floor_sol", "window")},
+        }
 
     async def _window_feed_loop(self):
         await asyncio.sleep(3.0)

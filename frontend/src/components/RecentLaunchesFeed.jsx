@@ -69,7 +69,7 @@ export const RH_GATE_HINT = {
   "max-positions": "RH max positions reached",
 };
 
-function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh: false } }) {
+function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh: false }, flow = null }) {
   const [detail, setDetail] = useState(null);
   const [chainFilter, setChainFilter] = useState(() => localStorage.getItem(CHAIN_FILTER_KEY) || "all");
   const setFilter = (k) => { localStorage.setItem(CHAIN_FILTER_KEY, k); setChainFilter(k); };
@@ -96,6 +96,7 @@ function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh
           })()}
         </div>
       </div>
+      <WindowReadout flow={flow} />
       <VirtualUl items={launches} estimate={68} maxHeightClass="max-h-[280px] md:max-h-[480px]" testId="launches-list"
         empty={<div className="text-center py-6 text-[10px] uppercase tracking-[0.2em] text-neutral-600" data-testid="launches-empty">no tokens inside your age window yet — rows appear as launches age into it</div>}
         renderItem={(l) => {
@@ -181,6 +182,38 @@ function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh
             );
           }} />
       <TokenDetailDialog token={detail} onClose={() => setDetail(null)} />
+    </div>
+  );
+}
+
+function WindowReadout({ flow }) {
+  if (!flow) return null;
+  const g = flow.gate || {};
+  const p = flow.pull || {};
+  const pullAge = p.ts ? Math.max(0, Math.round((Date.now() / 1000 - p.ts) / 60)) : null;
+  const gateTxt = `${g.lo_min ?? "?"}–${g.hi_min ?? "?"} min`;
+  const Cell = ({ label, value, hint, testid, tone = "text-neutral-200" }) => (
+    <span className="inline-flex items-baseline gap-1 whitespace-nowrap" title={hint} data-testid={testid}>
+      <span className={`font-mono ${tone}`}>{value}</span>
+      <span className="text-neutral-600">{label}</span>
+    </span>
+  );
+  return (
+    <div className="mb-2 px-2 py-1.5 border border-neutral-800/80 bg-neutral-950/40 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] uppercase tracking-[0.12em]" data-testid="window-readout">
+      <span className="text-neutral-500" title="Your New-band age gate (Controls → band). Only tokens of this age occupy tracker slots and the feed.">gate {gateTxt}</span>
+      <span className="text-neutral-800">|</span>
+      <Cell value={p.in_band ?? "—"} label="on pump.fun in window" testid="window-readout-in-window"
+        hint={`Last Pump.fun pull${pullAge != null ? ` (${pullAge} min ago)` : ""}: tokens whose launch age is inside your gate${p.skipped_scope ? ` · ${p.skipped_scope} outside scope skipped` : ""}`} />
+      <Cell value={p.alive ?? "—"} label={`cleared floor${p.floor_sol != null ? ` ≥${p.floor_sol} SOL/${p.window || "m5"}` : ""}`} testid="window-readout-alive" tone="text-emerald-300"
+        hint={`Of those, how many had buy inflow at or above your Min inflow over the ${p.window === "h1" ? "last hour" : "last 5 min"} (DexScreener pair stats)${p.below_floor != null ? ` · ${p.below_floor} below floor` : ""}${p.no_pair ? ` · ${p.no_pair} no pair yet` : ""}`} />
+      <span className="text-neutral-800">|</span>
+      <Cell value={`+${flow.entered_1m ?? 0} / −${flow.left_1m ?? 0}`} label="window flow / min" testid="window-readout-flow" tone="text-sky-300"
+        hint="Tokens that aged INTO your window (+) and OUT of it or were dropped (−) over the last 60 s" />
+      <Cell value={flow.launches_1m ?? 0} label="new launches / min" testid="window-readout-launches"
+        hint="Fresh Pump.fun launches seen on the WebSocket in the last 60 s. They do NOT enter the window until they reach the gate's minimum age — most die before that." />
+      <Cell value={flow.evicted_1m ?? 0} label="evicted / min" testid="window-readout-evicted"
+        hint="Tracker slots freed in the last 60 s (too young for the gate, aged out, dead tape, switched-off book, tagged dev)" />
+      <Cell value={`${flow.tracked ?? 0}/150`} label="tracked" testid="window-readout-tracked" hint="Tokens currently holding one of the 150 tracker slots" />
     </div>
   );
 }

@@ -65,6 +65,7 @@ export default function Dashboard() {
   const [config, setConfig] = useState(null);
   const [rules, setRules] = useState(null);
   const [launches, setLaunches] = useState([]);
+  const [windowFeed, setWindowFeed] = useState(null);   // feed-header readout (window_feed WS event / GET /launches/window)
   const [activeTrades, setActiveTrades] = useState([]);
   const [history, setHistory] = useState([]);
   const [pl, setPl] = useState({ series: [], daily_pnl_usd: 0, cumulative_usd: 0 });
@@ -110,7 +111,7 @@ export default function Dashboard() {
   // Initial full pull + slow polling fallback (every 20s)
   const refreshAll = useCallback(async () => {
     try {
-      const [w, s, c, r, l, a, h, p, re, sc] = await Promise.all([
+      const [w, s, c, r, l, a, h, p, re, sc, wf] = await Promise.all([
         api.wallet().catch(() => null),
         api.status().catch(() => null),
         api.config().catch(() => null),
@@ -121,8 +122,10 @@ export default function Dashboard() {
         api.plSummary(7).catch(() => ({ series: [], daily_pnl_usd: 0, cumulative_usd: 0 })),
         api.reentryWatchlist().catch(() => []),
         api.scannerCandidates().catch(() => []),
+        api.launchesWindow().catch(() => null),
       ]);
       if (w) setWallet(w);
+      if (wf) setWindowFeed(wf);
       if (s) setStatus(s);
       if (c) setConfig(c);
       if (r) setRules(r);
@@ -337,6 +340,9 @@ export default function Dashboard() {
       }
       case "scanner_snapshot":
         if (Array.isArray(data?.items)) setScanner(data.items);
+        break;
+      case "window_feed":
+        setWindowFeed(data);
         break;
       case "dev_watch_fired":
         toast.message(`CRAZY dev · ${data.symbol || data.mint?.slice(0, 8)} bought $${Number(data.stake_usd || 0).toFixed(2)} — long-term hold, exit by hand`, { duration: 12000 });
@@ -580,7 +586,7 @@ export default function Dashboard() {
               <div className="tile-in" style={{ animationDelay: "180ms" }}><CompactCandidates candidates={scanner} scannerEnabled={scannerEnabled} onEnableScanner={onEnableScanner} /></div>
               <div className="tile-in" style={{ animationDelay: "240ms" }}>
                 <MinimizableCard id="launch-feed" title="Live launch feed" stat={`${launches.length} tracked`}>
-                  <RecentLaunchesFeed launches={launches} feedLive={feedLive} />
+                  <RecentLaunchesFeed launches={launches} feedLive={feedLive} flow={windowFeed} />
                 </MinimizableCard>
               </div>
             </div>

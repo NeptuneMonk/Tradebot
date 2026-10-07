@@ -1991,6 +1991,13 @@ async def recover_stuck_trade(trade_id: str):
 
 
 # ---------- Launches & Trades ----------
+@api.get("/launches/window")
+async def launches_window():
+    """Feed-header readout: tokens inside the age window now, flow through it (last minute), last Pump.fun pull stats."""
+    return bot_state.window_feed_snapshot()
+
+
+
 @api.get("/launches/recent")
 async def launches_recent(limit: int = 150, candidates: bool = True):
     """Live launch feed by detection time desc: tokens inside the operator's age windows right now plus positions we
