@@ -1997,6 +1997,23 @@ async def launches_window():
     return bot_state.window_feed_snapshot()
 
 
+@api.get("/alerts")
+async def alerts_status():
+    return bot_state.alerts.snapshot()
+
+
+@api.post("/alerts/connect")
+async def alerts_connect():
+    """Pair the Telegram chat: reads the newest message sent to the bot and makes that chat the alert target."""
+    return await bot_state.alerts.connect()
+
+
+@api.post("/alerts/test")
+async def alerts_test():
+    ok = await bot_state.alerts.send("test", "🔔 <b>PUMP.BOT test alert</b> — phone alerts are working.")
+    return {"ok": ok, **bot_state.alerts.snapshot()}
+
+
 
 @api.get("/launches/recent")
 async def launches_recent(limit: int = 150, candidates: bool = True):

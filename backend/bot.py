@@ -180,6 +180,10 @@ class BotState:
         self.discovery = PumpfunDiscovery(self)
         self.rh_discovery = RHDiscovery(self)
         self.rh_paper = RHPaperTrader(self)
+        from alerts import Alerts
+        self.alerts = Alerts(self)                       # Telegram phone alerts (dark until TELEGRAM_BOT_TOKEN is set)
+        if self.alerts.on_event not in hub.listeners:
+            hub.listeners.append(self.alerts.on_event)
         from ladder import LadderBook
         self.ladder = LadderBook(self)
         self.pnl_reconciler = PnLReconciler(self)
@@ -420,6 +424,8 @@ class BotState:
         # Robinhood Chain watch-only feed (no Helius, no entries)
         self.rh_discovery.start()
         self.rh_paper.start()
+        await self.alerts.load()
+        self.alerts.start()
         # cut-the-fat (2026-10-03): the graduate LadderBook (1,089 watches, 0 legs ever) no longer starts
         # Start priority-fee auto-tuner (only consulted when speed_mode='auto')
         auto_tuner.start()
@@ -1046,6 +1052,7 @@ class BotState:
             self.kill_switch_reason = f"daily loss {pnl:+.2f} USD ≤ −{abs(self.config.daily_kill_switch_usd):.2f} (live)"
             self.config.enabled = False
             await self.save_enabled()
+            await hub.broadcast("kill_switch_tripped", {"reason": self.kill_switch_reason, "pnl_usd": pnl})
             return True
         return False
 

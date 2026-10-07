@@ -419,6 +419,9 @@ class BotConfig(BaseModel):
     # PnL stop — the one guard that stays on when you log out: realised + open PnL since `pnl_stop_armed_ts` (current
     # mode) ≤ −pnl_stop_usd → bot off, kill switch tripped, open positions flattened (if pnl_stop_flatten). 0 = off.
     pnl_stop_usd: float = 0.0
+    # Telegram phone alerts (alerts.py): master switch + |PnL %| floor for "trade closed" pings
+    alerts_enabled: bool = True
+    alert_trade_pnl_pct: float = 20.0
     pnl_stop_armed_ts: float = 0.0
     pnl_stop_flatten: bool = True
     inventory_halt_n: int = 5

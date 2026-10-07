@@ -52,6 +52,7 @@ class WSHub:
         self._ident: dict[str, dict] = {}   # launch id → identity stub of a not-yet-candidate launch
         self.stats = {"frames": 0, "bytes": 0}
         self._recent: deque = deque()   # (ts, bytes) for the last 60 s → msgs/s + avg bytes on the diagnostics strip
+        self.listeners: list = []       # async (event_type, data) observers (alerts); never called for the candidate tape
 
     async def connect(self, ws: WebSocket):
         await ws.accept()
@@ -107,6 +108,13 @@ class WSHub:
         prev["seq"] += 1
         return "candidate_update", {"id": lid, "seq": prev["seq"], "p": changed}
 
+    @staticmethod
+    async def _notify(fn, event_type: str, data) -> None:
+        try:
+            await fn(event_type, data)
+        except Exception as e:
+            logger.debug(f"hub listener failed on {event_type}: {e}")
+
     async def broadcast(self, event_type: str, data, *, mirror: bool = True):
         if event_type in ("launch", "launch_update") and isinstance(data, dict):
             event_type, data = self._gate_launch(event_type, data)
@@ -115,6 +123,9 @@ class WSHub:
         if mirror and self.mirror is not None:
             # leader → capped ws_events collection; follower pods tail it into their own sockets
             await self.mirror(event_type, data)
+        if self.listeners and not event_type.startswith("candidate"):
+            for fn in list(self.listeners):
+                asyncio.create_task(self._notify(fn, event_type, data))
         if not self.clients:
             return
         msg = json.dumps({"type": event_type, "data": data}, default=str)
