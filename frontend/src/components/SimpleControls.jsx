@@ -1,4 +1,5 @@
 import { memo, useEffect, useState } from "react";
+import { api } from "@/lib/api";
 import { Play, Square, ShieldCheck, Activity } from "lucide-react";
 import { toast } from "sonner";
 import { explainApiError } from "@/lib/api";
@@ -54,6 +55,36 @@ function Money({ label, value, onCommit, testid, step = 1, hint }) {
           className="w-24 bg-transparent py-1.5 pl-1 text-sm text-neutral-100 outline-none" />
       </span>
     </label>
+  );
+}
+
+// PnL stop — the one guard meant to stay on while you are logged out: realised + open PnL since ARM ≤ −limit → bot off,
+// kill switch tripped, open positions flattened. Counts from the moment you arm it (not from midnight).
+function PnlStop({ config, status }) {
+  const snap = status?.pnl_stop;
+  const [limit, setLimit] = useState(String(config.pnl_stop_usd || ""));
+  useEffect(() => { setLimit(String(config.pnl_stop_usd || "")); }, [config.pnl_stop_usd]);
+  const arm = (v) => api.pnlStopArm(v, config.pnl_stop_flatten !== false)
+    .then((r) => toast.success(r.armed ? `PnL stop armed: −$${Number(r.limit_usd).toFixed(2)} from now (${r.mode})` : "PnL stop disarmed"))
+    .catch((e) => toast.error(e?.response?.data?.detail || e.message));
+  const armed = !!snap?.armed;
+  const pnl = Number(snap?.pnl_usd || 0);
+  return (
+    <div className="flex flex-col gap-1" data-testid="pnl-stop">
+      <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500"
+        title="Stop-loss on your PnL: realised + open PnL since you armed it. Hits the limit → bot OFF, kill switch, positions flattened. Set the $ you are willing to lose from NOW; 0 disarms.">
+        PnL stop{armed ? <span className={`ml-2 normal-case tracking-normal ${pnl < 0 ? "text-rose-300" : "text-emerald-300"}`} data-testid="pnl-stop-pnl">{pnl >= 0 ? "+" : "−"}${Math.abs(pnl).toFixed(2)} / −${Number(snap.limit_usd).toFixed(0)}</span> : null}
+      </span>
+      <div className="flex items-center gap-1">
+        <input type="number" min="0" step="5" value={limit} onChange={(e) => setLimit(e.target.value)} data-testid="pnl-stop-limit-input" placeholder="$"
+          className="w-16 bg-neutral-950 border border-neutral-800 px-2 py-1 text-[11px] font-mono text-neutral-200" />
+        <button type="button" onClick={() => arm(parseFloat(limit) || 0)} data-testid="pnl-stop-arm"
+          className={`px-2 py-1.5 text-[11px] uppercase tracking-[0.18em] border transition-colors ${armed ? "border-rose-800 bg-rose-950/40 text-rose-200" : "border-neutral-800 text-neutral-400 hover:text-neutral-100"}`}>
+          {armed ? "re-arm" : "arm"}
+        </button>
+        {armed ? <button type="button" onClick={() => arm(0)} data-testid="pnl-stop-disarm" className="px-2 py-1.5 text-[11px] uppercase tracking-[0.18em] border border-neutral-800 text-neutral-500 hover:text-neutral-200">off</button> : null}
+      </div>
+    </div>
   );
 }
 
@@ -138,6 +169,12 @@ function SimpleControls({ config, status, wallet, pl, onPatch, onStart, onStop }
           <Book k="doctor-filter" label={config.live_doctor_entry_filter !== false ? "on" : "off"} on={config.live_doctor_entry_filter !== false}
             onFlip={(v) => patch({ live_doctor_entry_filter: v }, v ? "Doctor entry filter ON — look-alikes of recent exit liquidity are skipped / half-sized" : "Doctor entry filter OFF — every launch that passes the gates is sized full")} />
         </div>
+        <div className="flex flex-col gap-1">
+          <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500" title="Live-Doctor breakers bench a book whose recent payoff is below YOUR target (a 0.4R target is judged against 0.4, not 1.0) or whose target looks unreachable. Off = never bench. Runs even with Autopilot OFF.">Doctor breakers</span>
+          <Book k="doctor-breakers" label={config.live_doctor_breakers_enabled !== false ? "on" : "off"} on={config.live_doctor_breakers_enabled !== false}
+            onFlip={(v) => patch({ live_doctor_breakers_enabled: v }, v ? "Doctor breakers ON — books can be benched on payoff vs your target" : "Doctor breakers OFF — books are never benched; any existing pause is lifted")} />
+        </div>
+        <PnlStop config={config} status={status} />
         <div className="flex flex-col gap-1">
           <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">Speed</span>
           <Seg options={speedOpts} value={speed} onPick={(v) => patch({ speed_mode: v }, `Speed ${v}`)} testid="simple-speed" />

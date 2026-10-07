@@ -151,6 +151,7 @@ export const api = {
   scorecardCell: (cell, disabled) => client.post("/scorecard/cell", { cell, disabled }).then(r => r.data),
   inventory: () => client.get("/inventory").then(r => r.data),
   inventoryLift: () => client.post("/inventory/lift").then(r => r.data),
+  pnlStopArm: (limit_usd, flatten) => client.post("/pnl-stop/arm", { limit_usd, flatten }).then(r => r.data),
   readiness: () => client.get("/readiness").then(r => r.data),
   pods: () => client.get("/pods").then(r => r.data),
   reputationBatch: (mints, creators) => client.post("/reputation/batch", { mints, creators: creators || {} }).then(r => r.data),

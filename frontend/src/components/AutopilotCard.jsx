@@ -297,7 +297,7 @@ function AutopilotCard({ config, onConfigUpdate, section = "all", filter, status
         </div>
         <div className="flex items-center gap-1.5">
           <Clock className="w-3 h-3 text-neutral-500" /> next review {fmtWhen(s.next_review_ts)} · <Wallet className="w-3 h-3 text-neutral-500" /> paper pools ${Number(config?.paper_bankroll_usd ?? 1000).toFixed(0)} per chain
-          {s.kill_switch_tripped && <span className="text-rose-300"> · kill switch tripped</span>}
+          {s.kill_switch_tripped && <span className="text-rose-300" data-testid="kill-switch-reason"> · kill switch tripped{s.kill_switch_reason ? ` — ${s.kill_switch_reason}` : ""}</span>}
         </div>
       </div>
 

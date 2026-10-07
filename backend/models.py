@@ -413,6 +413,14 @@ class BotConfig(BaseModel):
     # Live-Doctor ENTRY filter (winner- vs exit-liquidity likeness → skip / half / full). Independent of Autopilot.
     # Off = every launch that passes the gates is sized full; the breakers and the hour profile keep running.
     live_doctor_entry_filter: bool = True
+    # Live-Doctor BREAKERS (book pauses on payoff / unreachable target). Off = never bench a book. When on, the payoff
+    # threshold follows YOUR target: a 0.4R target is judged against 0.4, not 1.0.
+    live_doctor_breakers_enabled: bool = True
+    # PnL stop — the one guard that stays on when you log out: realised + open PnL since `pnl_stop_armed_ts` (current
+    # mode) ≤ −pnl_stop_usd → bot off, kill switch tripped, open positions flattened (if pnl_stop_flatten). 0 = off.
+    pnl_stop_usd: float = 0.0
+    pnl_stop_armed_ts: float = 0.0
+    pnl_stop_flatten: bool = True
     inventory_halt_n: int = 5
     inventory_halt_window_min: int = 90
     # CRAZY-dev watch: reputation.family CRAZY rank → min-stake, no-gate buy parked as LTH (operator exits by hand)
@@ -726,6 +734,8 @@ class BotStatus(BaseModel):
     enabled: bool                       # master run — entries allowed
     live_trading: bool
     kill_switch_tripped: bool
+    kill_switch_reason: Optional[str] = None
+    pnl_stop: Optional[dict] = None       # {armed, limit_usd, pnl_usd, realized_usd, open_usd, since_ts, mode}
     lite_mode: Optional[dict] = None     # watchdog snapshot: active / reason / rss_mb / lag_ms
     dev_watch: Optional[dict] = None     # CRAZY-dev watch: state watching/away/autopilot/dark + counters
     books_paused: dict[str, float] = {}  # live-doctor breaker: book → lift_after ts (entries blocked for that book)

@@ -125,6 +125,7 @@ class BotState:
         self.active_trades: dict[str, dict] = {}
         self.recent_launches: list[dict] = []
         self.kill_switch_tripped = False
+        self.kill_switch_reason: str | None = None
         self.stats: dict = {}                      # counters (flush_holds, …) — was missing: _flush_holds_sol crashed the fast exit path
         self.listener_connected = False
         self.tracking: dict[str, dict] = {}
@@ -991,11 +992,53 @@ class BotState:
             total += float(d.get("pnl_usd", 0.0))
         return total
 
+    async def pnl_stop_snapshot(self) -> dict:
+        """Realised + open PnL (current mode) since the stop was armed, against the operator's limit."""
+        cfg = self.config
+        mode = "live" if cfg.live_trading else "paper"
+        since = float(getattr(cfg, "pnl_stop_armed_ts", 0.0) or 0.0)
+        limit = float(getattr(cfg, "pnl_stop_usd", 0.0) or 0.0)
+        realized = 0.0
+        if since > 0:
+            since_iso = datetime.fromtimestamp(since, tz=timezone.utc).isoformat()
+            agg = await self.db.trades.aggregate([
+                {"$match": {"status": {"$nin": ["active", "zombie_duplicate"]}, "mode": mode, "exit_time": {"$gte": since_iso}}},
+                {"$group": {"_id": None, "pnl": {"$sum": "$pnl_usd"}}}]).to_list(1)
+            realized = float((agg[0]["pnl"] if agg else 0.0) or 0.0)
+        open_usd = 0.0
+        for slot in self.active_trades.values():
+            t = slot.get("trade") or {}
+            if t.get("mode", mode) == mode:
+                open_usd += float(slot.get("live_pnl_usd") or t.get("live_pnl_usd") or 0.0)
+        return {"armed": limit > 0 and since > 0, "limit_usd": limit, "pnl_usd": round(realized + open_usd, 2),
+                "realized_usd": round(realized, 2), "open_usd": round(open_usd, 2), "since_ts": since, "mode": mode}
+
+    async def check_pnl_stop(self) -> bool:
+        snap = await self.pnl_stop_snapshot()
+        if not snap["armed"] or snap["pnl_usd"] > -abs(snap["limit_usd"]):
+            return False
+        self.kill_switch_tripped = True
+        self.kill_switch_reason = f"PnL stop: {snap['pnl_usd']:+.2f} USD since armed ≤ −{snap['limit_usd']:.2f} ({snap['mode']})"
+        self.config.enabled = False
+        await self.save_enabled()
+        logger.error(self.kill_switch_reason)
+        await hub.broadcast("pnl_stop_tripped", snap)
+        if getattr(self.config, "pnl_stop_flatten", True):
+            for mint in list(self.active_trades):
+                try:
+                    await self._exit(mint, reason="pnl stop")
+                except Exception as e:
+                    logger.warning(f"pnl stop flatten {mint[:8]}…: {e}")
+        return True
+
     async def check_kill_switch(self) -> bool:
+        if await self.check_pnl_stop():
+            return True
         # Live-only — paper trades must never trip the real-money kill switch
         pnl = await self.daily_pnl_usd(mode="live")
         if pnl <= -abs(self.config.daily_kill_switch_usd):
             self.kill_switch_tripped = True
+            self.kill_switch_reason = f"daily loss {pnl:+.2f} USD ≤ −{abs(self.config.daily_kill_switch_usd):.2f} (live)"
             self.config.enabled = False
             await self.save_enabled()
             return True
@@ -2892,7 +2935,7 @@ class BotState:
         if not is_manual and self.config.inventory_halt_enabled and self.inventory.active():
             logger.info(f"inventory halt: skipping {launch.mint[:8]}… ({self.inventory.snapshot()})")
             return
-        if not is_manual and self.live_doctor is not None and self.live_doctor.book_benched(book, bool(self.config.live_trading)):
+        if not is_manual and self.live_doctor is not None and self.config.live_doctor_breakers_enabled and self.live_doctor.book_benched(book, bool(self.config.live_trading)):
             logger.info(f"book {book} paused by live-doctor breaker: skipping {launch.mint[:8]}…")
             _band = "seasoned" if (self.tracking.get(launch.mint) or {}).get("protocol") == "pumpswap" else "new"
             await self._skip_event({"mint": launch.mint, "symbol": launch.symbol, "band": _band, "reason": f"doctor-breaker:{book}",

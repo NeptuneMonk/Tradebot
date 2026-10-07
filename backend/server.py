@@ -894,6 +894,8 @@ async def bot_status():
         books_paused=dict(bot_state.live_doctor.book_paused_until) if getattr(bot_state, "live_doctor", None) else {},
         lite_mode=bot_state.lite.snapshot(),
         dev_watch=await bot_state.dev_watch_snapshot(),
+        kill_switch_reason=bot_state.kill_switch_reason,
+        pnl_stop=await bot_state.pnl_stop_snapshot(),
         listener_connected=listener.connected,
         helius_paused=_gate_snapshot(),
         listener_last_error=listener.last_error,
@@ -1189,6 +1191,21 @@ async def inventory_snapshot():
             "runner_cap": _runner.RUNNER_CAP, "runner_open": len(runners), "runners": runners,
             "book_paused_until": dict(ld.book_paused_until) if ld else {}, "book_breakers": getattr(ld, "last_book_breakers", {}) if ld else {},
             "breakers": dict(ld.breakers) if ld else {}, "breakers_fail_closed": ld.breakers_fail_closed() if ld else False}
+
+
+@api.post("/pnl-stop/arm")
+async def pnl_stop_arm(body: dict = Body(default={})):
+    """Arm (or re-arm) the PnL stop from NOW: `{"limit_usd": 25, "flatten": true}`; limit 0 disarms."""
+    limit = max(0.0, float(body.get("limit_usd", bot_state.config.pnl_stop_usd) or 0.0))
+    bot_state.config.pnl_stop_usd = limit
+    bot_state.config.pnl_stop_armed_ts = time.time() if limit > 0 else 0.0
+    if "flatten" in body:
+        bot_state.config.pnl_stop_flatten = bool(body["flatten"])
+    await bot_state.save_config(include_switches=True)
+    snap = await bot_state.pnl_stop_snapshot()
+    logger.warning(f"PnL stop {'ARMED' if snap['armed'] else 'DISARMED'}: limit ${limit:.2f} from now ({snap['mode']})")
+    await hub.broadcast("pnl_stop", snap)
+    return {"ok": True, **snap}
 
 
 @api.post("/inventory/lift")

@@ -375,10 +375,22 @@ class LiveDoctor:
     async def _evaluate_book_breakers(self, joined: list[dict]) -> dict:
         """Per book, last 4h: pause when payoff (avg win / |avg loss|, after fees) < 1.0 or the median MFE
         can't even reach the book's first target — the TP is unreachable, stop feeding it."""
-        from book_params import FIRST_TARGET_R, BOOKS, r_of
+        from book_params import FIRST_TARGET_R, BOOKS, r_of, exit_param
+        cfg = getattr(self.bot_state, "config", None)
+        if cfg is not None and not getattr(cfg, "live_doctor_breakers_enabled", True):
+            for b in list(self.breakers):
+                if (self.breakers.get(b) or {}).get("paused"):
+                    self.breakers[b] = {**self.breakers[b], "paused": False, "lifted_by": "switch", "lifted_at": time.time()}
+            return {"disabled": True}
         since = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
         out = {}
         for book in BOOKS:
+            # the breaker judges against YOUR target: a 0.4R scalp target can never show payoff ≥ 1.0 — and a book with
+            # no R target at all (TP% or trail only) is never judged on payoff
+            tr = float(exit_param(cfg, book, "target_r") or 0.0) if cfg is not None else FIRST_TARGET_R[book]
+            tp = float(exit_param(cfg, book, "take_profit_pct") or 0.0) if cfg is not None else 0.0
+            payoff_floor = min(1.0, tr) if tr > 0 else None
+            first_target_r = tr if tr > 0 else None
             rows = [(j.get("trade") or {}) for j in joined
                     if (j.get("trade") or {}).get("book") == book and ((j.get("trade") or {}).get("exit_time") or "") >= since]
             if len(rows) < BREAKER_MIN_N:
@@ -393,10 +405,10 @@ class LiveDoctor:
                     mfes.append(max(0.0, float(t["mfe_pct"])) / (r / e * 100.0))   # MFE in R (never below 0)
             med_mfe_r = statistics.median(mfes) if mfes else None
             reason = None
-            if payoff is not None and payoff < 1.0:
-                reason = f"payoff {payoff:.2f} < 1.0 after fees (4h, n={len(rows)})"
-            elif med_mfe_r is not None and med_mfe_r < FIRST_TARGET_R[book]:
-                reason = f"median MFE {med_mfe_r:.2f}R < first target {FIRST_TARGET_R[book]:g}R — target unreachable"
+            if payoff is not None and payoff_floor is not None and payoff < payoff_floor:
+                reason = f"payoff {payoff:.2f} < {payoff_floor:.2f} (your {tr:g}R target) after fees (4h, n={len(rows)})"
+            elif med_mfe_r is not None and first_target_r is not None and tp <= 0 and med_mfe_r < first_target_r:
+                reason = f"median MFE {med_mfe_r:.2f}R < your target {first_target_r:g}R — target unreachable"
             if reason:
                 prior = self.breakers.get(book) or {}
                 if prior.get("lifted_by") == "user" and not prior.get("paused"):
