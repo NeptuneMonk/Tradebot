@@ -16,7 +16,7 @@ def _coin(mint, created_ago_s=600, complete=True, pool="Pool111"):
 
 def _state():
     return SimpleNamespace(config=BotConfig(), tracking={}, active_trades={}, entered_mints=set(),
-                           recent_launches=[], db=None)
+                           recent_launches=[], db=None, scope_reason=lambda mint, b, now: None)
 
 
 import pytest

@@ -92,9 +92,9 @@ def test_classifier_unused_on_pumpswap_and_no_trending_clients():
     text = "".join(p.read_text() for p in src.glob("*.py"))
     for needle in ("birdeye", "/trending"):
         assert needle not in text.lower(), needle
-    # DexScreener is allowed only for on-demand operator views (token drawer, manual-pin metadata) — never for
-    # discovery, gating or entry decisions.
-    for f in ("discovery.py", "scanner.py", "bot.py", "rh_discovery.py", "rh_paper.py", "classifier.py"):
+    # DexScreener is allowed for on-demand operator views (token drawer, manual-pin metadata) and, since the
+    # alive-by-inflow window discovery (2026-10-06), for discovery's volume check — never for gating or entry decisions.
+    for f in ("scanner.py", "bot.py", "rh_discovery.py", "rh_paper.py", "classifier.py"):
         assert "dexscreener" not in (src / f).read_text().lower(), f
 
 

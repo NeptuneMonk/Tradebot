@@ -365,6 +365,7 @@ class MomentumScanner:
                 cfg = st.config
                 interval = max(5, int(cfg.scanner_interval_s))
                 await asyncio.sleep(interval)
+                st._prune_out_of_scope()                 # time gates / switches / tags, even while the scanner is off
                 if not cfg.scanner_enabled:
                     continue
                 if not cfg.enabled or st.kill_switch_tripped:

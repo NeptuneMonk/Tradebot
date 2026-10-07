@@ -466,6 +466,8 @@ class RHDiscovery:
             try:
                 if not self._enabled():
                     self.stats["paused"] = True
+                    if not bool(getattr(self.state.config, "rh_feed_enabled", True)):
+                        self.flush_tracker("rh-feed-off")
                     await asyncio.sleep(POLL_INTERVAL_S)
                     continue
                 self.stats["paused"] = False
@@ -1157,12 +1159,30 @@ class RHDiscovery:
                 pass
             await hub.broadcast("launch_update", {"id": b["launch_id"], "mint": token, **update})
 
-    def _gc(self, now: float):
+    def _held(self) -> set[str]:
         paper = getattr(self.state, "rh_paper", None)
         held = set(paper.positions.keys()) if paper is not None else set()   # never evict a token we hold
         held |= {t for t, b in self.tracking.items() if b.get("pinned")}      # operator-pinned ladder tokens: no age, no TTL
-        # keep curve tokens as long as the RH max-age window says they are still eligible (≤ 7 d)…
-        ttl = max(float(TRACK_MAX_AGE_S), self._window_s())
+        return held
+
+    def flush_tracker(self, why: str) -> int:
+        """RH feed switched off: the tracker must not hold memory for a book that is not running (held / pinned stay)."""
+        held = self._held()
+        gone = [t for t in self.tracking if t not in held]
+        for t in gone:
+            b = self.tracking.pop(t, None)
+            if b:
+                self._curve_to_token.pop(b["curve"], None)
+            self._dirty.discard(t)
+        if gone:
+            self.stats["evicted_scope"] = self.stats.get("evicted_scope", 0) + len(gone)
+            logger.info(f"RH tracker: flushed {len(gone)} tokens ({why}); {len(self.tracking)} held/pinned kept")
+        return len(gone)
+
+    def _gc(self, now: float):
+        held = self._held()
+        # curve tokens stay exactly as long as the operator's RH max-age window says they are eligible (strict time gate)…
+        ttl = self._window_s()
         stale = [t for t, b in self.tracking.items() if now - b["start"] > ttl and t not in held]
         # …but only while they are ALIVE: no print inside the alive lookback (after a grace for brand-new launches) →
         # evicted; window discovery re-adds a token the moment it has inflow again. Keeps the tracker / trade filter on live tokens.
@@ -1194,6 +1214,16 @@ class RHDiscovery:
             )
         except Exception as e:
             logger.debug(f"rh launch gc failed: {e}")
+
+    def in_window(self, now: float | None = None) -> dict[str, dict]:
+        """Published curve tokens inside the operator's RH age window [rh_min_age_s, rh_max_age_min] (graduated RH
+        pools stay in-window) — the RH slice of the live launch feed."""
+        cfg = self.state.config
+        now = time.time() if now is None else now
+        lo = max(0.0, float(getattr(cfg, "rh_min_age_s", 0.0)))
+        hi = max(lo, float(getattr(cfg, "rh_max_age_min", 15.0)) * 60)
+        return {t: b for t, b in self.tracking.items()
+                if b.get("published") and (b.get("graduated") or lo <= now - b["start"] <= hi)}
 
     def candidates_snapshot(self) -> list[dict]:
         """Third scanner band ("rh_new") — watch-only view of the RH curve tracker. Age window and pass/fail

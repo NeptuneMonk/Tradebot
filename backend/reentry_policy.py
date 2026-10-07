@@ -69,6 +69,10 @@ class ReentryLedger:
         e = self.exits.get(token)
         return int(e["attempts"]) if e else 0
 
+    def exhausted(self, token: str, cfg) -> bool:
+        e = self.exits.get(token)
+        return e is not None and int(e["attempts"]) >= self._max_attempts(e, cfg)
+
     def prune(self, cfg, now: float | None = None) -> None:
         now = time.time() if now is None else now
         for token, e in list(self.exits.items()):

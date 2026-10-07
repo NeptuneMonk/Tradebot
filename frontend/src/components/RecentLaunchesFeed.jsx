@@ -82,7 +82,7 @@ function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh
     <div className="control-card flex flex-col" data-testid="recent-launches-card">
       <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
         <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-neutral-500">
-          <Radio className="w-3 h-3" /> Recent Launches ({launches.length})
+          <Radio className="w-3 h-3" /> Launches in window ({launches.length})
         </div>
         <div className="flex items-center gap-2">
           <ChainFilterChips value={chainFilter} onChange={setFilter} counts={counts} />
@@ -97,7 +97,7 @@ function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh
         </div>
       </div>
       <VirtualUl items={launches} estimate={68} maxHeightClass="max-h-[280px] md:max-h-[480px]" testId="launches-list"
-        empty={<div className="text-center py-6 text-[10px] uppercase tracking-[0.2em] text-neutral-600">listening for launches…</div>}
+        empty={<div className="text-center py-6 text-[10px] uppercase tracking-[0.2em] text-neutral-600" data-testid="launches-empty">no tokens inside your age window yet — rows appear as launches age into it</div>}
         renderItem={(l) => {
             const isRh = l.chain === "rh";
             return (
@@ -111,6 +111,11 @@ function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <ChainBadge chain={l.chain} protocol={isRh ? l.protocol : null} mint={l.mint} />
+                    {l.band && !l.entered && (
+                      <span className={`text-[10px] font-mono px-1 py-0 border uppercase ${l.band === "seasoned" ? "border-amber-800 text-amber-300" : "border-sky-800 text-sky-300"}`}
+                        title={l.band === "seasoned" ? "inside your Seasoned (post-graduation) age window" : l.band === "rh_new" ? "inside your RH age window" : "inside your New (Pump.fun curve) age window"}
+                        data-testid={`launch-band-${l.mint}`}>{l.band === "rh_new" ? "window" : l.band}</span>
+                    )}
                     <span className="font-mono font-semibold text-sm truncate">
                       {l.symbol || "?"}
                     </span>

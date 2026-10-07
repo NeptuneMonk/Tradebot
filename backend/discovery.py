@@ -114,6 +114,8 @@ class PumpfunDiscovery:
             pass
         coins = await self.fetch_recent_graduated()
         now = time.time()
+        if st.scope_reason("", {"protocol": "pumpswap", "graduated_at": now}, now):
+            return 0                                     # seasoned entries / hunt book off: nothing to seed
         band_max_s = float(getattr(st.config, "band_seasoned_max_age_min", 240.0)) * 60.0
         # Drop feed tokens that aged out of the Seasoned band — otherwise the
         # refresh loop keeps spending a pool-state RPC per minute on each.
@@ -460,6 +462,7 @@ class PumpfunDiscovery:
 
         seeded = 0
         skipped_idle = 0
+        skipped_scope = 0
         max_idle_ms = cfg.scanner_discovery_max_idle_minutes * 60 * 1000
         now_ms = now * 1000
         cands: list[tuple[dict, float, bool]] = []
@@ -477,6 +480,12 @@ class PumpfunDiscovery:
             # Graduated tokens trade on PumpSwap AMM. We still want them — they're
             # often the biggest movers — so just tag the protocol.
             is_pumpswap = bool(c.get("complete"))
+            # Operator scope: a token outside its band's time gate, on a switched-off book, or with burnt re-entries
+            # would be evicted the moment it was seeded — don't seed it.
+            if st.scope_reason(mint, {"protocol": "pumpswap" if is_pumpswap else "pumpfun", "start": created_s,
+                                      "graduated_at": now if is_pumpswap else None}, now):
+                skipped_scope += 1
+                continue
             # Freshness pre-filter (cheap): skip tokens whose last curve trade is too stale.
             # Pump.fun's `last_trade_timestamp` only tracks bonding-curve trades — it goes
             # stale the moment the token graduates, so graduated tokens skip this gate.
@@ -502,10 +511,11 @@ class PumpfunDiscovery:
             except Exception as e:
                 logger.debug(f"seed failed for {c['mint']}: {e}")
 
-        self.last_stats = {"ts": now, "in_band": len(coins), "candidates": len(cands), "seeded": seeded, "skipped_idle": skipped_idle, **alive_stats}
+        self.last_stats = {"ts": now, "in_band": len(coins), "candidates": len(cands), "seeded": seeded, "skipped_idle": skipped_idle,
+                           "skipped_scope": skipped_scope, **alive_stats}
         logger.info(f"discovery: {len(coins)} in band, {len(cands)} candidates, alive {alive_stats['alive']} "
                     f"(inflow ≥ {alive_stats['floor_sol']:g} SOL / {alive_stats['window']}), below floor {alive_stats['below_floor']}, "
-                    f"no pair {alive_stats['no_pair']}, seeded {seeded}, skipped_idle {skipped_idle}")
+                    f"no pair {alive_stats['no_pair']}, seeded {seeded}, skipped_idle {skipped_idle}, out of scope {skipped_scope}")
         if seeded:
             await hub.broadcast("discovery", {"seeded": seeded, "ts": now, **alive_stats})
         return seeded
@@ -699,6 +709,7 @@ class PumpfunDiscovery:
             "scanner_eligible": True,
             "scanner_last_attempt": 0.0,
             "discovered": True,
+            "seen_at": time.time(),                        # seed time: a just-seeded token is alive until proven quiet
             "usd_market_cap": usd_mc,
             "last_trade_ms": last_trade_ms,
             "protocol": "pumpswap" if is_pumpswap else "pumpfun",

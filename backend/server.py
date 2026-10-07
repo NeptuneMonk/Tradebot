@@ -245,7 +245,8 @@ async def ensure_indexes():
                                      partialFilterExpression={"status": "active"})
     except Exception as e:
         logger.error(f"uniq_active_mint index not created (duplicate active rows present? sweep first): {e}")
-    for coll, key, ttl in (("entry_locks", "ts", 120), ("pod_commands", "created_at", None), ("ws_events", "seq", None), ("pods", "seen_at", None)):
+    for coll, key, ttl in (("entry_locks", "ts", 120), ("pod_commands", "created_at", None), ("ws_events", "seq", None), ("pods", "seen_at", None),
+                           ("launches", "in_band", None), ("launches", "entered", None)):
         try:
             if ttl:
                 await db[coll].create_index([(key, 1)], expireAfterSeconds=ttl)
@@ -674,6 +675,7 @@ async def update_config(body: dict = Body(...)):
         logger.warning(f"CONFIG SWITCHES CHANGED via PUT /bot/config: {flips}")
     bot_state.config = cfg
     await bot_state.save_config(include_switches=True)
+    bot_state._prune_out_of_scope()                      # switches / gates changed: free tracker slots immediately
     if "helius_tracker_enabled" in body:
         await sync_helius_feed(cfg.helius_tracker_enabled, prev_helius)
     return cfg
@@ -1158,7 +1160,25 @@ async def set_lite_mode(body: dict = Body(...)):
 async def diagnostics_loop():
     from helius_gate import snapshot as gate_snapshot
     return {"event_loop_lag_ms": bot_state.loop_lag_ms, "helius_gate": gate_snapshot(),
-            "active_positions": len(bot_state.active_trades), "tracked_mints": len(bot_state.tracking), "ws_hub": hub.diagnostics}
+            "active_positions": len(bot_state.active_trades), "tracked_mints": len(bot_state.tracking), "ws_hub": hub.diagnostics,
+            "tracker_evictions": {k.replace("evicted_", ""): v for k, v in bot_state.stats.items() if k.startswith("evicted_")},
+            "tracker_bands": _tracker_bands(),
+            "rh_tracked": len(bot_state.rh_discovery.tracking) if getattr(bot_state, "rh_discovery", None) else 0}
+
+
+def _tracker_bands() -> dict:
+    """How the tracker slots are spent: in-band (new / seasoned), waiting to age into the new band, discovered."""
+    now = time.time()
+    cfg = bot_state.config
+    out = {"new": 0, "seasoned": 0, "pre_band": 0, "discovered": 0}
+    for b in bot_state.tracking.values():
+        band = bot_state.scanner.classify_band(b, cfg, now) if getattr(bot_state, "scanner", None) else None
+        if band:
+            out[band] += 1
+        elif (b.get("protocol") or "pumpfun") == "pumpfun" and (now - float(b.get("start") or now)) / 60.0 < float(cfg.band_new_min_age_min):
+            out["pre_band"] += 1
+        out["discovered"] += 1 if b.get("discovered") else 0
+    return out
 
 
 @api.get("/readiness")
@@ -1973,10 +1993,10 @@ async def recover_stuck_trade(trade_id: str):
 # ---------- Launches & Trades ----------
 @api.get("/launches/recent")
 async def launches_recent(limit: int = 30, candidates: bool = True):
-    """Recent launches by detection time desc, per-chain limits so the high-volume Robinhood Chain feed
-    can't push every Solana launch out of the window (and vice versa). Nothing is pinned any more."""
-    cand = {"$or": [{"entered": True}, {"scanner_eligible": True}, {"classifier_action": {"$in": list(hub.CANDIDATE_ACTIONS)}},
-                    {"classifier_action": "pending", "unique_buyers": {"$gte": hub.PENDING_MIN_BUYERS}}]} if candidates else {}
+    """Live launch feed by detection time desc: tokens inside the operator's age windows right now plus positions we
+    hold (`in_band`, kept current by the bot's window feed). Per-chain limits so the high-volume Robinhood Chain
+    feed can't push every Solana launch out of the window (and vice versa)."""
+    cand = {"in_band": True} if candidates else {}
     sol = await db.launches.find({"chain": {"$ne": "rh"}, **cand}, {"_id": 0}).sort("detected_at", -1).to_list(limit)
     rh = await db.launches.find({"chain": "rh", **cand}, {"_id": 0}).sort("detected_at", -1).to_list(limit)
     out = sorted(sol + rh, key=lambda r: str(r.get("detected_at") or ""), reverse=True)

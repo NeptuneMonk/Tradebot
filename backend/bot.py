@@ -63,6 +63,7 @@ SCANNER_TRACK_HOURS = 4       # how long we keep light tracking for the scanner
 PERSIST_INTERVAL_S = 2.0      # how often to flush tracker metrics to DB
 MAX_TRACKED_MINTS = 150       # cap memory (cut-the-fat 2026-10-03: was 500 — the tracker dict is the RAM hog on a 512Mi pod)
 TRACKER_DEAD_AFTER_S = 90.0   # a launch with no print (or ≤ 1 buy) for this long is evicted before any live one when the cap bites
+WINDOW_FEED_INTERVAL_S = 5.0  # how often the live launch list is re-diffed against the operator's age windows
 MANUAL_ENTRY_ACTIONS = ("manual", "dev_watch")   # operator-class entries: bypass the strategy gates, never consume a scanner slot
 DEV_WATCH_LOOKUP_DELAYS_S = (2.0, 4.0, 9.0)      # cumulative ~2s / 6s / 15s — reputation.family indexes a launch a moment after creation
 OPERATOR_PRESENCE_TTL_S = 45.0                   # dashboard WS heartbeat (any pod) younger than this = operator logged in
@@ -167,6 +168,7 @@ class BotState:
         # re-entry (attempt cap, min wait, size multiplier from the reentry_* controls), watch- or gate-triggered.
         self.reentry = ReentryLedger()
         self._reentry_gate_mult: dict[str, float] = {}
+        self._in_band: dict[str, dict] = {}            # window feed: mint → {band, id} last announced to the dashboard
         # Greylist Sniper rate cap — rolling per-hour fire counter so a wave
         # of greylist launches can't blow through the wallet. Cleared by
         # `_gc_greylist_snipe_counter` every minute.
@@ -434,7 +436,7 @@ class BotState:
         if first_load:
             self._bg_tasks = [asyncio.create_task(c()) for c in (
                 self._active_trades_reconciler_loop, self._held_bag_watcher_loop, self._readiness_watchdog_loop,
-                self._helius_autopause_loop, self._loop_lag_meter, self._metrics_flush_loop)]
+                self._helius_autopause_loop, self._loop_lag_meter, self._metrics_flush_loop, self._window_feed_loop)]
         # Surface the auto-disable to any WS clients listening — front-end
         # will show "Bot auto-disabled on restart" toast if connected.
         if was_running_before_restart and resumed:
@@ -1399,17 +1401,168 @@ class BotState:
         if reputation.configured():
             asyncio.create_task(self._crazy_dev_watch(launch))
 
+    def scope_reason(self, mint: str, b: dict, now: float) -> str | None:
+        """Why a bucket must NOT occupy a tracker slot: outside the operator's time gate, its book / the seasoned switch
+        is off, the dev is FARMER / fake-chart tagged, or the mint has burnt its re-entry attempts. Held, pending and
+        pinned mints are always in scope. Discovery calls this before seeding so out-of-scope tokens never enter."""
+        if b.get("pinned") or mint in self.active_trades or mint in self._pending_entry_mints:
+            return None
+        cfg = self.config
+        if b.get("rep_blocked"):
+            return b["rep_blocked"]
+        if self.reentry.exhausted(mint, cfg):
+            return "reentry-max"
+        if (b.get("protocol") or "pumpfun") == "pumpswap":
+            if not getattr(cfg, "scanner_seasoned_entries_enabled", True):
+                return "seasoned-off"
+            if not cfg.book_hunt_enabled:
+                return "book-off:hunt"
+            grad_at = float(b.get("graduated_at") or b.get("start") or now)
+            if (now - grad_at) / 60.0 > float(cfg.band_seasoned_max_age_min):
+                return "seasoned-age"
+            return None
+        if not cfg.book_scalp_enabled:
+            return "book-off:scalp"
+        if (now - float(b.get("start") or now)) / 60.0 > float(cfg.band_new_max_age_min):
+            return "new-age"
+        return None
+
+    def _prune_out_of_scope(self) -> int:
+        """Evict every tracked mint the operator can no longer trade (see `scope_reason`) so the 150 slots hold only
+        tokens inside the configured gates. Runs on every launch, every scanner tick and every config save."""
+        now = time.time()
+        gone = 0
+        for mint, b in list(self.tracking.items()):
+            why = self.scope_reason(mint, b, now)
+            if why is None:
+                continue
+            self.tracking.pop(mint, None)
+            gone += 1
+            key = f"evicted_scope:{why.split(':', 1)[0]}"
+            self.stats[key] = self.stats.get(key, 0) + 1
+        if gone:
+            logger.info(f"tracker: evicted {gone} out-of-scope tokens (time gates / switches / tags) — {len(self.tracking)} tracked")
+        return gone
+
+    # ---------- Window feed: the live launch list is "every token inside the operator's age windows" ----------
+    def _window_rows(self, now: float) -> dict[str, dict]:
+        """mint → identity row for every tracked token inside a band right now: SOL new / seasoned (band_* gates) and
+        RH curve tokens inside [rh_min_age_s, rh_max_age_min] (graduated RH pools count as in-window)."""
+        rows: dict[str, dict] = {}
+        cfg = self.config
+        for mint, b in self.tracking.items():
+            band = self.scanner.classify_band(b, cfg, now)
+            if band and b.get("launch_id"):
+                rows[mint] = {"id": b["launch_id"], "mint": mint, "band": band, "chain": "sol", "symbol": b.get("symbol"),
+                              "name": b.get("name"), "creator": b.get("creator"), "protocol": b.get("protocol") or "pumpfun",
+                              "detected_at": datetime.fromtimestamp(float(b["start"]), timezone.utc).isoformat()}
+        rh = getattr(self, "rh_discovery", None)
+        if rh is not None:
+            for token, b in rh.in_window(now).items():
+                rows[token] = {"id": b["launch_id"], "mint": token, "band": "rh_new", "chain": "rh", "symbol": b.get("symbol"),
+                               "name": b.get("name"), "creator": b.get("creator"), "protocol": b.get("protocol"),
+                               "quote_symbol": b.get("quote_symbol"),
+                               "detected_at": datetime.fromtimestamp(float(b["start"]), timezone.utc).isoformat()}
+        # open positions stay on the feed for as long as we hold them, whatever their age ("held" band)
+        for mint, slot in self.active_trades.items():
+            if mint in rows:
+                continue
+            b = self.tracking.get(mint) or {}
+            t = slot.get("trade") or {}
+            lid = b.get("launch_id") or (self._in_band.get(mint) or {}).get("id")
+            rows[mint] = {"id": lid, "mint": mint, "band": "held", "chain": "sol", "symbol": b.get("symbol") or t.get("symbol"),
+                          "name": b.get("name") or t.get("name"), "creator": b.get("creator") or t.get("creator"),
+                          "protocol": b.get("protocol") or "pumpfun",
+                          "detected_at": datetime.fromtimestamp(float(b["start"]), timezone.utc).isoformat() if b.get("start") else None}
+        paper = getattr(self, "rh_paper", None)
+        for token, pos in (paper.positions.items() if paper is not None else ()):
+            t = pos.get("trade") or {}
+            if token in rows or not t.get("launch_id"):
+                continue
+            rows[token] = {"id": t["launch_id"], "mint": token, "band": "held", "chain": "rh", "symbol": t.get("symbol"), "name": t.get("name")}
+        return rows
+
+    async def window_feed_tick(self) -> dict:
+        """Diff the in-window set against what the dashboard was last told: tokens that aged INTO a window get
+        `in_band=True` (→ hub promotes them to a `candidate` row), tokens that aged out / were evicted get
+        `in_band=False` (→ `dropped`). Persisted on the launch doc so `GET /launches/recent` agrees with the tape."""
+        now = time.time()
+        rows = self._window_rows(now)
+        entered, left = 0, 0
+        for mint, row in rows.items():
+            prev = self._in_band.get(mint)
+            if prev and prev["band"] == row["band"]:
+                continue
+            if not row.get("id"):
+                # held mint whose bucket is gone (restart / eviction): the launch doc is the only source of its id
+                doc = await self.db.launches.find_one({"mint": mint, "chain": {"$ne": "rh"}}, {"_id": 1, "symbol": 1, "name": 1, "creator": 1, "detected_at": 1})
+                if not doc:
+                    continue
+                row.update({"id": doc["_id"], **{k: doc.get(k) for k in ("symbol", "name", "creator", "detected_at") if doc.get(k)}})
+            self._in_band[mint] = {"band": row["band"], "id": row["id"]}
+            flags = {"in_band": True, "band": row["band"]}
+            ident = {k: v for k, v in row.items() if k not in ("id", "band") and v is not None}
+            try:
+                await self.db.launches.update_one({"_id": row["id"]}, {"$set": flags, "$setOnInsert": {**ident, "classifier_action": "discovered"}}, upsert=True)
+            except Exception as e:
+                logger.debug(f"window feed persist failed for {mint}: {e}")
+            await hub.broadcast("launch_update", {**row, **flags})
+            entered += 1
+        for mint in [m for m in self._in_band if m not in rows]:
+            prev = self._in_band.pop(mint)
+            try:
+                await self.db.launches.update_one({"_id": prev["id"]}, {"$set": {"in_band": False, "band": None}})
+            except Exception as e:
+                logger.debug(f"window feed persist failed for {mint}: {e}")
+            await hub.broadcast("launch_update", {"id": prev["id"], "mint": mint, "in_band": False, "band": None})
+            left += 1
+        return {"in_window": len(rows), "entered": entered, "left": left}
+
+    async def _window_feed_loop(self):
+        await asyncio.sleep(3.0)
+        try:
+            await self.db.launches.update_many({"in_band": True}, {"$set": {"in_band": False}})   # stale flags from the previous process
+        except Exception:
+            pass
+        while True:
+            try:
+                await self.window_feed_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"window feed tick failed: {e}")
+            await asyncio.sleep(WINDOW_FEED_INTERVAL_S)
+
+    def tag_reputation(self, mint: str, rep: dict) -> None:
+        """FARMER / fake-chart dev → the token is untradeable on every book: tag the bucket and free its slot now."""
+        if not rep or not (rep.get("tier") == "FARMER" or rep.get("fake_chart")):
+            return
+        b = self.tracking.get(mint)
+        if b is None:
+            return
+        b["rep_blocked"] = "fake-chart" if rep.get("fake_chart") and rep.get("tier") != "FARMER" else "FARMER"
+        if self.scope_reason(mint, b, time.time()):
+            self.tracking.pop(mint, None)
+            self.stats["evicted_scope:reputation"] = self.stats.get("evicted_scope:reputation", 0) + 1
+
     def _enforce_tracking_cap(self) -> None:
         """Cap (lite mode shrinks it): evict DEAD buckets first — most launches never get a second buyer and would
         otherwise push live ones out after ~4 min at 35 launches/min — then fall back to oldest-first."""
+        self._prune_out_of_scope()
         cap = LITE_TRACKED_MINTS if self.lite.active else MAX_TRACKED_MINTS
         if len(self.tracking) <= cap:
             return
         now_e = time.time()
 
         def _dead(b: dict) -> bool:
-            last = max(float(b.get("last_trade_ts") or 0), float(b.get("last_inflow_ts") or 0), float(b.get("last_new_buyer_ts") or 0), float(b["start"]))
-            return (now_e - last > TRACKER_DEAD_AFTER_S) or (now_e - b["start"] > TRACKER_DEAD_AFTER_S and int(b.get("buy_count") or 0) <= 1)
+            # discovered tokens carry `last_trade_ms` (API) + `seen_at` (seed time) instead of listener stamps; PumpSwap
+            # pools emit no mempool prints, their liveness is the 60 s discovery refresh → 4× the quiet window
+            last = max(float(b.get("last_trade_ts") or 0), float(b.get("last_trade_ms") or 0) / 1000.0, float(b.get("last_inflow_ts") or 0),
+                       float(b.get("last_new_buyer_ts") or 0), float(b.get("seen_at") or 0), float(b["start"]))
+            quiet = TRACKER_DEAD_AFTER_S * (4 if b.get("protocol") == "pumpswap" else 1)
+            if now_e - last > quiet:
+                return True
+            return not b.get("discovered") and now_e - b["start"] > TRACKER_DEAD_AFTER_S and int(b.get("buy_count") or 0) <= 1
         while len(self.tracking) > cap:
             evictable = [kv for kv in self.tracking.items() if not kv[1].get("pinned") and kv[0] not in self.active_trades]
             if not evictable:
@@ -1451,6 +1604,7 @@ class BotState:
                 return                                   # switched off in Controls: no lookups, no buys, no LTH flips
             rep = await self.reputation.lookup(launch.mint, launch.creator, fresh=True)
             if rep.get("ok"):
+                self.tag_reputation(launch.mint, rep)
                 break
         if not ReputationClient.is_crazy(rep):
             return
@@ -2927,6 +3081,7 @@ class BotState:
             why = self.reputation.gate(rep, book)
             if why:
                 _band = "seasoned" if (self.tracking.get(launch.mint) or {}).get("protocol") == "pumpswap" else "new"
+                self.tag_reputation(launch.mint, rep)
                 self.prerank_skip(_band, why)
                 await self._skip_event({"mint": launch.mint, "symbol": launch.symbol, "band": _band, "reason": why,
                                         "details": [f"dev reputation {rep.get('tier')}{' · fake chart' if rep.get('fake_chart') else ''}"

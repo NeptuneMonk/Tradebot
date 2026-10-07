@@ -17,6 +17,9 @@ class _State:
         self.entered_mints = set()
         self.db = None
 
+    def scope_reason(self, mint, b, now):
+        return None            # these tests cover the alive filter; scope gating has its own suite (test_tracker_scope.py)
+
 
 def _coin(mint, age_h=3.5, idle_s=60, complete=False):
     now_ms = time.time() * 1000

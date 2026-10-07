@@ -24,7 +24,7 @@ LIVE_FIELDS = frozenset((
     "gate", "gate_detail", "rh_gate", "rh_gate_detail", "backfilled", "graduated", "protocol", "quote_symbol", "quote_inflow",
     "unique_buyers", "sol_inflow", "buy_count", "curve_fill_pct", "usd_market_cap", "price_quote", "peak_mc_usd",
     "project_score", "project_flags", "project_meta_seen", "social_score", "live_pnl_pct", "live_drawdown_from_peak_pct",
-    "exit_pnl_pct", "exit_reason", "pinned", "pin_strategy", "pin_exited", "bonding_curve", "dropped",
+    "exit_pnl_pct", "exit_reason", "pinned", "pin_strategy", "pin_exited", "bonding_curve", "dropped", "in_band", "band",
 ))
 # Identity of a launch that is NOT a candidate yet — kept so a late qualifier's first `candidate` frame has a name.
 IDENT_FIELDS = ("id", "mint", "chain", "symbol", "name", "creator", "detected_at", "quote_symbol", "protocol", "bonding_curve")
@@ -70,17 +70,9 @@ class WSHub:
 
     @classmethod
     def is_candidate(cls, d: dict) -> bool:
-        if d.get("entered") or d.get("scanner_eligible"):
-            return True
-        a = d.get("classifier_action")
-        if a in cls.CANDIDATE_ACTIONS:
-            return True
-        buyers = int(d.get("unique_buyers") or 0)
-        if d.get("chain") == "rh":
-            # RH rows are gated by rh_paper (`rh_gate`): pass → candidate; otherwise the same "hot enough to watch"
-            # tier as Solana pending rows so the RH tab is never empty while the poller is alive
-            return d.get("rh_gate") == "pass" or buyers >= cls.PENDING_MIN_BUYERS
-        return a == "pending" and buyers >= cls.PENDING_MIN_BUYERS
+        """Feed row = inside the operator's age window right now, or a position we currently hold (`in_band`, stamped
+        by the bot's window feed). Age alone decides — buyer counts / classifier verdicts no longer promote a row."""
+        return bool(d.get("in_band"))
 
     @staticmethod
     def _prune(d: dict, cap: int):
