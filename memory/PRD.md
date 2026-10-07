@@ -2422,3 +2422,7 @@ Approved plan: remove every data source / book with zero edge; keep scanner → 
 - ✅ Pump.fun/DexScreener pull demoted to a 60 s backstop (`DISCOVERY_INTERVAL_S` 120 → 60) for tokens launched before the process started.
 - ✅ Header readout: inflow floor is an inline input (`window-readout-floor-input`, Enter/blur saves `scanner_min_recent_inflow_sol`), `gate.floor_sol` / `floor_window` in the snapshot; new "live on tape" cell (`window-readout-stream`: pulses · +seeded last minute) from `stream` in the snapshot.
 - Tests: `tests/test_stream_floor.py` (3). Live: 57 pulses after 1 min, 49 launches/min; tape seeding starts once pulses reach the 18-min pre-band edge.
+
+## Gate retune for the 20–40 min New band (2026-10-07, operator-approved)
+- Diagnosis: 1000 on tape → 86 right age → 18 cleared floor → 1 entry. Not latency (tape sub-second, scanner 5 s): the inflow window was 30 s (burst detector), rolling-growth gate rejected every dip, buyers gate = 6 × regime busy 1.5 × tempo √2 ≈ 12.7.
+- ✅ Config: `scanner_recent_inflow_window_s` 30 → 180, `scanner_min_growth_pct_new` 0 → −15 (server clamp loosened to ≥ −100 so a dip can pass; Bounce's second-impulse decides). Operator is monitoring. Buyers multiplier stack (regime busy 1.5 × Doctor tempo) left as-is, flagged.
