@@ -62,6 +62,7 @@ TRACK_DURATION_S = 60.0       # short-window heavy tracking (for fresh-launch cl
 SCANNER_TRACK_HOURS = 4       # how long we keep light tracking for the scanner
 PERSIST_INTERVAL_S = 2.0      # how often to flush tracker metrics to DB
 MAX_TRACKED_MINTS = 150       # cap memory (cut-the-fat 2026-10-03: was 500 — the tracker dict is the RAM hog on a 512Mi pod)
+TRACKER_DEAD_AFTER_S = 90.0   # a launch with no print (or ≤ 1 buy) for this long is evicted before any live one when the cap bites
 MANUAL_ENTRY_ACTIONS = ("manual", "dev_watch")   # operator-class entries: bypass the strategy gates, never consume a scanner slot
 DEV_WATCH_LOOKUP_DELAYS_S = (2.0, 4.0, 9.0)      # cumulative ~2s / 6s / 15s — reputation.family indexes a launch a moment after creation
 OPERATOR_PRESENCE_TTL_S = 45.0                   # dashboard WS heartbeat (any pod) younger than this = operator logged in
@@ -1346,14 +1347,7 @@ class BotState:
             "website": "",
             "uri": (launch_data.get("uri") or "").strip(),   # CreateEvent metadata URI — first (on-chain) source of socials
         }
-        # LRU-style cap: drop oldest if over the limit (lite mode shrinks the cap and sheds the excess)
-        cap = LITE_TRACKED_MINTS if self.lite.active else MAX_TRACKED_MINTS
-        while len(self.tracking) > cap:
-            evictable = [kv for kv in self.tracking.items() if not kv[1].get("pinned") and kv[0] not in self.active_trades]
-            if not evictable:
-                break
-            oldest = min(evictable, key=lambda kv: kv[1].get("graduated_at") or kv[1]["start"])[0]
-            self.tracking.pop(oldest, None)
+        self._enforce_tracking_cap()
 
         # Metadata / socials are fetched lazily — only when the scanner passes the mint or we buy it (`_ensure_metadata`).
         # Cut-the-fat (2026-10-03): no greylist sniper on the launch path.
@@ -1361,6 +1355,28 @@ class BotState:
         asyncio.create_task(self._tracker_cleanup(launch.mint))
         if reputation.configured():
             asyncio.create_task(self._crazy_dev_watch(launch))
+
+    def _enforce_tracking_cap(self) -> None:
+        """Cap (lite mode shrinks it): evict DEAD buckets first — most launches never get a second buyer and would
+        otherwise push live ones out after ~4 min at 35 launches/min — then fall back to oldest-first."""
+        cap = LITE_TRACKED_MINTS if self.lite.active else MAX_TRACKED_MINTS
+        if len(self.tracking) <= cap:
+            return
+        now_e = time.time()
+
+        def _dead(b: dict) -> bool:
+            last = max(float(b.get("last_trade_ts") or 0), float(b.get("last_inflow_ts") or 0), float(b.get("last_new_buyer_ts") or 0), float(b["start"]))
+            return (now_e - last > TRACKER_DEAD_AFTER_S) or (now_e - b["start"] > TRACKER_DEAD_AFTER_S and int(b.get("buy_count") or 0) <= 1)
+        while len(self.tracking) > cap:
+            evictable = [kv for kv in self.tracking.items() if not kv[1].get("pinned") and kv[0] not in self.active_trades]
+            if not evictable:
+                break
+            dead = [kv for kv in evictable if _dead(kv[1])]
+            pool = dead or evictable
+            oldest = min(pool, key=lambda kv: kv[1].get("graduated_at") or kv[1]["start"])[0]
+            self.tracking.pop(oldest, None)
+            key = "evicted_dead" if dead else "evicted_lru"
+            self.stats[key] = self.stats.get(key, 0) + 1
 
     async def operator_present(self) -> bool:
         """Operator logged in = an authenticated dashboard WS on this pod, or a fresh presence heartbeat from any pod."""
@@ -1457,6 +1473,7 @@ class BotState:
         if not bucket:
             return
         now = time.time()
+        bucket["last_trade_ts"] = now
         if not trade_data.get("is_buy") and trade_data.get("user") and trade_data["user"] == bucket.get("creator"):
             bucket.setdefault("_dump_window_s", float(getattr(self.config, "creator_dump_window_s", 60.0) or 60.0))
             creator_solvency.record_creator_sell(bucket, int(trade_data.get("sol_amount", 0)) / LAMPORTS_PER_SOL,

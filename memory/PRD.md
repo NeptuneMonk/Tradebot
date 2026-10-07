@@ -2368,3 +2368,7 @@ Approved plan: remove every data source / book with zero edge; keep scanner → 
 ## Live-Doctor entry filter switch (2026-10-06)
 - Prod symptom: "live-doctor skip" on most Bounce entries with Autopilot OFF. Cause: the Doctor's ENTRY likeness filter (winner vs recent exit liquidity → skip/half) runs independently of Autopilot and flags exactly the drawdown launches Bounce buys.
 - ✅ `BotConfig.live_doctor_entry_filter` (default ON); `_plan_entry` consults `score_launch` only when on. Controls toggle "Doctor filter" (`simple-book-doctor-filter`); Bounce preset sets it OFF. Breakers (book pauses, lift via `/doctor/live/lift/{book}`) and hour profile unaffected. Test added.
+
+## Tracker cap: dead-first eviction (2026-10-06)
+- User: "we miss so many new launches vs pump.fun's new tab". Measured: feed persists ~35 launches/min (pump.fun ≈ 46/min); tracker cap 150 (512Mi tier) = ~4 min of launches → live launches were LRU-evicted long before the 20-min new band.
+- ✅ `_enforce_tracking_cap()`: evict DEAD buckets first (no print ≥ 90 s via new `last_trade_ts` on every print, or ≤ 1 buy after 90 s), then oldest; stats `evicted_dead` / `evicted_lru`. Live preview: tracked set now holds live tokens 16–60 min old with 100–220 buys alongside fresh ones. Test added (test_dev_watch.py).

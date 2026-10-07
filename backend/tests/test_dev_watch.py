@@ -223,3 +223,21 @@ def test_live_doctor_entry_filter_switch(monkeypatch):
     st.config.live_doctor_entry_filter = True
     asyncio.run(st._plan_entry("M" * 44, "scalp", "pumpfun", 500, 1000, 150.0, use_doctor=True))
     assert asked == ["M" * 44] and skips[-1] == "live-doctor skip"
+
+
+def test_tracker_cap_evicts_dead_launches_before_live_ones(monkeypatch):
+    import bot as bot_mod
+    st = _state()
+    monkeypatch.setattr(bot_mod, "MAX_TRACKED_MINTS", 3)
+    now = time.time()
+    st.tracking = {
+        "old_live": {"start": now - 600, "buy_count": 40, "last_trade_ts": now - 5},        # oldest, but trading
+        "dead_a": {"start": now - 300, "buy_count": 1, "last_trade_ts": 0},                 # one buy (the dev), silent
+        "dead_b": {"start": now - 200, "buy_count": 9, "last_trade_ts": now - 150},         # had buyers, no print for 150 s
+        "fresh": {"start": now - 10, "buy_count": 0, "last_trade_ts": 0},                   # brand-new: inside the grace
+    }
+    st._enforce_tracking_cap()
+    assert set(st.tracking) == {"old_live", "dead_b", "fresh"} and st.stats["evicted_dead"] == 1   # oldest dead first; the live veteran stays
+    st.tracking["dead_c"] = {"start": now - 100, "buy_count": 0, "last_trade_ts": 0}
+    st._enforce_tracking_cap()
+    assert "dead_b" not in st.tracking and "old_live" in st.tracking
