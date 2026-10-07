@@ -3,6 +3,8 @@ import { Radio, Users, Droplets, Flame, DollarSign } from "lucide-react";
 import { ChainBadge, ChainFilterChips } from "./ChainBadge";
 import { TokenDetailDialog } from "./TokenDetailDialog";
 import { VirtualUl } from "./VirtualRows";
+import { api } from "@/lib/api";
+import { toast } from "sonner";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const fmtUsd = (n) => {
@@ -186,6 +188,29 @@ function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh
   );
 }
 
+function FloorInput({ value, win }) {
+  const [draft, setDraft] = useState(null);                       // null = follow the live config value
+  const shown = draft ?? value ?? "";
+  const commit = () => {
+    const v = parseFloat(draft);
+    if (draft === null || !Number.isFinite(v) || v < 0 || v === value) { setDraft(null); return; }
+    api.updateConfig({ scanner_min_recent_inflow_sol: v })
+      .then(() => toast.success(`Inflow floor → ${v} SOL / ${win}`))
+      .catch(() => toast.error("Could not save the floor"))
+      .finally(() => setDraft(null));
+  };
+  return (
+    <span className="inline-flex items-center gap-1" title="Minimum buy inflow (SOL over the inflow window) a token needs to clear to enter the window. Edit and press Enter — saved to the bot immediately.">
+      <span className="text-neutral-600">≥</span>
+      <input type="number" min="0" step="0.5" value={shown} data-testid="window-readout-floor-input"
+        onChange={(e) => setDraft(e.target.value)} onBlur={commit}
+        onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setDraft(null); }}
+        className="w-12 bg-neutral-950 border border-neutral-800 focus:border-emerald-700 px-1 py-0 text-[10px] font-mono text-emerald-200 outline-none" />
+      <span className="text-neutral-600">sol/{win}</span>
+    </span>
+  );
+}
+
 function WindowReadout({ flow }) {
   if (!flow) return null;
   const g = flow.gate || {};
@@ -204,8 +229,9 @@ function WindowReadout({ flow }) {
       <span className="text-neutral-800">|</span>
       <Cell value={p.in_band ?? "—"} label="on pump.fun in window" testid="window-readout-in-window"
         hint={`Last Pump.fun pull${pullAge != null ? ` (${pullAge} min ago)` : ""}: tokens whose launch age is inside your gate${p.skipped_scope ? ` · ${p.skipped_scope} outside scope skipped` : ""}`} />
-      <Cell value={p.alive ?? "—"} label={`cleared floor${p.floor_sol != null ? ` ≥${p.floor_sol} SOL/${p.window || "m5"}` : ""}`} testid="window-readout-alive" tone="text-emerald-300"
-        hint={`Of those, how many had buy inflow at or above your Min inflow over the ${p.window === "h1" ? "last hour" : "last 5 min"} (DexScreener pair stats)${p.below_floor != null ? ` · ${p.below_floor} below floor` : ""}${p.no_pair ? ` · ${p.no_pair} no pair yet` : ""}`} />
+      <Cell value={p.alive ?? "—"} label="cleared floor" testid="window-readout-alive" tone="text-emerald-300"
+        hint={`Of those, how many had buy inflow at or above the floor over the ${(g.floor_window || p.window) === "h1" ? "last hour" : "last 5 min"} (DexScreener pair stats)${p.below_floor != null ? ` · ${p.below_floor} below floor` : ""}${p.no_pair ? ` · ${p.no_pair} no pair yet` : ""}${p.floor_sol != null && g.floor_sol != null && p.floor_sol !== g.floor_sol ? ` · last pull used ${p.floor_sol} SOL, next uses ${g.floor_sol}` : ""}`} />
+      <FloorInput value={g.floor_sol} win={g.floor_window || p.window || "m5"} />
       <span className="text-neutral-800">|</span>
       <Cell value={`+${flow.entered_1m ?? 0} / −${flow.left_1m ?? 0}`} label="window flow / min" testid="window-readout-flow" tone="text-sky-300"
         hint="Tokens that aged INTO your window (+) and OUT of it or were dropped (−) over the last 60 s" />
