@@ -821,6 +821,13 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
             enabled
           </label>
         </div>
+        <label className="flex items-center gap-1.5 mb-2 text-[10px] font-mono uppercase text-neutral-400"
+               title="OFF (default): a token you already exited can only be bought back by the Re-entries tab watcher (pullback → breakout). ON: the scanner gates firing again on that mint may also re-buy it inside the re-entry window.">
+          <input type="checkbox" data-testid="reentry-gate-rebuys-checkbox"
+                 checked={!!local.reentry_gate_rebuys_enabled}
+                 onChange={(e) => setLocal({ ...local, reentry_gate_rebuys_enabled: e.target.checked })} />
+          also re-buy when gates fire (off = Re-entries tab only)
+        </label>
         <div className="grid grid-cols-2 gap-2 text-xs">
           <Field label="Max attempts" testid="reentry-max-input"
                  hint="Maximum number of re-entry buys allowed on a single token after the original exit."

@@ -2410,3 +2410,8 @@ Approved plan: remove every data source / book with zero edge; keep scanner → 
 - ✅ BotConfig `alerts_enabled` (True), `alert_trade_pnl_pct` (20). Routes: `GET /api/alerts`, `POST /api/alerts/connect`, `POST /api/alerts/test`. Controls cell "Alerts" (`alerts-toggle`, `alerts-connect` / `alerts-test`, `alerts-pnl-pct`) — hidden when no token.
 - Tests: `tests/test_alerts.py` (5, Telegram mocked). Status: token valid (getMe OK); PAIRING PENDING — the operator must press Start on @Micro_Tradebot, then Control → Alerts → connect.
 - Note: preview `helius_tracker_enabled` was found OFF (flipped 06:33 UTC, not by the agent) and the bot auto-disabled after the supervisor restart; agent re-enabled both at 14:09.
+
+## Re-entries only from the Re-entries tab (2026-10-07)
+- User: "I want only re-entries from my Re-entries tab; get rid of re-entries from gates that fire."
+- ✅ `_enter`: when `reentry.check()` says the mint exited inside the re-entry window and the action is a scanner gate (not `reentry` watcher, not manual) → skip `reentry-tab-only` unless `reentry_gate_rebuys_enabled` (new BotConfig, default False). The Re-entries watcher (pullback → breakout) is now the only automatic re-buy path. Checkbox "also re-buy when gates fire" in Advanced → Re-entry on winners (`reentry-gate-rebuys-checkbox`).
+- Test: `test_profitability_refactor.py::test_gate_rebuy_of_an_exited_mint_is_refused_unless_enabled`.

@@ -364,6 +364,7 @@ class BotConfig(BaseModel):
     reentry_window_seconds: int = 300
     reentry_size_multiplier: float = 0.5
     reentry_min_wait_s: int = 20            # quiet time after ANY exit on the mint before a re-entry may fire
+    reentry_gate_rebuys_enabled: bool = False   # operator 2026-10-07: only the Re-entries tab re-buys; scanner gates firing again on an exited mint do not
     reentry_min_bounce_pct: float = 5.0     # post-exit peak must exceed exit price by this much (token kept running)
     reentry_bounce_confirm_pct: float = 3.0 # price must lift this much off the trough before buying the pullback
     reentry_min_buyers: int = 2             # distinct buyers in the momentum window required for a pullback entry

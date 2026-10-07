@@ -3174,6 +3174,12 @@ class BotState:
                                             "details": [f"re-entry window: {self.reentry.attempts(launch.mint)} attempt(s) so far"]})
                     return
                 if rmult is not None:
+                    if action != "reentry" and not getattr(self.config, "reentry_gate_rebuys_enabled", False):
+                        # A token we already exited: only the Re-entries tab (pullback-breakout watcher) may buy it back,
+                        # not the scanner gates firing again on the same mint.
+                        await self._skip_event({"mint": launch.mint, "band": action, "reason": "reentry-tab-only",
+                                                "details": ["exited inside the re-entry window — gate re-buys are off; the Re-entries watch decides"]})
+                        return
                     self._reentry_gate_mult[launch.mint] = rmult
             # Reserve a slot — released in the finally below
             self._pending_entry_mints.add(launch.mint)

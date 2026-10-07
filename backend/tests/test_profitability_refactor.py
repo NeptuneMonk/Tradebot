@@ -426,3 +426,26 @@ def test_hunt_spike_bank_sells_half_once_above_100pct():
     assert d3.kind is None                                                           # below the +100% / 5R line nothing fires
     s2 = _slot("hunt", pct_peak=50); exits.after_partial(s2, 2.0); exits.after_partial(s2, 2.0)
     assert exits.decide_hunt(cfg, s2, 99.0, 1.99, 200, _fire, lambda c: False).kind is None
+
+
+def test_gate_rebuy_of_an_exited_mint_is_refused_unless_enabled(monkeypatch):
+    """Operator 2026-10-07: only the Re-entries tab watcher re-buys; scanner gates firing again on an exited mint do not."""
+    from models import Launch
+    import bot as bot_mod
+    monkeypatch.setattr(bot_mod.reputation, "configured", lambda: False)
+    st = _bot_stub()
+    async def _impl(*a, **k): st.calls.append(("enter_impl",))
+    st._enter_impl = _impl
+    st.search_regime_block = lambda: None
+    mint = "R" * 44
+    st.reentry.record_exit(mint, pnl_pct=30.0, cfg=st.config, now=time.time() - 60)   # exited a minute ago, inside the window
+    launch = Launch(mint=mint, creator="C" * 44, name="r", symbol="r", bonding_curve="B" * 44)
+    asyncio.run(st._enter(launch, 30, "momentum_new"))
+    assert ("skip", "reentry-tab-only") in st.calls and ("enter_impl",) not in st.calls and mint not in st._reentry_gate_mult
+    st.calls.clear()
+    asyncio.run(st._enter(launch, 30, "reentry"))                              # the watcher path still may
+    assert ("skip", "reentry-tab-only") not in st.calls
+    st.calls.clear()
+    st.config.reentry_gate_rebuys_enabled = True                               # explicit opt-in restores the old behaviour
+    asyncio.run(st._enter(launch, 30, "momentum_new"))
+    assert ("skip", "reentry-tab-only") not in st.calls and st._reentry_gate_mult.get(mint) == 0.75   # 0.5 × hot 1.5
