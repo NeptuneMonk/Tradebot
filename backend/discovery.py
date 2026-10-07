@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("discovery")
 
 PUMPFUN_API = "https://frontend-api-v3.pump.fun"
-DISCOVERY_INTERVAL_S = 120
+DISCOVERY_INTERVAL_S = 60     # backstop only: the Helius tape (stream_floor.py) seeds live; this catches pre-start tokens
 REFRESH_INTERVAL_S = 60      # how often to re-poll MC for already-tracked discovered tokens
 COLD_POOL_REFRESH_S = 300    # graduated pools far below the seasoned MC gate: reserves re-read every 5 min, not every cycle
 MC_SAMPLE_KEEP = 12          # 12 × 60s = 12min of MC samples for velocity calc

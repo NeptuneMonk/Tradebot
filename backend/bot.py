@@ -180,10 +180,13 @@ class BotState:
         self.discovery = PumpfunDiscovery(self)
         self.rh_discovery = RHDiscovery(self)
         self.rh_paper = RHPaperTrader(self)
+        from stream_floor import StreamFloor
+        self.stream_floor = StreamFloor(self)           # live inflow floor off the Helius tape (seeds in-gate tokens in ~3 s)
         from alerts import Alerts
         self.alerts = Alerts(self)                       # Telegram phone alerts (dark until TELEGRAM_BOT_TOKEN is set)
-        if self.alerts.on_event not in hub.listeners:
-            hub.listeners.append(self.alerts.on_event)
+        listeners = getattr(hub, "listeners", None)      # test stubs replace the hub with bare namespaces
+        if listeners is not None and self.alerts.on_event not in listeners:
+            listeners.append(self.alerts.on_event)
         from ladder import LadderBook
         self.ladder = LadderBook(self)
         self.pnl_reconciler = PnLReconciler(self)
@@ -421,6 +424,7 @@ class BotState:
             self._scanner_task = asyncio.create_task(self.scanner.loop())
         # Start Pump.fun discovery (aged tokens)
         self.discovery.start()
+        self.stream_floor.start()
         # Robinhood Chain watch-only feed (no Helius, no entries)
         self.rh_discovery.start()
         self.rh_paper.start()
@@ -1301,6 +1305,7 @@ class BotState:
     async def on_launch(self, launch_data: dict):
         """New Pump.fun token created."""
         self._launch_ts = (getattr(self, "_launch_ts", []) + [time.time()])[-5000:]
+        self.stream_floor.on_launch(launch_data)
         launch = Launch(
             mint=launch_data["mint"],
             creator=launch_data["creator"],
@@ -1516,7 +1521,8 @@ class BotState:
             flags = {"in_band": True, "band": row["band"]}
             ident = {k: v for k, v in row.items() if k not in ("id", "band") and v is not None}
             try:
-                await self.db.launches.update_one({"_id": row["id"]}, {"$set": flags, "$setOnInsert": {**ident, "classifier_action": "discovered"}}, upsert=True)
+                await self.db.launches.update_one({"_id": row["id"]}, {"$set": flags, "$setOnInsert": {**ident, "classifier_action": "discovered", "entered": False, "unique_buyers": 0, "sol_inflow": 0.0,
+                                                                                               "buy_count": 0, "curve_fill_pct": 0.0, "social_score": 0}}, upsert=True)
             except Exception as e:
                 logger.debug(f"window feed persist failed for {mint}: {e}")
             await hub.broadcast("launch_update", {**row, **flags})
@@ -1558,6 +1564,7 @@ class BotState:
                      "floor_window": "m5" if int(getattr(cfg, "scanner_recent_inflow_window_s", 300) or 300) <= 600 else "h1",
                      "seasoned_hi_min": float(cfg.band_seasoned_max_age_min), "seasoned_on": bool(getattr(cfg, "scanner_seasoned_entries_enabled", True))},
             "pull": {k: pull.get(k) for k in ("ts", "in_band", "candidates", "alive", "below_floor", "no_pair", "seeded", "skipped_scope", "skipped_idle", "floor_sol", "window")},
+            "stream": self.stream_floor.snapshot(),
         }
 
     async def _window_feed_loop(self):
@@ -1709,6 +1716,7 @@ class BotState:
         if cur_price and mint in self.active_trades:
             asyncio.create_task(self._check_fast_exit(mint, cur_price))
 
+        self.stream_floor.on_trade(trade_data)          # rolling buy inflow for every launch we saw, tracked or not
         if not bucket:
             return
         now = time.time()

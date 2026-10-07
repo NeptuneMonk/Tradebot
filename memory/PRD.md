@@ -2415,3 +2415,10 @@ Approved plan: remove every data source / book with zero edge; keep scanner → 
 - User: "I want only re-entries from my Re-entries tab; get rid of re-entries from gates that fire."
 - ✅ `_enter`: when `reentry.check()` says the mint exited inside the re-entry window and the action is a scanner gate (not `reentry` watcher, not manual) → skip `reentry-tab-only` unless `reentry_gate_rebuys_enabled` (new BotConfig, default False). The Re-entries watcher (pullback → breakout) is now the only automatic re-buy path. Checkbox "also re-buy when gates fire" in Advanced → Re-entry on winners (`reentry-gate-rebuys-checkbox`).
 - Test: `test_profitability_refactor.py::test_gate_rebuy_of_an_exited_mint_is_refused_unless_enabled`.
+
+## Stream-driven inflow floor + editable floor (2026-10-07)
+- User: floor re-evaluation must be near-real-time ("every 10 s") → agreed design: use the Helius tape instead of polling.
+- ✅ `stream_floor.py` `StreamFloor`: every launch seen on the tape gets a `Pulse` (30-bucket ring of buy inflow over `scanner_recent_inflow_window_s`, identity, latest vsr/vtr, buy count). `on_launch` / `on_trade` hooks in bot.py (hot path: dict lookup + float add; tracked or not). 3 s `tick`: pulses inside the age gate (`scope_reason` is None) with rolling inflow ≥ `scanner_min_recent_inflow_sol` are seeded via `discovery._seed_token` (coin dict built from the pulse; MC = vsr/vtr × 1e6 × SOL/USD); pulses past `band_new_max_age_min` + 60 s are dropped; cap 6000 pulses (≈1–2 MB).
+- ✅ Pump.fun/DexScreener pull demoted to a 60 s backstop (`DISCOVERY_INTERVAL_S` 120 → 60) for tokens launched before the process started.
+- ✅ Header readout: inflow floor is an inline input (`window-readout-floor-input`, Enter/blur saves `scanner_min_recent_inflow_sol`), `gate.floor_sol` / `floor_window` in the snapshot; new "live on tape" cell (`window-readout-stream`: pulses · +seeded last minute) from `stream` in the snapshot.
+- Tests: `tests/test_stream_floor.py` (3). Live: 57 pulses after 1 min, 49 launches/min; tape seeding starts once pulses reach the 18-min pre-band edge.

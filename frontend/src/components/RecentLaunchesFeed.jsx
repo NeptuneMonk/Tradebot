@@ -232,6 +232,10 @@ function WindowReadout({ flow }) {
       <Cell value={p.alive ?? "—"} label="cleared floor" testid="window-readout-alive" tone="text-emerald-300"
         hint={`Of those, how many had buy inflow at or above the floor over the ${(g.floor_window || p.window) === "h1" ? "last hour" : "last 5 min"} (DexScreener pair stats)${p.below_floor != null ? ` · ${p.below_floor} below floor` : ""}${p.no_pair ? ` · ${p.no_pair} no pair yet` : ""}${p.floor_sol != null && g.floor_sol != null && p.floor_sol !== g.floor_sol ? ` · last pull used ${p.floor_sol} SOL, next uses ${g.floor_sol}` : ""}`} />
       <FloorInput value={g.floor_sol} win={g.floor_window || p.window || "m5"} />
+      {flow.stream && (
+        <Cell value={`${flow.stream.pulses}${flow.stream.seeded_1m ? ` · +${flow.stream.seeded_1m}` : ""}`} label="live on tape" testid="window-readout-stream" tone="text-fuchsia-300"
+          hint={`Launches being watched live on the Helius tape (rolling buy inflow per token, re-checked every 3 s). The moment one is inside your gate and clears the floor it enters the window — no polling. ${flow.stream.seeded_1m ? `+${flow.stream.seeded_1m} seeded from the tape in the last minute.` : ""} Total from tape: ${flow.stream.seeded_total}.`} />
+      )}
       <span className="text-neutral-800">|</span>
       <Cell value={`+${flow.entered_1m ?? 0} / −${flow.left_1m ?? 0}`} label="window flow / min" testid="window-readout-flow" tone="text-sky-300"
         hint="Tokens that aged INTO your window (+) and OUT of it or were dropped (−) over the last 60 s" />
