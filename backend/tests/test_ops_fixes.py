@@ -245,24 +245,25 @@ def test_breakers_fail_closed_when_store_unreadable():
 def test_ws_hub_forwards_candidates_only():
     from ws_hub import WSHub
     h = WSHub()
-    # raw launch with no tape → dropped
+    # raw launch (outside the operator's age window) → dropped; buyers alone never promote a row
     assert h._gate_launch("launch", {"id": "a", "classifier_action": "pending", "unique_buyers": 1}) == (None, None)
-    # pending with real tape → candidate (merged payload)
-    ev, d = h._gate_launch("launch_update", {"id": "a", "classifier_action": "pending", "unique_buyers": 7})
-    assert ev == "candidate" and d["unique_buyers"] == 7
+    assert h._gate_launch("launch_update", {"id": "a", "classifier_action": "pending", "unique_buyers": 7}) == (None, None)
+    # window feed stamps it in-band → candidate (merged payload)
+    ev, d = h._gate_launch("launch_update", {"id": "a", "in_band": True, "band": "new", "unique_buyers": 7})
+    assert ev == "candidate" and d["unique_buyers"] == 7 and d["band"] == "new"
     # follow-up metrics → candidate_update
     ev, d = h._gate_launch("launch_update", {"id": "a", "unique_buyers": 9})
     assert ev == "candidate_update" and d == {"id": "a", "seq": 2, "p": {"unique_buyers": 9}}
     # unchanged metrics → nothing on the wire
     assert h._gate_launch("launch_update", {"id": "a", "unique_buyers": 9}) == (None, None)
-    # degraded to skip → one final update flagged dropped, then silence
-    ev, d = h._gate_launch("launch_update", {"id": "a", "classifier_action": "skip"})
+    # aged out of the window → one final update flagged dropped, then silence
+    ev, d = h._gate_launch("launch_update", {"id": "a", "in_band": False, "band": None})
     assert ev == "candidate_update" and d["p"]["dropped"] is True
     assert h._gate_launch("launch_update", {"id": "a", "unique_buyers": 10}) == (None, None)
-    # scalp / hunt / entered are always candidates; skip never
-    assert h._gate_launch("launch", {"id": "b", "classifier_action": "scalp"})[0] == "candidate"
-    assert h._gate_launch("launch", {"id": "c", "entered": True})[0] == "candidate"
-    assert h._gate_launch("launch", {"id": "d", "classifier_action": "skip", "unique_buyers": 50}) == (None, None)
+    # verdicts / entered flags alone are history, not feed; a held position arrives as band "held"
+    assert h._gate_launch("launch", {"id": "b", "classifier_action": "scalp"}) == (None, None)
+    assert h._gate_launch("launch", {"id": "c", "entered": True}) == (None, None)
+    assert h._gate_launch("launch", {"id": "d", "entered": True, "in_band": True, "band": "held"})[0] == "candidate"
 
 
 def test_search_books_capped_runner_is_the_only_lever():

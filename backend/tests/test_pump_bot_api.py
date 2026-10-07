@@ -158,6 +158,8 @@ class TestLaunches:
                 # validate structure
                 first = arr[0]
                 for k in ("mint", "creator", "bonding_curve", "detected_at"):
+                    if k == "bonding_curve" and first.get("classifier_action") == "discovered":
+                        continue                                   # window-discovered rows come from the Pump.fun API (curve optional)
                     assert k in first, f"launch missing {k}"
                 break
             time.sleep(3)

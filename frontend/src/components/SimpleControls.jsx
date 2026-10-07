@@ -21,6 +21,16 @@ export const BOUNCE_PRESET = {
 };
 export const BOUNCE_SCALP_EXITS = { stop_loss_pct: 8, target_r: 1.5, trailing_stop_pct: 5, trailing_arm_pct: 8, hold_max_seconds: 60 };
 
+// Is the live config still the Bounce preset? Returns the settings that drifted (empty = Bounce is ON).
+export function bounceDrift(config) {
+  if (!config) return [];
+  const scalp = (config.book_exits || {}).scalp || {};
+  const diff = [];
+  for (const [k, want] of Object.entries(BOUNCE_PRESET)) if (config[k] !== undefined && Number(config[k]) !== Number(want) && config[k] !== want) diff.push(`${k}: ${String(config[k])} (bounce ${String(want)})`);
+  for (const [k, want] of Object.entries(BOUNCE_SCALP_EXITS)) if (scalp[k] !== undefined && Number(scalp[k]) !== Number(want)) diff.push(`scalp ${k}: ${scalp[k]} (bounce ${want})`);
+  return diff;
+}
+
 export const SAFE_PAPER_PRESET = {
   live_trading: false, rh_live_trading: false, max_trade_usd: 8, rh_max_trade_usd: 8, max_concurrent_positions: 2,
   book_scalp_enabled: true, book_hunt_enabled: true, book_runner_enabled: true, rh_paper_enabled: true, autopilot_enabled: false,
@@ -180,6 +190,17 @@ function SimpleControls({ config, status, wallet, pl, onPatch, onStart, onStop }
           <Seg options={speedOpts} value={speed} onPick={(v) => patch({ speed_mode: v }, `Speed ${v}`)} testid="simple-speed" />
         </div>
         <div className="flex items-center gap-2 ml-auto">
+          {(() => {
+            const drift = bounceDrift(config);
+            const on = drift.length === 0;
+            return (
+              <span data-testid="simple-bounce-state"
+                title={on ? "Every Bounce gate and scalp exit is in place" : `Bounce is OFF — ${drift.length} setting(s) differ from the preset:\n${drift.join("\n")}\nClick Bounce twice to re-apply.`}
+                className={`px-2 py-1 text-[10px] font-mono uppercase tracking-[0.18em] border ${on ? "border-emerald-700 text-emerald-300 bg-emerald-950/40" : "border-neutral-800 text-neutral-500"}`}>
+                bounce {on ? "on" : `off · ${drift.length} differ`}
+              </span>
+            );
+          })()}
           <button type="button" onClick={applyBounce} data-testid="simple-preset-bounce"
             title={"Bounce preset: catch the second leg on brand-new tiny-MC launches.\nNew band 0.5–20 min · dip ≥ 25 % from peak and recovering · buyers ≥ 3 · no liquidity floor · inflow ≥ 0.5 SOL / 2 min\nScalp exits: SL 8 % · target 1.5R · trail 5 % armed at +8 % · clock 60 s · no-momentum only above +3 %"}
             className={`flex items-center gap-1.5 px-3 py-2 text-[11px] uppercase tracking-[0.18em] border transition-colors ${arm === "bounce" ? "border-amber-700 text-amber-200" : "border-neutral-800 text-neutral-400 hover:text-neutral-100"}`}>

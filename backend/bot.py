@@ -64,6 +64,7 @@ PERSIST_INTERVAL_S = 2.0      # how often to flush tracker metrics to DB
 MAX_TRACKED_MINTS = 150       # cap memory (cut-the-fat 2026-10-03: was 500 — the tracker dict is the RAM hog on a 512Mi pod)
 TRACKER_DEAD_AFTER_S = 90.0   # a launch with no print (or ≤ 1 buy) for this long is evicted before any live one when the cap bites
 WINDOW_FEED_INTERVAL_S = 5.0  # how often the live launch list is re-diffed against the operator's age windows
+PRE_BAND_WAIT_MAX_S = 120.0   # a curve token may wait in the tracker for the New band only if it ages in within this long
 MANUAL_ENTRY_ACTIONS = ("manual", "dev_watch")   # operator-class entries: bypass the strategy gates, never consume a scanner slot
 DEV_WATCH_LOOKUP_DELAYS_S = (2.0, 4.0, 9.0)      # cumulative ~2s / 6s / 15s — reputation.family indexes a launch a moment after creation
 OPERATOR_PRESENCE_TTL_S = 45.0                   # dashboard WS heartbeat (any pod) younger than this = operator logged in
@@ -1423,8 +1424,11 @@ class BotState:
             return None
         if not cfg.book_scalp_enabled:
             return "book-off:scalp"
-        if (now - float(b.get("start") or now)) / 60.0 > float(cfg.band_new_max_age_min):
+        age_min = (now - float(b.get("start") or now)) / 60.0
+        if age_min > float(cfg.band_new_max_age_min):
             return "new-age"
+        if (float(cfg.band_new_min_age_min) - age_min) * 60.0 > PRE_BAND_WAIT_MAX_S:
+            return "pre-band"              # too young for the gate and not about to age in: discovery re-pulls it when it is
         return None
 
     def _prune_out_of_scope(self) -> int:
@@ -1455,7 +1459,7 @@ class BotState:
             if band and b.get("launch_id"):
                 rows[mint] = {"id": b["launch_id"], "mint": mint, "band": band, "chain": "sol", "symbol": b.get("symbol"),
                               "name": b.get("name"), "creator": b.get("creator"), "protocol": b.get("protocol") or "pumpfun",
-                              "detected_at": datetime.fromtimestamp(float(b["start"]), timezone.utc).isoformat()}
+                              "bonding_curve": b.get("bonding_curve") or "", "detected_at": datetime.fromtimestamp(float(b["start"]), timezone.utc).isoformat()}
         rh = getattr(self, "rh_discovery", None)
         if rh is not None:
             for token, b in rh.in_window(now).items():

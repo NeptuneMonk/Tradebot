@@ -1,0 +1,22 @@
+{
+  "summary": "Verified tracker scope eviction and 'Launches in window' live feed end-to-end. Backend diagnostics expose tracked_mints/tracker_evictions/tracker_bands/rh_tracked. Toggling book_scalp_enabled off evicted 113 tokens with reason 'scope:book-off', dropping tracked_mints 104 -> 1 (only the in-band HELD mint); restoring it caused tracked_mints to grow back (27 within ~5s, continuing). GET /api/launches/recent returned only rows with in_band=true, band in {new,seasoned,rh_new,held}, and new-band row ages fell inside band_new_min_age_min..band_new_max_age_min (20-40m, actual ~25-26m). Dashboard card 'Launches in window (N)' with data-testid=recent-launches-card renders launch-row-<mint> and launch-band-<mint> matching the API exactly (set equality at T0 and T+75s). WS LIVE indicator present; band chip transitioned 'held' -> 'NEW' live (BIDX position closed, then re-entered scope) without reload. Active Trades, Candidates, equity chart all render; no duplicate-key React warnings. Config restored to original (book_scalp_enabled=true, all band_* unchanged).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_tracker_scope_window_feed.py",
+    "/app/test_reports/pytest/tracker_scope_window.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "test_scope_eviction_book_toggle is auto-skipped by conftest.destructive_guard unless PYTEST_LIVE_MUTATE=1 is set; correct safety but worth documenting in the test's docstring.",
+    "On initial dashboard load one 401 was observed on a resource fetch before the session_token cookie was applied; harmless but could be made cookie-aware to suppress noise."
+  ],
+  "updated_files": ["/app/backend/tests/test_tracker_scope_window_feed.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Session token seeded via conftest._seed_session_token (pytest_session_1791352450369, user nbobby79@gmail.com, 1h TTL). Cookie session_token on micro-stake-trader.preview.emergentagent.com; or Authorization: Bearer header.",
+  "seed_data_creation": "None (real preview feed used).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "To run the scope-eviction test under pytest you must set PYTEST_LIVE_MUTATE=1 (conftest marks /api/bot/config PUTs as mutating). Backend HOT RELOAD resets the tracker to empty and tokens need ~20 min to age into the 20-40 min new band (tracker_bands.pre_band large meanwhile). Preview config at test time: band_new_min_age_min=20, band_new_max_age_min=40, scanner_seasoned_entries_enabled=false, rh_feed_enabled=false, so launches/recent typically shows SOL-new or HELD rows only.",
+  "rca of the issue": "N/A - no bugs found. Both reviewed changes behave as spec'd."
+}

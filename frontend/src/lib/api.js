@@ -60,7 +60,7 @@ export const api = {
   resetKillSwitch: () => client.post("/bot/reset-kill-switch").then(r => r.data),
   rules: () => client.get("/classifier/rules").then(r => r.data),
   updateRules: (rules) => client.put("/classifier/rules", rules).then(r => r.data),
-  launches: (limit = 30) => client.get(`/launches/recent?limit=${limit}`).then(r => r.data),
+  launches: (limit = 150) => client.get(`/launches/recent?limit=${limit}`).then(r => r.data),
   rhStatus: () => client.get("/rh/status").then(r => r.data),
   activeTrades: () => client.get("/trades/active").then(r => r.data),
   tradeHistory: (limit = 100, book) => client.get(`/trades/history?limit=${limit}${book ? `&book=${book}` : ""}`).then(r => r.data),

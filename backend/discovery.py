@@ -447,8 +447,10 @@ class PumpfunDiscovery:
         """Returns the number of newly seeded tokens."""
         st = self.state
         cfg = st.config
-        max_age_s = cfg.scanner_window_hours * 3600
-        min_age_s = cfg.scanner_min_age_minutes * 60
+        # The pull window is the operator's New-band gate (minus the short pre-band wait the tracker tolerates), widened
+        # by the legacy scanner window so nothing the old settings covered is lost.
+        max_age_s = max(cfg.scanner_window_hours * 3600, float(cfg.band_new_max_age_min) * 60)
+        min_age_s = min(cfg.scanner_min_age_minutes * 60, max(0.0, float(cfg.band_new_min_age_min) * 60 - 120.0))
         if max_age_s <= min_age_s:
             return 0
         now = time.time()
@@ -709,6 +711,7 @@ class PumpfunDiscovery:
             "scanner_eligible": True,
             "scanner_last_attempt": 0.0,
             "discovered": True,
+            "bonding_curve": coin.get("bonding_curve") or "",
             "seen_at": time.time(),                        # seed time: a just-seeded token is alive until proven quiet
             "usd_market_cap": usd_mc,
             "last_trade_ms": last_trade_ms,

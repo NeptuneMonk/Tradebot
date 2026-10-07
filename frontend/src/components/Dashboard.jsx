@@ -38,8 +38,9 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Activity, LogOut } from "lucide-react";
 import DiagStrip from "./DiagStrip";
 
-// On-screen list caps (P0.5): 30 Solana + 30 RH launches, newest first by detected_at; history never grows past 50 from WS.
-const LAUNCH_CAP_PER_CHAIN = 30;
+// On-screen list caps: the launch feed is "every token inside the operator's age window" — the backend tracker holds at
+// most 150 per chain, so the cap only guards against a runaway WS burst. Newest first by detected_at; history ≤ 50 from WS.
+const LAUNCH_CAP_PER_CHAIN = 150;
 const HISTORY_CAP = 50;
 const isActiveRow = (t) => !t.status || t.status === "active";
 const tsOf = (l) => (l?.detected_at ? Date.parse(l.detected_at) || 0 : 0);
@@ -114,7 +115,7 @@ export default function Dashboard() {
         api.status().catch(() => null),
         api.config().catch(() => null),
         api.rules().catch(() => null),
-        api.launches(30).catch(() => []),
+        api.launches().catch(() => []),
         api.activeTrades().catch(() => []),
         api.tradeHistory(50).catch(() => []),
         api.plSummary(7).catch(() => ({ series: [], daily_pnl_usd: 0, cumulative_usd: 0 })),

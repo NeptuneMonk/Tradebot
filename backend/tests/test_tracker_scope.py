@@ -43,6 +43,17 @@ def test_time_gates_evict_live_tokens_past_the_band():
     assert st.stats["evicted_scope:new-age"] == 1 and st.stats["evicted_scope:seasoned-age"] == 1
 
 
+def test_pre_band_tokens_do_not_hold_slots_unless_about_to_age_in():
+    st = _state(band_new_min_age_min=20)
+    st.config.band_new_max_age_min = 40
+    st.tracking = {"fresh": _curve(1), "almost": _curve(18.5), "inband": _curve(25)}
+    st._prune_out_of_scope()
+    assert set(st.tracking) == {"almost", "inband"} and st.stats["evicted_scope:pre-band"] == 1
+    st.config.band_new_min_age_min = 0.5                       # Bounce-style gate: fresh launches wait in place
+    st.tracking["fresh"] = _curve(0.1)
+    assert st._prune_out_of_scope() == 0
+
+
 def test_switches_purge_their_band_immediately():
     st = _state(scanner_seasoned_entries_enabled=False)
     st.tracking = {"c": _curve(1), "p": _pool(1)}
@@ -188,12 +199,11 @@ class _FeedDB:
 @pytest.mark.asyncio
 async def test_window_feed_announces_tokens_as_they_age_into_and_out_of_the_window(monkeypatch):
     """Feed rows = tokens inside the operator's age window, pushed live (no refresh): enter → in_band, leave → dropped."""
-    from ws_hub import hub
     sent: list[tuple] = []
 
     async def fake_broadcast(ev, data, **k):
         sent.append((ev, data))
-    monkeypatch.setattr(hub, "broadcast", fake_broadcast)
+    monkeypatch.setattr(bot_mod.hub, "broadcast", fake_broadcast)      # whatever hub object bot.py holds right now
     st = BotState(_FeedDB())
     st.config = BotConfig(band_new_min_age_min=20, band_new_max_age_min=40, band_seasoned_max_age_min=60, rh_min_age_s=30, rh_max_age_min=15)
     st.rh_discovery.tracking = {

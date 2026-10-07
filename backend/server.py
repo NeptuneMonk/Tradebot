@@ -1992,7 +1992,7 @@ async def recover_stuck_trade(trade_id: str):
 
 # ---------- Launches & Trades ----------
 @api.get("/launches/recent")
-async def launches_recent(limit: int = 30, candidates: bool = True):
+async def launches_recent(limit: int = 150, candidates: bool = True):
     """Live launch feed by detection time desc: tokens inside the operator's age windows right now plus positions we
     hold (`in_band`, kept current by the bot's window feed). Per-chain limits so the high-volume Robinhood Chain
     feed can't push every Solana launch out of the window (and vice versa)."""

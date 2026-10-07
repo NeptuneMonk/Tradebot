@@ -4,7 +4,7 @@ from ws_hub import WSHub, LIVE_FIELDS, SEEN_CAP, IDENT_CAP, slim_launch
 
 def full_doc(i: str, **over) -> dict:
     d = {"id": i, "mint": f"mint{i}", "chain": "solana", "symbol": f"S{i}", "name": f"Name {i}", "creator": "c" * 44,
-         "classifier_action": "scalp", "classifier_reasons": ["strong inflow 3.2 SOL"] * 5, "signature": "x" * 88,
+         "classifier_action": "scalp", "in_band": True, "band": "new", "classifier_reasons": ["strong inflow 3.2 SOL"] * 5, "signature": "x" * 88,
          "unique_buyers": 7, "sol_inflow": 3.2, "detected_at": "2026-09-20T00:00:00", "pin_creator_pattern": {"big": "blob" * 50}}
     d.update(over)
     return d
@@ -33,26 +33,26 @@ def test_update_becomes_patch_with_changed_fields_only():
 def test_drop_patch_then_requalify_restarts_as_candidate():
     h = WSHub()
     h._gate_launch("launch", full_doc("a"))
-    ev, d = h._gate_launch("launch_update", {"id": "a", "classifier_action": "skip"})
+    ev, d = h._gate_launch("launch_update", {"id": "a", "in_band": False, "band": None})     # aged out of the window
     assert ev == "candidate_update" and d["p"] == {"dropped": True} and d["seq"] == 2
     assert "a" not in h._seen
-    ev, d = h._gate_launch("launch_update", {"id": "a", "classifier_action": "scalp", "unique_buyers": 3})
+    ev, d = h._gate_launch("launch_update", {"id": "a", "in_band": True, "band": "seasoned", "unique_buyers": 3})
     assert ev == "candidate" and d["seq"] == 1 and "symbol" not in d   # identity was not kept for a dropped candidate
 
 
 def test_non_candidate_keeps_identity_stub_only_and_late_qualifier_arrives_named():
     h = WSHub()
-    assert h._gate_launch("launch", full_doc("b", classifier_action="pending", unique_buyers=1)) == (None, None)
+    assert h._gate_launch("launch", full_doc("b", in_band=False, band=None, unique_buyers=1)) == (None, None)   # fresh launch: not in the window yet
     stub = h._ident["b"]
     assert stub["symbol"] == "Sb" and "classifier_reasons" not in stub and "unique_buyers" not in stub
-    ev, d = h._gate_launch("launch_update", {"id": "b", "classifier_action": "pending", "unique_buyers": 8})
+    ev, d = h._gate_launch("launch_update", {"id": "b", "in_band": True, "band": "new", "unique_buyers": 8})
     assert ev == "candidate" and d["symbol"] == "Sb" and d["unique_buyers"] == 8 and "b" not in h._ident
 
 
 def test_caps_are_enforced():
     h = WSHub()
     for i in range(IDENT_CAP + 300):
-        h._gate_launch("launch", full_doc(f"p{i}", classifier_action="pending", unique_buyers=0))
+        h._gate_launch("launch", full_doc(f"p{i}", in_band=False, unique_buyers=0))
     assert len(h._ident) == IDENT_CAP and "p0" not in h._ident and f"p{IDENT_CAP + 299}" in h._ident
     for i in range(SEEN_CAP + 50):
         h._gate_launch("launch", full_doc(f"c{i}"))
