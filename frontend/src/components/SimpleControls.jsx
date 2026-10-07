@@ -192,12 +192,20 @@ function SimpleControls({ config, status, wallet, pl, onPatch, onStart, onStop }
         <div className="flex items-center gap-2 ml-auto">
           {(() => {
             const drift = bounceDrift(config);
-            const on = drift.length === 0;
+            const dipOn = !!config?.scanner_second_impulse_enabled;
+            const dipPct = Number(config?.scanner_second_impulse_dip_pct ?? 0);
+            const exact = drift.length === 0;
+            const tone = !dipOn ? "border-neutral-800 text-neutral-500" : exact ? "border-emerald-700 text-emerald-300 bg-emerald-950/40" : "border-sky-800 text-sky-300 bg-sky-950/30";
+            const label = !dipOn ? "dip hunt off" : exact ? "bounce on" : `dip hunt on · ${drift.length} custom`;
+            const title = !dipOn
+              ? "Second impulse is OFF — the dip-then-recover entry that defines Bounce is not running. Click Bounce twice to apply the preset, or turn Second impulse on in Advanced."
+              : exact
+                ? `Dip hunting ON (dip ≥ ${dipPct} % then recovering) and every other Bounce gate / scalp exit matches the preset.`
+                : `Dip hunting ON (dip ≥ ${dipPct} % then recovering) — the core of Bounce is active.\n${drift.length} setting(s) are your own instead of the preset's:\n${drift.join("\n")}`;
             return (
-              <span data-testid="simple-bounce-state"
-                title={on ? "Every Bounce gate and scalp exit is in place" : `Bounce is OFF — ${drift.length} setting(s) differ from the preset:\n${drift.join("\n")}\nClick Bounce twice to re-apply.`}
-                className={`px-2 py-1 text-[10px] font-mono uppercase tracking-[0.18em] border ${on ? "border-emerald-700 text-emerald-300 bg-emerald-950/40" : "border-neutral-800 text-neutral-500"}`}>
-                bounce {on ? "on" : `off · ${drift.length} differ`}
+              <span data-testid="simple-bounce-state" title={title}
+                className={`px-2 py-1 text-[10px] font-mono uppercase tracking-[0.18em] border ${tone}`}>
+                {label}
               </span>
             );
           })()}
