@@ -18,6 +18,7 @@ from solders.pubkey import Pubkey
 from models import BotConfig, ClassifierRules, Launch, Trade, now_utc
 from classifier import classify
 import pumpfun
+from quote_mints import quote_book, is_sol_quote
 import pumpswap
 from solana_client import get_sol_usd_price, LAMPORTS_PER_SOL
 import solana_client
@@ -425,6 +426,7 @@ class BotState:
         # Start Pump.fun discovery (aged tokens)
         self.discovery.start()
         self.stream_floor.start()
+        quote_book.start()
         # Robinhood Chain watch-only feed (no Helius, no entries)
         self.rh_discovery.start()
         self.rh_paper.start()
@@ -1305,6 +1307,7 @@ class BotState:
     async def on_launch(self, launch_data: dict):
         """New Pump.fun token created."""
         self._launch_ts = (getattr(self, "_launch_ts", []) + [time.time()])[-5000:]
+        quote_book.normalize(launch_data)               # USDC / PUMP / stock-paired coin: price its quote, tag the row
         self.stream_floor.on_launch(launch_data)
         launch = Launch(
             mint=launch_data["mint"],
@@ -1355,6 +1358,9 @@ class BotState:
         doc["creator_tokens_created"] = (creator_doc or {}).get("tokens_created", 1)
         doc["creator_tokens_failed"] = (creator_doc or {}).get("tokens_failed", 0)
         doc["creator_tokens_graduated"] = (creator_doc or {}).get("tokens_graduated", 0)
+        if not is_sol_quote(launch_data.get("quote_mint")):
+            doc["quote_mint"] = launch_data.get("quote_mint")
+            doc["quote_symbol"] = launch_data.get("quote_symbol")
         await self.db.launches.insert_one({**doc, "_id": launch.id})
         self.recent_launches.insert(0, doc)
         self.recent_launches = self.recent_launches[:50]   # aging — plain recency, nothing is pinned
@@ -1368,6 +1374,10 @@ class BotState:
             "launch_id": launch.id,
             "creator": launch.creator,
             "start": time.time(),
+            # Custom quote pair (create_v2): None/SOL for classic launches; e.g. USDC / PUMP / SPCX-paired coins. Tape
+            # amounts for these are converted to SOL-equivalents by quote_mints.QuoteBook before they reach the bucket.
+            "quote_mint": None if is_sol_quote(launch_data.get("quote_mint")) else launch_data.get("quote_mint"),
+            "quote_symbol": launch_data.get("quote_symbol"),
             # Protocol tag — new launches are ALWAYS on the Pump.fun bonding
             # curve. Flipped to "pumpswap" by on_trade when the curve completes
             # (graduation event). The scanner uses this to gate band eligibility:
@@ -1473,7 +1483,7 @@ class BotState:
             if band and b.get("launch_id"):
                 rows[mint] = {"id": b["launch_id"], "mint": mint, "band": band, "chain": "sol", "symbol": b.get("symbol"),
                               "name": b.get("name"), "creator": b.get("creator"), "protocol": b.get("protocol") or "pumpfun",
-                              "bonding_curve": b.get("bonding_curve") or "", "detected_at": datetime.fromtimestamp(float(b["start"]), timezone.utc).isoformat()}
+                              "bonding_curve": b.get("bonding_curve") or "", "quote_mint": b.get("quote_mint"), "quote_symbol": b.get("quote_symbol"), "detected_at": datetime.fromtimestamp(float(b["start"]), timezone.utc).isoformat()}
         rh = getattr(self, "rh_discovery", None)
         if rh is not None:
             for token, b in rh.in_window(now).items():
@@ -1565,6 +1575,7 @@ class BotState:
                      "seasoned_hi_min": float(cfg.band_seasoned_max_age_min), "seasoned_on": bool(getattr(cfg, "scanner_seasoned_entries_enabled", True))},
             "pull": {k: pull.get(k) for k in ("ts", "in_band", "candidates", "alive", "below_floor", "no_pair", "seeded", "skipped_scope", "skipped_idle", "floor_sol", "window")},
             "stream": self.stream_floor.snapshot(),
+            "quotes": quote_book.snapshot(),
         }
 
     async def _window_feed_loop(self):
@@ -1703,7 +1714,11 @@ class BotState:
     async def on_trade(self, trade_data: dict):
         """A buy/sell event was observed on Pump.fun."""
         mint = trade_data["mint"]
+        quote_book.normalize(trade_data)                # non-SOL quote: sol_amount / reserves rewritten to SOL-equivalents
         bucket = self.tracking.get(mint)
+        if bucket is not None and not bucket.get("quote_mint") and not is_sol_quote(trade_data.get("quote_mint")):
+            # discovered via the Pump.fun pull (no CreateEvent seen): learn the pair from its first tape print
+            bucket["quote_mint"], bucket["quote_symbol"] = trade_data["quote_mint"], trade_data.get("quote_symbol")
         # Track price via virtual reserves first (so active-trade fast path can use it)
         vsr = trade_data.get("virtual_sol_reserves", 0)
         vtr = trade_data.get("virtual_token_reserves", 0)
@@ -2488,6 +2503,8 @@ class BotState:
         }
         if b.get("peak_mc_usd_at"):
             update["peak_mc_usd_at"] = b["peak_mc_usd_at"]
+        if b.get("quote_mint"):
+            update["quote_mint"], update["quote_symbol"] = b["quote_mint"], b.get("quote_symbol")
         # Coalesced: one bulk_write per PERSIST_INTERVAL_S. Cut-the-fat (2026-10-03): only candidates (gate pass) and
         # mints we hold / bought are written to Mongo — the other ~500 launches live in RAM + the WS tape only.
         if (b.get("gate_reason") == "pass" or b.get("_meta_requested") or mint in self.active_trades) and not self.lite.active:
@@ -3708,6 +3725,13 @@ class BotState:
 
         entry_price_sol = sol_in_lamports / tokens_out / LAMPORTS_PER_SOL
         mode = "live" if self.config.live_trading else "paper"
+        _qm = (self.tracking.get(launch.mint) or {}).get("quote_mint") or (state or {}).get("quote_mint")
+        if mode == "live" and not is_sol_quote(_qm):
+            # Live buys go through the SOL `buy` instruction; a USDC / PUMP / stock-paired curve needs buy_v3 with the
+            # quote accounts (or multi_hop_swap from SOL), which the executor does not speak yet. Paper trades it normally.
+            await self._skip_event({"mint": launch.mint, "band": action, "reason": "quote-pair-live",
+                                    "details": [f"paired with {(self.tracking.get(launch.mint) or {}).get('quote_symbol') or 'a non-SOL quote'} — live execution not supported yet; paper only"]})
+            return
 
         # Structured entry decision log — captures every factor that fed the
         # buy so post-trade analysis can correlate inputs to outcomes.

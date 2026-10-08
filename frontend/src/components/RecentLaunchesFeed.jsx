@@ -114,6 +114,12 @@ function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <ChainBadge chain={l.chain} protocol={isRh ? l.protocol : null} mint={l.mint} />
+                    {!isRh && l.quote_symbol && (
+                      <span className="text-[10px] font-mono px-1 py-0 border border-violet-800 text-violet-300" data-testid={`launch-quote-${l.mint}`}
+                        title={`Paired with ${l.quote_symbol} instead of SOL (Pump.fun custom pair). Tape amounts are converted to SOL-equivalents for the gates; paper trades normally, live buys are skipped until the executor speaks buy_v3.`}>
+                        /{l.quote_symbol}
+                      </span>
+                    )}
                     {l.band && !l.entered && (
                       <span className={`text-[10px] font-mono px-1 py-0 border uppercase ${l.band === "seasoned" ? "border-amber-800 text-amber-300" : "border-sky-800 text-sky-300"}`}
                         title={l.band === "seasoned" ? "inside your Seasoned (post-graduation) age window" : l.band === "rh_new" ? "inside your RH age window" : "inside your New (Pump.fun curve) age window"}

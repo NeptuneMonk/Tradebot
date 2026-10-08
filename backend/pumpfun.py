@@ -331,7 +331,15 @@ def decode_bonding_curve(data: bytes) -> dict | None:
     except Exception:
         creator = None
     is_cashback = bool(data[82]) if len(data) > 82 else False
-    return {
+    # custom quote pairs (create_v2): offsets 83..115 hold quote_mint (default pubkey / absent = SOL); the reserve fields
+    # are then quote units — quote_mints.QuoteBook.normalize() converts them to SOL-equivalents for the gates
+    quote_mint = None
+    if len(data) >= 115:
+        try:
+            quote_mint = str(Pubkey(data[83:115]))
+        except Exception:
+            quote_mint = None
+    out = {
         "virtual_token_reserves": vtr,
         "virtual_sol_reserves": vsr,
         "real_token_reserves": rtr,
@@ -340,7 +348,16 @@ def decode_bonding_curve(data: bytes) -> dict | None:
         "complete": complete,
         "creator": creator,
         "is_cashback": is_cashback,
+        "quote_mint": quote_mint,
+        "virtual_quote_reserves": vsr,
+        "real_quote_reserves": rsr,
     }
+    try:
+        from quote_mints import quote_book
+        quote_book.normalize(out)
+    except Exception:
+        pass
+    return out
 
 
 # ---------- Quote math (unchanged constant-product) ----------

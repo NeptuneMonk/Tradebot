@@ -4,9 +4,12 @@ Detects Create + Trade events for Pump.fun and emits them.
 """
 import json
 import base64
+import os
 import struct
 import hashlib
 import logging
+
+import base58
 
 from pumpfun import PUMP_PROGRAM_ID
 
@@ -22,10 +25,84 @@ TRADE_EVENT_DISC = _anchor_event_disc("TradeEvent")
 CREATE_EVENT_DISC = _anchor_event_disc("CreateEvent")
 
 
+# ---------- IDL-driven Anchor event decoding (tolerant: older/shorter events stop at the last field present) ----------
+_IDL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pump_idl.json")
+try:
+    with open(_IDL_PATH) as _f:
+        _IDL = json.load(_f)
+    _IDL_TYPES = {t["name"]: t for t in _IDL.get("types", [])}
+except Exception as _e:   # pragma: no cover
+    _IDL, _IDL_TYPES = None, {}
+    logger.warning(f"pump_idl.json unavailable ({_e}); falling back to fixed-layout parsers")
+
+
+def _borsh_decode(fields: list, buf: bytes, off: int) -> tuple[dict, int]:
+    out: dict = {}
+    for f in fields:
+        if off >= len(buf):
+            break
+        t = f["type"]
+        if t == "string":
+            n = struct.unpack_from("<I", buf, off)[0]
+            off += 4
+            out[f["name"]] = buf[off:off + n].decode("utf-8", errors="replace")
+            off += n
+        elif t == "pubkey":
+            if off + 32 > len(buf):
+                break
+            out[f["name"]] = base58.b58encode(buf[off:off + 32]).decode()
+            off += 32
+        elif t == "u64":
+            out[f["name"]] = struct.unpack_from("<Q", buf, off)[0]
+            off += 8
+        elif t == "i64":
+            out[f["name"]] = struct.unpack_from("<q", buf, off)[0]
+            off += 8
+        elif t == "u16":
+            out[f["name"]] = struct.unpack_from("<H", buf, off)[0]
+            off += 2
+        elif t == "bool":
+            out[f["name"]] = bool(buf[off])
+            off += 1
+        elif t == "u8":
+            out[f["name"]] = buf[off]
+            off += 1
+        elif isinstance(t, dict) and "vec" in t:
+            n = struct.unpack_from("<I", buf, off)[0]
+            off += 4
+            inner = _IDL_TYPES[t["vec"]["defined"]["name"]]["type"]["fields"]
+            items = []
+            for _ in range(n):
+                item, off = _borsh_decode(inner, buf, off)
+                items.append(item)
+            out[f["name"]] = items
+        else:
+            break
+    return out, off
+
+
+def _event_fields(name: str) -> list | None:
+    t = _IDL_TYPES.get(name)
+    return (t.get("type") or {}).get("fields") if t else None
+
+
+CREATE_FIELDS = _event_fields("CreateEvent")
+TRADE_FIELDS = _event_fields("TradeEvent")
+
+
 def parse_create_event(raw: bytes) -> dict | None:
-    """Anchor CreateEvent layout (best-effort)."""
+    """Anchor CreateEvent → {name, symbol, uri, mint, bonding_curve, creator, quote_mint, virtual_quote_reserves, token_program, is_mayhem_mode…}."""
     try:
-        offset = 8  # event discriminator
+        if CREATE_FIELDS:
+            ev, _ = _borsh_decode(CREATE_FIELDS, raw, 8)
+            mint, bc = ev.get("mint"), ev.get("bonding_curve")
+            user = ev.get("user")
+            if not mint or not bc or not user:
+                return None  # truncated event → would yield mint='' / creator=1111… phantom launches
+            ev["creator"] = user          # tx signer = launch creator (CreateEvent.creator is the fee creator, may differ)
+            ev["signer_creator"] = user
+            return ev
+        offset = 8
 
         def read_str(buf, off):
             length = struct.unpack_from("<I", buf, off)[0]
@@ -41,28 +118,27 @@ def parse_create_event(raw: bytes) -> dict | None:
         bonding_curve = raw[offset : offset + 32]
         offset += 32
         if len(mint) != 32 or len(bonding_curve) != 32 or len(raw) < offset + 32:
-            return None  # truncated event → would yield mint='' / creator=1111… phantom launches
+            return None
         user = raw[offset : offset + 32]
-
-        import base58
-        return {
-            "name": name,
-            "symbol": symbol,
-            "uri": uri,
-            "mint": base58.b58encode(mint).decode("utf-8"),
-            "bonding_curve": base58.b58encode(bonding_curve).decode("utf-8"),
-            "creator": base58.b58encode(user).decode("utf-8"),
-        }
+        return {"name": name, "symbol": symbol, "uri": uri, "mint": base58.b58encode(mint).decode("utf-8"),
+                "bonding_curve": base58.b58encode(bonding_curve).decode("utf-8"), "creator": base58.b58encode(user).decode("utf-8")}
     except Exception as e:
         logger.debug(f"parse_create_event failed: {e}")
         return None
 
 
 def parse_trade_event(raw: bytes) -> dict | None:
-    """Anchor TradeEvent layout (after 8-byte disc): mint(32) sol(u64) tok(u64) isBuy(1) user(32) ts(i64) vsr(u64) vtr(u64)."""
+    """Anchor TradeEvent → every IDL field present (mint, sol_amount, token_amount, is_buy, user, timestamp, virtual_sol_reserves,
+    virtual_token_reserves, real_sol_reserves, …, quote_mint, quote_amount, virtual_quote_reserves, real_quote_reserves).
+    Non-SOL-quoted coins report sol_amount / virtual_sol_reserves = 0 — quote_mints.QuoteBook.normalize() fills them in."""
     try:
         if len(raw) < 8 + 105:
             return None
+        if TRADE_FIELDS:
+            ev, _ = _borsh_decode(TRADE_FIELDS, raw, 8)
+            if not ev.get("mint") or "virtual_token_reserves" not in ev:
+                return None
+            return ev
         offset = 8
         mint = raw[offset : offset + 32]
         offset += 32
@@ -73,17 +149,8 @@ def parse_trade_event(raw: bytes) -> dict | None:
         user = raw[offset : offset + 32]
         offset += 32
         ts, vsr, vtr = struct.unpack_from("<qQQ", raw, offset)
-        import base58
-        return {
-            "mint": base58.b58encode(mint).decode("utf-8"),
-            "sol_amount": sol_amount,
-            "token_amount": tok_amount,
-            "is_buy": is_buy,
-            "user": base58.b58encode(user).decode("utf-8"),
-            "timestamp": ts,
-            "virtual_sol_reserves": vsr,
-            "virtual_token_reserves": vtr,
-        }
+        return {"mint": base58.b58encode(mint).decode("utf-8"), "sol_amount": sol_amount, "token_amount": tok_amount, "is_buy": is_buy,
+                "user": base58.b58encode(user).decode("utf-8"), "timestamp": ts, "virtual_sol_reserves": vsr, "virtual_token_reserves": vtr}
     except Exception as e:
         logger.debug(f"parse_trade_event failed: {e}")
         return None
