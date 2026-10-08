@@ -1802,12 +1802,12 @@ class BotState:
         r_usd = float(trade_doc.get("r_usd") or 0.0)
         if r_usd <= 0 or self.active_trades.get(mint) is not slot or not self.config.book_runner_enabled:
             return False
-        if self._runner_open() >= runner.RUNNER_CAP:
+        if self._runner_open() >= runner.cap(self.config):
             if not slot.get("_runner_cap_skipped"):
                 slot["_runner_cap_skipped"] = True
                 logger.info(f"runner-cap: {mint[:8]}… [{book}] qualifies but the runner slot is full — {book} exits stand")
                 await self._skip_event({"mint": mint, "band": book, "reason": "runner-cap",
-                                        "details": [f"{runner.RUNNER_CAP} runner already open"]})
+                                        "details": [f"{runner.cap(self.config)} runner(s) already open"]})
             return False
         now = time.time()
         bucket = self.tracking.get(mint) or {}
@@ -1835,7 +1835,7 @@ class BotState:
             has_tape=bool(bucket.get("buy_events")), mc_velocity_5m_pct=float(flow["mc_velocity_5m_pct"]),
             exit_liq_pct=None if exit_liq is None else float(exit_liq),
             exit_cost_pct=runner.exit_cost_pct(remaining_usd, depth_usd, exit_slip, protocol),
-            ladder_legs_done=int(slot.get("ladder_legs_done") or 0))
+            ladder_legs_done=int(slot.get("ladder_legs_done") or 0), cfg=self.config)
         if not ok:
             if now - float(slot.get("_promo_log_ts") or 0) > 10:
                 slot["_promo_log_ts"] = now
@@ -1844,7 +1844,7 @@ class BotState:
         if book == "scalp":
             if not await self._partial_exit(mint, runner.SCALP_BANK_FRAC, reason=f"promotion → runner: bank {runner.SCALP_BANK_FRAC * 100:.0f}% (+{pct:.1f}%)"):
                 return False
-        if self.active_trades.get(mint) is not slot or self._runner_open() >= runner.RUNNER_CAP:
+        if self.active_trades.get(mint) is not slot or self._runner_open() >= runner.cap(self.config):
             return False   # the slot was closed / another runner won the slot while we were selling
         runner.promote(trade_doc, slot, cur_price_sol, protocol, now)
         await self.db.trades.update_one({"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True)
@@ -1993,7 +1993,11 @@ class BotState:
             d = dead if dead is not None else (exits.decide_hunt(cfg, slot, pct, cur_price_sol, elapsed, sl_fire, ts_fire) if book == "hunt"
                                                else exits.decide_scalp(cfg, slot, pct, cur_price_sol, elapsed, sl_fire, ts_fire))
         # promotion → runner: scalp (or any manual hold) at its +target·R exit, hunt once the +1R leg is banked (never on a stop)
-        promo_window = ((book == "scalp" or manual) and d.kind == "exit" and "target" in d.reason) or \
+        _one_r = exits.r_pct(slot)
+        _scalp_anytime = (book == "scalp" and bool(getattr(cfg, "runner_scalp_promo_anytime", False)) and d.kind != "exit"
+                          and _one_r > 0 and pct >= _one_r * runner.promo_thresholds(cfg)["min_r"]
+                          and time.time() - float(slot.get("_promo_check_ts") or 0) >= 2.0)
+        promo_window = ((book == "scalp" or manual) and d.kind == "exit" and "target" in d.reason) or _scalp_anytime or \
                        (book == "hunt" and int(slot.get("ladder_legs_done") or 0) >= 1 and d.kind != "exit"
                         and time.time() - float(slot.get("_promo_check_ts") or 0) >= 2.0)
         if promo_window:
@@ -3042,8 +3046,8 @@ class BotState:
         if self.kill_switch_tripped:
             return {"ok": False, "reason": "daily kill switch tripped"}
         # manual holds live outside max_concurrent_positions (they never consume a scanner slot)
-        if as_runner and self._runner_open() >= runner.RUNNER_CAP:
-            return {"ok": False, "reason": "runner-cap: the runner slot is already taken"}
+        if as_runner and self._runner_open() >= runner.cap(self.config):
+            return {"ok": False, "reason": "runner-cap: every runner slot is already taken"}
         launch = Launch(mint=mint, creator=b.get("creator") or "", bonding_curve="",
                         name=b.get("name"), symbol=b.get("symbol"))
         launch.id = b.get("launch_id") or launch.id

@@ -2426,3 +2426,8 @@ Approved plan: remove every data source / book with zero edge; keep scanner → 
 ## Gate retune for the 20–40 min New band (2026-10-07, operator-approved)
 - Diagnosis: 1000 on tape → 86 right age → 18 cleared floor → 1 entry. Not latency (tape sub-second, scanner 5 s): the inflow window was 30 s (burst detector), rolling-growth gate rejected every dip, buyers gate = 6 × regime busy 1.5 × tempo √2 ≈ 12.7.
 - ✅ Config: `scanner_recent_inflow_window_s` 30 → 180, `scanner_min_growth_pct_new` 0 → −15 (server clamp loosened to ≥ −100 so a dip can pass; Bounce's second-impulse decides). Operator is monitoring. Buyers multiplier stack (regime busy 1.5 × Doctor tempo) left as-is, flagged.
+
+## Runner promotion rules exposed in Controls (2026-10-08)
+- ✅ BotConfig: `runner_promo_min_r` (1.0), `runner_promo_min_mfe_r` (1.5), `runner_promo_max_exit_liq_pct` (70), `runner_promo_max_exit_cost_pct` (8), `runner_cap` (1, clamp 0–5), `runner_scalp_promo_anytime` (False). `runner.promo_thresholds(cfg)` / `runner.cap(cfg)` replace the constants in `promotion_ok` and every cap check; scalp promo window widened to "any time ≥ min R, every 2 s" when the switch is on.
+- ✅ UI: "Runner promotion" block above the per-book exits table in Advanced (`runner-promotion`, inputs `runner-promo-*-input`, `runner-cap-input`, `runner-scalp-promo-anytime-checkbox`), amber when drifted from defaults, saved with the Advanced form.
+- Test: `test_runner_book.py::test_promotion_thresholds_and_cap_come_from_config`.

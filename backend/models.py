@@ -450,6 +450,13 @@ class BotConfig(BaseModel):
     book_scalp_size_mult: float = 1.0
     book_hunt_size_mult: float = 1.0
     book_runner_size_mult: float = 1.0
+    # Runner promotion rules (runner.py defaults when None/unset): exposed in Advanced → Exits → Runner promotion
+    runner_promo_min_r: float = 1.0
+    runner_promo_min_mfe_r: float = 1.5
+    runner_promo_max_exit_liq_pct: float = 70.0
+    runner_promo_max_exit_cost_pct: float = 8.0
+    runner_cap: int = 1
+    runner_scalp_promo_anytime: bool = False     # True: a scalp is checked for promotion any time it is ≥ min R, not only when its target exit fires
     discovery_clip_usd: float = 10.0        # hard USD ceiling on Solana entry-book notional (scalp/hunt) — search stays cheap
     rh_discovery_clip_usd: float = 10.0     # same ceiling for rh_pons (RH never shares Solana values)
     book_rh_size_mult: float = 1.0            # desk-allocator weight for the RH curve book

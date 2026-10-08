@@ -27,6 +27,45 @@ const FIELDS = [
   ["ladder_2r_sell_pct", "+2R sell %", "Hunt ladder leg 2 size."],
 ];
 
+const PROMO_FIELDS = [
+  ["runner_promo_min_r", "min R", 0.25, 1.0, "Open PnL (realized + unrealized) in R the scalp / hunt must show before it may become a runner. Default 1."],
+  ["runner_promo_min_mfe_r", "min MFE R", 0.25, 1.5, "Peak since entry, in R, the position must have reached. Default 1.5."],
+  ["runner_promo_max_exit_liq_pct", "max exit-liq %", 5, 70, "Live Doctor exit-liquidity likeness must stay BELOW this (higher = more permissive). Default 70."],
+  ["runner_promo_max_exit_cost_pct", "max exit cost %", 1, 8, "Cost to flatten the remainder (depth, slippage, fees) must stay below this. Default 8."],
+  ["runner_cap", "cap", 1, 1, "Runner slots open at once on the Solana book. While a runner is open the hunt cap drops to 1. Default 1."],
+];
+
+function RunnerPromotion({ local, setLocal }) {
+  const set = (k, v) => setLocal({ ...local, [k]: v });
+  return (
+    <div className="mb-3 p-2 border border-neutral-800/80 bg-neutral-950/40" data-testid="runner-promotion">
+      <div className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 mb-1.5 flex items-center gap-1.5">
+        Runner promotion
+        <HelpHint label="help: runner promotion">Nothing opens as a runner cold. A live scalp (when its target exit would fire — or any time it is ≥ min R with the switch below) or a hunt (after its +1R leg) is promoted when ALL hold: PnL ≥ min R · peak ≥ min MFE R · flow still expanding (buyers and inflow above entry) · exit-liquidity likeness below max · exit cost below max · a runner slot is free. A promoted scalp banks 45% first; the remainder rides on the Runner row's exits.</HelpHint>
+      </div>
+      <div className="flex flex-wrap items-end gap-x-3 gap-y-2 text-[10px] font-mono">
+        {PROMO_FIELDS.map(([k, label, step, dflt, hint]) => {
+          const cur = local[k];
+          return (
+            <label key={k} className="flex flex-col gap-0.5 text-neutral-500 uppercase tracking-[0.08em]" title={hint}>
+              {label}
+              <input type="number" step={step} min="0" value={cur ?? dflt} data-testid={`${k.replace(/_/g, "-")}-input`}
+                onChange={(e) => set(k, k === "runner_cap" ? Math.max(0, parseInt(e.target.value, 10) || 0) : Math.max(0, parseFloat(e.target.value) || 0))}
+                className={`w-16 bg-neutral-950 border px-1 py-0.5 text-right ${cur != null && cur !== dflt ? "border-amber-700 text-amber-200" : "border-neutral-800 text-neutral-300"}`} />
+            </label>
+          );
+        })}
+        <label className="flex items-center gap-1.5 text-neutral-400 uppercase tracking-[0.08em] pb-1"
+          title="OFF: a scalp is only examined for promotion at the instant its target exit would fire. ON: examined every 2 s whenever it is ≥ min R, so a token that blows through the target can still be caught.">
+          <input type="checkbox" data-testid="runner-scalp-promo-anytime-checkbox" checked={!!local.runner_scalp_promo_anytime}
+            onChange={(e) => set("runner_scalp_promo_anytime", e.target.checked)} />
+          scalp: check any time ≥ min R
+        </label>
+      </div>
+    </div>
+  );
+}
+
 export default function BookExitsEditor({ local, setLocal, onRestored }) {
   const bx = local.book_exits || {};
   const set = (book, key, v) => setLocal({ ...local, book_exits: { ...bx, [book]: { ...(bx[book] || {}), [key]: v } } });
@@ -52,6 +91,7 @@ export default function BookExitsEditor({ local, setLocal, onRestored }) {
           <RotateCcw className="w-3 h-3" /> Restore book defaults
         </button>
       </div>
+      <RunnerPromotion local={local} setLocal={setLocal} />
       <div className="overflow-x-auto">
         <table className="w-full text-[10px] font-mono">
           <thead><tr className="text-neutral-500 uppercase tracking-[0.1em]"><th className="text-left py-1">Book</th>

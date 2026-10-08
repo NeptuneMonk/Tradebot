@@ -84,22 +84,39 @@ def exit_cost_pct(remaining_usd: float, depth_usd: float, exit_slip_bps: int, pr
     return slip + cost_gate.PROTOCOL_FEE_PCT.get(protocol, 1.0) + cost_gate.TOKEN_SHAVE_PCT
 
 
+def cap(cfg) -> int:
+    """Runner slots (operator setting, default RUNNER_CAP)."""
+    try:
+        return max(0, int(getattr(cfg, "runner_cap", RUNNER_CAP) or 0))
+    except (TypeError, ValueError):
+        return RUNNER_CAP
+
+
+def promo_thresholds(cfg) -> dict:
+    """Promotion rules the operator can tune (Advanced → Exits → Runner promotion); constants are the defaults."""
+    g = lambda k, d: float(getattr(cfg, k, d) if getattr(cfg, k, None) is not None else d)   # noqa: E731
+    return {"min_r": g("runner_promo_min_r", PROMO_MIN_R), "min_mfe_r": g("runner_promo_min_mfe_r", PROMO_MIN_MFE_R),
+            "max_exit_liq": g("runner_promo_max_exit_liq_pct", PROMO_MAX_EXIT_LIQ),
+            "max_exit_cost": g("runner_promo_max_exit_cost_pct", PROMO_MAX_EXIT_COST_PCT)}
+
+
 def promotion_ok(*, book: str, pnl_r: float, mfe_r: float, buyers_now: int, buyers_entry: int, inflow_now: float, inflow_entry: float,
                  has_tape: bool, mc_velocity_5m_pct: float, exit_liq_pct: float | None, exit_cost_pct: float,
-                 ladder_legs_done: int) -> tuple[bool, str]:
-    if pnl_r < PROMO_MIN_R:
-        return False, f"pnl {pnl_r:+.2f}R < +{PROMO_MIN_R:g}R"
-    if mfe_r < PROMO_MIN_MFE_R:
-        return False, f"MFE {mfe_r:.2f}R < {PROMO_MIN_MFE_R:g}R"
+                 ladder_legs_done: int, cfg=None) -> tuple[bool, str]:
+    th = promo_thresholds(cfg)
+    if pnl_r < th["min_r"]:
+        return False, f"pnl {pnl_r:+.2f}R < +{th['min_r']:g}R"
+    if mfe_r < th["min_mfe_r"]:
+        return False, f"MFE {mfe_r:.2f}R < {th['min_mfe_r']:g}R"
     if has_tape:
         if not (buyers_now > buyers_entry and inflow_now > inflow_entry):
             return False, f"flow not expanding (buyers {buyers_entry}→{buyers_now}, inflow {inflow_entry:.2f}→{inflow_now:.2f})"
     elif mc_velocity_5m_pct <= 0:
         return False, f"no tape and 5m velocity {mc_velocity_5m_pct:+.1f}%"
-    if exit_liq_pct is not None and exit_liq_pct >= PROMO_MAX_EXIT_LIQ:
-        return False, f"exit-liquidity likeness {exit_liq_pct:.0f}% ≥ {PROMO_MAX_EXIT_LIQ:g}"
-    if exit_cost_pct >= PROMO_MAX_EXIT_COST_PCT:
-        return False, f"exit cost {exit_cost_pct:.1f}% ≥ {PROMO_MAX_EXIT_COST_PCT:g}%"
+    if exit_liq_pct is not None and exit_liq_pct >= th["max_exit_liq"]:
+        return False, f"exit-liquidity likeness {exit_liq_pct:.0f}% ≥ {th['max_exit_liq']:g}"
+    if exit_cost_pct >= th["max_exit_cost"]:
+        return False, f"exit cost {exit_cost_pct:.1f}% ≥ {th['max_exit_cost']:g}%"
     if book == "hunt" and ladder_legs_done < 1:
         return False, "hunt +1R leg not filled yet"
     return True, "promote"

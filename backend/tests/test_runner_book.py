@@ -310,3 +310,22 @@ def test_runner_ignores_snipe_stale_and_velocity_exits_but_keeps_ripcord():
     s["trade"]["book"] = "hunt"
     st._check_snipe_pattern_exit_impl = lambda slot, px: (True, "snipe stale-exit (held 120s ≥ 90s)")
     assert st._check_snipe_pattern_exit(s, 1.0)[0] is True          # hunt keeps every pattern exit
+
+
+def test_promotion_thresholds_and_cap_come_from_config():
+    """Operator-tunable promotion rules (Advanced → Exits → Runner promotion); constants stay the defaults."""
+    from models import BotConfig
+    cfg = BotConfig()
+    base = dict(book="scalp", buyers_now=5, buyers_entry=3, inflow_now=2.0, inflow_entry=1.0, has_tape=True, mc_velocity_5m_pct=0.0,
+                exit_liq_pct=50.0, exit_cost_pct=3.0, ladder_legs_done=0)
+    assert runner.promotion_ok(pnl_r=0.6, mfe_r=1.0, cfg=cfg, **base)[0] is False          # defaults: 1R / 1.5R
+    assert runner.promotion_ok(pnl_r=0.6, mfe_r=1.0, cfg=None, **base)[1].startswith("pnl +0.60R < +1R")
+    cfg.runner_promo_min_r, cfg.runner_promo_min_mfe_r = 0.5, 1.0
+    assert runner.promotion_ok(pnl_r=0.6, mfe_r=1.0, cfg=cfg, **base) == (True, "promote")
+    cfg.runner_promo_max_exit_liq_pct = 40.0
+    assert "exit-liquidity" in runner.promotion_ok(pnl_r=0.6, mfe_r=1.0, cfg=cfg, **base)[1]
+    cfg.runner_promo_max_exit_liq_pct, cfg.runner_promo_max_exit_cost_pct = 70.0, 2.0
+    assert "exit cost" in runner.promotion_ok(pnl_r=0.6, mfe_r=1.0, cfg=cfg, **base)[1]
+    assert runner.cap(cfg) == 1 and runner.cap(None) == 1
+    cfg.runner_cap = 2
+    assert runner.cap(cfg) == 2
