@@ -161,6 +161,18 @@ class BotConfig(BaseModel):
     flush_extra_drop_pct: float = 5.0
     flush_window_s: int = 30
     flush_reentry_enabled: bool = True          # a flush-caused stop primes a re-entry watch (breakout path)
+    # Cohort-unwind flush: ≥ share of the dip's SOL sold by the wallets that bought the impulse we entered on
+    # (a bundle unwinding its own pump) — a flush however many wallets; floor = pre-impulse base − extra drop.
+    flush_cohort_enabled: bool = True
+    flush_cohort_share: float = 0.6
+    flush_cohort_window_s: int = 45
+    # Buy the dip while a flush hold is active: one add-on leg once price lifts bounce-confirm% off the trough with fresh buyers.
+    flush_dip_addon_enabled: bool = False
+    flush_dip_addon_size_mult: float = 1.0      # × the original size (capped at max_trade_usd)
+    flush_dip_addon_min_buyers: int = 1
+    # Flush-stop re-entry (SOL): the stop fired on a flush → re-buy the reclaim (bounce off the post-exit trough with fresh buyers)
+    flush_reentry_wait_s: int = 5
+    flush_reentry_max_chase_pct: float = 50.0   # never re-buy more than this above the stop fill
     exit_slippage_bps: int = 1000    # 10% normal exit slippage (TP/trailing/timeout)
     # Panic-exit slippage: applied on stop-loss, hard-stop, classifier abort,
     # and bonding-curve-complete exits where landing the sell matters more

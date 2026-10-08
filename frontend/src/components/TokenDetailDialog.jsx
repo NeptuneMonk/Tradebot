@@ -7,6 +7,7 @@ import { CreatorAuditPanel } from "@/components/CreatorAuditPanel";
 import { ChainBadge } from "./ChainBadge";
 import { api, explainApiError } from "@/lib/api";
 import TokenChart from "./TokenChart";
+import { flushVerdict } from "@/lib/flushVerdict";
 
 const fmtUsd = (n) => {
   const v = Number(n);
@@ -93,12 +94,18 @@ export function TokenDetailDialog({ token, onClose }) {
               {rx ? (
                 <div>re-entry: {rx.attempts} attempt(s) · last exit {fmtAge(Date.now() / 1000 - rx.ts)} ago {rx.was_sl ? "· stop-out" : ""} {rx.hot ? "· hot" : ""} {rx.sl_until > Date.now() / 1000 ? <span className="text-amber-300">· SL cooldown {fmtAge(rx.sl_until - Date.now() / 1000)} left</span> : null}</div>
               ) : <div>no exit inside the re-entry window — a manual buy is a fresh entry</div>}
-              {data?.watch && <div className="text-lime-300">on the pullback / breakout watch · attempts {data.watch.attempts}</div>}
+              {data?.watch && <div className="text-lime-300">{data.watch.flush ? `flush stop — re-buying the reclaim (${data.watch.flush_kind || "flush"})` : "on the pullback / breakout watch"} · attempts {data.watch.attempts}</div>}
               <ul className="max-h-28 overflow-auto space-y-0.5">
-                {(data?.trades || []).map((t) => (
-                  <li key={t.id} className="flex gap-2"><span className="text-neutral-500">{t.book}</span><span>{t.status}</span>
-                    <span className={(t.pnl_pct || 0) >= 0 ? "text-emerald-400" : "text-red-400"}>{pct(t.pnl_pct)}</span><span className="truncate text-neutral-500">{t.exit_reason || ""}</span></li>
-                ))}
+                {(data?.trades || []).map((t) => {
+                  const fv = flushVerdict(t);
+                  return (
+                    <li key={t.id} className="flex flex-col gap-0" data-testid={`record-trade-${t.id}`}>
+                      <div className="flex gap-2"><span className="text-neutral-500">{t.book}</span><span>{t.status}</span>
+                        <span className={(t.pnl_pct || 0) >= 0 ? "text-emerald-400" : "text-red-400"}>{pct(t.pnl_pct)}</span><span className="truncate text-neutral-500">{t.exit_reason || ""}</span></div>
+                      {fv && <div className="pl-2 text-[9px] text-neutral-500" data-testid={`record-flush-${t.id}`}><span className={fv.tint.replace(/border-\S+/, "")}>{fv.label}</span> · {fv.detail}</div>}
+                    </li>
+                  );
+                })}
               </ul>
             </div>
 

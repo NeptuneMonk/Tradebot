@@ -575,9 +575,13 @@ class BotState:
         # dip_forensics expects quote amounts in the same unit for buys and sells (SOL here)
         b = {"sell_events": bucket.get("sell_events") or (),
              "buy_events": [(ts, int(lam or 0) / LAMPORTS_PER_SOL, w) for ts, lam, w in (bucket.get("buy_events") or ())]}
-        f = flush.dip_forensics(b, pos, now, float(getattr(cfg, "flush_window_s", 30)))
-        slot["_dip_forensics"] = {**f, "flush": flush.is_flush(f, cfg), "kind": kind}
-        if not slot["_dip_forensics"]["flush"]:
+        entry_ts = float(slot.get("_entry_ts_mono") or 0.0)
+        cohort_w = float(getattr(cfg, "flush_cohort_window_s", 45) or 45)
+        cohort = flush.entry_cohort(b["buy_events"], entry_ts, cohort_w) if entry_ts > 0 and getattr(cfg, "flush_cohort_enabled", True) else None
+        f = flush.dip_forensics(b, pos, now, float(getattr(cfg, "flush_window_s", 30)), cohort=cohort)
+        kind_f = flush.flush_kind(f, cfg)
+        slot["_dip_forensics"] = {**f, "flush": kind_f is not None, "flush_kind": kind_f, "kind": kind}
+        if kind_f is None:
             slot.pop("_flush_hold_since", None)
             return False
         since = slot.get("_flush_hold_since")
@@ -585,15 +589,105 @@ class BotState:
             slot["_flush_hold_since"] = now
             slot["_flush_hold_trough"] = pos["trough_price"] or cur_price_sol
             slot["_flush_hold_at_pnl_pct"] = round(pct_change, 2)
+            base = flush.pre_impulse_base(bucket.get("price_samples"), entry_ts, cohort_w) if (kind_f == "cohort-unwind" and entry_ts > 0) else None
+            slot["_flush_base_sol"] = base
+            slot["_dip_forensics"]["base_price"] = base
             self.stats["flush_holds"] = self.stats.get("flush_holds", 0) + 1
-            logger.warning(f"FLUSH? {trade_doc.get('symbol')} {kind} at {pct_change:+.1f}%: {f['n_sellers']} seller(s), top {f['top_seller_share']*100:.0f}% "
-                           f"of {f['sold_quote']:.3f} SOL sold, {f['buyers']} buyers still in — holding up to {getattr(cfg, 'flush_hold_s', 10)}s")
+            who = (f"{f['n_sellers']} seller(s), top {f['top_seller_share']*100:.0f}%" if kind_f == "single-seller"
+                   else f"{f.get('cohort_sellers', 0)}/{f['n_sellers']} sellers are the entry cohort ({float(f.get('cohort_share') or 0)*100:.0f}% of the SOL)")
+            logger.warning(f"FLUSH? {trade_doc.get('symbol')} {kind} at {pct_change:+.1f}% [{kind_f}]: {who} "
+                           f"of {f['sold_quote']:.3f} SOL sold, {f['buyers']} buyers still in — holding up to {getattr(cfg, 'flush_hold_s', 10)}s"
+                           + (f", floor = pre-impulse base {base:.3e}" if base else ""))
             since = now
-        floor = float(slot.get("_flush_hold_trough") or 0) * (1.0 - flow.flush_floor_pct(cfg, (self.tracking.get(mint) or {}).get("price_samples"), now) / 100.0)
+        extra = flow.flush_floor_pct(cfg, (self.tracking.get(mint) or {}).get("price_samples"), now) / 100.0
+        base = slot.get("_flush_base_sol")
+        # cohort unwind: the pump is gone once price falls through where the token sat BEFORE the impulse
+        floor = (float(base) * (1.0 - float(getattr(cfg, "flush_extra_drop_pct", 5.0) or 0.0) / 100.0) if base
+                 else float(slot.get("_flush_hold_trough") or 0) * (1.0 - extra))
+        slot["_flush_floor_sol"] = floor
+        slot["_dip_forensics"]["floor_price"] = floor
         if cur_price_sol <= floor:
             slot["_dip_forensics"]["hold_broke_floor"] = True
             return False                      # kept falling — distribution after all
-        return now - since < float(getattr(cfg, "flush_hold_s", 10))
+        if now - since >= float(getattr(cfg, "flush_hold_s", 10)):
+            return False
+        # buy the dip: one add-on once price lifts off the trough with fresh (non-seller) buyers
+        if (getattr(cfg, "flush_dip_addon_enabled", False) and not slot.get("_flush_addon_started") and not trade_doc.get("flush_addon_done")
+                and cur_price_sol >= float(slot.get("_flush_hold_trough") or 0) * (1.0 + float(getattr(cfg, "reentry_bounce_confirm_pct", 3.0)) / 100.0)
+                and flush.fresh_buyers(b["buy_events"], since, set(f.get("sellers") or ())) >= int(getattr(cfg, "flush_dip_addon_min_buyers", 1))):
+            slot["_flush_addon_started"] = True
+            slot["_flush_addon_due"] = cur_price_sol
+        return True
+
+    async def _flush_dip_add_on(self, mint: str, slot: dict, cur_price_sol: float) -> bool:
+        """Buy-the-dip leg during a flush hold: flush_dip_addon_size_mult × original size (≤ max_trade_usd), blended into
+        the position's cost basis so the ladder works off the average. One attempt per position, pass or fail."""
+        trade_doc = slot["trade"]
+        cfg = self.config
+        trade_doc["flush_addon_done"] = True
+        protocol = slot.get("protocol") or trade_doc.get("protocol") or "pumpfun"
+        sol_price = await get_sol_usd_price()
+        eff_priority, eff_slip, _ = self._resolve_fees()
+        pool_state = state = None
+        if protocol == "pumpswap":
+            pool = slot.get("pumpswap_pool") or trade_doc.get("pumpswap_pool") or ""
+            pool_state = await pumpswap.fetch_pool_state(pool) if pool else None
+            if not pool_state:
+                return False
+        else:
+            state = await pumpfun.fetch_bonding_curve_state(mint)
+            if not state or state.get("complete"):
+                return False
+        base_usd = float(trade_doc.get("size_usd") or trade_doc.get("entry_usd") or 0.0)
+        size_usd = min(base_usd * float(getattr(cfg, "flush_dip_addon_size_mult", 1.0) or 0.0), float(cfg.max_trade_usd))
+        sol_in = int(size_usd / sol_price * LAMPORTS_PER_SOL) if sol_price > 0 else 0
+        if sol_in <= 0:
+            return False
+        tokens_out, max_sol = (pumpswap.quote_buy_tokens(pool_state, sol_in, eff_slip) if protocol == "pumpswap"
+                               else pumpfun.quote_buy_tokens(state, sol_in, eff_slip))
+        if tokens_out <= 0:
+            return False
+        sig = None
+        if trade_doc.get("mode") == "live":
+            try:
+                kp, user, mint_pk = get_keypair(), get_pubkey(), Pubkey.from_string(mint)
+                if protocol == "pumpswap":
+                    base_tp = await pumpfun.get_mint_token_program(mint)
+                    ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
+                    wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, max_sol)
+                    ixs = [pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp), *wsol_ixs,
+                           pumpswap.build_buy_ix(user, pool_state, ata, wsol_acc, base_amount_out=tokens_out,
+                                                 max_quote_amount_in=max_sol, base_token_program=base_tp),
+                           pumpswap.build_close_wsol_ix(user, wsol_acc)]
+                    sig = await pumpfun.send_versioned_tx(kp, ixs, eff_priority, compute_unit_limit=400_000)
+                else:
+                    creator = state.get("creator") or trade_doc.get("creator") or (slot.get("launch") or {}).get("creator")
+                    if not creator:
+                        raise RuntimeError("missing creator (required for creator_vault PDA)")
+                    tp = await pumpfun.get_mint_token_program(mint)
+                    ixs = [pumpfun.build_create_ata_ix(user, user, mint_pk, tp),
+                           await pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol, Pubkey.from_string(creator), tp)]
+                    sig = await pumpfun.send_versioned_tx(kp, ixs, eff_priority)
+            except Exception as e:
+                logger.warning(f"flush dip add-on buy failed for {mint[:8]}…: {e}")
+                return False
+        cost_sol = sol_in / LAMPORTS_PER_SOL
+        prev_entry_price = float(trade_doc.get("entry_price_sol") or 0.0)
+        trade_doc["entry_tokens"] = int(trade_doc["entry_tokens"]) + int(tokens_out)
+        trade_doc["entry_sol"] = float(trade_doc["entry_sol"]) + cost_sol
+        trade_doc["entry_usd"] = trade_doc["entry_sol"] * sol_price
+        trade_doc["entry_fee_sol"] = float(trade_doc.get("entry_fee_sol") or 0.0) + estimate_tx_fee_sol(eff_priority, CU_PUMPSWAP if protocol == "pumpswap" else CU_PUMPFUN)
+        trade_doc["entry_price_sol"] = trade_doc["entry_sol"] / trade_doc["entry_tokens"] if trade_doc["entry_tokens"] else prev_entry_price
+        trade_doc.update({"flush_addon_sig": sig, "flush_addon_usd": round(size_usd, 2), "flush_addon_price_sol": cost_sol / tokens_out,
+                          "flush_addon_at": time.time(), "flush_addon_prev_entry_price_sol": prev_entry_price})
+        slot["exit_blocked_until"] = time.time() + 3.0
+        slot["sl_breached_since"], slot["sl_breached_samples"] = None, 0      # new basis → fresh persistence window
+        self.stats["flush_dip_addons"] = self.stats.get("flush_dip_addons", 0) + 1
+        await self.db.trades.update_one({"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True)
+        await hub.broadcast("trade_update", trade_doc)
+        logger.warning(f"FLUSH DIP ADD-ON {trade_doc.get('symbol')} {mint[:8]}…: ${size_usd:.2f} at {cost_sol / tokens_out:.3e} SOL "
+                       f"— basis {prev_entry_price:.3e} → {trade_doc['entry_price_sol']:.3e}")
+        return True
 
     def _buy_momentum_holds(self, mint: str, slot: dict, kind: str, pct_change: float) -> bool:
         """True ⇒ DEFER this SL/TP exit because buyers are still piling in.
@@ -1096,8 +1190,15 @@ class BotState:
                     if cur_price <= 0:
                         continue
                     b = self.tracking.get(mint) or {}
+                    if w.get("flush"):
+                        fl = float(w.get("floor_price") or 0.0)
+                        if fl > 0 and cur_price < fl:
+                            logger.info(f"flush re-entry watch {mint[:8]}… dropped — price fell through the flush floor ({cur_price:.3e} < {fl:.3e})")
+                            to_remove.append(mint)
+                            continue
                     window_s = float(getattr(self.config, "exit_momentum_window_s", 10) or 10)
-                    n_buyers, inflow_lamports = recent_buyers_and_inflow(b.get("buy_events"), now, window_s)
+                    n_buyers, inflow_lamports = recent_buyers_and_inflow(b.get("buy_events"), now, window_s,
+                                                                         exclude=set(w.get("cohort") or ()) if w.get("flush") else None)
                     inflow_ok = inflow_lamports / LAMPORTS_PER_SOL >= float(
                         getattr(self.config, "exit_momentum_min_inflow_sol", 0.25) or 0)
                     trigger = decide_reentry(w, cur_price, now, n_buyers, inflow_ok, self.config)
@@ -1168,7 +1269,7 @@ class BotState:
             # SL cooldown applies to re-entry watcher too — if the previous
             # exit was SL, give the price action time to settle.
             cd_until = self.sl_cooldown_until.get(mint, 0.0)
-            if cd_until and time.time() < cd_until:
+            if cd_until and time.time() < cd_until and not w.get("flush"):     # a flush stop is not the token failing
                 return
             self._pending_entry_mints.add(mint)
         try:
@@ -2038,6 +2139,8 @@ class BotState:
         if kind and self._buy_momentum_holds(mint, slot, kind, pct):
             return False
         if kind and d.kind == "exit" and self._flush_holds_sol(mint, slot, kind, pct, cur_price_sol):
+            if slot.pop("_flush_addon_due", None) is not None:
+                await self._flush_dip_add_on(mint, slot, cur_price_sol)
             return False
         slot["exit_in_progress"] = True
         try:
@@ -5472,7 +5575,9 @@ class BotState:
                 "exit_price_sol": exit_price_sol,
                 "exit_sig": exit_sig,
                 "exit_reason": reason,
-                "dip_forensics": slot.get("_dip_forensics"),       # flush-hold verdict at the stop (None when no SL/trail ran)
+                "dip_forensics": ({k: v for k, v in _dipf.items() if k != "sellers"} if (_dipf := slot.get("_dip_forensics")) else None),   # flush verdict at the stop
+                "flush_held": bool(slot.get("_flush_hold_since")),
+                "flush_hold_at_pnl_pct": slot.get("_flush_hold_at_pnl_pct"),
                 "pnl_sol": total_pnl_sol,
                 "pnl_usd": total_pnl_usd,
                 "pnl_pct": pnl_pct,
@@ -5620,6 +5725,30 @@ class BotState:
                 "creator": (slot.get("launch") or {}).get("creator"),
             }
             await hub.broadcast("reentry_watch_add", self.reentry_watch[mint])
+        _f = slot.get("_dip_forensics") or {}
+        if (
+            total_pnl_sol <= 0 and _f.get("flush") and _f.get("kind") in ("sl", "trail")
+            and getattr(self.config, "flush_reentry_enabled", True) and self.config.reentry_enabled
+            and not self.stopping_gracefully and not is_snipe_trade and exit_price_sol > 0
+            and mint not in self.reentry_watch and not _f.get("hold_broke_floor")
+        ):
+            # we sold a flush (buy-the-dip path): watch for the reclaim — bounce off the post-exit trough with fresh buyers
+            self.stats["flush_reentry_watches"] = self.stats.get("flush_reentry_watches", 0) + 1
+            self.reentry_watch[mint] = {
+                "mint": mint, "name": trade_doc.get("name"), "symbol": trade_doc.get("symbol"),
+                "exit_price_sol": exit_price_sol, "exit_time": time.time(), "last_exit_time": time.time(), "last_exit_was_sl": False,
+                "flush": True, "flush_kind": _f.get("flush_kind"), "floor_price": float(slot.get("_flush_floor_sol") or 0.0),
+                "flush_trough": exit_price_sol, "cohort": list(_f.get("sellers") or []),
+                "attempts": 0, "hot": False, "max_attempts": 1,
+                "window_s": self.config.reentry_window_seconds, "pullback_pct": self.config.reentry_pullback_pct,
+                "size_multiplier": self.config.reentry_size_multiplier, "original_pnl_usd": total_pnl_usd,
+                "peak_price_after_exit": exit_price_sol, "trough_after_peak": exit_price_sol,
+                "protocol": watch_protocol, "pumpswap_pool": slot.get("pumpswap_pool") or "",
+                "creator": (slot.get("launch") or {}).get("creator") or trade_doc.get("creator"),
+            }
+            logger.warning(f"FLUSH STOP {trade_doc.get('symbol')} [{_f.get('flush_kind')}] — re-entry watch armed: re-buy the reclaim "
+                           f"(≥{self.config.reentry_bounce_confirm_pct:g}% off the trough, fresh buyers, floor {self.reentry_watch[mint]['floor_price']:.3e})")
+            await hub.broadcast("reentry_watch_add", {k: v for k, v in self.reentry_watch[mint].items() if k != "cohort"})
         await self.check_kill_switch()
         # If a graceful stop is in progress, the finaliser watches active_trades
         # and will flip enabled=False on its own. Wake it eagerly so the UI

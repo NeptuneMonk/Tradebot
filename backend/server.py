@@ -2154,7 +2154,7 @@ async def trades_active():
     return docs
 
 
-HISTORY_OMIT = {"_id": 0, "entry_ctx": 0, "dip_forensics": 0, "snipe_pattern_ctx": 0, "greylist_overrides_at_entry": 0,
+HISTORY_OMIT = {"_id": 0, "entry_ctx": 0, "snipe_pattern_ctx": 0, "greylist_overrides_at_entry": 0,
                 "cost_breakdown": 0, "exit_deferrals": 0}   # analytics-only blobs — ~2/3 of every history row
 
 
@@ -2684,7 +2684,7 @@ async def token_detail(chain: str, mint: str):
         out["market_error"] = str(e)[:120]
     rows = await db.trades.find({"mint": mint}, {"_id": 0}).sort("entry_time", -1).limit(20).to_list(20)
     out["trades"] = [{k: t.get(k) for k in ("id", "book", "mode", "status", "entry_time", "exit_time", "entry_usd", "pnl_usd", "pnl_pct", "exit_reason",
-                                             "reentry_trigger", "classifier_action", "peak_pnl_pct")} for t in rows]
+                                             "reentry_trigger", "classifier_action", "peak_pnl_pct", "dip_forensics", "flush_held", "flush_addon_usd")} for t in rows]
     out["summary"] = {"n": len(rows), "pnl_usd": round(sum(float(t.get("pnl_usd") or 0) for t in rows), 2),
                       "active": any(t.get("status") == "active" for t in rows)}
     if out.get("live") is not None:

@@ -530,7 +530,7 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
         <label className="flex flex-col gap-1" data-testid="flush-scope-field">
           <span className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 inline-flex items-center gap-1">
             Flush hold
-            <HelpHint label="help: flush hold">Robinhood: when a fast dip trips the SL or trailing stop, the bot checks WHO sold since the peak. If one wallet did ≥ the top-share of the selling (≤ max sellers) and buyers are still stepping in, it is a flush of weak hands, not distribution — the exit is held up to Flush hold (s), floored at Flush extra drop % under the flush trough. It also asks the chain whether the flusher emptied their bag. A stop that WAS caused by a flush primes a recovery re-entry watch instead of ending the token. Scope: hot tokens + re-entry legs, or every position.</HelpHint>
+            <HelpHint label="help: flush hold">When a fast dip trips the SL or trailing stop, the bot checks WHO sold since the peak. Single-seller flush: one wallet did ≥ the top-share of the selling (≤ max sellers) with buyers still stepping in. Cohort unwind: ≥ Flush cohort share of the SOL sold came from the wallets that bought the impulse you entered on (a bundle dumping its own pump — any wallet count). Either way the exit is held up to Flush hold (s), floored at Flush extra drop % under the trough (single seller) or under the pre-impulse base (cohort). Broad selling by unrelated holders is distribution and sells at once. Scope: hot tokens + re-entry legs, or every position — fresh scalps are only protected on "all".</HelpHint>
           </span>
           <select data-testid="flush-scope-select" value={local.flush_hold_enabled === false ? "off" : (local.flush_hold_scope ?? "hot_reentry")}
                   onChange={(e) => { const v = e.target.value; setLocal({ ...local, flush_hold_enabled: v !== "off", flush_hold_scope: v === "off" ? (local.flush_hold_scope ?? "hot_reentry") : v }); }}
@@ -553,9 +553,41 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
                value={local.flush_max_sellers ?? 2}
                onChange={(v) => setLocal({ ...local, flush_max_sellers: parseInt(v, 10) || 0 })} step="1" />
         <Field label="Flush extra drop %" testid="flush-extra-drop-input"
-               hint="Floor while holding a flush: if price falls this far below the flush trough, sell anyway — it was distribution after all."
+               hint="Floor while holding a flush: if price falls this far below the flush trough (or, for a cohort unwind, below the pre-impulse base), sell anyway — it was distribution after all."
                value={local.flush_extra_drop_pct ?? 5}
                onChange={(v) => setLocal({ ...local, flush_extra_drop_pct: parseFloat(v) || 0 })} step="1" />
+        <Field label="Flush cohort share" testid="flush-cohort-share-input"
+               hint="Cohort-unwind flush: share of the dip's SOL sold by the wallets that bought the impulse you entered on (0.6 = 60%). A 20-wallet bundle dumping its own pump is a flush however many wallets sold — the hold's floor becomes the pre-impulse base − extra drop %. 0 = off."
+               value={local.flush_cohort_share ?? 0.6}
+               onChange={(v) => { const n = parseFloat(v) || 0; setLocal({ ...local, flush_cohort_share: n, flush_cohort_enabled: n > 0 }); }} step="0.05" />
+        <Field label="Cohort window (s)" testid="flush-cohort-window-input"
+               hint="How far before your entry the impulse cohort is collected (buyers in [entry − window, entry + 3s]); also where the pre-impulse base price is read."
+               value={local.flush_cohort_window_s ?? 45}
+               onChange={(v) => setLocal({ ...local, flush_cohort_window_s: parseInt(v, 10) || 0 })} step="5" />
+        <Field label="Flush dip add-on ×" testid="flush-dip-addon-input"
+               hint="Buy the dip DURING a flush hold: once price lifts Bounce Confirm % off the trough with a fresh (non-seller) buyer, add one leg of this × the original size (≤ max trade $) and blend it into the cost basis. Aggressive — the floor still sells everything if it breaks. 0 = off."
+               value={local.flush_dip_addon_enabled ? (local.flush_dip_addon_size_mult ?? 1) : 0}
+               onChange={(v) => { const n = parseFloat(v) || 0; setLocal({ ...local, flush_dip_addon_size_mult: n, flush_dip_addon_enabled: n > 0 }); }} step="0.25" />
+        <label className="flex flex-col gap-1" data-testid="flush-reentry-field">
+          <span className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 inline-flex items-center gap-1">
+            Flush re-entry
+            <HelpHint label="help: flush re-entry">Buy the dip AFTER a flush stop: when a stop fires and the dip was a flush (single seller or cohort unwind), the token is not failing — arm a one-shot re-entry watch that re-buys once price lifts Bounce Confirm % off the lowest print since the exit with fresh buyers (not the flush sellers), waiting at least Flush re-entry wait (s), never more than Max chase % above the fill, and dropped if price falls through the flush floor. Bypasses the SL cooldown.</HelpHint>
+          </span>
+          <select data-testid="flush-reentry-select" value={local.flush_reentry_enabled === false ? "off" : "on"}
+                  onChange={(e) => setLocal({ ...local, flush_reentry_enabled: e.target.value === "on" })}
+                  className="bg-neutral-950 border border-neutral-800 px-2 py-1 font-mono text-sm focus:border-blue-500 focus:outline-none">
+            <option value="on">re-buy the reclaim</option>
+            <option value="off">off</option>
+          </select>
+        </label>
+        <Field label="Flush re-entry wait (s)" testid="flush-reentry-wait-input"
+               hint="Shortest wait after a flush stop before the reclaim can be bought (the normal re-entry min wait does not apply)."
+               value={local.flush_reentry_wait_s ?? 5}
+               onChange={(v) => setLocal({ ...local, flush_reentry_wait_s: parseInt(v, 10) || 0 })} step="1" />
+        <Field label="Flush max chase %" testid="flush-reentry-chase-input"
+               hint="Never re-buy a flush more than this far above the stop fill — past that you are chasing, not buying the dip."
+               value={local.flush_reentry_max_chase_pct ?? 50}
+               onChange={(v) => setLocal({ ...local, flush_reentry_max_chase_pct: parseFloat(v) || 0 })} step="5" />
         {showAdvancedFees && (
           <Field label="Priority µLamp" testid="prio-input"
                  hint="Compute-unit price in micro-lamports. Higher = better landing odds, higher fee. Speed Mode handles this; manual override only."

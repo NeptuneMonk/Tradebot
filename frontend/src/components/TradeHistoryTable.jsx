@@ -8,6 +8,7 @@ import { useVirtualTable, SpacerRow } from "./VirtualRows";
 import { openWiki, wikiTargetForExit } from "@/lib/wikiNav";
 import { BookOpen } from "lucide-react";
 import { api } from "@/lib/api";
+import { flushVerdict } from "@/lib/flushVerdict";
 
 const BOOKS = ["all", "scalp", "hunt", "runner", "rh_pons"];
 
@@ -181,11 +182,23 @@ function TradeHistoryTable({ history: liveHistory }) {
                             {reentryTitle(t)}
                           </div>
                         )}
+                        {flushVerdict(t) && (
+                          <div className="mt-1 text-[10px] text-neutral-500" data-testid={`flush-verdict-${t.id}`}>
+                            <span className={flushVerdict(t).tint.replace(/border-\S+/, "")}>{flushVerdict(t).label}</span> — {flushVerdict(t).detail}
+                          </div>
+                        )}
                       </TooltipContent>
                     </Tooltip>
                   </td>
                   <td className="py-1.5 font-mono text-neutral-500 text-[10px]">{fmtTime(t.exit_time || t.entry_time)}</td>
                   <td className="font-mono text-neutral-300">
+                    {flushVerdict(t) && (
+                      <span
+                        data-testid={`flush-badge-${t.id}`}
+                        className={`mr-1 inline-block px-1 py-0 border text-[9px] font-mono align-middle ${flushVerdict(t).tint}`}
+                        title={flushVerdict(t).detail}
+                      >{flushVerdict(t).label}</span>
+                    )}
                     {t.partial_done && (
                       <span
                         data-testid={`partial-badge-${t.id}`}

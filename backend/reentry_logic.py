@@ -34,6 +34,8 @@ def decide_reentry(w: dict, price: float, now: float, buyers_recent: int,
     if price <= 0:
         return None
     update_watch_price(w, price)
+    if w.get("flush"):
+        return _decide_flush_reclaim(w, price, now, buyers_recent, cfg)
     min_wait = float(_cfg(cfg, "reentry_min_wait_s", 20))
     if now - float(w.get("last_exit_time") or w.get("exit_time") or 0) < min_wait:
         return None
@@ -61,8 +63,23 @@ def decide_reentry(w: dict, price: float, now: float, buyers_recent: int,
     return None
 
 
-def recent_buyers_and_inflow(buy_events, now: float, window_s: float) -> tuple[int, float]:
-    """buy_events rows: (ts, amount, wallet). Returns (distinct wallets, summed amount)."""
+def _decide_flush_reclaim(w: dict, price: float, now: float, buyers_recent: int, cfg) -> str | None:
+    """Flush-stop watch ('buy the dip'): the stop fired on a flush; re-buy once price lifts bounce-confirm% off the
+    lowest print since our exit with fresh (non-cohort) buyers — never more than max-chase% above our fill."""
+    w["flush_trough"] = min(float(w.get("flush_trough") or price), price)
+    if now - float(w.get("last_exit_time") or w.get("exit_time") or 0) < float(_cfg(cfg, "flush_reentry_wait_s", 5)):
+        return None
+    exit_price = float(w.get("exit_price_quote") or w.get("exit_price_sol") or 0)
+    trough = float(w.get("flush_trough") or price)
+    bouncing = price >= trough * (1.0 + float(_cfg(cfg, "reentry_bounce_confirm_pct", 3.0)) / 100.0)
+    chase_ok = exit_price <= 0 or price <= exit_price * (1.0 + float(_cfg(cfg, "flush_reentry_max_chase_pct", 50.0)) / 100.0)
+    if bouncing and chase_ok and buyers_recent >= int(_cfg(cfg, "reentry_min_buyers", 2)):
+        return "flush-reclaim"
+    return None
+
+
+def recent_buyers_and_inflow(buy_events, now: float, window_s: float, exclude: set | None = None) -> tuple[int, float]:
+    """buy_events rows: (ts, amount, wallet). Returns (distinct wallets, summed amount); `exclude` drops the flush sellers."""
     cutoff = now - window_s
     wallets: set = set()
     amt = 0.0
@@ -71,7 +88,7 @@ def recent_buyers_and_inflow(buy_events, now: float, window_s: float) -> tuple[i
             ts, q, wl = ev[0], ev[1], ev[2]
         except (IndexError, TypeError):
             continue
-        if ts >= cutoff:
+        if ts >= cutoff and not (exclude and wl in exclude):
             wallets.add(wl)
             amt += float(q or 0)
     return len(wallets), amt
