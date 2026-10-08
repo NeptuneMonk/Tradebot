@@ -431,6 +431,13 @@ class MomentumScanner:
                             tally(band, verdict("mc-velocity", f"{v:+.1f}%/5m < {cfg.scanner_min_mc_velocity_5m_pct_seasoned:g}%"))
                             continue
                     else:
+                        mc = float(b.get("usd_market_cap") or 0.0)
+                        if cfg.scanner_min_mc_usd_new > 0 and mc < cfg.scanner_min_mc_usd_new:
+                            tally(band, verdict("mc", f"${mc:,.0f} < ${cfg.scanner_min_mc_usd_new:,.0f}"))
+                            continue
+                        if cfg.scanner_max_mc_usd_new > 0 and mc > cfg.scanner_max_mc_usd_new:
+                            tally(band, verdict("mc-max", f"${mc:,.0f} > ${cfg.scanner_max_mc_usd_new:,.0f}"))
+                            continue
                         if m["recent_inflow_sol"] < g["min_inflow_sol"]:
                             tally(band, verdict("inflow", f"{m['recent_inflow_sol']:.2f} SOL < {g['min_inflow_sol']:g}"))
                             continue
@@ -541,6 +548,13 @@ class MomentumScanner:
                             verdict("mc-velocity")
                             continue
                     else:
+                        mc = float(b.get("usd_market_cap") or 0.0)
+                        if cfg.scanner_min_mc_usd_new > 0 and mc < cfg.scanner_min_mc_usd_new:
+                            verdict("mc")
+                            continue
+                        if cfg.scanner_max_mc_usd_new > 0 and mc > cfg.scanner_max_mc_usd_new:
+                            verdict("mc-max")
+                            continue
                         if m["recent_inflow_sol"] < g["min_inflow_sol"]:
                             verdict("inflow")
                             continue

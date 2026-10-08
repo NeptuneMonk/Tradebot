@@ -277,6 +277,8 @@ class BotConfig(BaseModel):
     # Seasoned-band-only gates (use Pump.fun API data since Helius mempool
     # doesn't reach PumpSwap pools). Polled via the discovery refresh task.
     scanner_min_mc_usd_seasoned: float = 30000.0      # $30K market cap floor
+    scanner_min_mc_usd_new: float = 0.0               # NEW band (curve) MC floor from the live tape price; 0 = off
+    scanner_max_mc_usd_new: float = 0.0               # NEW band MC ceiling; 0 = off
     scanner_min_mc_velocity_5m_pct_seasoned: float = 5.0  # +5% MC change over 5min
     # Discovery: only seed tokens whose last trade is fresher than this (minutes).
     # Set 0 to disable the freshness gate.

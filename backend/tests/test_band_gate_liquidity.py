@@ -106,3 +106,18 @@ def test_curve_state_overrides_bucket_cache():
     }
     m = scanner.score(b, curve_state, now=2000.0)
     assert abs(m["real_sol_reserves"] - 75.0) < 0.001
+
+
+
+def test_new_band_market_cap_gate_wired_into_both_scanner_paths():
+    """Operator 2026-10-08: NEW band gets a $ market-cap floor / ceiling (live tape MC) like the seasoned band; 0 = off."""
+    import inspect, scanner as scanner_mod
+    from models import BotConfig
+    src = inspect.getsource(scanner_mod.MomentumScanner.loop)
+    assert src.count("cfg.scanner_min_mc_usd_new > 0 and mc < cfg.scanner_min_mc_usd_new") == 2     # prerank + ranked paths
+    assert src.count("cfg.scanner_max_mc_usd_new > 0 and mc > cfg.scanner_max_mc_usd_new") == 2
+    cfg = BotConfig()
+    assert cfg.scanner_min_mc_usd_new == 0.0 and cfg.scanner_max_mc_usd_new == 0.0                   # off by default
+    # the tape keeps curve MC live: vsr/vtr × 1e6 × SOL/USD (pump.fun 1B supply, 6-dec tokens)
+    import bot as bot_mod
+    assert "bucket[\"usd_market_cap\"] = vsr / vtr * 1_000_000 * _sp" in inspect.getsource(bot_mod.BotState.on_trade)

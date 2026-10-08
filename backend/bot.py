@@ -1725,6 +1725,12 @@ class BotState:
         cur_price = None
         if vsr and vtr:
             cur_price = vsr / vtr / LAMPORTS_PER_SOL
+            if bucket is not None:
+                # live MC off the tape (pump.fun: price × 1B supply, 6-dec tokens): vsr/vtr × 1e6 SOL × SOL/USD. Lets the
+                # NEW band have a $ market-cap gate like the seasoned band; also keeps the feed's MC moving on curve tokens.
+                _sp = float(solana_client._sol_price_cache.get("price") or 0.0)
+                if _sp > 0:
+                    bucket["usd_market_cap"] = vsr / vtr * 1_000_000 * _sp
 
         # FAST EXIT PATH: if we hold this mint, check TP/SL on every trade event
         # (sub-100ms reaction instead of 800ms poll loop — eliminates SL overshoot)

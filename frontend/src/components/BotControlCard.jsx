@@ -790,13 +790,22 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
                      newValue={local.min_buyers_for_entry_new}
                      onNewChange={(v) => setLocal({ ...local, min_buyers_for_entry_new: parseInt(v, 10) || 0 })}
                      step="1" />
-            {/* Seasoned-only: Pump.fun API polled signals */}
-            <GateRow label="Min MC ($)" seasonedOnly
-                     hint="Minimum USD market cap (from Pump.fun API). Bigger = lower rug risk, lower upside ceiling."
+            <GateRow label="Min MC ($)"
+                     hint="Minimum USD market cap. NEW band: live from the tape price (vsr/vtr × 1B supply × SOL/USD), 0 = off. SEASONED: from the Pump.fun API. Bigger = lower rug risk, lower upside ceiling."
+                     newTestid="scanner-mc-new-input"
+                     newValue={local.scanner_min_mc_usd_new ?? 0}
+                     onNewChange={(v) => setLocal({ ...local, scanner_min_mc_usd_new: parseFloat(v) || 0 })}
                      seasonedTestid="scanner-mc-seasoned-input"
                      seasonedValue={local.scanner_min_mc_usd_seasoned}
                      onSeasonedChange={(v) => setLocal({ ...local, scanner_min_mc_usd_seasoned: parseFloat(v) || 0 })}
                      step="1000" />
+            <GateRow label="Max MC ($)" newOnly
+                     hint="NEW band ceiling: skip curve tokens whose live market cap is already above this (too late for a micro-stake bounce). 0 = off."
+                     newTestid="scanner-mc-max-new-input"
+                     newValue={local.scanner_max_mc_usd_new ?? 0}
+                     onNewChange={(v) => setLocal({ ...local, scanner_max_mc_usd_new: parseFloat(v) || 0 })}
+                     step="1000" />
+            {/* Seasoned-only: Pump.fun API polled signals */}
             <GateRow label="Min MC vel (5m %)" seasonedOnly last
                      hint="Minimum % market-cap velocity over the last 5 minutes. Catches Seasoned tokens that are still actively pumping."
                      seasonedTestid="scanner-mcvel-seasoned-input"

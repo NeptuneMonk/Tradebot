@@ -57,9 +57,21 @@ export default function ConfigSyncPanel({ onApplied }) {
       )) {
         return;
       }
-      const fresh = await api.configImport(cfg);
+      const res = await api.configImport(cfg);
+      const fresh = res?.config ?? res;
+      const rep = res?.report;
       onApplied?.(fresh);
-      toast.success("Config imported · bot paused for review");
+      if (rep) {
+        const bits = [`${rep.applied.length} settings applied`, `${rep.changed.length} changed`];
+        if (rep.kept_local?.length) bits.push(`${rep.kept_local.length} feed/arming switches kept local`);
+        if (rep.clamped?.length) bits.push(`${rep.clamped.length} clamped: ${rep.clamped.slice(0, 4).join(", ")}`);
+        toast.success(`Config imported · bot paused for review — ${bits.join(" · ")}`, { duration: 8000 });
+        if (rep.ignored_unknown?.length) {
+          toast.warning(`${rep.ignored_unknown.length} setting(s) in the file are unknown to this build and were ignored: ${rep.ignored_unknown.join(", ")}. Deploy the latest build, then import again.`, { duration: 15000 });
+        }
+      } else {
+        toast.success("Config imported · bot paused for review");
+      }
     } catch (e) {
       toast.error(`Import failed: ${e?.response?.data?.detail || e?.message || e}`);
     } finally {

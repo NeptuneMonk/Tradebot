@@ -606,6 +606,8 @@ async def update_config(body: dict = Body(...)):
     cfg.scanner_min_recent_inflow_sol_new = max(0.0, min(1000.0, cfg.scanner_min_recent_inflow_sol_new))
     cfg.scanner_min_new_buyers_new = max(0, min(500, cfg.scanner_min_new_buyers_new))
     cfg.scanner_min_mc_usd_seasoned = max(0.0, min(1e9, cfg.scanner_min_mc_usd_seasoned))
+    cfg.scanner_min_mc_usd_new = max(0.0, min(1e9, float(cfg.scanner_min_mc_usd_new)))
+    cfg.scanner_max_mc_usd_new = max(0.0, min(1e9, float(cfg.scanner_max_mc_usd_new)))
     cfg.scanner_min_mc_velocity_5m_pct_seasoned = max(-100.0, min(1000.0, cfg.scanner_min_mc_velocity_5m_pct_seasoned))
     cfg.scanner_discovery_max_idle_minutes = max(0, min(1440, cfg.scanner_discovery_max_idle_minutes))
     # Exit-behavior clamps
@@ -1066,10 +1068,23 @@ async def config_import(req: _ConfigImportReq):
     await bot_state.save_config()
     try:
         from models import FEED_KEYS
-        foreign = {k: v for k, v in req.config.items() if k not in FEED_KEYS | {"enabled", "live_trading"}}   # feeds/arming stay local
-        merged = BotConfig(**{**bot_state.config.model_dump(), **foreign})
+        local_keys = FEED_KEYS | {"enabled", "live_trading"}
+        known = set(BotConfig.model_fields)
+        before = bot_state.config.model_dump()
+        foreign = {k: v for k, v in req.config.items() if k not in local_keys}   # feeds/arming stay local
+        unknown = sorted(k for k in foreign if k not in known)                  # file is from a newer build than this one
+        merged = BotConfig(**{**before, **{k: v for k, v in foreign.items() if k in known}})
         merged.enabled = False  # never auto-enable on import; user re-starts
-        return await update_config({k: v for k, v in merged.model_dump().items() if k not in FEED_KEYS})
+        cfg = await update_config({k: v for k, v in merged.model_dump().items() if k not in FEED_KEYS})
+        after = cfg.model_dump()
+        changed = sorted(k for k in after if k in foreign and after.get(k) != before.get(k))
+        report = {"applied": sorted(k for k in foreign if k in known), "changed": changed, "ignored_unknown": unknown,
+                  "kept_local": sorted(k for k in req.config if k in local_keys),
+                  "clamped": sorted(k for k in foreign if k in known and k not in FEED_KEYS and after.get(k) != foreign.get(k)
+                                    and not isinstance(foreign.get(k), dict))}
+        if unknown:
+            logger.warning(f"config import: {len(unknown)} key(s) unknown to this build ignored: {unknown}")
+        return {"config": after, "report": report}
     except Exception as e:
         # Roll back the pause if import fails so the user isn't stuck
         bot_state.config.enabled = was_enabled
