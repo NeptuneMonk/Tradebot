@@ -2495,7 +2495,8 @@ class BotState:
             # (peak → rug delta) — Bing reference §3.B.
             b["peak_mc_usd_at"] = now_utc().isoformat()
         update = {
-            "unique_buyers": len(b["buyers"]),
+            "unique_buyers": max(len(b["buyers"]), int(b.get("holder_count") or 0)),   # graduated: DAS holder count (no tape)
+            "holder_count": b.get("holder_count"),
             "sol_inflow": b["sol_inflow_lamports"] / LAMPORTS_PER_SOL,
             "buy_count": b["buy_count"],
             "curve_fill_pct": b["curve_fill_pct"],
@@ -3532,6 +3533,8 @@ class BotState:
             b = self.tracking.get(launch.mint, {})
             if is_new_band:
                 buyers = len(b.get("buyers", set()))
+            elif b.get("protocol") == "pumpswap" and b.get("holder_count"):
+                buyers = int(b["holder_count"])        # graduated: on-chain holder count (Helius DAS), refreshed by discovery
             elif b.get("buy_count") is None and b.get("protocol") == "pumpswap":
                 # Pump.fun's API no longer reports buy_count and Helius doesn't cover PumpSwap swaps: the buyer count
                 # is UNKNOWN for seasoned tokens, not zero. Growth / MC / MC-velocity / liquidity already vouch for interest.

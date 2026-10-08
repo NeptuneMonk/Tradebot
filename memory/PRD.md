@@ -2446,3 +2446,9 @@ Approved plan: remove every data source / book with zero edge; keep scanner → 
 - ✅ `POST /config/import` returns `{config, report{applied, changed, ignored_unknown, kept_local, clamped}}`; ConfigSyncPanel toasts the report and warns about keys unknown to the running build (older prod deploy). Export covers all 278 BotConfig keys; feed/arming switches stay local by design.
 - ✅ Reputation: hunt-book entries whose dev is UNKNOWN / not an allow-tier are **demoted to scalp** (`<action>_scalp`, book scalp) instead of skipped; FARMER / fake-chart still block every book. Stat `rep_demoted_to_scalp`. Tests in test_profitability_refactor.py.
 - Preview note: SOL feed was found OFF again (05:07 UTC, during a pytest run) — re-enabled.
+
+## Graduated (PumpSwap) data quality (2026-10-08)
+- User: holders 0 (pump.fun shows 995), MC velocity −2.4 %/5m on a +107 %/h token; "pass" rows not entering.
+- ✅ `_refresh_once`: pool-derived MC (`quote × 1e6 / base × SOL/USD`) now ALWAYS overrides the Pump.fun API `usd_market_cap` for graduated coins (API lags/freezes → mixed-source mc_samples made velocity/rolling-growth garbage). `bucket.mc_source = "pool"`.
+- ✅ Holder count for graduated coins via Helius DAS `getTokenAccounts` (paged ≤ 3000, `HOLDERS_REFRESH_S` 120) → `bucket.holder_count`; metrics `unique_buyers = max(tape buyers, holder_count)` + `holder_count`; seasoned buyer gate uses holder_count when present (was "unknown → skip buyers gate").
+- Open: PumpSwap price displayed per raw unit (3.1e-13 SOL) — cosmetic ×1e6; "pass but no entry" needs the skip ticker reason for that mint (entry-path skips: book-off, reputation, breaker, caps, pending).

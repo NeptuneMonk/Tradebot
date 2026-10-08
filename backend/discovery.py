@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("discovery")
 
 PUMPFUN_API = "https://frontend-api-v3.pump.fun"
+HOLDERS_REFRESH_S = 120      # Helius DAS getTokenAccounts per graduated token (≤ 3 pages of 1000)
 DISCOVERY_INTERVAL_S = 60     # backstop only: the Helius tape (stream_floor.py) seeds live; this catches pre-start tokens
 REFRESH_INTERVAL_S = 60      # how often to re-poll MC for already-tracked discovered tokens
 COLD_POOL_REFRESH_S = 300    # graduated pools far below the seasoned MC gate: reserves re-read every 5 min, not every cycle
@@ -321,12 +322,21 @@ class PumpfunDiscovery:
                                 #           = (quote/base) * 1e15 / 1e9 lamports/SOL
                                 #           = quote * 1e6 / base                 (in SOL)
                                 #   MC_USD  = MC_SOL * sol_usd
-                                if usd_mc <= 0 and sol_usd > 0:
+                                # Always prefer the live pool MC: the Pump.fun API's usd_market_cap for graduated coins
+                                # lags / freezes, and mixing the two sources made MC velocity read -2 %/5m on a +100 %/h
+                                # token (operator report 2026-10-08).
+                                if sol_usd > 0:
                                     base = float(ps_state.get("base_reserves") or 0)
                                     quote = float(ps_state.get("quote_reserves") or 0)
                                     if base > 0 and quote > 0:
                                         mc_sol = quote * 1e6 / base
                                         usd_mc = mc_sol * sol_usd
+                                        bucket["mc_source"] = "pool"
+                                # holder count: PumpSwap swaps never hit the Pump.fun tape, so `buyers` stays empty for
+                                # graduated coins — count token accounts via Helius DAS every HOLDERS_REFRESH_S instead
+                                if now - float(bucket.get("_holders_ts") or 0) >= HOLDERS_REFRESH_S:
+                                    bucket["_holders_ts"] = now
+                                    asyncio.create_task(self._refresh_holders(mint, bucket))
                                 # Same proxy for `last_trade_timestamp` — when
                                 # the API gives us nothing we use NOW (we
                                 # successfully fetched live pool state, so
@@ -633,6 +643,23 @@ class PumpfunDiscovery:
                     # Be a polite client between pages
                     await asyncio.sleep(0.25)
         return out
+
+    async def _refresh_holders(self, mint: str, bucket: dict) -> None:
+        """Holder count for a graduated coin via Helius DAS `getTokenAccounts` (paged, capped at 3000)."""
+        try:
+            from solana_client import rpc_call
+            total = 0
+            for page in range(1, 4):
+                res = await rpc_call("getTokenAccounts", {"mint": mint, "limit": 1000, "page": page, "options": {"showZeroBalance": False}})
+                accts = ((res or {}).get("result") or {}).get("token_accounts") or []
+                total += len(accts)
+                if len(accts) < 1000:
+                    break
+            if total > 0:
+                bucket["holder_count"] = total
+                bucket["holder_count_capped"] = total >= 3000
+        except Exception as e:
+            logger.debug(f"holder count failed for {mint}: {e}")
 
     async def _seed_token(self, coin: dict, created_s: float, is_pumpswap: bool = False, pool_state: dict | None = None):
         st = self.state
