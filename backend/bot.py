@@ -1272,10 +1272,13 @@ class BotState:
             if cd_until and time.time() < cd_until and not w.get("flush"):     # a flush stop is not the token failing
                 return
             self._pending_entry_mints.add(mint)
+            self._pending_since = getattr(self, "_pending_since", {})
+            self._pending_since[mint] = time.time()
         try:
             await self._attempt_reentry_impl(w)
         finally:
             self._pending_entry_mints.discard(mint)
+            getattr(self, "_pending_since", {}).pop(mint, None)
 
     async def _attempt_reentry_impl(self, w: dict):
         mint = w["mint"]
@@ -2690,13 +2693,21 @@ class BotState:
         return "buy failed: " + err[:140]
 
     async def _refuse(self, mint: str, band: str, reason: str, detail: str):
-        """Entry-path refusal AFTER the gates (size dust, zero quote, pod lock, send failure): visible in the skip feed,
-        the skip tally, the candidate row's gate and the manual-buy toast — never a silent return."""
+        """Entry-path refusal AFTER the gates (size dust, zero quote, pod lock, send failure) and the pre-gate holds
+        (inventory halt, doctor pause, caps, cooldowns): visible in the skip feed, the skip tally, the candidate row's
+        gate and the manual-buy toast — never a silent return. Same reason inside 60s is stamped, not re-broadcast."""
         b = self.tracking.get(mint)
+        prev = (b or {}).get("entry_refusal") or {}
+        repeat = prev.get("reason") == reason and time.time() - float(prev.get("ts") or 0) < 60.0
         if b is not None:
             b["entry_refusal"] = {"reason": reason, "detail": detail, "ts": time.time()}
+        if repeat:
+            return
         logger.info(f"entry refused {mint[:8]}… [{band}] {reason} — {detail}")
         await self._skip_event({"mint": mint, "band": band, "reason": reason, "details": [detail]})
+
+    def _band_of(self, mint: str) -> str:
+        return "seasoned" if (self.tracking.get(mint) or {}).get("protocol") == "pumpswap" else "new"
 
     async def _skip_event(self, payload: dict):
         self._ledger_sol(payload.get("mint", ""), payload.get("reason") or "skip")
@@ -2707,6 +2718,8 @@ class BotState:
             b["gate_reason"] = str(payload.get("reason") or "skip").split(" (")[0][:32]
             d = payload.get("details")
             b["gate_detail"] = "; ".join(str(x) for x in d) if isinstance(d, (list, tuple)) else (str(d) if d else None)
+            # the pre-rank re-stamps "pass" every tick, so keep the refusal where the candidate row can show it
+            b["entry_refusal"] = {"reason": b["gate_reason"], "detail": b["gate_detail"], "ts": time.time()}
         tally = self._skip_counts = getattr(self, "_skip_counts", {})
         key = f"{payload.get('band') or 'new'}:{payload.get('reason') or 'skip'}"
         tally[key] = tally.get(key, 0) + 1
@@ -3210,10 +3223,7 @@ class BotState:
         if not is_manual and action != "reentry":
             blk = self.search_regime_block()
             if blk:
-                self._skip_counts = getattr(self, "_skip_counts", {})
-                self._skip_counts[blk] = self._skip_counts.get(blk, 0) + 1
-                if self._skip_counts[blk] % 25 == 1:
-                    logger.info(f"entry skipped for {launch.mint[:8]}…: {blk} (feeds stay up, runner untouched)")
+                await self._refuse(launch.mint, self._band_of(launch.mint), blk, "the tape is dead (market regime) and 'dead regime blocks search' is on — feeds stay up, runner untouched")
                 return
         # Smart-stop: refuse new entries while we're winding down
         if self.stopping_gracefully and not is_manual:
@@ -3236,10 +3246,8 @@ class BotState:
         pause_until = float(getattr(self.config, "doctor_pause_until_ts", 0) or 0)
         if (pause_until and time.time() < pause_until
                 and not is_manual):
-            logger.debug(
-                f"doctor pause: skipping entry for {launch.mint[:8]}… "
-                f"({int(pause_until - time.time())}s remaining)"
-            )
+            await self._refuse(launch.mint, self._band_of(launch.mint), "doctor-pause",
+                               f"the Doctor paused new entries — {int(pause_until - time.time())}s remaining (lift it in the Doctor tab)")
             return
         # === Creator-greylist telemetry (Phase 1 — logs only) ===
         # The actual fetch + override resolution happens in `_enter_impl`
@@ -3277,7 +3285,10 @@ class BotState:
                                                     + ("" if rep.get("ok") else " (lookup missed — hunt requires a known allow-tier)")]})
                 return
         if not is_manual and self.config.inventory_halt_enabled and self.inventory.active():
-            logger.info(f"inventory halt: skipping {launch.mint[:8]}… ({self.inventory.snapshot()})")
+            snap = self.inventory.snapshot()
+            await self._refuse(launch.mint, self._band_of(launch.mint), "inventory-halt",
+                               f"{snap.get('trigger_n')} loss closes inside {snap.get('window_min')}m — no new Solana entries for "
+                               f"{int(max(0, float(snap.get('halted_until') or 0) - time.time()))}s (lift in the header banner or Controls)")
             return
         if not is_manual and self.live_doctor is not None and self.config.live_doctor_breakers_enabled and self.live_doctor.book_benched(book, bool(self.config.live_trading)):
             logger.info(f"book {book} paused by live-doctor breaker: skipping {launch.mint[:8]}…")
@@ -3286,11 +3297,17 @@ class BotState:
                                     "details": [(getattr(self.live_doctor, "last_book_breakers", {}).get(book) or {}).get("reason") or "book paused"]})
             return
         async with self._entry_gate_lock:
-            if launch.mint in self.active_trades or launch.mint in self._pending_entry_mints:
+            if launch.mint in self.active_trades:
+                return
+            if launch.mint in self._pending_entry_mints:
+                age = time.time() - float(getattr(self, "_pending_since", {}).get(launch.mint) or time.time())
+                await self._refuse(launch.mint, self._band_of(launch.mint), "entry-in-flight",
+                                   f"another entry attempt on this mint has been running for {age:.0f}s" + (" — a hung RPC call, most likely" if age > 30 else ""))
                 return
             cap = max(1, self.config.max_concurrent_positions)
             in_flight = self.counted_open() + len(self._pending_entry_mints)
             if in_flight >= cap and not is_manual:
+                await self._refuse(launch.mint, self._band_of(launch.mint), "max-positions", f"{in_flight}/{cap} slots in use")
                 return
             hunt_cap = self._hunt_cap()
             if book == "hunt" and self._hunt_open() >= min(hunt_cap, cap):
@@ -3304,6 +3321,7 @@ class BotState:
             # SL-tripped mint is the textbook "buy the exit" anti-pattern.
             cd_until = self.sl_cooldown_until.get(launch.mint, 0.0)
             if cd_until and time.time() < cd_until and not is_manual:
+                await self._refuse(launch.mint, self._band_of(launch.mint), "sl-cooldown", f"stopped out recently — {int(cd_until - time.time())}s before this mint may be bought again")
                 return
             # Universal post-exit cooldown — prevents re-entry on the SAME
             # mint within the cooldown window after ANY exit. Fixes the
@@ -3311,6 +3329,7 @@ class BotState:
             # slots raced against the new position's exits.
             rx_until = self.recent_exit_until.get(launch.mint, 0.0)
             if rx_until and time.time() < rx_until and not is_manual:
+                await self._refuse(launch.mint, self._band_of(launch.mint), "exit-cooldown", f"exited this mint moments ago — {int(rx_until - time.time())}s cooldown")
                 return
             # Universal re-entry policy: a mint that exited inside the re-entry window may be bought again
             # when the gates pass — under the reentry_* controls (enabled / attempts / min wait / size mult).
@@ -3332,11 +3351,14 @@ class BotState:
                     self._reentry_gate_mult[launch.mint] = rmult
             # Reserve a slot — released in the finally below
             self._pending_entry_mints.add(launch.mint)
+            self._pending_since = getattr(self, "_pending_since", {})
+            self._pending_since[launch.mint] = time.time()
 
         try:
             await self._enter_impl(launch, risk_score, action)
         finally:
             self._pending_entry_mints.discard(launch.mint)
+            getattr(self, "_pending_since", {}).pop(launch.mint, None)
 
     async def _live_buy(self, mint: str, protocol: str, pumpswap_state, tokens_out: int, max_sol: int,
                         creator: str | None, priority_fee: int) -> str:
@@ -3463,7 +3485,7 @@ class BotState:
         self._ensure_metadata(launch.mint)          # a bought mint always gets its socials/image
         # cross-pod idempotency: one active row per mint, whichever pod raced us to it
         if await self.db.trades.find_one({"mint": launch.mint, "status": "active"}, {"_id": 1}):
-            logger.info(f"entry skipped for {launch.mint[:8]}…: an active row already exists")
+            await self._refuse(launch.mint, self._band_of(launch.mint), "active-row-exists", "an active trade row for this mint already exists in the DB (another pod, or an un-reconciled position)")
             return
         # === Creator-greylist (Phase 2: apply OR log strategy overrides) ===
         # Resolved once at entry, then carried through sizing + slot extras
@@ -3554,7 +3576,7 @@ class BotState:
         is_research_snipe = (action == "greylist_snipe"
                              and getattr(self, "_snipe_research_flags", {}).get(launch.mint, False))
         if book_size_mult(self.config, book) <= 0 and action != "dev_watch":
-            logger.info(f"skip {launch.mint[:8]} — book {book} disabled (size_mult=0)")
+            await self._refuse(launch.mint, self._band_of(launch.mint), "book-size-0", f"{book} book size multiplier is 0 in Controls")
             return
 
         # Route by protocol — graduated tokens trade on PumpSwap AMM
@@ -3587,6 +3609,8 @@ class BotState:
         else:
             state = await pumpfun.fetch_bonding_curve_state(launch.mint)
             if not state or state["complete"]:
+                await self._refuse(launch.mint, "new", "curve-complete" if state else "curve-state",
+                                   "bonding curve is complete — migrating to PumpSwap" if state else "could not read the bonding curve (RPC)")
                 return
 
         # Resolve band-specific gates: "new" (action=momentum_new) uses tighter
@@ -3621,7 +3645,8 @@ class BotState:
         real_sol = state["real_sol_reserves"] / LAMPORTS_PER_SOL
         effective_min_liq = 0.0 if action == "dev_watch" else 0.1 if bypass_gates else min_liq
         if real_sol < effective_min_liq:
-            logger.info(f"skip {launch.mint} [{action}]: liquidity {real_sol:.2f} SOL < min {effective_min_liq}")
+            await self._refuse(launch.mint, "new" if is_new_band else "seasoned", "liquidity",
+                               f"on-chain {real_sol:.2f} SOL < min {effective_min_liq:.2f} (the feed's cached reading passed — chain state is behind/ahead of it)")
             return
 
         # Buyer gate — works for BOTH bands now:
@@ -3722,6 +3747,8 @@ class BotState:
         velocity = velocity_pct_strict(samples, time.time(), vel_window) if samples else None
         _min_flow = float(getattr(self.config, "scanner_min_flow_ratio_pct", 0.0) or 0.0)
         _fr = flow.flow_ratio_pct(bucket, time.time(), 30.0, sol=True) if (_min_flow > 0 and not bypass_gates) else None
+        if _fr is None and _min_flow > 0 and not bypass_gates and is_new_band and flow.liquidity(bucket, sol=True):
+            _fr = 0.0            # a curve token with no prints in 30s IS dead flow; PumpSwap tokens are tape-blind (unknown ≠ zero)
         if _fr is not None and _fr < _min_flow:
             await self._skip_event({"mint": launch.mint, "symbol": launch.symbol, "band": "new" if is_new_band else "seasoned",
                                     "reason": "flow", "details": [f"net inflow {_fr:+.2f}% of liquidity in 30s < {_min_flow:.1f}%"]})
@@ -4005,6 +4032,7 @@ class BotState:
                 r.update(launch_update)
                 break
 
+        (self.tracking.get(launch.mint) or {}).pop("entry_refusal", None)
         self.active_trades[launch.mint] = {
             "trade": trade.model_dump(),
             "launch": launch.model_dump(),

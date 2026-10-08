@@ -270,6 +270,8 @@ class MomentumScanner:
             m["band"] = band
             m["gate_reason"] = b.get("gate_reason")
             m["gate_detail"] = b.get("gate_detail") if b.get("gate_reason") not in (None, "pass") else None
+            er = b.get("entry_refusal")
+            m["blocked"] = er if er and now - float(er.get("ts") or 0) < 90.0 else None     # gates passed, entry path refused
             m["discovered"] = bool(b.get("discovered"))
             m["graduated_feed"] = bool(b.get("graduated_feed"))
             m["protocol"] = b.get("protocol") or "pumpfun"

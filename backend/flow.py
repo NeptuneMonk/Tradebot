@@ -27,11 +27,15 @@ def liquidity(b: dict, *, sol: bool) -> float | None:
 
 
 def flow_ratio_pct(b: dict, now: float, window_s: float, *, sol: bool) -> float | None:
-    """Net flow over the window as % of liquidity; None when liquidity is unknown (callers fall back to counts)."""
+    """Net flow over the window as % of liquidity; None when liquidity is unknown (callers fall back to counts) or
+    when the tape is blind for this token (no buy/sell events at all in the window — PumpSwap swaps are not on the
+    Pump.fun event feed, so 'no events' means unknown, not zero)."""
     liq = liquidity(b, sol=sol)
     if not liq or liq <= 0:
         return None
-    net, _bq, _sq = net_flow(b, now, window_s, sol=sol)
+    net, bq, sq = net_flow(b, now, window_s, sol=sol)
+    if bq == 0 and sq == 0:
+        return None
     return round(net / liq * 100.0, 3)
 
 

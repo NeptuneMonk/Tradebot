@@ -149,6 +149,7 @@ def test_flow_ratio_and_flush_floor():
     assert flow.liquidity(b, sol=True) == 20.0
     assert flow.flow_ratio_pct(b, now, 10.0, sol=True) == 5.0                   # (1.5 − 0.5) / 20
     assert flow.flow_ratio_pct({"buy_events": []}, now, 10.0, sol=True) is None   # unknown liquidity → callers fall back
+    assert flow.flow_ratio_pct({"last_vsr_lamports": 50 * 10**9, "buy_events": [], "sell_events": []}, now, 10.0, sol=True) is None   # tape-blind (no prints) → unknown, not 0
     rh = {"net_quote": 2.0, "buy_events": [(now - 2, 0.1, "a")], "sell_events": [(now - 1, 0.3, "b")]}
     assert flow.flow_ratio_pct(rh, now, 10.0, sol=False) == -10.0
     cfg = BotConfig()

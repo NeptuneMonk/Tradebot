@@ -185,6 +185,15 @@ function CandidateRow({ c, passing, onOpen }) {
                 {c.gate_reason}
               </span>
             )}
+            {passing && c.blocked && (
+              <span
+                className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-amber-700 text-amber-300 bg-amber-950/40"
+                data-testid={`scanner-row-blocked-${c.mint}`}
+                title={`Gates passed but the entry path refused it: ${c.blocked.detail || c.blocked.reason}`}
+              >
+                not entering · {c.blocked.reason}
+              </span>
+            )}
             {discovered && (
               <span
                 className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-cyan-800 text-cyan-300 bg-cyan-950/40"

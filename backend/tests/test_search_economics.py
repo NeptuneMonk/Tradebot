@@ -53,6 +53,8 @@ def _entry_stub(rate_h, hot_share):
     now = time.time()
     st.recent_launches = [{"_detected_ts": now, "unique_buyers": 9 if i < int(hot_share * 10) else 1} for i in range(10)]
     st._enter_impl = AsyncMock()
+    st._refuse = AsyncMock()                       # refusals are surfaced (skip feed + candidate row), not tallied silently
+    st.tracking = getattr(st, "tracking", {})
     st._reserve_position_slot = getattr(st, "_reserve_position_slot", None)
     return st
 
@@ -63,7 +65,7 @@ def test_dead_regime_skips_search_entries_but_not_manual_or_reentry():
     assert st.market_regime()["regime"] == "dead" and st.search_regime_block() == "search-regime-dead"
     launch = Launch(mint="M" * 44, symbol="X", name="X", creator="C" * 44, bonding_curve="B" * 44, risk_score=10, classifier_action="scalp")
     asyncio.run(botmod.BotState._enter(st, launch, 10, "scalp"))
-    assert st._enter_impl.await_count == 0 and st._skip_counts["search-regime-dead"] == 1
+    assert st._enter_impl.await_count == 0 and st._refuse.await_count == 1 and st._refuse.await_args.args[2] == "search-regime-dead"
     st.config.regime_dead_blocks_search = False
     assert st.search_regime_block() is None
     st2 = _entry_stub(60.0, 0.3)

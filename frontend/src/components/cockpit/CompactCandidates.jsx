@@ -64,7 +64,13 @@ function Row({ c, onOpen }) {
       <td className="font-mono text-xs"><ChainBadge chain={c.chain} mint={c.mint} /> <span className="text-neutral-100 ml-1">{c.symbol || "?"}</span> <RepBadge mint={c.mint} creator={c.creator} compact /></td>
       <td className="font-mono text-xs text-right"><span className={growth >= 0 ? "text-emerald-300" : "text-red-300"}>{growth >= 0 ? "+" : ""}{growth.toFixed(0)}%</span></td>
       <td className="text-right pr-3" data-testid={`cockpit-cand-gate-${c.mint}`}>
-        {c.passes ? (
+        {c.passes && c.blocked ? (
+          <button type="button" onClick={buyNow} disabled={buying} data-testid={`cockpit-cand-blocked-${c.mint}`}
+            title={`gate ✓ but the entry path refused it: ${c.blocked.reason}\n${c.blocked.detail || ""}\n\nClick to BUY NOW manually (bypasses the gates and the inventory halt; max positions still applies)`}
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 border font-mono text-[10px] border-amber-700 text-amber-200 bg-amber-950/40 hover:bg-amber-800/50 disabled:opacity-50 transition-colors duration-100">
+            {buying ? "buying…" : `gate ✓ · ${c.blocked.reason}`}
+          </button>
+        ) : c.passes ? (
           <button type="button" onClick={buyNow} disabled={buying} data-testid={`cockpit-cand-buy-${c.mint}`}
             title={`gate ✓ — click to BUY NOW at standard sizing (${c.chain === "rh" ? "rh_pons" : "scalp"} book)${c.gate_detail ? `\n${c.gate_detail}` : ""}`}
             className="inline-flex items-center gap-1 px-1.5 py-0.5 border font-mono text-[10px] border-emerald-600 text-emerald-200 bg-emerald-950/40 hover:bg-emerald-800/50 disabled:opacity-50 transition-colors duration-100">
@@ -86,12 +92,22 @@ function CompactCandidates({ candidates, limit = 10, scannerEnabled = true, onEn
   const sorted = [...(candidates || [])].sort((a, b) => (b.passes === true) - (a.passes === true) || (b.growth_pct ?? 0) - (a.growth_pct ?? 0));
   const passing = sorted.filter((c) => c.passes);
   const shown = passing.length ? passing.slice(0, limit) : sorted.slice(0, 5);
+  const blockers90 = passing.filter((c) => c.blocked);
+  const topBlock = blockers90.length ? Object.entries(blockers90.reduce((a, c) => { a[c.blocked.reason] = (a[c.blocked.reason] || 0) + 1; return a; }, {})).sort((a, b) => b[1] - a[1])[0] : null;
+  const topBlockDetail = topBlock ? (blockers90.find((c) => c.blocked.reason === topBlock[0])?.blocked.detail || "") : "";
   return (
     <div className="control-card h-full flex flex-col !p-0" data-testid="cockpit-candidates">
       <div className="px-3 py-2 border-b border-neutral-800 text-[11px] font-mono tracking-[0.2em] text-neutral-200 flex items-center justify-between">
         <span>CANDIDATES <span className="text-neutral-500 tracking-normal">· {passing.length ? "passing" : "closest — none passing"}</span></span>
         <span className="text-neutral-500 tracking-normal">{sorted.length} tracked</span>
       </div>
+      {topBlock && (
+        <div className="px-3 py-1.5 border-b border-amber-900/60 bg-amber-950/30 text-[10px] font-mono text-amber-200" data-testid="entry-blocked-banner"
+          title="These rows passed the gates, but the entry path refused them in the last 90s — the reason is on each row's gate chip.">
+          NOT ENTERING — {topBlock[1]}/{passing.length} passing row{passing.length === 1 ? "" : "s"} refused: <span className="text-amber-100">{topBlock[0]}</span>
+          {topBlockDetail && <span className="text-amber-300/80"> · {topBlockDetail}</span>}
+        </div>
+      )}
       {!scannerEnabled && (
         <div className="px-3 py-1.5 border-b border-amber-900/60 bg-amber-950/30 text-[10px] font-mono text-amber-200 flex items-center justify-between gap-2" data-testid="scanner-off-banner">
           <span>SOL SCANNER OFF — gate ✓ rows are NOT auto-entered (Buy Now still works)</span>

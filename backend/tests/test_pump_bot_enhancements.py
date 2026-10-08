@@ -43,7 +43,7 @@ class TestLaunchFieldsContract:
         required_field_types = {
             "unique_buyers": int,
             "sol_inflow": (int, float),
-            "buy_count": int,
+            "buy_count": (int, type(None)),      # Pump.fun API no longer reports buy_count → None is "unknown"
             "curve_fill_pct": (int, float),
             "social_score": int,
             "entered": bool,
@@ -80,13 +80,13 @@ class TestLiveMetricPopulation:
                 l for l in arr
                 if (l.get("unique_buyers", 0) > 0)
                 or (l.get("sol_inflow", 0) > 0)
-                or (l.get("buy_count", 0) > 0)
+                or ((l.get("buy_count") or 0) > 0)
             ]
             last_summary = (
                 f"total={len(arr)} with_buys={len(with_buys)} "
                 f"max_buyers={max([l.get('unique_buyers', 0) for l in arr], default=0)} "
                 f"max_inflow={max([l.get('sol_inflow', 0) for l in arr], default=0):.3f} "
-                f"max_buy_count={max([l.get('buy_count', 0) for l in arr], default=0)}"
+                f"max_buy_count={max([l.get('buy_count') or 0 for l in arr], default=0)}"
             )
             if with_buys:
                 found = True
