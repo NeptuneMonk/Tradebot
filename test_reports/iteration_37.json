@@ -1,0 +1,32 @@
+{
+  "summary": "Verified cohort-unwind flush iteration (backend + frontend). All 8 request items pass end-to-end. GET /api/bot/config returns the full new flush_* key set with the expected defaults (flush_hold_scope='all', flush_cohort_enabled=true, flush_cohort_share=0.6, flush_cohort_window_s=45, flush_dip_addon_enabled=false, flush_dip_addon_size_mult=1.0, flush_reentry_enabled=true, flush_reentry_wait_s=5, flush_reentry_max_chase_pct=50.0). PUT /api/bot/config persists {0.7/60/true/0.5/8/40} and GET confirms them; original values restored. /api/trades/history now includes dip_forensics on rows (previously HISTORY_OMIT dropped it); flush_held/flush_hold_at_pnl_pct present on rows closed after the change. /api/config/export carries all new flush_* keys and POST /api/config/import round-trips 200. /api/token/{chain}/{mint} trades projection includes dip_forensics, flush_held, flush_addon_usd. Seeded one test closed trade (TESTFLUSH-1791495877048) and verified Trade History row shows badge 'FLUSH·FLOOR' (data-testid flush-badge-<id>) and TokenDetailDialog shows record-flush-<id> verdict line; test doc deleted afterwards. Control tab (/dashboard → CONTROL → ADVANCED) exposes all 7 new testids with correct default values; UI Save Config persists via PUT /api/bot/config (verified: 0.6→0.7→0.6 round-trip; dip-addon 0→0.5→0 sets enabled true/false correctly). Re-entry watchlist renders without console errors. Config restored to original defaults.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/token/{chain}/{mint}", "issue": "trades[] projection at server.py line 2686-2687 omits 'flush_hold_at_pnl_pct' (and does not include it in the tuple). TokenDetailDialog's record-flush verdict line therefore renders as 'held from undefined% but price broke the floor' for flush-held trades. The /api/trades/history endpoint returns the field correctly — only token_detail drops it."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "TokenDetailDialog / flushVerdict.js", "issue": "Verdict text shows 'held from undefined%' because token_detail API returns flush_hold_at_pnl_pct=null (see backend minor above). Fix is server-side projection; alternatively guard in flushVerdict.js when the value is null.", "selector": "[data-testid='record-flush-<id>']", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_flush_cohort.py"],
+  "action_items": [
+    "Add 'flush_hold_at_pnl_pct' (and consider 'flush_hold_floor_price') to the trades projection in server.py around line 2686 so TokenDetailDialog's record-flush verdict can render the hold-start PnL. OR null-guard the value in /app/frontend/src/lib/flushVerdict.js."
+  ],
+  "critical_code_review_comments": [
+    "server.py:2686 trades projection is a hand-maintained whitelist — easy to drift from the schema (as seen here with flush_hold_at_pnl_pct). Consider either (a) using the same key list as HISTORY_OMIT inversely, or (b) adding a unit test that asserts every documented flush_* row field appears in the token_detail response for a seeded flush trade.",
+    "BotControlCard flush_dip_addon_input is a size-multiplier that doubles as the enable toggle: when the user types 0 the PUT sends flush_dip_addon_size_mult=0.0 (not reverting to the model default 1.0) alongside flush_dip_addon_enabled=false. Functionally fine (enabled=false short-circuits), but means the exported config can carry mult=0.0 which is a confusing audit value. Consider sending {enabled:false, size_mult:<previous>} or snapping mult to 1.0 when disabling."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "95%"},
+  "test_credentials": "Bearer token from /app/memory/.tok (test_session_1791495727379); ALLOWED_EMAIL=nbobby79@gmail.com. Still valid at test time.",
+  "seed_data_creation": "Inserted trades._id='TESTFLUSH-1791495877048' (cohort-unwind flush, hold_broke_floor=true, mint TESTFLUSHMINT1111...) to exercise the FLUSH·FLOOR badge and TokenDetailDialog record-flush line; DELETED after the UI assertions. Also PUT config toggles (cohort share 0.6→0.7→0.6; dip-addon 0→0.5→0) were fully restored to defaults — final config: scope=all, cohort_enabled=true, share=0.6, window=45, dip_enabled=false, dip_mult=1.0, reentry_enabled=true, wait=5, chase=50.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "The /api/token/{chain}/{mint} projection whitelist at server.py:2686 is still missing flush_hold_at_pnl_pct — if main agent patches it, verify by seeding a flush trade and checking the record-flush-<id> text no longer contains 'undefined%'. Bot remains STOPPED (do not start). All new BotControlCard testids live inside the collapsed ADVANCED section of the CONTROL tab — expand it before locating.",
+  "rca of the issue": "Backend root cause: `/api/token/{chain}/{mint}` builds `out['trades']` from a hand-written key tuple in server.py line 2686-2687. The tuple adds 'dip_forensics', 'flush_held', 'flush_addon_usd' but forgot to add 'flush_hold_at_pnl_pct'. The DB document has the field (confirmed via mongosh seed) and the parallel /api/trades/history path returns it correctly. Mitigation: add 'flush_hold_at_pnl_pct' (and ideally 'flush_hold_floor_price') to that projection tuple, or project the whole document and strip _id, keeping these projections in one place."
+}
