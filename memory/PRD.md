@@ -2440,3 +2440,9 @@ Approved plan: remove every data source / book with zero edge; keep scanner → 
 - ✅ Live-execution guard: live buys on non-SOL-quoted curves are skipped with `quote-pair-live` (executor speaks the SOL `buy` ix only; needs buy_v3 + quote accounts or multi_hop_swap). Paper trades them normally — XSCAN (SPCX-paired) was entered on paper within minutes.
 - Tests: `tests/test_quote_mints.py` (5). Full suite 817 green.
 - TODO (P1): live execution for quote-paired coins (buy_v3 / sell_v3 with quote accounts, or multi_hop_swap from SOL; requires a quote token account).
+
+## NEW-band MC gate, import report, reputation demotion (2026-10-08)
+- ✅ `scanner_min_mc_usd_new` / `scanner_max_mc_usd_new` (0 = off) gate the NEW band in both scanner paths (verdicts `mc` / `mc-max`); curve MC kept live on the bucket from the tape (`vsr/vtr × 1e6 × SOL/USD`) in `on_trade`. UI: Min MC ($) row now has a NEW column, new Max MC ($) NEW-only row (`scanner-mc-new-input`, `scanner-mc-max-new-input`). Verified live ($15K floor → 21 `mc` skips / 50 s).
+- ✅ `POST /config/import` returns `{config, report{applied, changed, ignored_unknown, kept_local, clamped}}`; ConfigSyncPanel toasts the report and warns about keys unknown to the running build (older prod deploy). Export covers all 278 BotConfig keys; feed/arming switches stay local by design.
+- ✅ Reputation: hunt-book entries whose dev is UNKNOWN / not an allow-tier are **demoted to scalp** (`<action>_scalp`, book scalp) instead of skipped; FARMER / fake-chart still block every book. Stat `rep_demoted_to_scalp`. Tests in test_profitability_refactor.py.
+- Preview note: SOL feed was found OFF again (05:07 UTC, during a pytest run) — re-enabled.

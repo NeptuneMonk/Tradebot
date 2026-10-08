@@ -449,3 +449,33 @@ def test_gate_rebuy_of_an_exited_mint_is_refused_unless_enabled(monkeypatch):
     st.config.reentry_gate_rebuys_enabled = True                               # explicit opt-in restores the old behaviour
     asyncio.run(st._enter(launch, 30, "momentum_new"))
     assert ("skip", "reentry-tab-only") not in st.calls and st._reentry_gate_mult.get(mint) == 0.75   # 0.5 × hot 1.5
+
+
+def test_unknown_dev_on_hunt_demotes_to_scalp_instead_of_skipping(monkeypatch):
+    """Operator 2026-10-08: 'dev reputation UNKNOWN — hunt requires a known allow-tier' must enter as scalp, not skip."""
+    from models import Launch
+    import bot as bot_mod
+    monkeypatch.setattr(bot_mod.reputation, "configured", lambda: True)
+    st = _bot_stub()
+    st.stats = {}
+    seen = {}
+    async def _impl(launch, risk, action): seen["action"] = action
+    st._enter_impl = _impl
+    st.search_regime_block = lambda: None
+
+    class _Rep:
+        def __init__(self, tier): self.tier = tier
+        async def lookup(self, mint, creator): return {"tier": self.tier, "fake_chart": False, "ok": self.tier != "UNKNOWN"}
+        def gate(self, rep, book): return bot_mod.ReputationClient.gate(self, rep, book)
+        stats = {"skips_farmer": 0, "skips_hunt": 0}
+    st.reputation = _Rep("UNKNOWN")
+    launch = Launch(mint="U" * 44, creator="C" * 44, name="u", symbol="u", bonding_curve="B" * 44)
+    asyncio.run(st._enter(launch, 30, "scanner_momentum"))                     # seasoned continuation → hunt book
+    assert seen.get("action") == "scanner_momentum_scalp" and not any(c[0] == "skip" for c in st.calls)
+    assert st.stats["rep_demoted_to_scalp"] == 1
+    from book_params import book_for_action
+    assert book_for_action("scanner_momentum_scalp") == "scalp"
+    # FARMER still blocks every book
+    st.reentry.exits.clear(); st.calls.clear(); seen.clear(); st.reputation = _Rep("FARMER"); st._pending_entry_mints.discard(launch.mint)
+    asyncio.run(st._enter(Launch(mint="F" * 44, creator="C" * 44, name="f", symbol="f", bonding_curve="B" * 44), 30, "scanner_momentum"))
+    assert seen == {} and ("skip", "reputation:FARMER") in st.calls

@@ -3156,6 +3156,14 @@ class BotState:
             # Phase 3b: outsourced dev reputation. FARMER / fake-chart = master skip on every book; hunt needs an allow-tier.
             rep = await self.reputation.lookup(launch.mint, launch.creator)
             why = self.reputation.gate(rep, book)
+            if why and book == "hunt" and self.reputation.gate(rep, "scalp") is None and getattr(self.config, "book_scalp_enabled", True):
+                # Operator 2026-10-08: an unknown / non-allow-tier dev must not cost the trade — demote hunt → scalp
+                # (scalp exits: clock + tighter SL) instead of skipping. FARMER / fake-chart still block every book.
+                logger.info(f"reputation {rep.get('tier') or 'UNKNOWN'}: {launch.mint[:8]}… demoted hunt → scalp ({action} → {action}_scalp)")
+                self.stats["rep_demoted_to_scalp"] = self.stats.get("rep_demoted_to_scalp", 0) + 1
+                action = f"{action}_scalp"
+                book = "scalp"
+                why = None
             if why:
                 _band = "seasoned" if (self.tracking.get(launch.mint) or {}).get("protocol") == "pumpswap" else "new"
                 self.tag_reputation(launch.mint, rep)
