@@ -18,7 +18,10 @@ export default function StatusBanner({ status, onResetKill }) {
     bg = "bg-amber-950 border-amber-800";
     txt = "text-amber-400";
     icon = <AlertTriangle className="w-4 h-4" />;
-    label = "BOT PAUSED · awaiting start";
+    const why = status.kill_switch_reason || "";
+    label = /PnL stop/i.test(why)
+      ? `BOT STOPPED BY ${why} — Start re-arms the stop from now`
+      : "BOT PAUSED · awaiting start";
   }
 
   return (

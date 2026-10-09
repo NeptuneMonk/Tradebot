@@ -2496,3 +2496,11 @@ Root cause of "−10 % on open": PumpSwap paper fills booked the worst-case tole
 - Verified in preview: fresh seasoned positions now open ≈ −1.3 % (was −10 %); candidates show fill 1.6–2.0 % at $100.
 - Tests: `tests/test_fills.py` (5). Removed `tests/test_iter38_review.py` (asserted mutable live config). `test_iteration23_review` rail updated to 20.
 - Note: someone/something flipped `no_momentum_exit_enabled` back to true and `scanner_second_impulse_enabled` false on the preview config after the preset — likely operator toggles; no code writes these keys.
+
+
+## "Pass ✓ but never enters" round 2 — cadence + PnL stop (2026-10-09)
+Operator imported the published config into preview: `scanner_interval_s = 600` (entry loop ran every 10 min — rows said pass ✓, nothing entered until the operator refreshed/bought manually) and `pnl_stop_usd = 25` whose imported `pnl_stop_armed_ts` was from the other environment → the PnL stop tripped on the first scan (−54.96 since that old baseline) and silently disabled the bot.
+- ✅ Scanner loop cadence clamped to 5–60 s (server + loop); `BotState.scan_wake` event: a freed slot (`_exit_impl`) or an operator refresh (`GET /api/scanner/candidates`) wakes the loop immediately.
+- ✅ `POST /bot/start` re-arms the PnL stop from now when the armed baseline is already past the limit (`pnl_stop_rearmed` in the response); config import keeps `pnl_stop_armed_ts` local and re-arms from import time.
+- ✅ StatusBanner shows "BOT STOPPED BY PnL stop: … — Start re-arms the stop from now" instead of the generic "paused".
+- Verified: after start, Blind + BNKR entered within 2 s; preview scanner_interval_s set to 10.

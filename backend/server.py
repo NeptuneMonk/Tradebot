@@ -591,7 +591,7 @@ async def update_config(body: dict = Body(...)):
     # Scanner clamps
     cfg.scanner_window_hours = max(1, min(720, cfg.scanner_window_hours))  # up to 30 days
     cfg.scanner_min_age_minutes = max(0, min(720 * 60, cfg.scanner_min_age_minutes))
-    cfg.scanner_interval_s = max(5, min(600, cfg.scanner_interval_s))
+    cfg.scanner_interval_s = max(5, min(60, cfg.scanner_interval_s))      # entry cadence; >60 s meant "pass but never enters"
     cfg.scanner_min_growth_pct = max(-100.0, min(10000.0, cfg.scanner_min_growth_pct))   # negative = seasoned dip hunting
     cfg.scanner_recent_inflow_window_s = max(30, min(3600, cfg.scanner_recent_inflow_window_s))
     cfg.scanner_min_recent_inflow_sol = max(0.0, min(1000.0, cfg.scanner_min_recent_inflow_sol))
@@ -715,11 +715,21 @@ async def bot_start():
     # If a graceful stop was in progress, cancel it — user is resuming
     if bot_state.stopping_gracefully:
         await bot_state.cancel_graceful_stop()
+    # Starting means "trade from now": a PnL stop that is already past its limit (it stopped the bot, or the baseline is
+    # from another environment / session) is re-armed from this moment instead of tripping again on the first scan.
+    snap = await bot_state.pnl_stop_snapshot()
+    rearmed = False
+    if snap["armed"] and snap["pnl_usd"] <= -abs(snap["limit_usd"]):
+        bot_state.config.pnl_stop_armed_ts = time.time()
+        bot_state.kill_switch_reason = ""
+        await bot_state.save_config(include_switches=True)
+        rearmed = True
+        logger.warning(f"PnL stop re-armed on start: {snap['pnl_usd']:+.2f} USD since the old baseline ≤ −{snap['limit_usd']:.2f} — fresh ${snap['limit_usd']:.2f} budget from now")
     bot_state.config.enabled = True
     await bot_state.save_enabled()          # ONLY {enabled} — feed toggles are never touched by start/stop
     if bot_state.config.helius_tracker_enabled:
         await sync_helius_feed(True)        # flag already ON → make sure the WS is actually up (never sets the flag)
-    return {"ok": True, "enabled": True, "listener": listener.health()}
+    return {"ok": True, "enabled": True, "pnl_stop_rearmed": rearmed, "listener": listener.health()}
 
 
 @api.post("/bot/stop")
@@ -1068,13 +1078,15 @@ async def config_import(req: _ConfigImportReq):
     await bot_state.save_config()
     try:
         from models import FEED_KEYS
-        local_keys = FEED_KEYS | {"enabled", "live_trading"}
+        local_keys = FEED_KEYS | {"enabled", "live_trading", "pnl_stop_armed_ts"}   # arming time is per-environment state
         known = set(BotConfig.model_fields)
         before = bot_state.config.model_dump()
         foreign = {k: v for k, v in req.config.items() if k not in local_keys}   # feeds/arming stay local
         unknown = sorted(k for k in foreign if k not in known)                  # file is from a newer build than this one
         merged = BotConfig(**{**before, **{k: v for k, v in foreign.items() if k in known}})
         merged.enabled = False  # never auto-enable on import; user re-starts
+        if float(merged.pnl_stop_usd or 0) > 0:
+            merged.pnl_stop_armed_ts = time.time()   # imported limit measures from NOW, not from the other environment's arming time
         cfg = await update_config({k: v for k, v in merged.model_dump().items() if k not in FEED_KEYS})
         after = cfg.model_dump()
         changed = sorted(k for k in after if k in foreign and after.get(k) != before.get(k))
@@ -2915,6 +2927,7 @@ async def autopilot_release_governor(chain: str | None = None):
 
 @api.get("/scanner/candidates")
 async def scanner_candidates():
+    bot_state.scan_wake.set()                       # operator refreshed the list → evaluate entries now, not at the next tick
     return bot_state.scanner.candidates_snapshot() + bot_state.rh_discovery.candidates_snapshot()
 
 

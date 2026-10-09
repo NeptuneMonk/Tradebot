@@ -383,8 +383,18 @@ class MomentumScanner:
         while True:
             try:
                 cfg = st.config
-                interval = max(5, int(cfg.scanner_interval_s))
-                await asyncio.sleep(interval)
+                # Entry cadence is capped at 60 s whatever the knob says (a 600 s setting once meant "pass ✓ but nothing
+                # enters for ten minutes"); a freed slot or an operator refresh wakes the loop immediately.
+                interval = max(5, min(60, int(cfg.scanner_interval_s)))
+                wake = getattr(st, "scan_wake", None)
+                if wake is not None:
+                    try:
+                        await asyncio.wait_for(wake.wait(), timeout=interval)
+                    except asyncio.TimeoutError:
+                        pass
+                    wake.clear()
+                else:
+                    await asyncio.sleep(interval)
                 st._prune_out_of_scope()                 # time gates / switches / tags, even while the scanner is off
                 if not cfg.scanner_enabled:
                     continue

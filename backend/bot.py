@@ -140,6 +140,7 @@ class BotState:
         self._metrics_pending: dict[str, dict] = {}   # launch_id -> $set, drained by _metrics_flush_loop
         # Re-entry watchlist: mint -> {exit_price_sol, exit_time, attempts, ...}
         self.reentry_watch: dict[str, dict] = {}
+        self.scan_wake = asyncio.Event()           # set by a freed slot / operator refresh → scanner evaluates NOW, not next tick
         self._reentry_task: asyncio.Task | None = None
         # Mints we have already entered (or attempted) so the scanner doesn't double-trade
         self.entered_mints: set[str] = set()
@@ -5131,6 +5132,7 @@ class BotState:
         slot = self.active_trades.pop(mint, None)
         if not slot:
             return
+        self.scan_wake.set()                        # a slot just freed — let the scanner fill it right away
         # Drop the LaserStream account subscription for this position now
         # that the slot is being torn down. Safe to call even if the bus
         # was never started or the account wasn't tracked. Done here (not

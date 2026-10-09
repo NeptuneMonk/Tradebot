@@ -686,7 +686,7 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
                  value={local.band_seasoned_max_age_min ?? 60}
                  onChange={(v) => setLocal({ ...local, band_seasoned_max_age_min: Math.max(0, parseFloat(v) || 0) })} step="1" />
           <Field label="Scan every (s)" testid="scanner-interval-input"
-                 hint="How often the scanner loop re-evaluates all tracked tokens. Backend enforces a 5s minimum — values below 5 are clamped to 5 to avoid frontend OOM from rapid metric broadcasts. SL/TP reactions on open positions are NOT controlled by this — they use LaserStream WSS push events."
+                 hint="How often the scanner re-evaluates tracked tokens AND tries to enter the passing ones. Clamped to 5–60 s (a 600 s setting once meant rows said pass ✓ for ten minutes without entering). A freed slot or a refresh of the candidates list wakes it immediately. SL/TP reactions on open positions are NOT controlled by this — they use LaserStream WSS push events."
                  value={local.scanner_interval_s}
                  onChange={(v) => setLocal({ ...local, scanner_interval_s: parseInt(v, 10) || 0 })} step="5" />
           <Field label="Inflow Win (s)" testid="scanner-inflow-window-input"
