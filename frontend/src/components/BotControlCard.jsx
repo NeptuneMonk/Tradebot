@@ -839,11 +839,29 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
                      step="1000" />
             {/* Seasoned-only: Pump.fun API polled signals */}
             <GateRow label="Min MC vel (5m %)" seasonedOnly last
-                     hint="Minimum % market-cap velocity over the last 5 minutes. Catches Seasoned tokens that are still actively pumping."
+                     hint="Minimum % market-cap velocity over the last 5 minutes (negative = allow tokens still bleeding, e.g. -15 for dip hunting on graduated tokens). Catches Seasoned tokens that are still actively pumping."
                      seasonedTestid="scanner-mcvel-seasoned-input"
                      seasonedValue={local.scanner_min_mc_velocity_5m_pct_seasoned}
                      onSeasonedChange={(v) => setLocal({ ...local, scanner_min_mc_velocity_5m_pct_seasoned: parseFloat(v) || 0 })}
                      step="1" />
+          </div>
+          <div className="grid grid-cols-2 gap-3 mt-3">
+            <label className="flex flex-col gap-1" data-testid="dip-hunt-field">
+              <span className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 inline-flex items-center gap-1">
+                Dip hunt (2nd impulse)
+                <HelpHint label="help: dip hunt">NEW band only. ON = a candidate that passes the gates must ALSO have dipped ≥ Dip % from its tracked peak and be recovering with fresh buyers before the bot buys (the first vertical leg is exit liquidity). OFF = buy the first impulse as soon as the gates pass.</HelpHint>
+              </span>
+              <select data-testid="dip-hunt-select" value={local.scanner_second_impulse_enabled === false ? "off" : "on"}
+                      onChange={(e) => setLocal({ ...local, scanner_second_impulse_enabled: e.target.value === "on" })}
+                      className="bg-neutral-950 border border-neutral-800 px-2 py-1 font-mono text-sm focus:border-blue-500 focus:outline-none">
+                <option value="on">on — wait for the dip, buy the recovery</option>
+                <option value="off">off — buy the first impulse</option>
+              </select>
+            </label>
+            <Field label="Dip % from peak" testid="dip-hunt-pct-input"
+                   hint="How far below its tracked peak a NEW-band candidate must have dipped (and now be recovering) before the dip-hunt entry fires."
+                   value={local.scanner_second_impulse_dip_pct ?? 8}
+                   onChange={(v) => setLocal({ ...local, scanner_second_impulse_dip_pct: parseFloat(v) || 0 })} step="1" />
           </div>
         </div>
       </div>
@@ -1111,6 +1129,20 @@ function Field({ label, value, onChange, step, testid, hint }) {
   );
 }
 
+// Number input that lets you type "-" / "-1" / "0." without the parent snapping the value back to 0 mid-keystroke.
+function NumInput({ testid, step, value, onCommit, className }) {
+  const [draft, setDraft] = useState(value ?? "");
+  const [focused, setFocused] = useState(false);
+  useEffect(() => { if (!focused) setDraft(value ?? ""); }, [value, focused]);
+  return (
+    <input data-testid={testid} type="number" step={step} value={focused ? draft : (value ?? "")}
+      onFocus={() => { setFocused(true); setDraft(value ?? ""); }}
+      onBlur={() => setFocused(false)}
+      onChange={(e) => { const v = e.target.value; setDraft(v); if (v !== "" && !Number.isNaN(parseFloat(v))) onCommit(v); }}
+      className={className} />
+  );
+}
+
 function GateRow({ label, hint, newTestid, newValue, onNewChange, seasonedTestid, seasonedValue, onSeasonedChange, step, last, newOnly, seasonedOnly }) {
   const cell = "px-2 py-1 border-l border-neutral-800";
   const dim = "px-2 py-1 border-l border-neutral-800 text-[10px] font-mono text-neutral-700 italic text-center self-center";
@@ -1124,28 +1156,16 @@ function GateRow({ label, hint, newTestid, newValue, onNewChange, seasonedTestid
         <div className={dim}>n/a</div>
       ) : (
         <div className={cell}>
-          <input
-            data-testid={newTestid}
-            type="number"
-            step={step}
-            value={newValue}
-            onChange={(e) => onNewChange(e.target.value)}
-            className="w-full bg-neutral-950 border border-amber-900/50 px-2 py-0.5 font-mono text-xs text-amber-200 focus:border-amber-500 focus:outline-none"
-          />
+          <NumInput testid={newTestid} step={step} value={newValue} onCommit={onNewChange}
+            className="w-full bg-neutral-950 border border-amber-900/50 px-2 py-0.5 font-mono text-xs text-amber-200 focus:border-amber-500 focus:outline-none" />
         </div>
       )}
       {newOnly ? (
         <div className={dim}>n/a</div>
       ) : (
         <div className={cell}>
-          <input
-            data-testid={seasonedTestid}
-            type="number"
-            step={step}
-            value={seasonedValue}
-            onChange={(e) => onSeasonedChange(e.target.value)}
-            className="w-full bg-neutral-950 border border-cyan-900/50 px-2 py-0.5 font-mono text-xs text-cyan-200 focus:border-cyan-500 focus:outline-none"
-          />
+          <NumInput testid={seasonedTestid} step={step} value={seasonedValue} onCommit={onSeasonedChange}
+            className="w-full bg-neutral-950 border border-cyan-900/50 px-2 py-0.5 font-mono text-xs text-cyan-200 focus:border-cyan-500 focus:outline-none" />
         </div>
       )}
     </div>

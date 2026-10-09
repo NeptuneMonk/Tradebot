@@ -1,6 +1,6 @@
 import { memo, useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { Play, Square, ShieldCheck, Activity } from "lucide-react";
+import { Play, Square, ShieldCheck, Activity, TrendingDown } from "lucide-react";
 import { toast } from "sonner";
 import { explainApiError } from "@/lib/api";
 
@@ -35,6 +35,47 @@ export const SAFE_PAPER_PRESET = {
   live_trading: false, rh_live_trading: false, max_trade_usd: 8, rh_max_trade_usd: 8, max_concurrent_positions: 2,
   book_scalp_enabled: true, book_hunt_enabled: true, book_runner_enabled: true, rh_paper_enabled: true, autopilot_enabled: false,
 };
+
+// "Dip & Hold 30" preset (2026-10-08, paper research): buy dips on both bands, hold through flushes (cohort-unwind hold +
+// dip add-on + flush re-entry), no momentum/clock exits, sell at +30 %, as many positions as the tape gives. Risk
+// guards that pause entries (inventory halt, Doctor filter/breakers, dead-regime block, flow gate) are OFF. Sizes/mode untouched.
+export const DIP_HOLD_PRESET = {
+  max_concurrent_positions: 20,
+  // bands + discovery window
+  band_new_min_age_min: 0.5, band_new_max_age_min: 45, band_seasoned_min_age_min: 0, band_seasoned_max_age_min: 240,
+  scanner_window_hours: 4, scanner_min_age_minutes: 0,
+  // NEW band: dips allowed, light floors, dip-hunt on
+  scanner_min_growth_pct_new: -20, scanner_min_recent_inflow_sol_new: 0.5, scanner_min_new_buyers_new: 2,
+  min_curve_liquidity_sol_new: 12, min_buyers_for_entry_new: 4, scanner_min_mc_usd_new: 6000, scanner_max_mc_usd_new: 0,
+  scanner_second_impulse_enabled: true, scanner_second_impulse_dip_pct: 15,
+  // SEASONED band: tape-blind → no inflow/new-buyer floors; holders via DAS; MC velocity may be negative (bleeding = dip)
+  scanner_min_growth_pct: -25, scanner_min_recent_inflow_sol: 0, scanner_min_new_buyers: 0,
+  min_curve_liquidity_sol: 20, min_buyers_for_entry: 20, scanner_min_mc_usd_seasoned: 25000, scanner_min_mc_velocity_5m_pct_seasoned: -15,
+  scanner_seasoned_entries_enabled: true,
+  // dip buying ≠ positive flow: flow / velocity gates off, windows wide
+  scanner_min_flow_ratio_pct: 0, scanner_entry_velocity_min_pct: 0,
+  scanner_recent_inflow_window_s: 180, scanner_holder_velocity_window_s: 60,
+  // nothing pauses entries (paper research)
+  inventory_halt_enabled: false, live_doctor_entry_filter: false, live_doctor_breakers_enabled: false, doctor_circuit_breaker_enabled: false,
+  regime_dead_blocks_search: false, creator_solvency_enabled: false, sl_cooldown_minutes: 1,
+  // hold: no momentum / recovery kills; stops need 3 s of breach
+  no_momentum_exit_enabled: false, recovery_watch_enabled: false, sl_persistence_ms: 3000, sl_persistence_min_samples: 3,
+  // flushes: hold them, buy them, re-buy them
+  flush_hold_enabled: true, flush_hold_scope: "all", flush_hold_s: 45, flush_extra_drop_pct: 15, flush_range_floor_mult: 0.5,
+  flush_max_sellers: 11, flush_top_share: 0.5, flush_min_buyers: 1, flush_window_s: 30,
+  flush_cohort_enabled: true, flush_cohort_share: 0.5, flush_cohort_window_s: 45,
+  flush_dip_addon_enabled: true, flush_dip_addon_size_mult: 1.0, flush_dip_addon_min_buyers: 1,
+  flush_reentry_enabled: true, flush_reentry_wait_s: 5, flush_reentry_max_chase_pct: 50,
+  // re-entries on winners: real bounce confirm (3 %), not 50 %
+  reentry_enabled: true, reentry_gate_rebuys_enabled: true, reentry_min_wait_s: 20, reentry_pullback_pct: 15, reentry_min_bounce_pct: 3,
+  reentry_bounce_confirm_pct: 3, reentry_breakout_pct: 5, reentry_min_buyers: 2, reentry_max_attempts: 2, reentry_window_seconds: 300,
+  // books: scalp + hunt take the entries; runner promotion off (it would trail out before +30 %)
+  book_scalp_enabled: true, book_hunt_enabled: true, book_runner_enabled: false, runner_scalp_promo_anytime: false,
+  graduation_grace_s: 180,
+};
+// sell at +30 %, stop at −35 %, no trail / clock / R target / ladder legs
+export const DIP_HOLD_EXITS = { stop_loss_pct: 35, target_r: 0, take_profit_pct: 30, trailing_stop_pct: 0, trailing_arm_pct: 0, hold_max_seconds: 0,
+  ladder_1r_sell_pct: 0, ladder_2r_sell_pct: 0 };
 
 function Seg({ options, value, onPick, testid, danger }) {
   return (
@@ -168,6 +209,13 @@ function SimpleControls({ config, status, wallet, pl, onPatch, onStart, onStop }
     const bx = { ...(config.book_exits || {}), scalp: { ...((config.book_exits || {}).scalp || {}), ...BOUNCE_SCALP_EXITS } };
     patch({ ...BOUNCE_PRESET, book_exits: bx }, "Bounce preset applied — new launches ≤20 min, dip ≥25 % then recovering, SL 8 %, clock 60 s, +3 % momentum floor");
   };
+  const applyDipHold = () => {
+    if (arm !== "diphold") { setArm("diphold"); toast.message("Click again to apply Dip & Hold 30 (gates, flush, re-entry and scalp/hunt exits — sizes and mode untouched)"); return; }
+    setArm(null);
+    const be = config.book_exits || {};
+    const bx = { ...be, scalp: { ...(be.scalp || {}), ...DIP_HOLD_EXITS }, hunt: { ...(be.hunt || {}), ...DIP_HOLD_EXITS } };
+    patch({ ...DIP_HOLD_PRESET, book_exits: bx }, "Dip & Hold 30 applied — dips on both bands, flush hold + dip add-on + flush re-entry, no momentum/clock exits, TP +30 % / SL −35 %, 20 slots");
+  };
   const speed = config.speed_mode;
   const speedOpts = [["eco", "Eco"], ["normal", "Normal"], ...(speed !== "eco" && speed !== "normal" ? [[speed, `custom · ${speed}`]] : [])];
   const dailyPnl = pl?.daily_pnl_usd ?? 0;
@@ -242,12 +290,19 @@ function SimpleControls({ config, status, wallet, pl, onPatch, onStart, onStop }
                 ? `Dip hunting ON (dip ≥ ${dipPct} % then recovering) and every other Bounce gate / scalp exit matches the preset.`
                 : `Dip hunting ON (dip ≥ ${dipPct} % then recovering) — the core of Bounce is active.\n${drift.length} setting(s) are your own instead of the preset's:\n${drift.join("\n")}`;
             return (
-              <span data-testid="simple-bounce-state" title={title}
-                className={`px-2 py-1 text-[10px] font-mono uppercase tracking-[0.18em] border ${tone}`}>
+              <button type="button" data-testid="simple-bounce-state" title={title + "\n\nClick to turn dip hunting " + (dipOn ? "OFF" : "ON") + "."}
+                onClick={() => patch({ scanner_second_impulse_enabled: !dipOn }, dipOn ? "Dip hunt OFF — first-impulse entries allowed again (no dip-then-recover requirement)" : `Dip hunt ON — wait for a ≥ ${dipPct || 8}% dip from the peak that is recovering`)}
+                aria-pressed={dipOn}
+                className={`px-2 py-1 text-[10px] font-mono uppercase tracking-[0.18em] border transition-colors hover:text-neutral-100 ${tone}`}>
                 {label}
-              </span>
+              </button>
             );
           })()}
+          <button type="button" onClick={applyDipHold} data-testid="simple-preset-dip-hold"
+            title={"Dip & Hold 30 preset (paper research):\nNew 0.5–45 min · dip ≥ 15 % then recovering · growth ≥ −20 % · MC ≥ $6k · liq ≥ 12 SOL\nSeasoned 0–240 min since graduation · growth ≥ −25 % · MC vel ≥ −15 % · holders ≥ 20 · MC ≥ $25k\nFlow / velocity gates off · inventory halt, Doctor, dead-regime block OFF · 20 slots\nHold: no momentum / clock exits · flush hold 45 s (cohort 50 %) · dip add-on 1× · flush re-entry\nExits (scalp + hunt): TP +30 % · SL −35 % · no trail · runner promotion off"}
+            className={`flex items-center gap-1.5 px-3 py-2 text-[11px] uppercase tracking-[0.18em] border transition-colors ${arm === "diphold" ? "border-amber-700 text-amber-200" : "border-neutral-800 text-neutral-400 hover:text-neutral-100"}`}>
+            <TrendingDown className="w-3.5 h-3.5" /> {arm === "diphold" ? "Apply dip & hold?" : "Dip & Hold 30"}
+          </button>
           <button type="button" onClick={applyBounce} data-testid="simple-preset-bounce"
             title={"Bounce preset: catch the second leg on brand-new tiny-MC launches.\nNew band 0.5–20 min · dip ≥ 25 % from peak and recovering · buyers ≥ 3 · no liquidity floor · inflow ≥ 0.5 SOL / 2 min\nScalp exits: SL 8 % · target 1.5R · trail 5 % armed at +8 % · clock 60 s · no-momentum only above +3 %"}
             className={`flex items-center gap-1.5 px-3 py-2 text-[11px] uppercase tracking-[0.18em] border transition-colors ${arm === "bounce" ? "border-amber-700 text-amber-200" : "border-neutral-800 text-neutral-400 hover:text-neutral-100"}`}>

@@ -592,7 +592,7 @@ async def update_config(body: dict = Body(...)):
     cfg.scanner_window_hours = max(1, min(720, cfg.scanner_window_hours))  # up to 30 days
     cfg.scanner_min_age_minutes = max(0, min(720 * 60, cfg.scanner_min_age_minutes))
     cfg.scanner_interval_s = max(5, min(600, cfg.scanner_interval_s))
-    cfg.scanner_min_growth_pct = max(0.0, min(10000.0, cfg.scanner_min_growth_pct))
+    cfg.scanner_min_growth_pct = max(-100.0, min(10000.0, cfg.scanner_min_growth_pct))   # negative = seasoned dip hunting
     cfg.scanner_recent_inflow_window_s = max(30, min(3600, cfg.scanner_recent_inflow_window_s))
     cfg.scanner_min_recent_inflow_sol = max(0.0, min(1000.0, cfg.scanner_min_recent_inflow_sol))
     cfg.scanner_holder_velocity_window_s = max(15, min(3600, cfg.scanner_holder_velocity_window_s))
@@ -611,7 +611,7 @@ async def update_config(body: dict = Body(...)):
     cfg.scanner_min_mc_velocity_5m_pct_seasoned = max(-100.0, min(1000.0, cfg.scanner_min_mc_velocity_5m_pct_seasoned))
     cfg.scanner_discovery_max_idle_minutes = max(0, min(1440, cfg.scanner_discovery_max_idle_minutes))
     # Exit-behavior clamps
-    cfg.max_concurrent_positions = max(1, min(8, int(cfg.max_concurrent_positions)))
+    cfg.max_concurrent_positions = max(1, min(8 if cfg.live_trading else 20, int(cfg.max_concurrent_positions)))   # live stays capped at 8
     if cfg.exit_slippage_bps != 0:
         cfg.exit_slippage_bps = max(50, min(5000, cfg.exit_slippage_bps))
     # Greylist Sniper clamps
@@ -3096,7 +3096,7 @@ async def tracking_summary():
                 "age_s": int(age),
                 "sol_inflow": b.get("sol_inflow_lamports", 0) / 1_000_000_000,
                 "buy_count": b.get("buy_count"),
-                "unique_buyers": len(b.get("buyers", set())),
+                "unique_buyers": max(len(b.get("buyers", set())), int(b.get("holder_count") or 0)),
                 "scanner_eligible": b.get("scanner_eligible"),
                 "in_active": is_active,
                 "in_entered": is_entered,

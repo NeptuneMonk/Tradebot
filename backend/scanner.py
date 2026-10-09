@@ -212,7 +212,7 @@ class MomentumScanner:
             "growth_lookback_s": lookback_s,
             "recent_inflow_sol": recent_inflow_lamports / LAMPORTS_PER_SOL,
             "new_buyers_recent": len(recent_buyers_set),
-            "unique_buyers_total": len(b.get("buyers", set())),
+            "unique_buyers_total": max(len(b.get("buyers", set())), int(b.get("holder_count") or 0)),   # graduated: DAS holders (tape-blind)
             # Cumulative buyer count from the Pump.fun coin API (refreshed by
             # discovery polling). Seasoned-band `min_buyers_for_entry` gate
             # reads this — `buyers` set is always empty for PumpSwap pools.

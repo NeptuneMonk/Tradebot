@@ -42,6 +42,7 @@ from spl.token.instructions import (
 )
 
 from solana_client import rpc_call, LAMPORTS_PER_SOL
+from quote_mints import quote_book, is_sol_quote
 
 # ---- Program & system addresses ----
 PUMPSWAP_PROGRAM_ID = Pubkey.from_string("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA")
@@ -153,13 +154,25 @@ def _with_reserves(static: dict, base_acct: Optional[dict], quote_acct: Optional
         quote_amt = int(quote_acct["data"]["parsed"]["info"]["tokenAmount"]["amount"])
     except (KeyError, TypeError, ValueError):
         return None
+    # Pools paired with PUMP / USDC / another coin: the quote vault is NOT SOL. Convert to SOL-equivalents through the
+    # QuoteBook so liquidity, price, MC and paper quotes stay in SOL units (raw quote units kept for tx building).
+    quote_mint = static.get("quote_mint")
+    quote_is_sol = is_sol_quote(quote_mint)
+    rate = quote_book.lamports_per_raw(quote_mint)
+    if not quote_is_sol:
+        quote_book.note(quote_mint)
+    quote_sol = quote_amt if quote_is_sol else (int(quote_amt * rate) if rate else 0)
     return {
         **static,
         "base_reserves": base_amt,
-        "quote_reserves": quote_amt,
+        "quote_reserves": quote_sol,                 # SOL-equivalent lamports
+        "quote_reserves_raw": quote_amt,             # raw quote units (what the pool actually holds)
+        "quote_is_sol": quote_is_sol,
+        "quote_priced": quote_is_sol or rate is not None,
+        "quote_symbol": None if quote_is_sol else quote_book.symbol(quote_mint),
         "base_decimals": base_decimals,
         # For symmetry with pumpfun's state dict
-        "real_sol_reserves": quote_amt,  # WSOL vault balance == real SOL liquidity
+        "real_sol_reserves": quote_sol,  # quote vault balance in SOL terms == real liquidity
         "complete": False,                # AMM pools don't "complete"
     }
 

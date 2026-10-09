@@ -126,6 +126,7 @@ class BotConfig(BaseModel):
     no_momentum_after_s: int = 30
     no_momentum_min_mfe_pct: float = 5.0
     no_momentum_min_profit_pct: float = 3.0   # a stalled position is only sold when it is up at least this much; below → held for stop/clock
+    graduation_grace_s: int = 180             # after a curve→PumpSwap migration: no-momentum paused, stop counters reset for this long
     # Net-flow momentum (buys − sells as % of curve liquidity): the size-aware replacement for wallet counts
     exit_momentum_min_flow_pct: float = 1.0     # momentum gate defers SL/TP only while net inflow ≥ this % of liquidity per window
     scanner_min_flow_ratio_pct: float = 2.0     # entry: net inflow over the last 30s ≥ this % of liquidity (0 = off)

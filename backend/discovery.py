@@ -305,6 +305,8 @@ class PumpfunDiscovery:
                             ps_state = pool_states.get(pool) or await pumpswap.fetch_pool_state(pool)
                             bucket["_pool_read_ts"] = now
                             if ps_state:
+                                if not ps_state.get("quote_is_sol", True):
+                                    bucket["quote_mint"], bucket["quote_symbol"] = ps_state.get("quote_mint"), ps_state.get("quote_symbol")
                                 cur_price = pumpswap.price_sol_per_raw_token(ps_state)
                                 # PumpSwap quote_reserves IS the actual WSOL
                                 # in the pool — no virtual offset like Pump.fun.
@@ -668,6 +670,7 @@ class PumpfunDiscovery:
         vtr = int(coin.get("virtual_token_reserves") or 0)
         usd_mc = float(coin.get("usd_market_cap") or 0.0)
         last_trade_ms = int(coin.get("last_trade_timestamp") or 0)
+        pool_quote: tuple = (None, None)                 # (quote_mint, quote_symbol) for non-SOL-paired pools
         pool_address = coin.get("pump_swap_pool") or coin.get("pool_address") or ""
 
         # Resolve current price per protocol
@@ -689,6 +692,8 @@ class PumpfunDiscovery:
                     if ps_state:
                         cur_price = pumpswap.price_sol_per_raw_token(ps_state)
                         real_sol_lamports = ps_state["quote_reserves"]
+                        if not ps_state.get("quote_is_sol", True):
+                            pool_quote = (ps_state.get("quote_mint"), ps_state.get("quote_symbol"))
                 except Exception as e:
                     logger.debug(f"pumpswap pool fetch failed for {mint}: {e}")
         else:
@@ -730,6 +735,7 @@ class PumpfunDiscovery:
             # last_vsr_lamports-30 only if missing.
             "last_real_sol_lamports": real_sol_lamports,
             "last_vsr_lamports": real_sol_lamports,
+            "quote_mint": pool_quote[0], "quote_symbol": pool_quote[1],
             # Throttled price samples for entry-velocity gate. Discovered
             # tokens populate this via the discovery refresh loop (not the
             # mempool listener, which doesn't reach PumpSwap pools).
@@ -766,6 +772,9 @@ class PumpfunDiscovery:
         if cur_price > 0:
             bucket["price_samples"].append((time.time(), cur_price))
         st.tracking[mint] = bucket
+        if is_pumpswap:                                  # holders right away — the row would otherwise read "0 buyers" for up to 2 min
+            bucket["_holders_ts"] = time.time()
+            asyncio.create_task(self._refresh_holders(mint, bucket))
         # Also push a synthetic launch into the recent feed so the UI shows it
         synthetic = Launch(
             mint=mint,

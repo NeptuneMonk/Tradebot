@@ -1880,16 +1880,13 @@ class BotState:
                 bucket["first_seen_price_sol"] = cur_price
             bucket["last_price_sol"] = cur_price
             bucket["last_vsr_lamports"] = vsr  # legacy: virtual SOL reserves
-            # Pump.fun bonding curves have a 30 SOL virtual offset baked in,
-            # so real_sol = virtual_sol - 30. Mempool buy events only fire
-            # for non-graduated tokens, so this subtraction is always valid
-            # here (graduated tokens get `last_real_sol_lamports` set directly
-            # in discovery.py).
-            real_sol = max(0, vsr - 30_000_000_000)
+            # Real liquidity: the TradeEvent carries real_sol_reserves (SOL coins) / real_quote_reserves (PUMP-, USDC-,
+            # stock-paired coins, converted to SOL-equivalents by normalize()). The legacy `vsr − 30 SOL` estimate only
+            # holds for SOL pairs — a PUMP-paired curve has a different virtual offset and read as "0 liquidity".
+            _rsr = trade_data.get("real_sol_reserves")
+            real_sol = int(_rsr) if _rsr is not None and int(_rsr) > 0 else max(0, vsr - 30_000_000_000)
             bucket["last_real_sol_lamports"] = real_sol
-            bucket["curve_fill_pct"] = min(
-                100.0, max(0.0, (vsr - 30_000_000_000) / (85_000_000_000) * 100)
-            )
+            bucket["curve_fill_pct"] = min(100.0, max(0.0, real_sol / 85_000_000_000 * 100))
             # Adaptive price sampling — sample at 1Hz for the first 60s of
             # tracking (entry-velocity gate needs dense data) then drop to one
             # sample every 30s so the 120-slot deque covers ~1 hour of history
@@ -3872,7 +3869,8 @@ class BotState:
 
         entry_price_sol = sol_in_lamports / tokens_out / LAMPORTS_PER_SOL
         mode = "live" if self.config.live_trading else "paper"
-        _qm = (self.tracking.get(launch.mint) or {}).get("quote_mint") or (state or {}).get("quote_mint")
+        _qm = ((self.tracking.get(launch.mint) or {}).get("quote_mint") or (state or {}).get("quote_mint")
+               or (None if (pumpswap_state or {}).get("quote_is_sol", True) else pumpswap_state.get("quote_mint")))
         if mode == "live" and not is_sol_quote(_qm):
             # Live buys go through the SOL `buy` instruction; a USDC / PUMP / stock-paired curve needs buy_v3 with the
             # quote accounts (or multi_hop_swap from SOL), which the executor does not speak yet. Paper trades it normally.
@@ -4425,6 +4423,13 @@ class BotState:
                 trade_doc["pumpswap_pool"] = pool
             except Exception as e:
                 logger.warning(f"graduation persist failed for {mint[:8]}…: {e}")
+        # Graduation is not a stall: the curve froze while the pool was being seeded, so the rolling no-momentum
+        # check restarts from here (peak reference = current pool price) and the stop breach counters reset.
+        slot["_graduation_grace_until"] = time.time() + float(getattr(self.config, "graduation_grace_s", 180) or 0)
+        slot["_nm_last_ts"] = time.time()
+        slot.pop("_nm_peak_ref", None)
+        slot["sl_breached_since"], slot["sl_breached_samples"] = None, 0
+        slot["exit_blocked_until"] = max(float(slot.get("exit_blocked_until") or 0), time.time() + 5.0)
         logger.warning(
             f"GRADUATION MIGRATED: {trade_doc.get('symbol','?')} {mint[:8]}… "
             f"pumpfun → pumpswap (pool={pool[:8]}…). Continuing monitor."
@@ -4573,7 +4578,12 @@ class BotState:
                 is_runner = (slot.get("trade") or {}).get("book") == "runner"
                 _pinned = self._is_manual_hold(slot)
                 _ep = float((slot.get("trade") or {}).get("entry_price_sol") or 0)
-                _stall = None if _pinned else exits.no_momentum_stalled(
+                # graduating / just-migrated positions: the curve is frozen or the pool is seconds old — not a stall
+                _grad_quiet = (bool(slot.get("_curve_complete")) or bool(slot.get("_runner_pool_missing_since"))
+                               or time.time() < float(slot.get("_graduation_grace_until") or 0))
+                if _grad_quiet:
+                    slot["_nm_last_ts"] = time.time()
+                _stall = None if (_pinned or _grad_quiet) else exits.no_momentum_stalled(
                     self.config, slot, time.time(), elapsed, _ep, float(slot.get("peak_price_sol") or 0))
                 if _stall is not None:
                     _b = self.tracking.get(mint) or {}
