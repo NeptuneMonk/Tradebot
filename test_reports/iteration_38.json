@@ -1,0 +1,26 @@
+{
+  "summary": "Iteration 38 review covered: Dip & Hold 30 preset, dip-hunt toggle (simple + advanced), negative-value gates (growth / mc_vel seasoned), max_concurrent_positions clamp to 20 (paper), unique_buyers_total surfacing on scanner/launches, and LIVE/CONTROL dashboard rendering. 8/8 backend pytest cases pass. All 9 frontend review items pass. Every mutated config value was restored to the preset (scanner_second_impulse_enabled=true, scanner_min_growth_pct=-25, scanner_min_mc_velocity_5m_pct_seasoned=-15, max_concurrent_positions=20).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter38_review.py",
+    "/app/test_reports/pytest/iter38_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "NumInput (BotControlCard.jsx line 1133) commits only when parseFloat is a finite number — this is correct for allowing '-' mid-typing. For future automated tests use page.fill() (sets DOM value and fires one input event) rather than page.type() with keystrokes on type=number inputs; the latter sometimes drops intermediate React onChange events and the save button then diffs stale local state.",
+    "GateRow in BotControlCard.jsx uses `scanner-growth-input` for the SEASONED column of the Min Growth gate while the NEW column uses `scanner-growth-new-input`. Consider renaming to `scanner-growth-seasoned-input` for consistency with the other seasoned-only testids (scanner-mc-seasoned-input, scanner-mcvel-seasoned-input, min-liq-seasoned-input). Current naming is confusing but not a bug."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (8/8)", "frontend": "100% (9/9)"},
+  "test_credentials": "session_token from /app/memory/.tok (test_session_1791495727379); ALLOWED_EMAIL nbobby79@gmail.com",
+  "seed_data_creation": "none; bot left running in paper mode with 20 open positions as instructed",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend pytest file test_iter38_review.py requires PYTEST_LIVE_MUTATE=1 to run the PUT /api/bot/config mutation tests (conftest skips mutating calls by default). All config edits restored to preset values. For Playwright on NumInput fields in Advanced controls, use page.fill() with the final string (e.g. '-20') — do NOT use page.type() char-by-char: type=number inputs may drop the '-' React onChange event, causing save to no-op. The dip-hunt-select change requires an explicit SAVE CONFIG click; the simple-bounce-state chip is a one-click toggle that PUTs config directly.",
+  "rca of the issue": "No open issues. Earlier observation that `page.type('-20')` did not persist via save-config-btn turned out to be a test-harness artifact (keystroke events on type=number inputs vs React's controlled NumInput's parseFloat check at line 1141). page.fill() reliably commits and the save button then persists correctly."
+}
