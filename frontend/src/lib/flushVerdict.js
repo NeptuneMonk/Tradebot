@@ -12,7 +12,8 @@ export function flushVerdict(t) {
       (share ? ` · ${f.cohort_sellers}/${f.n_sellers} were the entry cohort (${share} of the SOL)` : ` · top seller ${top}`) +
       ` · ${f.buyers} buyer(s) still in` +
       (t.flush_held ? (f.hold_broke_floor ? ` · held from ${t.flush_hold_at_pnl_pct}% but price broke the floor` : ` · stop held from ${t.flush_hold_at_pnl_pct}%, hold budget ran out`) : "") +
-      (t.flush_addon_usd ? ` · dip add-on $${Number(t.flush_addon_usd).toFixed(2)}` : "");
+      (t.flush_addon_usd ? ` · dip add-on $${Number(t.flush_addon_usd).toFixed(2)}` : "") +
+      (t.fill_cost_pct != null ? ` · paid +${Number(t.fill_cost_pct).toFixed(1)}% over mid at entry` : "");
     return { label, tint, detail };
   }
   return { label: "DISTRIB", tint: "border-neutral-700 text-neutral-400",

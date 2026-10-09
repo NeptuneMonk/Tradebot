@@ -127,6 +127,12 @@ class BotConfig(BaseModel):
     no_momentum_min_mfe_pct: float = 5.0
     no_momentum_min_profit_pct: float = 3.0   # a stalled position is only sold when it is up at least this much; below → held for stop/clock
     graduation_grace_s: int = 180             # after a curve→PumpSwap migration: no-momentum paused, stop counters reset for this long
+    # Fill-cost model: paper fills book at impact + protocol fee + this extra slip (bps); gate refuses entries whose
+    # projected cost over spot exceeds max_fill_cost_pct (0 = off). Price-sanity: a tick > N× / < 1/N from the last
+    # accepted price is held until the next sample confirms it.
+    paper_extra_slip_bps: int = 100
+    max_fill_cost_pct: float = 0.0
+    price_sanity_ratio: float = 4.0
     # Net-flow momentum (buys − sells as % of curve liquidity): the size-aware replacement for wallet counts
     exit_momentum_min_flow_pct: float = 1.0     # momentum gate defers SL/TP only while net inflow ≥ this % of liquidity per window
     scanner_min_flow_ratio_pct: float = 2.0     # entry: net inflow over the last 30s ≥ this % of liquidity (0 = off)
@@ -739,6 +745,13 @@ class Trade(BaseModel):
     # "greylist_snipe"`; None for momentum / reentry trades.
     snipe_pattern_ctx: Optional[dict] = None
     entry_ctx: Optional[dict] = None  # gate features at entry (Doctor learns entry filters from these)
+    # fill cost over spot at entry (paper = expected: impact + fee + paper_extra_slip; live = quote's worst case)
+    fill_cost_pct: Optional[float] = None
+    fill_impact_pct: Optional[float] = None
+    fill_fee_pct: Optional[float] = None
+    fill_slip_pct: Optional[float] = None
+    fill_expected: Optional[bool] = None
+    spot_price_sol_at_entry: Optional[float] = None
 
 
 class WalletInfo(BaseModel):

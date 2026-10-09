@@ -42,6 +42,7 @@ import creator_solvency
 import r_sizer
 import exits
 import flush
+import fills
 import flow
 import runner
 from scorecard import Scorecard
@@ -645,6 +646,10 @@ class BotState:
             return False
         tokens_out, max_sol = (pumpswap.quote_buy_tokens(pool_state, sol_in, eff_slip) if protocol == "pumpswap"
                                else pumpfun.quote_buy_tokens(state, sol_in, eff_slip))
+        if trade_doc.get("mode") != "live":
+            _pf = fills.paper_fill(protocol, pool_state if protocol == "pumpswap" else state, sol_in, cfg)
+            if _pf:
+                tokens_out = _pf["tokens_out"]
         if tokens_out <= 0:
             return False
         sig = None
@@ -1321,6 +1326,12 @@ class BotState:
             return
         entry_price_sol = sol_in_lamports / tokens_out / LAMPORTS_PER_SOL
         mode = "live" if self.config.live_trading else "paper"
+        _fill_state = pumpswap_state if protocol == "pumpswap" else state
+        if mode == "paper":
+            _pf = fills.paper_fill(protocol, _fill_state, sol_in_lamports, self.config)
+            if _pf:
+                tokens_out, entry_price_sol = _pf["tokens_out"], _pf["entry_price_sol"]
+        fill_cost = fills.fill_cost_fields(protocol, _fill_state, sol_in_lamports, tokens_out, self.config, expected=(mode == "paper"))
         est_entry_fee_sol = estimate_tx_fee_sol(eff_priority, CU_PUMPFUN)
         creator_str = w.get("creator") or ""
         trade = Trade(
@@ -1335,6 +1346,7 @@ class BotState:
             entry_usd=trade_sol * sol_price,
             entry_tokens=tokens_out,
             entry_price_sol=entry_price_sol,
+            **fill_cost,
             entry_fee_sol=est_entry_fee_sol,
             speed_mode_at_entry=self.config.speed_mode,
             risk_score=40,
@@ -2559,6 +2571,8 @@ class BotState:
         entry_p = trade_doc.get("entry_price_sol", 0)
         if entry_p <= 0:
             return
+        if not self._price_sane(mint, slot, cur_price_sol):
+            return
         # Update peak for trailing stop (+ trough/timing → Doctor's counterfactual exit grid)
         peak = slot.get("peak_price_sol", entry_p)
         if cur_price_sol > peak:
@@ -2705,6 +2719,34 @@ class BotState:
 
     def _band_of(self, mint: str) -> str:
         return "seasoned" if (self.tracking.get(mint) or {}).get("protocol") == "pumpswap" else "new"
+
+    def _price_sane(self, mint: str, slot: dict, price: float) -> bool:
+        """Price-sanity guard for exits: a tick > ratio× / < 1/ratio from the last accepted price is HELD until the next
+        sample lands on the same side (a corrupt sample fired a +19223 % 'take-profit' once). Confirmed → accepted."""
+        ratio = float(getattr(self.config, "price_sanity_ratio", 4.0) or 0.0)
+        last = float(slot.get("_last_sane_price_sol") or 0.0)
+        if price <= 0:
+            return False
+        if ratio <= 1.0 or last <= 0:
+            slot["_last_sane_price_sol"] = price
+            return True
+        r = price / last
+        if r > ratio or r < 1.0 / ratio:
+            pend = float(slot.get("_pending_outlier_sol") or 0.0)
+            same_side = pend > 0 and ((pend / last > ratio) == (r > ratio)) and ((pend / last < 1.0 / ratio) == (r < 1.0 / ratio))
+            if same_side:
+                slot["_pending_outlier_sol"] = None
+                slot["_last_sane_price_sol"] = price
+                self.stats["price_outliers_confirmed"] = self.stats.get("price_outliers_confirmed", 0) + 1
+                return True
+            slot["_pending_outlier_sol"] = price
+            self.stats["price_outliers_held"] = self.stats.get("price_outliers_held", 0) + 1
+            logger.warning(f"price outlier held {(slot.get('trade') or {}).get('symbol')} {mint[:8]}…: {price:.3e} is {r:.1f}× the last accepted "
+                           f"{last:.3e} ({(slot.get('trade') or {}).get('protocol')}) — waiting for a confirming sample before any exit")
+            return False
+        slot["_pending_outlier_sol"] = None
+        slot["_last_sane_price_sol"] = price
+        return True
 
     async def _skip_event(self, payload: dict):
         self._ledger_sol(payload.get("mint", ""), payload.get("reason") or "skip")
@@ -3869,6 +3911,18 @@ class BotState:
 
         entry_price_sol = sol_in_lamports / tokens_out / LAMPORTS_PER_SOL
         mode = "live" if self.config.live_trading else "paper"
+        _fill_state = pumpswap_state if protocol == "pumpswap" else state
+        if mode == "paper":
+            # paper books the EXPECTED fill (impact + protocol fee + paper_extra_slip_bps), not the worst-case tolerance
+            _pf = fills.paper_fill(protocol, _fill_state, sol_in_lamports, self.config)
+            if _pf:
+                tokens_out, entry_price_sol = _pf["tokens_out"], _pf["entry_price_sol"]
+        fill_cost = fills.fill_cost_fields(protocol, _fill_state, sol_in_lamports, tokens_out, self.config, expected=(mode == "paper"))
+        _max_fill = float(getattr(self.config, "max_fill_cost_pct", 0.0) or 0.0)
+        if _max_fill > 0 and not bypass_gates and float(fill_cost.get("fill_cost_pct") or 0) > _max_fill:
+            await self._refuse(launch.mint, _band, "fill-cost",
+                               f"${trade_usd:.2f} would fill {fill_cost['fill_cost_pct']:+.1f}% over mid (impact {fill_cost.get('fill_impact_pct')}, fee {fill_cost.get('fill_fee_pct')}, slip {fill_cost.get('fill_slip_pct')}) > max {_max_fill:g}% — size down or skip")
+            return
         _qm = ((self.tracking.get(launch.mint) or {}).get("quote_mint") or (state or {}).get("quote_mint")
                or (None if (pumpswap_state or {}).get("quote_is_sol", True) else pumpswap_state.get("quote_mint")))
         if mode == "live" and not is_sol_quote(_qm):
@@ -3944,6 +3998,7 @@ class BotState:
             is_research_snipe=is_research_snipe,
             long_term_hold=action == "dev_watch",
             dev_watch=action == "dev_watch",
+            **fill_cost,
             **plan["trade_fields"],
             # Persist the snipe ctx on the trade doc itself so a restart
             # can restore the slot without losing the pattern frame of
@@ -4425,7 +4480,7 @@ class BotState:
                 logger.warning(f"graduation persist failed for {mint[:8]}…: {e}")
         # Graduation is not a stall: the curve froze while the pool was being seeded, so the rolling no-momentum
         # check restarts from here (peak reference = current pool price) and the stop breach counters reset.
-        slot["_graduation_grace_until"] = time.time() + float(getattr(self.config, "graduation_grace_s", 180) or 0)
+        slot["_graduation_grace_until"] = time.time() + float(getattr(getattr(self, "config", None), "graduation_grace_s", 180) or 0)
         slot["_nm_last_ts"] = time.time()
         slot.pop("_nm_peak_ref", None)
         slot["sl_breached_since"], slot["sl_breached_samples"] = None, 0

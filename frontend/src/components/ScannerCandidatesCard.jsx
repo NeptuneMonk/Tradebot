@@ -6,6 +6,7 @@ import { ChainBadge } from "./ChainBadge";
 import { TokenDetailDialog } from "./TokenDetailDialog";
 import { VirtualUl } from "./VirtualRows";
 import { api, explainApiError } from "@/lib/api";
+import { fillTone, projectedFillTitle } from "@/lib/fillCost";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const fmtAge = (s) => {
@@ -184,6 +185,10 @@ function CandidateRow({ c, passing, onOpen }) {
               >
                 {c.gate_reason}
               </span>
+            )}
+            {c.fill_cost && (
+              <span data-testid={`scanner-row-fill-${c.mint}`} title={projectedFillTitle(c.fill_cost)}
+                className={`text-[9px] font-mono px-1.5 py-0.5 border ${fillTone(c.fill_cost.total_pct)}`}>fill −{c.fill_cost.total_pct.toFixed(1)}%</span>
             )}
             {passing && c.blocked && (
               <span

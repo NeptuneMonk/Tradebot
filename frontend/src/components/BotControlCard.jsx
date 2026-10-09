@@ -588,6 +588,18 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
                hint="Never re-buy a flush more than this far above the stop fill — past that you are chasing, not buying the dip."
                value={local.flush_reentry_max_chase_pct ?? 50}
                onChange={(v) => setLocal({ ...local, flush_reentry_max_chase_pct: parseFloat(v) || 0 })} step="5" />
+        <Field label="Paper extra slip (bps)" testid="paper-extra-slip-input"
+               hint="Paper fills book at the EXPECTED price: constant-product impact + protocol fee (1 % curve / 0.30 % PumpSwap) + this extra slip. 100 bps = 1 %. Live orders still use your Slippage tolerance for min-tokens-out; this only shapes paper."
+               value={local.paper_extra_slip_bps ?? 100}
+               onChange={(v) => setLocal({ ...local, paper_extra_slip_bps: parseInt(v, 10) || 0 })} step="25" />
+        <Field label="Max fill cost %" testid="max-fill-cost-input"
+               hint="Refuse an entry whose projected cost over mid (impact + fee + slip for the configured size) is above this — reason 'fill-cost'. The candidate rows show the same number as the 'fill −x%' chip. 0 = off."
+               value={local.max_fill_cost_pct ?? 0}
+               onChange={(v) => setLocal({ ...local, max_fill_cost_pct: parseFloat(v) || 0 })} step="0.5" />
+        <Field label="Price sanity ×" testid="price-sanity-ratio-input"
+               hint="A price tick more than this many × above (or 1/× below) the last accepted price is HELD until the next sample confirms it, so one corrupt sample cannot fire TP / SL / trailing. 4 = a 4× jump needs confirming. 0 = off."
+               value={local.price_sanity_ratio ?? 4}
+               onChange={(v) => setLocal({ ...local, price_sanity_ratio: parseFloat(v) || 0 })} step="0.5" />
         {showAdvancedFees && (
           <Field label="Priority µLamp" testid="prio-input"
                  hint="Compute-unit price in micro-lamports. Higher = better landing odds, higher fee. Speed Mode handles this; manual override only."

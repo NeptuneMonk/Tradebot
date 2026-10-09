@@ -2484,3 +2484,15 @@ Operator asks: dip hunt has no OFF switch; seasoned MC-velocity must go negative
 - ✅ **Dip & Hold 30 preset** (`DIP_HOLD_PRESET` / `DIP_HOLD_EXITS` in SimpleControls, button `simple-preset-dip-hold`; applied to preview DB): 20 slots · new 0.5–45 min (growth ≥ −20 %, MC ≥ $6k, liq ≥ 12 SOL, buyers ≥ 4, dip ≥ 15 % recovering) · seasoned 0–240 min since grad (growth ≥ −25 %, MC vel ≥ −15 %, holders ≥ 20, MC ≥ $25k, no tape floors) · flow/velocity gates OFF · inventory halt / Doctor / dead-regime / creator-solvency OFF · no-momentum + recovery watch OFF · SL persistence 3 s · flush hold 45 s (cohort 50 %, extra drop 15 %), dip add-on 1×, flush re-entry · re-entry bounce confirm 3 % · runner promotion OFF · scalp+hunt TP +30 / SL −35 / no trail / no clock / no ladder.
 - Observed in preview after apply: 20/20 paper slots filled within a minute; fresh fills show ≈ −10 % immediately on thin curves (paper impact + fees) → liq floor raised 5 → 12 SOL.
 - Tests: `tests/test_quote_liquidity.py` (3). Testing agent iteration_38: all pass (backend 8/8, frontend 9/9).
+
+
+## Paper Impact Readout + fill model + price-sanity guard (2026-10-09)
+Root cause of "−10 % on open": PumpSwap paper fills booked the worst-case tolerance (fee + 600 bps slippage + impact) while curve fills booked zero fee.
+- ✅ `fills.py`: `paper_fill()` books EXPECTED fills (constant-product impact + protocol fee 1 % curve / 0.30 % PumpSwap + `paper_extra_slip_bps` 100) for entries, re-entries and the flush dip add-on; live tx building untouched. `fill_cost_fields()` stamps `fill_cost_pct / fill_impact_pct / fill_fee_pct / fill_slip_pct / fill_expected / spot_price_sol_at_entry` on every Trade (model fields added).
+- ✅ Candidates: `scanner._projected_fill_cost` → `fill_cost {impact,fee,slip,total,size_usd}` for max_trade_usd × scalp mult; chips `fill −x%` (amber > 3, red > 6) in cockpit + full card; gate `max_fill_cost_pct` (0 = off) refuses `fill-cost`.
+- ✅ Active rows: `paid +x%` chip with breakdown tooltip (cockpit + table); history flush tooltip includes it.
+- ✅ Price-sanity guard `bot._price_sane` at the top of `_run_ladder`: a tick > `price_sanity_ratio` (4) × / < 1/× the last accepted price is held until the next sample lands on the same side (the $MONEROCHAN "+19223 % take-profit" case); stats `price_outliers_held/confirmed`.
+- Controls (Advanced): Paper extra slip (bps), Max fill cost %, Price sanity ×.
+- Verified in preview: fresh seasoned positions now open ≈ −1.3 % (was −10 %); candidates show fill 1.6–2.0 % at $100.
+- Tests: `tests/test_fills.py` (5). Removed `tests/test_iter38_review.py` (asserted mutable live config). `test_iteration23_review` rail updated to 20.
+- Note: someone/something flipped `no_momentum_exit_enabled` back to true and `scanner_second_impulse_enabled` false on the preview config after the preset — likely operator toggles; no code writes these keys.

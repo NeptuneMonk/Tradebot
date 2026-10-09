@@ -2,6 +2,7 @@ import { memo } from "react";
 import { Activity, X } from "lucide-react";
 import { ChainBadge } from "./ChainBadge";
 import { TradeTicket } from "./TradeTicket";
+import { fillTone, paidFillTitle } from "@/lib/fillCost";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 
@@ -61,6 +62,10 @@ function ActiveTradesTable({ trades, onExit }) {
                   )}
                   <span className="mr-1.5 align-middle inline-flex"><ChainBadge chain={t.chain} mint={t.mint} /></span>
                   {t.symbol ? <span className="text-neutral-200">{t.symbol}</span> : <span className="text-neutral-500">—</span>}
+                  {t.fill_cost_pct != null && (
+                    <span data-testid={`active-fill-${t.mint}`} title={paidFillTitle(t)}
+                      className={`ml-1.5 px-1 py-0 border text-[9px] font-mono align-middle ${fillTone(Number(t.fill_cost_pct))}`}>paid +{Number(t.fill_cost_pct).toFixed(1)}%</span>
+                  )}
                   <span className="text-neutral-600 ml-2 text-[10px]">{short(t.mint)}</span>
                 </td>
                 <td className="text-right font-mono">

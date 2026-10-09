@@ -15,6 +15,9 @@ from typing import TYPE_CHECKING
 
 import pumpfun
 import pumpswap
+import fills
+import solana_client
+from book_params import book_size_mult
 from models import Launch
 from solana_client import LAMPORTS_PER_SOL
 from ws_hub import hub
@@ -244,6 +247,20 @@ class MomentumScanner:
             "curve_complete": bool(curve_state["complete"]) if curve_state else False,
         }
 
+    def _projected_fill_cost(self, b: dict, m: dict) -> dict | None:
+        """Cost over mid of buying the configured size here (max_trade_usd × scalp size mult). Curve → virtual SOL
+        reserves; pool → quote vault (SOL-equivalent). None when the SOL price or reserves are unknown."""
+        cfg = self.state.config
+        sol_usd = float(solana_client._sol_price_cache.get("price") or 0.0)
+        if sol_usd <= 0:
+            return None
+        usd = float(getattr(cfg, "max_trade_usd", 0) or 0) * book_size_mult(cfg, "scalp")
+        sol_in = int(usd / sol_usd * LAMPORTS_PER_SOL)
+        is_pool = b.get("protocol") == "pumpswap"
+        quote = int((b.get("last_real_sol_lamports") if is_pool else b.get("last_vsr_lamports")) or 0)
+        c = fills.projected_cost_pct("pumpswap" if is_pool else "pumpfun", quote, sol_in, cfg)
+        return {**c, "size_usd": round(usd, 2)} if c else None
+
     def candidates_snapshot(self) -> list[dict]:
         """For the API: ranked candidates with current cached metrics (no RPC).
         Returns both bands. Band classification is PROTOCOL-AWARE:
@@ -272,6 +289,7 @@ class MomentumScanner:
             m["gate_detail"] = b.get("gate_detail") if b.get("gate_reason") not in (None, "pass") else None
             er = b.get("entry_refusal")
             m["blocked"] = er if er and now - float(er.get("ts") or 0) < 90.0 else None     # gates passed, entry path refused
+            m["fill_cost"] = self._projected_fill_cost(b, m)                                  # what the configured size would cost over mid
             m["discovered"] = bool(b.get("discovered"))
             m["graduated_feed"] = bool(b.get("graduated_feed"))
             m["protocol"] = b.get("protocol") or "pumpfun"
