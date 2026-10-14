@@ -1640,7 +1640,7 @@ async def wallet_rent(fresh: bool = False):
     cfg = bot_state.config
     return {"accounts": scan["accounts"], "empty": len(scan["empty"]), "dust": len(scan["dust"]), "skipped_valued": scan["skipped_valued"],
             "reclaimable_sol": scan["reclaimable_sol"], "reclaimable_usd": scan["reclaimable_usd"], "scanned_at": scan["scanned_at"],
-            "min_sol": float(cfg.rent_reclaim_min_sol), "auto": bool(cfg.rent_reclaim_auto), "last_sweep": bot_state.rent.last_sweep}
+            "min_sol": float(cfg.rent_reclaim_min_sol), "auto": bool(cfg.rent_reclaim_auto), "last_sweep": bot_state.rent.last_sweep or None}
 
 
 @api.post("/wallet/rent/reclaim")

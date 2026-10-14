@@ -2504,3 +2504,37 @@ Operator imported the published config into preview: `scanner_interval_s = 600` 
 - ✅ `POST /bot/start` re-arms the PnL stop from now when the armed baseline is already past the limit (`pnl_stop_rearmed` in the response); config import keeps `pnl_stop_armed_ts` local and re-arms from import time.
 - ✅ StatusBanner shows "BOT STOPPED BY PnL stop: … — Start re-arms the stop from now" instead of the generic "paused".
 - Verified: after start, Blind + BNKR entered within 2 s; preview scanner_interval_s set to 10.
+
+
+## 2026-10-14 — Sells must land + rent reclaim + wallet import/export (wallet-vs-equity gap fix)
+User report: live wallet 0.2 → 0.1057 SOL while equity showed +$20. Production dump: all 36 stuck rows = buy landed, sell sent 3× + emergency,
+none confirmed inside the 25 s poll → parked `exit_failed_terminal` (excluded from equity) → tokens later gone (sells landed late).
+Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
+- ✅ **`landing.py` fast-landing executor** — one signed tx per fee rung, broadcast to Helius Sender (dual: validators+Jito) AND RPC at once,
+  all signatures polled together every 0.4 s, fee doubles every `exit_land_rung_s` (2.5 s) from `exit_priority_floor` (1M µL; panic 3M) to
+  `exit_priority_cap` (20M µL, user: "land at any cost"), total `exit_land_budget_s` 15 s. `NotLanded` carries every sig; `LandedButFailed` carries the on-chain error.
+  Used by: full exits (both venues), partial exits, emergency PumpSwap sell, buys (swqos tip, ladder [p, 2p], 10 s budget), rent sweeps.
+- ✅ **Late-landing safety net** — `NotLanded` keeps the position ACTIVE (never parks), stores `pending_exit_sigs`, spawns `_watch_late_sell`
+  (120 s, searchTransactionHistory) → books the real exit from the wallet delta. Buys: `_watch_late_buy` opens the position if a slow buy lands.
+  Only 3 landed REVERTS (`exit_landed_failures`) + a failed emergency AMM sell park a row (venue_stage `sell-reverted`, PnL unset) = liquidity issue.
+- ✅ **Balance 0 at exit** → `_find_sale_on_chain` (pending sigs, then the ATA's own signature history) books the real sale; else closed at −entry
+  (`pnl_reconciled=False`), never a $0 exit. Held-bag watcher resolves gone bags the same way (`_resolve_gone_bag`), dated at park time so old losses
+  don't hit today's kill switch. Legacy "wallet holds 0 tokens" rows are resolved 6/pass.
+- ✅ **Equity truth** — `/pl/equity` + `daily_pnl_usd` (kill switch) include parked rows as −entry_usd (+ `mark_usd` from the stuck list).
+- ✅ **Reconciler lookback** 60 min → 24 h.
+- ✅ **`rent_reclaim.py`** — scans both token programs, prices leftovers, burns provably worthless dust (< 0.00005 SOL) and closes empty accounts in
+  batches of 8 via `land_tx`; auto loop (10 min, live mode, leader) when reclaimable ≥ `rent_reclaim_min_sol` (0.02). `GET /wallet/rent`,
+  `POST /wallet/rent/reclaim`. **Ran once live: 72 accounts closed, +0.109 SOL, wallet 0.0746 → 0.1831 SOL.** UI chip in Wallet card.
+- ✅ **External sells tolerated** — `_detect_external_sells` (15 s, one batched balance read) exits a live slot whose wallet balance hit 0 → booked from chain.
+- ✅ **Private-key export fixed** — env gate `ALLOW_KEY_EXPORT` removed; `?confirm=EXPORT` from the Reveal dialog instead (still behind single-user auth).
+- ✅ **Private-key import** — `POST /wallet/import {secret (b58 | JSON array), confirm:"IMPORT", sweep_old}`; paper mode + no open live positions
+  required; key persisted in `wallet_keys` so both pods sync (`_sync_wallet_key`, 15 s) and redeploys keep it; old file retired. `ImportWallet.jsx`.
+- ✅ Config: `exit_priority_floor/cap_microlamports`, `exit_land_rung_s`, `exit_land_budget_s`, `exit_use_sender`, `rent_reclaim_auto`, `rent_reclaim_min_sol` (+ UI fields).
+- Tests: `test_landing.py` (8), `test_fast_landing_exit.py` (7); `test_graduation_hold.py` migrated to `land_tx`. Testing agent iteration_39: 100 % backend + frontend.
+- ⚠️ Deploy required: the deployed app still runs the old sell path. After deploy, the held-bag watcher resolves the 36 stuck rows from chain and the
+  equity line drops to wallet truth.
+
+### Backlog
+- P0 Live execution for non-SOL-paired curve tokens (PUMP/SPCX quotes)
+- P1 PumpSwap price UI formatting (×1e6)
+- P2 PUMP.BOT Lite phone UI; slippage-aware fast SL; execution learning / replay

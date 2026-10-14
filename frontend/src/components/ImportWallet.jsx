@@ -42,6 +42,7 @@ export default function ImportWallet({ onDone }) {
             onChange={(e) => setSecret(e.target.value)}
             rows={2}
             placeholder="base58 secret (Phantom / Solflare export) or [1,2,3,…] JSON array"
+            style={{ WebkitTextSecurity: "disc" }}
             className="w-full bg-neutral-950 border border-neutral-800 px-2 py-1 font-mono text-[11px] text-neutral-200 focus:border-blue-500 focus:outline-none"
             data-testid="import-wallet-secret"
             autoComplete="off"

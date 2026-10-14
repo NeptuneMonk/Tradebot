@@ -34,6 +34,8 @@ class RentReclaimer:
         self.last_sweep: dict | None = None
 
     async def scan(self, fresh: bool = False) -> dict:
+        if self.last_sweep is None:
+            self.last_sweep = await self.state.db.rent_sweeps.find_one({}, {"_id": 0, "rows": 0}, sort=[("at", -1)]) or {}
         if self._scan and not fresh and time.time() - self._scan_ts < SCAN_TTL_S:
             return self._scan
         wallet = str(get_pubkey())

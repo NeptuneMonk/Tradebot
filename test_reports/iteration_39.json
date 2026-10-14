@@ -1,0 +1,33 @@
+{
+  "summary": "Iteration 39 verified the fast-landing exits + wallet-rent + import/export + bot_config clamps work end-to-end. Backend: all 7 request items pass (config fields, clamps, export/import endpoints with correct error texts, /pl/equity, /trades/stuck, rent/reclaim idempotent 'nothing to reclaim'). Pytest regression (test_landing + test_fast_landing_exit + test_held_bag_watcher + test_graduation_hold with the one documented deselect) = 49 passed / 0 failed. Frontend (CONTROL → Advanced): rent-reclaim-chip ('Rent 0.0000 SOL · 0 accts · auto ≥0.02 SOL · Reclaim'), rent-reclaimable, rent-rescan-btn, rent-reclaim-btn (disabled when 0 accts) all present. import-wallet-toggle opens secret textarea + sweep checkbox + confirm button; confirm disabled when empty, enabled after text. Typing 'notakey' + accepting the dialog produced visible toast 'could not parse key: expected 64-byte secret (or 32-byte seed), got 6 bytes'. All five new numeric inputs render with correct defaults (floor 1, cap 20, rung 2.5, budget 15, rent 0.02). Changing cap to 10 and clicking SAVE CONFIG issued PUT /api/bot/config with exit_priority_cap_microlamports=10000000 and NO 'enabled'/'live_trading' keys; restored to 20M after. All backend config values restored to the pre-test originals (floor 1_000_000, cap 20_000_000, rung 2.5, budget 15, rent 0.02).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/wallet/rent", "issue": "last_sweep returned null even though db.rent_sweeps has the prior sweep {closed:72, reclaimed_sol:0.108996, rows:72}. Root cause: RentReclaimer.last_sweep is in-memory only (rent_reclaim.py:34) and uvicorn --reload wipes it. The DB record exists but the endpoint does not hydrate from it. Mitigation: on first /wallet/rent call (or in RentReclaimer __init__), load the most recent rent_sweeps doc into self.last_sweep (projection: {at,closed,reclaimed_sol,sigs,errors}, exclude _id). Non-blocking because reclaimable_sol/accounts are still live-scanned, but the UI will show no history after any backend restart."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_landing.py",
+    "/app/backend/tests/test_fast_landing_exit.py",
+    "/app/backend/tests/test_held_bag_watcher.py",
+    "/app/backend/tests/test_graduation_hold.py"
+  ],
+  "action_items": [
+    "Fix last_sweep hydration: have RentReclaimer load the most-recent /rent_sweeps document from Mongo at startup (or lazily on first scan) so GET /api/wallet/rent shows prior sweeps after backend reload. Projection should drop _id."
+  ],
+  "critical_code_review_comments": [
+    "rent_reclaim.py keeps last_sweep purely in-memory; combined with uvicorn --reload (which runs during normal dev) this makes the UI chip's 'last sweep' invisible for the common case. Easiest fix: at RentReclaimer.start(), do `doc = await self.state.db.rent_sweeps.find_one(sort=[('at',-1)], projection={'_id':0}); self.last_sweep = doc`.",
+    "server.py /api/wallet/import success response returns {ok, public_key, unchanged} when key matches, but the error path raises HTTPException with the raw parse_secret message (e.g. 'expected 64-byte secret (or 32-byte seed), got 6 bytes'). Prefix is still 'could not parse key:' so the frontend contract holds — just noting that any future wording change in parse_secret ripples through the UI toast with no translation layer.",
+    "ImportWallet.jsx textarea autofocuses the real secret into the DOM; consider type='password' or masking on blur so screen-recorded sessions don't leak the key paste.",
+    "BotControlCard numeric inputs for the new fee ladder use the shared NumInput (BotControlCard.jsx ~L1133) which commits only on finite parseFloat — tested OK via page.fill(). Users typing '-' first momentarily shows the field empty, which is fine for positive-only fields here."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (7/7 items + 49/49 pytest)", "frontend": "100% (10/10 testids + save flow)"},
+  "test_credentials": "session_token from /app/memory/.tok (test_session_1791990910855); ALLOWED_EMAIL nbobby79@gmail.com. Current wallet pubkey FXCMFSvRPkWkxnMLUQTDe2iFHRivUaaYWVJowLXHrcWe, 0.1831 SOL. Export endpoint secrets were obtained but NOT logged.",
+  "seed_data_creation": "none. No destructive calls made: POST /api/wallet/rent/reclaim was invoked exactly once (returned {ok:false, reason:'nothing to reclaim', accounts:0}). POST /api/wallet/import was called with 'notakey' (rejected 400) and once with the wallet's own b58 key (returned {ok:true, unchanged:true, public_key:FXCMF…HrcWe}). All PUT /api/bot/config mutations (clamp probe + UI cap 20→10→20) were restored. Bot remains STOPPED in paper mode.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "The only open issue from this iteration is cosmetic: /api/wallet/rent.last_sweep is null because RentReclaimer in-memory state is wiped by backend --reload. The historical sweep (closed=72, reclaimed_sol≈0.109) is still in db.rent_sweeps. If main agent patches RentReclaimer to hydrate from Mongo, verify with: GET /api/wallet/rent → last_sweep.closed==72, reclaimed_sol≈0.108996. Do NOT POST /api/wallet/rent/reclaim again (zero accounts; already verified it short-circuits, but it is a real-wallet endpoint). The user's rotate/import endpoint should NOT be hit with any key other than the one from /api/wallet/export-private-key?confirm=EXPORT.",
+  "rca of the issue": "Reported bug: GET /api/wallet/rent returned last_sweep=null though the earlier manual sweep (closed=72, reclaimed_sol≈0.109) succeeded. Repro: curl /api/wallet/rent after backend restart → last_sweep:null; mongosh db.rent_sweeps.find() → doc present. Cause: rent_reclaim.py:34 initialises self.last_sweep=None and only ever writes it in-memory inside sweep(); uvicorn --reload rebuilds the process and the attribute is reset. The DB insert at line 129 is correct, but server.py:1643 reads bot_state.rent.last_sweep without any DB fallback. Fix: on RentReclaimer.start() (or in __init__ after db attach), await self.state.db.rent_sweeps.find_one(sort=[('at',-1)], projection={'_id':0}) and assign to self.last_sweep."
+}
