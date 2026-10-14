@@ -2395,6 +2395,28 @@ async def costs_summary(days: int = 7):
     }
 
 
+@api.get("/costs/landing")
+async def costs_landing(days: int = 7):
+    """Fast-landing stats for live sells: how fast they land, which fee rung wins, what the Sender tips cost."""
+    since = (datetime.now(timezone.utc) - timedelta(days=max(1, min(days, 90)))).isoformat()
+    rows = await db.trades.find({"mode": "live", "exit_land_s": {"$ne": None}, "exit_time": {"$gte": since}},
+                                {"_id": 0, "exit_land_s": 1, "exit_land_prio": 1, "exit_land_rungs": 1, "exit_tip_sol": 1, "entry_land_s": 1}).to_list(5000)
+    secs = sorted(float(r["exit_land_s"]) for r in rows)
+    n = len(secs)
+    pct = lambda q: (secs[min(n - 1, int(q * (n - 1)))] if n else None)
+    rungs: dict[str, int] = {}
+    prios: dict[str, int] = {}
+    for r in rows:
+        rungs[str(int(r.get("exit_land_rungs") or 1))] = rungs.get(str(int(r.get("exit_land_rungs") or 1)), 0) + 1
+        k = f"{(int(r.get('exit_land_prio') or 0)) / 1e6:g}M"
+        prios[k] = prios.get(k, 0) + 1
+    entry = [float(r["entry_land_s"]) for r in rows if r.get("entry_land_s") is not None]
+    return {"days": days, "sells": n, "p50_s": pct(0.5), "p90_s": pct(0.9), "max_s": secs[-1] if n else None,
+            "avg_s": round(sum(secs) / n, 2) if n else None, "first_rung_pct": round(100 * rungs.get("1", 0) / n, 1) if n else None,
+            "rungs": rungs, "prio_landed": prios, "tip_sol_total": round(sum(float(r.get("exit_tip_sol") or 0) for r in rows), 6),
+            "entry_avg_s": round(sum(entry) / len(entry), 2) if entry else None}
+
+
 @api.get("/costs/network")
 async def costs_network():
     """Current network conditions: last polled p75 priority fee + the effective

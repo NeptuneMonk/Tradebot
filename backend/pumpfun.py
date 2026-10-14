@@ -331,6 +331,7 @@ def decode_bonding_curve(data: bytes) -> dict | None:
     except Exception:
         creator = None
     is_cashback = bool(data[82]) if len(data) > 82 else False
+    is_mayhem = bool(data[81]) if len(data) > 81 else False
     # custom quote pairs (create_v2): offsets 83..115 hold quote_mint (default pubkey / absent = SOL); the reserve fields
     # are then quote units — quote_mints.QuoteBook.normalize() converts them to SOL-equivalents for the gates
     quote_mint = None
@@ -348,6 +349,7 @@ def decode_bonding_curve(data: bytes) -> dict | None:
         "complete": complete,
         "creator": creator,
         "is_cashback": is_cashback,
+        "is_mayhem": is_mayhem,
         "quote_mint": quote_mint,
         "virtual_quote_reserves": vsr,
         "real_quote_reserves": rsr,

@@ -20,6 +20,19 @@ from solana_client import rpc_call
 logger = logging.getLogger("landing")
 
 DEFAULT_CAP_MICROLAMPORTS = 20_000_000
+LAST: dict[str, dict] = {}          # sig → {"land_s", "prio", "rungs", "tip_sol"} for the trade doc (bounded)
+
+
+def stats_for(sig: str | None) -> dict:
+    return dict(LAST.get(sig or "", {}))
+
+
+def _remember(sig: str, land_s: float, prio: int, rungs: int, mode: str | None) -> None:
+    if len(LAST) > 400:
+        for k in list(LAST)[:200]:
+            LAST.pop(k, None)
+    tip = (TIP_LAMPORTS_DUAL if mode == "dual" else TIP_LAMPORTS_SWQOS if mode else 0) / 1e9
+    LAST[sig] = {"land_s": round(land_s, 2), "prio": int(prio), "rungs": int(rungs), "tip_sol": tip}
 
 
 class NotLanded(RuntimeError):
@@ -47,13 +60,13 @@ def fee_ladder(start: int, cap: int = DEFAULT_CAP_MICROLAMPORTS, mult: float = 2
     return out
 
 
-async def _sign(keypair, ixs: list, priority: int, cu_limit: int, sender_mode: str | None) -> tuple[str, str]:
+async def _sign(keypair, ixs: list, priority: int, cu_limit: int, sender_mode: str | None, alts: list | None = None) -> tuple[str, str]:
     payer = keypair.pubkey()
     full = [set_compute_unit_limit(cu_limit), set_compute_unit_price(priority), *ixs]
     if sender_mode:
         full.append(_build_tip_transfer_ix(payer, TIP_LAMPORTS_DUAL if sender_mode == "dual" else TIP_LAMPORTS_SWQOS))
     bh = await rpc_call("getLatestBlockhash", [{"commitment": "confirmed"}])
-    msg = MessageV0.try_compile(payer=payer, instructions=full, address_lookup_table_accounts=[],
+    msg = MessageV0.try_compile(payer=payer, instructions=full, address_lookup_table_accounts=list(alts or []),
                                 recent_blockhash=Hash.from_string(bh["result"]["value"]["blockhash"]))
     tx = VersionedTransaction(msg, [keypair])
     return str(tx.signatures[0]), base64.b64encode(bytes(tx)).decode()
@@ -104,7 +117,7 @@ async def _verify_meta(sig: str):
 
 async def land_tx(keypair, instructions: list, *, priority_ladder: list[int], compute_unit_limit: int = 200_000,
                   rung_s: float = 2.5, budget_s: float = 15.0, use_sender: bool = True, sender_mode: str = "dual",
-                  label: str = "") -> tuple[str, int]:
+                  label: str = "", alts: list | None = None) -> tuple[str, int]:
     """Returns (landed signature, priority that landed). Raises LandedButFailed / NotLanded.
     `sender_mode`: "dual" (validators + Jito, 0.0002 SOL tip — sells) or "swqos" (0.000005 SOL tip — buys)."""
     mode = sender_mode if use_sender else None
@@ -118,7 +131,7 @@ async def land_tx(keypair, instructions: list, *, priority_ladder: list[int], co
         if rung < len(priority_ladder) and now - last_send >= rung_s and (rung == 0 or now - t0 + 1.0 < budget_s):
             prio = int(priority_ladder[rung])
             try:
-                sig, raw = await _sign(keypair, instructions, prio, compute_unit_limit, mode)
+                sig, raw = await _sign(keypair, instructions, prio, compute_unit_limit, mode, alts)
                 await _broadcast(raw, mode)
                 sent.append((sig, raw, prio))
                 logger.info(f"LAND {label} rung {rung + 1}/{len(priority_ladder)} prio={prio} µL sig={sig[:12]}… t+{now - t0:.1f}s")
@@ -143,7 +156,8 @@ async def land_tx(keypair, instructions: list, *, priority_ladder: list[int], co
                     if meta_err is not None:
                         failed[sig] = meta_err
                         continue
-                    logger.info(f"LAND {label} landed sig={sig[:12]}… prio={prio} µL in {time.monotonic() - t0:.1f}s")
+                    _remember(sig, time.monotonic() - t0, prio, len(sent), mode)
+                    logger.info(f"LAND {label} landed sig={sig[:12]}… prio={prio} µL rung {len(sent)} in {time.monotonic() - t0:.1f}s")
                     return sig, prio
             if sent and len(failed) == len(sent) and rung >= len(priority_ladder):
                 sig, err = next(iter(failed.items()))

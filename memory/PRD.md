@@ -2538,3 +2538,14 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
 - P0 Live execution for non-SOL-paired curve tokens (PUMP/SPCX quotes)
 - P1 PumpSwap price UI formatting (×1e6)
 - P2 PUMP.BOT Lite phone UI; slippage-aware fast SL; execution learning / replay
+
+
+## 2026-10-14 — Non-SOL quote routing (P0) + landing stats verified (P1)
+- ✅ **Router for non-SOL-quoted coins** (`bot._route_buy_ixs` / `_route_sell_ixs`): pump-coin quotes (depth-1, e.g. CONDOM-paired) → native PumpSwap `multi_hop_swap` (`multihop.py` rewritten to walk the quote chain like `@pump-fun/pump-sdk resolveMultiHopRoute`: live curve or canonical pool per hop, no SOL wrap on a curve-first buy, buyback WSOL ATA create skipped once seen). Listed quotes (PUMP, USDC, xStocks like SPCX/NVDAx/BOT) have no pump venue for SOL → quote → **Jupiter** (`jupiter.py`, lite-api `/quote` + `/swap-instructions`, our own compute budget / fee ladder / Sender; ALTs threaded through `landing.land_tx(alts=)`).
+- ✅ Route output quoted by **simulateTransaction balance delta** (`multihop.simulate_out`) — the SOL-equivalent curve estimate was 5 % off and reverted with pump-amm 6004 ExceededSlippage. `min_out = quote × (1 − slip)`; `_is_slip_revert` escalates the slip ladder on 6003 / routed 6004 / Jupiter 6001.
+- ✅ Routed buys book the route's quoted tokens (`Trade.router`, `_routed_fill`); routed sells size from the wallet balance. `quote-unpriced` refusal when the quote mint has no SOL rate yet. PumpSwap pools with a non-SOL quote no longer skipped (`quote-pair-live` removed) — the route handles pool hops.
+- ✅ **Live-verified with real SOL** (user approved ≤ $1/trade, < $5 total): BOT-quoted curve via Jupiter (buy 1.1 s, sell 1.1 s), CONDOM-quoted curve via multi_hop_swap (buy 1.8 s, sell 1.1 s). Total cost of the test ≈ 0.013 SOL incl. the coins dumping.
+- ✅ **P1 landing stats verified** — `/api/costs/landing` + Doctor → Forensics → Trading Costs "Sell landing" row (p50/p90/max, 1st-rung %, fee rungs, tips, buy avg) and per-row ⚡ badge in Trade History; `HOP` / `JUP` badge for routed trades.
+- ⚠️ Depth-2 pump-coin chains (3 hops) overflow the 1232-byte packet without a lookup table → fall to Jupiter, which often has no route for a minutes-old coin → `buy-failed`. Fix later with an owned address lookup table.
+- Tests: `tests/test_multihop_route.py` (9) + regressions green. Config restored after the test (min $8 / max $15, paper, Helius feed OFF).
+- P2 still open: PumpSwap price display ×1e6 (user: skip for now).

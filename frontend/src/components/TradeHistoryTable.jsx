@@ -217,6 +217,17 @@ function TradeHistoryTable({ history: liveHistory }) {
                       <span data-testid={`grad-badge-${t.id}`} title="Graduated token — entered and exited on its PumpSwap pool (seasoned band)"
                         className="mr-1 inline-block px-1 py-0 border border-fuchsia-800 text-fuchsia-300 text-[9px] font-mono align-middle">GRAD</span>
                     )}
+                    {t.quote_mint && (
+                      <span data-testid={`quote-badge-${t.id}`} title={`Curve paired with a non-SOL quote (${t.quote_mint}); live legs route SOL → quote → coin via ${t.router === "jupiter" ? "Jupiter (listed quote: PUMP / USDC / xStock)" : "PumpSwap multi_hop_swap (pump-coin quote)"}`}
+                        className="mr-1 inline-block px-1 py-0 border border-amber-800 text-amber-300 text-[9px] font-mono align-middle">{t.router === "jupiter" ? "JUP" : t.router === "multihop" ? "HOP" : "QUOTE"}</span>
+                    )}
+                    {t.exit_land_s != null && (
+                      <span data-testid={`land-badge-${t.id}`}
+                        title={`Sell landed in ${t.exit_land_s}s at ${(t.exit_land_prio / 1e6).toFixed(1)}M µL (fee rung ${t.exit_land_rungs}${t.exit_tip_sol ? `, Sender tip ${t.exit_tip_sol} SOL` : ""})${t.entry_land_s != null ? ` · buy landed in ${t.entry_land_s}s at ${(t.entry_land_prio / 1e6).toFixed(1)}M µL` : ""}`}
+                        className={`mr-1 inline-block px-1 py-0 border text-[9px] font-mono align-middle ${t.exit_land_rungs > 1 ? "border-amber-800 text-amber-300" : "border-emerald-900 text-emerald-300"}`}>
+                        ⚡{t.exit_land_s}s·{(t.exit_land_prio / 1e6).toFixed(0)}M{t.exit_land_rungs > 1 ? `·r${t.exit_land_rungs}` : ""}
+                      </span>
+                    )}
                     <span className="mr-1.5 align-middle inline-flex"><ChainBadge chain={t.chain} mint={t.mint} /></span>
                     {t.symbol || "?"} <span className="text-neutral-600 text-[10px]">{short(t.mint)}</span>
                     {(t.reentry_trigger || t.reentry) && (

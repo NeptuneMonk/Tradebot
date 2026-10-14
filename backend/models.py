@@ -693,6 +693,15 @@ class Trade(BaseModel):
     # backend restart. Without these, a re-spawned _monitor_position can't
     # route price polls / sell builds correctly.
     protocol: str = "pumpfun"  # "pumpfun" or "pumpswap" (or "pons" on chain="rh")
+    quote_mint: Optional[str] = None       # non-SOL quote (PUMP / SPCX …) — live trades route via multi_hop_swap / Jupiter
+    router: Optional[str] = None           # "multihop" | "jupiter" for routed fills
+    # fast-landing stats (per leg): seconds to land, fee rung that landed, ladder rungs sent, Sender tip paid
+    entry_land_s: Optional[float] = None
+    entry_land_prio: Optional[int] = None
+    exit_land_s: Optional[float] = None
+    exit_land_prio: Optional[int] = None
+    exit_land_rungs: Optional[int] = None
+    exit_tip_sol: Optional[float] = None
     pumpswap_pool: Optional[str] = None
     # Chain provenance + quote-denominated legs for non-Solana (paper) trades.
     chain: str = "sol"

@@ -12,18 +12,21 @@ const fmtSol = (v, d = 6) => `${Number(v || 0).toFixed(d)} SOL`;
 function CostTrackerCard({ apiBase }) {
   const [data, setData] = useState(null);
   const [net, setNet] = useState(null);
+  const [landing, setLanding] = useState(null);
   const [days, setDays] = useState(7);
 
   useEffect(() => {
     let timer;
     const load = async () => {
       try {
-        const [c, n] = await Promise.all([
+        const [c, n, l] = await Promise.all([
           fetch(`${apiBase}/api/costs/summary?days=${days}`).then((r) => r.json()),
           fetch(`${apiBase}/api/costs/network`).then((r) => r.json()),
+          fetch(`${apiBase}/api/costs/landing?days=${days}`).then((r) => r.json()),
         ]);
         setData(c);
         setNet(n);
+        setLanding(l);
       } catch {
         /* swallow — show last-known data */
       }
@@ -103,6 +106,23 @@ function CostTrackerCard({ apiBase }) {
                 <div className="px-2 py-1 font-mono text-right text-amber-200">{fmtSol(v.fee_sol)}</div>
               </div>
             ))}
+        </div>
+      )}
+
+      {landing && (
+        <div className="border-t border-neutral-800 pt-2 text-[11px] font-mono" data-testid="landing-stats">
+          <div className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 mb-1">Sell landing · {landing.sells} live sells</div>
+          {landing.sells ? (
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-neutral-300">
+              <span>p50 <b className="text-emerald-300">{landing.p50_s}s</b></span>
+              <span>p90 <b className={landing.p90_s > 5 ? "text-amber-300" : "text-emerald-300"}>{landing.p90_s}s</b></span>
+              <span>max {landing.max_s}s</span>
+              <span>1st rung <b>{landing.first_rung_pct}%</b></span>
+              <span>fee rungs {Object.entries(landing.prio_landed).map(([k, v]) => `${k}×${v}`).join(" ")}</span>
+              <span>tips {landing.tip_sol_total} SOL</span>
+              {landing.entry_avg_s != null && <span>buys avg {landing.entry_avg_s}s</span>}
+            </div>
+          ) : <div className="text-neutral-600">no live sells with landing data yet</div>}
         </div>
       )}
 

@@ -23,6 +23,8 @@ import pumpswap
 from solana_client import get_sol_usd_price, LAMPORTS_PER_SOL, get_tx_wallet_delta_lamports, rpc_call
 import solana_client
 import landing
+import multihop
+import jupiter
 from wallet import get_keypair, get_pubkey
 from ws_hub import hub
 from pymongo import UpdateOne
@@ -158,6 +160,7 @@ class BotState:
         # checks len(active_trades) + len(_pending_entry_mints) >= max.
         self._entry_gate_lock = asyncio.Lock()
         self._pending_entry_mints: set[str] = set()
+        self._routed_fill: dict[str, dict] = {}         # mint → {tokens_out, router} of the last routed (non-SOL quote) buy
         # Stop-loss cooldown: mint -> unix timestamp when cooldown expires.
         # Populated by `_exit_impl` when reason starts with "stop-loss hit".
         # Checked inside the entry gate lock so concurrent attempts agree.
@@ -3270,6 +3273,7 @@ class BotState:
             b = self.tracking[mint] = {
                 "launch_id": doc.get("id"), "creator": doc.get("creator") or "", "start": time.time(),
                 "protocol": "pumpfun" if on_curve else "pumpswap", "pumpswap_pool": pool,
+                "quote_mint": None if is_sol_quote((curve or {}).get("quote_mint")) else (curve or {}).get("quote_mint"),
                 "graduated_at": None if on_curve else time.time(), "buyers": set(), "buy_events": deque(maxlen=EVENT_KEEP),
                 "sol_inflow_lamports": int(real_sol * LAMPORTS_PER_SOL) if on_curve else 0,
                 "buy_count": None, "curve_fill_pct": min(100.0, real_sol / 85.0 * 100.0) if on_curve else 100.0,
@@ -3464,6 +3468,17 @@ class BotState:
         kp = get_keypair()
         user = get_pubkey()
         mint_pk = Pubkey.from_string(mint)
+        qm = self._quote_mint_for(mint, pumpswap_state if protocol == "pumpswap" else None)
+        if qm:
+            # PUMP / SPCX / pump-coin-paired coin (curve OR pool): SOL → quote → coin in one route (exact SOL in)
+            _, slip_bps, _ = self._resolve_fees()
+            sol_in = int(max_sol) * 10_000 // (10_000 + int(slip_bps))
+            min_out = int(tokens_out) * (10_000 - int(slip_bps)) // 10_000
+            ixs, cu, alts, _router, _out = await self._route_buy_ixs(user, mint, qm, sol_in, max(1, min_out), int(slip_bps))
+            sig = (await self._land_buy(kp, ixs, priority_fee, cu, mint, alts=alts))[0]
+            if _out > 0:
+                self._routed_fill[mint] = {"tokens_out": int(_out), "router": _router}
+            return sig
         if protocol == "pumpswap":
             # PumpSwap pools can hold Token-2022 base mints (like ETB) — thread the right token program through.
             base_tp = await pumpfun.get_mint_token_program(mint)
@@ -3486,10 +3501,53 @@ class BotState:
         ]
         return (await self._land_buy(kp, ixs, priority_fee, 200_000, mint))[0]
 
-    async def _land_buy(self, kp, ixs: list, priority_fee: int, cu: int, mint: str) -> tuple[str, int]:
+    def _quote_mint_for(self, mint: str, state: dict | None) -> str | None:
+        """Non-SOL quote mint of a bonding-curve coin (None for SOL-paired)."""
+        qm = (self.tracking.get(mint) or {}).get("quote_mint") or (state or {}).get("quote_mint") \
+            or ((self.active_trades.get(mint) or {}).get("trade") or {}).get("quote_mint")
+        return None if is_sol_quote(qm) else qm
+
+    async def _route_buy_ixs(self, user, mint: str, qm: str, sol_in: int, min_out: int, slip_bps: int) -> tuple[list, int, list, str, int]:
+        """(ixs, cu, lookup tables, router, quoted tokens out) for SOL → non-SOL-quoted coin: pump multi_hop_swap when the
+        quote chain reaches SOL through pump venues (quoted by simulation, min = quote × (1 − slip)), else Jupiter
+        (listed quotes: PUMP, USDC, xStocks)."""
+        try:
+            ixs, cu = await multihop.buy_ixs(user, mint, qm, sol_in, 1)
+            out = await multihop.simulate_out(user, ixs, cu, "buy", mint)
+            min_out = out * (10_000 - int(slip_bps)) // 10_000
+            logger.info(f"route {mint[:8]}… via multi_hop_swap: quote {out} tokens, min {min_out} ({slip_bps} bps)")
+            return multihop.with_min_out(ixs, min_out), cu, [], "multihop", out
+        except multihop.NotPumpRoutable as e:
+            logger.info(f"route {mint[:8]}…: {e} → Jupiter")
+        ixs, cu, alts, q = await jupiter.buy_ixs(user, mint, sol_in, slip_bps)
+        logger.info(f"route {mint[:8]}… via Jupiter: {' → '.join(r['swapInfo']['label'] for r in q.get('routePlan', []))} out={q.get('outAmount')} impact={q.get('priceImpactPct')}")
+        return ixs, cu, alts, "jupiter", int(q.get("outAmount") or 0)
+
+    async def _route_sell_ixs(self, user, mint: str, qm: str, tokens_in: int, min_sol: int, slip_bps: int) -> tuple[list, int, list, str, int]:
+        """(ixs, cu, lookup tables, router, quoted lamports out) — see _route_buy_ixs."""
+        try:
+            ixs, cu = await multihop.sell_ixs(user, mint, qm, tokens_in, 1)
+            out = await multihop.simulate_out(user, ixs, cu, "sell", mint)
+            min_sol = out * (10_000 - int(slip_bps)) // 10_000
+            logger.info(f"sell route {mint[:8]}… via multi_hop_swap: quote {out} lamports, min {min_sol} ({slip_bps} bps)")
+            return multihop.with_min_out(ixs, min_sol), cu, [], "multihop", out
+        except multihop.NotPumpRoutable as e:
+            logger.info(f"route {mint[:8]}…: {e} → Jupiter")
+        ixs, cu, alts, q = await jupiter.sell_ixs(user, mint, tokens_in, slip_bps)
+        logger.info(f"sell route {mint[:8]}… via Jupiter: {' → '.join(r['swapInfo']['label'] for r in q.get('routePlan', []))} out={q.get('outAmount')} min={q.get('otherAmountThreshold')}")
+        return ixs, cu, alts, "jupiter", int(q.get("outAmount") or 0)
+
+    @staticmethod
+    def _is_slip_revert(err: str, router: str | None) -> bool:
+        """Custom:6003 (pump TooLittleSolReceived) — plus pump-amm 6004 ExceededSlippage / Jupiter 6001 on routed sells."""
+        if "6003" in err:
+            return True
+        return bool(router) and ("6004" in err or "6001" in err)
+
+    async def _land_buy(self, kp, ixs: list, priority_fee: int, cu: int, mint: str, alts: list | None = None) -> tuple[str, int]:
         """Buys get one fee bump and a short budget — a slow buy is tracked by `_watch_late_buy`, never forced."""
         return await landing.land_tx(kp, ixs, priority_ladder=[int(priority_fee), int(priority_fee) * 2], compute_unit_limit=cu,
-                                     rung_s=3.0, budget_s=10.0, use_sender=bool(self.config.exit_use_sender), sender_mode="swqos", label=f"buy {mint[:8]}")
+                                     rung_s=3.0, budget_s=10.0, use_sender=bool(self.config.exit_use_sender), sender_mode="swqos", label=f"buy {mint[:8]}", alts=alts)
 
     async def add_to_position(self, mint: str, usd: float) -> dict:
         """Operator add-on (the + on an LTH row): buy `usd` more of an open SOL position at market and fold it into the
@@ -3714,6 +3772,10 @@ class BotState:
             if not state or state["complete"]:
                 await self._refuse(launch.mint, "new", "curve-complete" if state else "curve-state",
                                    "bonding curve is complete — migrating to PumpSwap" if state else "could not read the bonding curve (RPC)")
+                return
+            if state.get("quote_priced") is False:
+                await self._refuse(launch.mint, "new", "quote-unpriced",
+                                   f"curve is paired with {state.get('quote_symbol') or 'a non-SOL quote'} and its SOL rate is not known yet — cannot size or quote the fill")
                 return
 
         # Resolve band-specific gates: "new" (action=momentum_new) uses tighter
@@ -3989,12 +4051,6 @@ class BotState:
             return
         _qm = ((self.tracking.get(launch.mint) or {}).get("quote_mint") or (state or {}).get("quote_mint")
                or (None if (pumpswap_state or {}).get("quote_is_sol", True) else pumpswap_state.get("quote_mint")))
-        if mode == "live" and not is_sol_quote(_qm):
-            # Live buys go through the SOL `buy` instruction; a USDC / PUMP / stock-paired curve needs buy_v3 with the
-            # quote accounts (or multi_hop_swap from SOL), which the executor does not speak yet. Paper trades it normally.
-            await self._skip_event({"mint": launch.mint, "band": action, "reason": "quote-pair-live",
-                                    "details": [f"paired with {(self.tracking.get(launch.mint) or {}).get('quote_symbol') or 'a non-SOL quote'} — live execution not supported yet; paper only"]})
-            return
 
         # Structured entry decision log — captures every factor that fed the
         # buy so post-trade analysis can correlate inputs to outcomes.
@@ -4043,6 +4099,7 @@ class BotState:
             reentry_ctx={"size_multiplier": reentry_mult, "attempt": self.reentry.attempts(launch.mint) + 1} if reentry_mult is not None else None,
             protocol=protocol,
             pumpswap_pool=bucket.get("pumpswap_pool") or None,
+            quote_mint=None if is_sol_quote(_qm) else _qm,
             greylist_strategy_at_entry=greylist_ctx.get("strategy"),
             greylist_score_at_entry=greylist_ctx.get("score"),
             greylist_pattern_at_entry=greylist_ctx.get("pattern"),
@@ -4100,6 +4157,15 @@ class BotState:
             try:
                 sig = await self._live_buy(launch.mint, protocol, pumpswap_state, tokens_out, max_sol, trade_creator, eff_priority)
                 trade.entry_sig = sig
+                _rf = self._routed_fill.pop(launch.mint, None)
+                if _rf and _rf.get("tokens_out"):
+                    # routed (non-SOL quote) fill: book the route's quoted tokens, not the SOL-equivalent curve estimate
+                    tokens_out = int(_rf["tokens_out"])
+                    trade.entry_tokens = tokens_out
+                    trade.entry_price_sol = entry_price_sol = sol_in_lamports / tokens_out / LAMPORTS_PER_SOL
+                    trade.router = _rf.get("router")
+                _ls = landing.stats_for(sig)
+                trade.entry_land_s, trade.entry_land_prio = _ls.get("land_s"), _ls.get("prio")
             except Exception as e:
                 logger.exception(f"Live buy failed for {launch.mint}: {e}")
                 b_fail = self.tracking.get(launch.mint)
@@ -5034,24 +5100,33 @@ class BotState:
                         base_tp = await pumpfun.get_mint_token_program(mint)
                         user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
                         wsol_ata, wsol_ixs = pumpswap.build_wsol_ata_idempotent_ixs(user)
-                        ixs = [
-                            pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp),
-                            *wsol_ixs,
-                            pumpswap.build_sell_ix(
-                                user, pumpswap_state, user_token_ata, wsol_ata,
-                                base_amount_in=sell_tokens, min_quote_amount_out=attempt_min_sol,
-                                base_token_program=base_tp,
-                            ),
-                            pumpswap.build_close_wsol_ix(user, wsol_ata),
-                        ]
+                        _ps_qm = self._quote_mint_for(mint, pumpswap_state)
+                        _ps_alts: list = []
+                        _ps_cu = CU_PUMPSWAP
+                        _ps_router: str | None = None
+                        if _ps_qm:
+                            ixs, _ps_cu, _ps_alts, _ps_router, _ps_out = await self._route_sell_ixs(user, mint, _ps_qm, sell_tokens, attempt_min_sol, attempt_slip)
+                            if _ps_out > 0:
+                                attempt_min_sol = _ps_out * (10_000 - attempt_slip) // 10_000
+                        else:
+                            ixs = [
+                                pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp),
+                                *wsol_ixs,
+                                pumpswap.build_sell_ix(
+                                    user, pumpswap_state, user_token_ata, wsol_ata,
+                                    base_amount_in=sell_tokens, min_quote_amount_out=attempt_min_sol,
+                                    base_token_program=base_tp,
+                                ),
+                                pumpswap.build_close_wsol_ix(user, wsol_ata),
+                            ]
                         try:
-                            partial_sig, eff_priority = await self._land_sell(kp, ixs, eff_priority, is_panic_partial, CU_PUMPSWAP, f"partial {mint[:8]} pumpswap")
+                            partial_sig, eff_priority = await self._land_sell(kp, ixs, eff_priority, is_panic_partial, _ps_cu, f"partial {mint[:8]} pumpswap", alts=_ps_alts)
                         except landing.NotLanded as _nl:
                             trade_doc["pending_partial_sigs"] = [*(trade_doc.get("pending_partial_sigs") or []), *_nl.sigs][-12:]
                             raise
                         except landing.LandedButFailed as _se:
                             last_err = _se
-                            if "6003" in str(_se.err) and attempt_idx + 1 < len(slip_ladder):
+                            if self._is_slip_revert(str(_se.err), _ps_router) and attempt_idx + 1 < len(slip_ladder):
                                 logger.info(f"partial slip-retry {attempt_idx + 1}/{len(slip_ladder) - 1} for {mint[:8]} after {attempt_slip}bps: escalating")
                                 continue
                             raise
@@ -5064,15 +5139,23 @@ class BotState:
                         creator_pk = Pubkey.from_string(creator_str)
                         tp = await pumpfun.get_mint_token_program(mint)
                         is_cashback = bool((state or {}).get("is_cashback", False))
-                        ix = await pumpfun.build_sell_ix(user, mint_pk, sell_tokens, attempt_min_sol, creator_pk, tp, cashback=is_cashback)
+                        _qm = self._quote_mint_for(mint, state)
+                        _p_alts: list = []
+                        _p_router: str | None = None
+                        if _qm:
+                            _p_ixs, _p_cu, _p_alts, _p_router, _p_out = await self._route_sell_ixs(user, mint, _qm, sell_tokens, attempt_min_sol, attempt_slip)
+                            if _p_out > 0:
+                                attempt_min_sol = _p_out * (10_000 - attempt_slip) // 10_000
+                        else:
+                            _p_ixs, _p_cu = [await pumpfun.build_sell_ix(user, mint_pk, sell_tokens, attempt_min_sol, creator_pk, tp, cashback=is_cashback)], CU_PUMPFUN
                         try:
-                            partial_sig, eff_priority = await self._land_sell(kp, [ix], eff_priority, is_panic_partial, CU_PUMPFUN, f"partial {mint[:8]} pumpfun")
+                            partial_sig, eff_priority = await self._land_sell(kp, _p_ixs, eff_priority, is_panic_partial, _p_cu, f"partial {mint[:8]} pumpfun", alts=_p_alts)
                         except landing.NotLanded as _nl:
                             trade_doc["pending_partial_sigs"] = [*(trade_doc.get("pending_partial_sigs") or []), *_nl.sigs][-12:]
                             raise
                         except landing.LandedButFailed as _se:
                             last_err = _se
-                            if "6003" in str(_se.err) and attempt_idx + 1 < len(slip_ladder):
+                            if self._is_slip_revert(str(_se.err), _p_router) and attempt_idx + 1 < len(slip_ladder):
                                 logger.info(f"partial slip-retry {attempt_idx + 1}/{len(slip_ladder) - 1} for {mint[:8]} after {attempt_slip}bps: escalating")
                                 continue
                             raise
@@ -5137,11 +5220,11 @@ class BotState:
             start = max(start, int(cfg.panic_exit_priority_microlamports))
         return landing.fee_ladder(start, int(cfg.exit_priority_cap_microlamports))
 
-    async def _land_sell(self, kp, ixs: list, eff_priority: int, panic: bool, cu: int, label: str) -> tuple[str, int]:
+    async def _land_sell(self, kp, ixs: list, eff_priority: int, panic: bool, cu: int, label: str, alts: list | None = None) -> tuple[str, int]:
         cfg = self.config
         return await landing.land_tx(kp, ixs, priority_ladder=self._exit_fee_ladder(eff_priority, panic), compute_unit_limit=cu,
                                      rung_s=float(cfg.exit_land_rung_s), budget_s=float(cfg.exit_land_budget_s),
-                                     use_sender=bool(cfg.exit_use_sender), label=label)
+                                     use_sender=bool(cfg.exit_use_sender), label=label, alts=alts)
 
     async def _find_sale_on_chain(self, mint: str, trade_doc: dict) -> tuple[str, int] | None:
         """(sig, lamports credited) of a sell that landed without being booked: pending sigs first, then the
@@ -5502,7 +5585,8 @@ class BotState:
                     tokens_in = int(actual * 0.95)
                     shave_label = "partial-5%"
                 else:
-                    tokens_in = min(tokens_in, int(actual * 0.995))
+                    # routed (non-SOL-quoted) buys book an estimate — the wallet balance is the truth there
+                    tokens_in = int(actual * 0.995) if trade_doc.get("quote_mint") else min(tokens_in, int(actual * 0.995))
                     shave_label = "normal-0.5%"
                 if tokens_in <= 0:
                     tokens_in = actual  # very small position: send full balance
@@ -5594,7 +5678,15 @@ class BotState:
                         sol_out, attempt_min_sol = pumpswap.quote_sell_sol(pumpswap_state, tokens_in, attempt_slip)
                     else:
                         sol_out, attempt_min_sol = pumpfun.quote_sell_sol(state, tokens_in, attempt_slip)
-                    if protocol == "pumpswap":
+                    _qm = self._quote_mint_for(mint, pumpswap_state if protocol == "pumpswap" else state)
+                    _alts: list = []
+                    _router: str | None = None
+                    if _qm:
+                        # non-SOL-quoted coin (curve or pool): one routed sell coin → quote → SOL, quoted by the route itself
+                        ixs, cu_sell, _alts, _router, _route_out = await self._route_sell_ixs(user, mint, _qm, tokens_in, attempt_min_sol, attempt_slip)
+                        if _route_out > 0:
+                            sol_out, attempt_min_sol = _route_out, _route_out * (10_000 - attempt_slip) // 10_000
+                    elif protocol == "pumpswap":
                         # Token-2022 pools require explicit base_token_program +
                         # canonical user WSOL ATA (not seed-derived temp). Sells
                         # with a temp WSOL revert with Custom:6053 (seeds mismatch).
@@ -5624,19 +5716,21 @@ class BotState:
                         is_cashback = bool((state or {}).get("is_cashback", False))
                         ixs = [await pumpfun.build_sell_ix(user, mint_pk, tokens_in, attempt_min_sol, creator_pk, tp, cashback=is_cashback)]
                     try:
-                        exit_sig, eff_priority = await self._land_sell(kp, ixs, eff_priority, is_panic, cu_sell, f"sell {mint[:8]} {protocol}")
+                        exit_sig, eff_priority = await self._land_sell(kp, ixs, eff_priority, is_panic, cu_sell, f"sell {mint[:8]} {protocol}", alts=_alts)
                     except landing.NotLanded as _nl:
                         # still in flight — remember every signature so a late landing is booked, never orphaned
                         trade_doc["pending_exit_sigs"] = [*(trade_doc.get("pending_exit_sigs") or []), *_nl.sigs][-12:]
                         raise
                     except landing.LandedButFailed as _se:
                         last_err = _se
-                        if "6003" in str(_se.err) and attempt_idx + 1 < len(slip_ladder):
+                        if self._is_slip_revert(str(_se.err), _router) and attempt_idx + 1 < len(slip_ladder):
                             logger.info(f"sell slip-retry {attempt_idx + 1}/{len(slip_ladder) - 1} for {mint[:8]} after {attempt_slip}bps: escalating")
                             continue
                         raise
                     # Success — record the slip that actually landed and bail
                     exit_slip = attempt_slip
+                    _ls = landing.stats_for(exit_sig)
+                    trade_doc.update(exit_land_s=_ls.get("land_s"), exit_land_prio=_ls.get("prio"), exit_land_rungs=_ls.get("rungs"), exit_tip_sol=_ls.get("tip_sol"))
                     exit_sol = sol_out / LAMPORTS_PER_SOL
                     exit_price_sol = sol_out / tokens_in / LAMPORTS_PER_SOL if tokens_in > 0 else 0
                     break
