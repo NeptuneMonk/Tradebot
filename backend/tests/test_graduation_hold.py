@@ -26,6 +26,8 @@ def _st(mode="paper", book="scalp", **slot_kw):
     st.scorecard = SimpleNamespace(record=AsyncMock(return_value="x"))
     st.db.launches = SimpleNamespace(find_one=AsyncMock(return_value=None), update_one=AsyncMock())
     st.check_kill_switch = AsyncMock()
+    st.scan_wake = asyncio.Event()
+    st._watch_late_sell = AsyncMock()
     s = _slot(book, **slot_kw)
     s["trade"]["mint"] = MINT
     s["trade"]["mode"] = mode
@@ -138,7 +140,7 @@ def _live_patches(state):
         patch("bot.pumpfun.derive_associated_token_for_program", new=lambda *a, **k: "ATA"),
         patch("bot.pumpswap.get_token_balance", new=AsyncMock(return_value=1_000_000)),
         patch("bot.pumpfun.build_sell_ix", new=AsyncMock(return_value="IX")),
-        patch("bot.pumpfun.send_versioned_tx", new=AsyncMock(side_effect=RuntimeError("Transaction simulation failed: {'InstructionError': [2, {'Custom': 6005}]}"))),
+        patch("bot.landing.land_tx", new=AsyncMock(side_effect=__import__("landing").LandedButFailed("SIG6005", {"InstructionError": [2, {"Custom": 6005}]}))),
     ]
 
 
@@ -160,7 +162,6 @@ def test_live_6005_mid_sell_emergency_amm_fill_books_real_proceeds():
     assert t["status"] == "closed" and t["exit_sig"] == "EMSIG"
     assert abs(t["exit_sol"] - sol_out / 1e9) < 1e-12 and t["pnl_pct"] > -100
     assert st._attempt_emergency_pumpswap_sell.await_count == 1
-    assert botmod.pumpfun.send_versioned_tx.await_count if hasattr(botmod.pumpfun.send_versioned_tx, "await_count") else True
 
 
 def test_live_6005_no_pool_inside_grace_waits_then_parks_after_grace_never_minus_100():
@@ -171,7 +172,7 @@ def test_live_6005_no_pool_inside_grace_waits_then_parks_after_grace_never_minus
     send_mock = None
     for p in ps:
         m = p.start()
-        if p.attribute == "send_versioned_tx":
+        if p.attribute == "land_tx":
             send_mock = m
     try:
         with patch("bot.pumpswap.find_pool_for_mint", new=AsyncMock(return_value=None)):

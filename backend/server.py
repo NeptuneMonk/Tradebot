@@ -393,20 +393,16 @@ async def wallet_rotate(req: _RotateReq):
 
 
 @api.get("/wallet/export-private-key")
-async def wallet_export_private_key():
-    """Return the bot wallet's private key (base58 + JSON-array forms).
-
-    Preview-only diagnostic — gated behind session auth via the APIRouter.
-    Provided so the user can import the wallet into Phantom / Solflare /
-    a CLI signer to manually recover stranded tokens when the in-bot
-    recovery path can't land a tx (graduated mid-sell, RPC-down, etc.).
-    """
-    if os.environ.get("ALLOW_KEY_EXPORT", "").lower() not in ("1", "true", "yes"):
-        raise HTTPException(403, "private-key export is disabled (set ALLOW_KEY_EXPORT=true in the service env to enable it temporarily)")
-    from wallet import get_secret_b58, get_keypair, get_pubkey_str
+async def wallet_export_private_key(confirm: str = ""):
+    """Return the bot wallet's private key (base58 + JSON-array forms) for import into Phantom / Solflare / CLI.
+    Gated by the single-user Google session plus an explicit `?confirm=EXPORT` from the reveal dialog."""
+    if confirm != "EXPORT":
+        raise HTTPException(400, 'confirm must be "EXPORT" — use the Reveal dialog')
+    from wallet import get_secret_b58, get_keypair, get_pubkey_str, key_source
     kp = get_keypair()
     # JSON-array form is what `solana-keygen` and most CLI tools expect
     secret_array = list(bytes(kp))
+    logger.critical(f"PRIVATE KEY EXPORTED for {get_pubkey_str()} ({key_source()})")
     return {
         "public_key": get_pubkey_str(),
         "secret_key_b58": get_secret_b58(),
@@ -416,6 +412,60 @@ async def wallet_export_private_key():
             "into chat, never commit. Preview-only diagnostic."
         ),
     }
+
+
+class _ImportReq(BaseModel):
+    secret: str
+    confirm: str = ""
+    sweep_old: bool = False
+
+
+@api.post("/wallet/import")
+async def wallet_import(req: _ImportReq):
+    """Make an existing key (Phantom / Solflare base58 or JSON array) THE bot wallet. Paper mode + no open live
+    positions required. The key is persisted to Mongo so every pod (leader + follower) swaps within ~20 s and a
+    redeploy keeps it; the previous key file is retired, never deleted. Optionally sweeps the old wallet's SOL."""
+    import pumpfun
+    from wallet import parse_secret, set_keypair, get_pubkey_str, get_secret_b58
+    from solders.system_program import TransferParams, transfer
+    if req.confirm != "IMPORT":
+        raise HTTPException(400, 'confirm must be "IMPORT"')
+    try:
+        kp = parse_secret(req.secret)
+    except Exception as e:
+        raise HTTPException(400, f"could not parse key: {e}")
+    if bot_state.config.live_trading:
+        raise HTTPException(409, "switch to paper first — importing a key mid-live would strand open positions on the old key")
+    live_open = await db.trades.count_documents({"status": "active", "mode": "live", "chain": {"$ne": "rh"}})
+    if live_open:
+        raise HTTPException(409, f"{live_open} live position(s) still open — close or force-recover them first")
+    if singleton is not None and not await singleton.is_leader_now():
+        raise HTTPException(409, "this pod is not the leader — retry (the relay should have routed this)")
+    old_pk = get_pubkey_str()
+    if str(kp.pubkey()) == old_pk:
+        return {"ok": True, "public_key": old_pk, "unchanged": True}
+    old_kp, retired = set_keypair(kp)
+    await db.wallet_keys.update_one({"_id": "current"}, {"$set": {"public_key": get_pubkey_str(), "secret_key_b58": get_secret_b58(),
+                                                                  "updated_at": datetime.now(timezone.utc).isoformat(), "source": "import"}}, upsert=True)
+    swept = {"lamports": 0, "signature": None, "error": None}
+    if req.sweep_old:
+        try:
+            bal = int((await get_sol_balance(old_pk, fresh=True)) * 1_000_000_000)
+            amount = bal - 15_000
+            if amount > 0:
+                ix = transfer(TransferParams(from_pubkey=old_kp.pubkey(), to_pubkey=kp.pubkey(), lamports=amount))
+                sig = await pumpfun.send_versioned_tx(old_kp, [ix], bot_state.config.priority_fee_microlamports)
+                swept.update(lamports=amount, signature=sig)
+        except Exception as e:
+            swept["error"] = str(e)
+    logger.critical(f"WALLET IMPORTED: {old_pk} → {get_pubkey_str()} (retired {retired.name if retired else 'env key'}); swept {swept['lamports']} lamports")
+    try:
+        await hub.broadcast("wallet", (await wallet_info()).model_dump())
+    except Exception:
+        pass
+    return {"ok": True, "old_public_key": old_pk, "public_key": get_pubkey_str(), "retired_key_file": str(retired) if retired else None, "swept": swept,
+            "note": "the imported key is stored for every pod and survives redeploys; positions you open or sell from Phantom/Pump.fun on this "
+                    "wallet are reconciled from chain (external sells are booked, closed token accounts are skipped)"}
 
 
 @api.post("/trades/{trade_id}/force-recover")
@@ -570,6 +620,11 @@ async def update_config(body: dict = Body(...)):
         cfg.slippage_bps = 50
     if cfg.slippage_bps > 5000:
         cfg.slippage_bps = 5000
+    cfg.exit_priority_floor_microlamports = max(100_000, min(int(cfg.exit_priority_floor_microlamports), 20_000_000))
+    cfg.exit_priority_cap_microlamports = max(cfg.exit_priority_floor_microlamports, min(int(cfg.exit_priority_cap_microlamports), 50_000_000))
+    cfg.exit_land_rung_s = max(1.0, min(float(cfg.exit_land_rung_s), 10.0))
+    cfg.exit_land_budget_s = max(5.0, min(float(cfg.exit_land_budget_s), 60.0))
+    cfg.rent_reclaim_min_sol = max(0.002, min(float(cfg.rent_reclaim_min_sol), 1.0))
     if cfg.daily_kill_switch_usd > 1000:
         cfg.daily_kill_switch_usd = 1000
     if cfg.reentry_max_attempts < 0:
@@ -1578,6 +1633,22 @@ async def wallet_token_scan():
     }
 
 
+@api.get("/wallet/rent")
+async def wallet_rent(fresh: bool = False):
+    """Reclaimable token-account rent: empty accounts + provably worthless dust (cached 2 min; `?fresh=1` rescans)."""
+    scan = await bot_state.rent.scan(fresh=fresh)
+    cfg = bot_state.config
+    return {"accounts": scan["accounts"], "empty": len(scan["empty"]), "dust": len(scan["dust"]), "skipped_valued": scan["skipped_valued"],
+            "reclaimable_sol": scan["reclaimable_sol"], "reclaimable_usd": scan["reclaimable_usd"], "scanned_at": scan["scanned_at"],
+            "min_sol": float(cfg.rent_reclaim_min_sol), "auto": bool(cfg.rent_reclaim_auto), "last_sweep": bot_state.rent.last_sweep}
+
+
+@api.post("/wallet/rent/reclaim")
+async def wallet_rent_reclaim():
+    """Close every reclaimable account now, regardless of the auto threshold."""
+    return await bot_state.rent.sweep(force=True)
+
+
 @api.post("/wallet/unwrap-wsol")
 async def wallet_unwrap_wsol():
     """One-shot: close the user's WSOL ATA so any wrapped wSOL inside it
@@ -1839,6 +1910,8 @@ async def list_stuck_trades(fresh: bool = False):
             "pumpswap_pool": pumpswap_pool,
         })
     out.sort(key=lambda x: -x.get("current_usd", 0))
+    for row in out:
+        await bot_state.db.trades.update_one({"id": row["id"]}, {"$set": {"mark_usd": float(row.get("current_usd") or 0.0)}})
     payload = {"stuck": out, "sol_price_usd": sol_price}
     _STUCK_CACHE["v"] = (cache_key, time.time(), payload)
     return payload
@@ -1910,19 +1983,9 @@ async def recover_stuck_trade(trade_id: str):
             tp = alt_tp
             actual_tokens = bal_alt
     if actual_tokens <= 0:
-        # No tokens left — close the row so it stops appearing in the stuck list
-        await bot_state.db.trades.update_one(
-            {"id": trade_id},
-            {"$set": {
-                "status": "closed",
-                "exit_reason": (trade.get("exit_reason") or "") + " | auto-closed: wallet balance is 0",
-                "recovered": False,
-                "pnl_sol": 0.0,
-                "pnl_usd": 0.0,
-                "pnl_pct": 0.0,
-            }},
-        )
-        return {"ok": False, "reason": "wallet balance is 0 — nothing to recover (auto-closed)"}
+        # No tokens left — a sale may have landed unbooked; resolve from chain (or close at −entry), never a $0 row
+        await bot_state._resolve_gone_bag(trade)
+        return {"ok": False, "reason": "wallet balance is 0 — nothing to recover (resolved from on-chain history)"}
 
     # GRADUATED or PumpSwap-native: route the sell through PumpSwap AMM.
     if protocol == "pumpswap" or graduated:
@@ -2449,6 +2512,10 @@ async def pl_equity(tf: str = "15m", mode: str = "all", book: str = "all", days:
         q["book"] = book
     rows = await db.trades.find(q, {"_id": 0, "exit_time": 1, "pnl_usd": 1, "mode": 1, "book": 1, "entry_usd": 1, "size_usd": 1,
                                     "mfe_pct": 1, "mae_pct": 1, "r_usd": 1}).to_list(20000)
+    # Parked (stuck) rows: the buy left the wallet and nothing came back — book −entry (+ current mark) at park time.
+    sq = {**q, "status": "exit_failed_terminal", "chain": {"$ne": "rh"}}
+    async for s in db.trades.find(sq, {"_id": 0, "exit_time": 1, "mode": 1, "book": 1, "entry_usd": 1, "mark_usd": 1}):
+        rows.append({**s, "pnl_usd": -float(s.get("entry_usd") or 0) + float(s.get("mark_usd") or 0), "stuck": True})
     marks = _open_marks(mode, book)
     now_ts = datetime.now(timezone.utc).timestamp()
     out = build_equity(rows, EQUITY_TF_S[tf], now_ts, sum(m["unrealized_usd"] for m in marks))

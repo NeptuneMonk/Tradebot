@@ -71,3 +71,38 @@ def rotate_keypair() -> tuple[Keypair, Keypair, Path]:
         os.chmod(retired, 0o600)
     _KEYPAIR = _load_or_create_keypair()
     return old, _KEYPAIR, retired
+
+
+def parse_secret(text: str) -> Keypair:
+    """Accept a base58 secret (Phantom / Solflare export) or a JSON byte array (solana-keygen)."""
+    raw = (text or "").strip()
+    if not raw:
+        raise ValueError("empty key")
+    if raw.startswith("["):
+        arr = json.loads(raw)
+        if not isinstance(arr, list) or not all(isinstance(b, int) and 0 <= b <= 255 for b in arr):
+            raise ValueError("JSON array must hold bytes 0-255")
+        data = bytes(arr)
+    else:
+        data = base58.b58decode(raw)
+    if len(data) == 32:
+        return Keypair.from_seed(data)
+    if len(data) != 64:
+        raise ValueError(f"expected 64-byte secret (or 32-byte seed), got {len(data)} bytes")
+    return Keypair.from_bytes(data)
+
+
+def set_keypair(kp: Keypair, *, persist: bool = True) -> tuple[Keypair, Path | None]:
+    """Hot-swap the active key (import / cross-pod sync). The previous key file is retired, never deleted."""
+    global _KEYPAIR
+    old = _KEYPAIR
+    retired = None
+    if persist and not os.environ.get("WALLET_SECRET_B58", "").strip():
+        if WALLET_PATH.exists() and str(old.pubkey()) != str(kp.pubkey()):
+            retired = WALLET_PATH.with_name(f"{WALLET_PATH.name}.retired-{int(time.time())}")
+            WALLET_PATH.rename(retired)
+            os.chmod(retired, 0o600)
+        WALLET_PATH.write_text(json.dumps({"public_key": str(kp.pubkey()), "secret_key_b58": base58.b58encode(bytes(kp)).decode("utf-8")}, indent=2))
+        os.chmod(WALLET_PATH, 0o600)
+    _KEYPAIR = kp
+    return old, retired

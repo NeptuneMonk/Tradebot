@@ -880,7 +880,7 @@ class LiveDoctor:
                     else "active — monitoring"
                 ),
                 "body": (
-                    f"Regime score: {score:.0f} (wr {wr*100:.0f}% × 60% + "
+                    f"Regime score: {score:.0f} (wr {(wr or 0)*100:.0f}% × 60% + "
                     f"winner-like {wlike_avg:.0f}% × 40%)\n"
                     f"Peak: {peak:.0f} · drawdown trail: {drawdown_pct:.0f}% "
                     f"(trip at {trip_threshold:.0f})\n"

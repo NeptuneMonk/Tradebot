@@ -6,6 +6,8 @@ import WithdrawDialog from "@/components/WithdrawDialog";
 import StuckPositions from "@/components/StuckPositions";
 import RevealPrivateKey from "@/components/RevealPrivateKey";
 import RotateWallet from "@/components/RotateWallet";
+import ImportWallet from "@/components/ImportWallet";
+import { RentReclaimChip } from "@/components/RentReclaimChip";
 import { copyToClipboard } from "@/lib/clipboard";
 
 function WalletCard({ wallet }) {
@@ -98,11 +100,13 @@ function WalletCard({ wallet }) {
         )}
       </div>
 
+      <RentReclaimChip />
       <StuckPositions />
 
       <div className="border-t border-neutral-800 pt-3">
         <RevealPrivateKey />
         <RotateWallet />
+        <ImportWallet />
       </div>
 
       <WithdrawDialog

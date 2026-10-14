@@ -20,8 +20,9 @@ from classifier import classify
 import pumpfun
 from quote_mints import quote_book, is_sol_quote
 import pumpswap
-from solana_client import get_sol_usd_price, LAMPORTS_PER_SOL
+from solana_client import get_sol_usd_price, LAMPORTS_PER_SOL, get_tx_wallet_delta_lamports, rpc_call
 import solana_client
+import landing
 from wallet import get_keypair, get_pubkey
 from ws_hub import hub
 from pymongo import UpdateOne
@@ -193,6 +194,8 @@ class BotState:
         from ladder import LadderBook
         self.ladder = LadderBook(self)
         self.pnl_reconciler = PnLReconciler(self)
+        from rent_reclaim import RentReclaimer
+        self.rent = RentReclaimer(self)
         self.scorecard = Scorecard(db)
         self.inventory = InventoryHalt()
         self.live_doctor = None   # set by server.py after LiveDoctor is built
@@ -447,12 +450,13 @@ class BotState:
         # Start on-chain PnL reconciler (overwrites quoted pnl with actual
         # wallet deltas read from getTransaction every 30s)
         self.pnl_reconciler.start()
+        await self._sync_wallet_key()
         # Periodically reconcile in-memory active_trades against DB so any
         # mints leaked by an unhandled exit exception get re-attached to a
         # monitor instead of sitting orphaned in DB.
         if first_load:
             self._bg_tasks = [asyncio.create_task(c()) for c in (
-                self._active_trades_reconciler_loop, self._held_bag_watcher_loop, self._readiness_watchdog_loop,
+                self._active_trades_reconciler_loop, self._held_bag_watcher_loop, self._readiness_watchdog_loop, self.rent.loop,
                 self._helius_autopause_loop, self._loop_lag_meter, self._metrics_flush_loop, self._window_feed_loop)]
         # Surface the auto-disable to any WS clients listening — front-end
         # will show "Bot auto-disabled on restart" toast if connected.
@@ -938,7 +942,47 @@ class BotState:
                 logger.exception(f"active_trades reconciler error: {e}")
             await asyncio.sleep(15.0)
 
+    async def _sync_wallet_key(self) -> None:
+        """An imported key is stored in Mongo so every pod (and a redeploy) trades with the same wallet."""
+        try:
+            doc = await self.db.wallet_keys.find_one({"_id": "current"})
+            if not doc or not doc.get("secret_key_b58"):
+                return
+            import wallet as _w
+            if doc.get("public_key") == _w.get_pubkey_str():
+                return
+            kp = _w.parse_secret(doc["secret_key_b58"])
+            _w.set_keypair(kp)
+            logger.critical(f"WALLET KEY SYNCED from Mongo → {_w.get_pubkey_str()} (imported on another pod / before redeploy)")
+        except Exception as e:
+            logger.warning(f"wallet key sync failed: {e}")
+
+    async def _detect_external_sells(self) -> None:
+        """The operator may sell a position or close its token account from Phantom / Pump.fun: a live slot whose
+        wallet balance is 0 is exited through the normal path, which books the sale found on-chain (or −entry)."""
+        live = [(m, s) for m, s in self.active_trades.items() if (s.get("trade") or {}).get("mode") == "live"
+                and not s.get("exit_in_progress") and (s.get("trade") or {}).get("chain") != "rh"
+                and time.time() - float(s.get("_entry_ts_mono") or time.time()) > 20.0]
+        if not live:
+            return
+        try:
+            user = get_pubkey()
+            atas = []
+            for m, _ in live:
+                tp = await pumpfun.get_mint_token_program(m)
+                atas.append(pumpswap.get_associated_token_address(user, Pubkey.from_string(m), tp))
+            bals = await pumpswap.get_token_balances(atas)
+        except Exception as e:
+            logger.debug(f"external-sell scan failed: {e}")
+            return
+        for (m, s), bal in zip(live, bals):
+            if bal == 0 and not s.get("exit_in_progress") and m in self.active_trades:
+                logger.warning(f"EXTERNAL SELL detected for {(s.get('trade') or {}).get('symbol')} {m[:8]}… — wallet holds 0, booking from chain")
+                asyncio.create_task(self._exit(m, "sold externally (wallet holds 0)"))
+
     async def _reattach_orphaned_active_rows(self):
+        await self._sync_wallet_key()
+        await self._detect_external_sells()
         # Sweep expired cooldowns from the in-memory maps. Cheap O(N) walk —
         # the maps are naturally bounded by recent exits in their windows.
         now = time.time()
@@ -1107,6 +1151,20 @@ class BotState:
         total = 0.0
         async for d in cursor:
             total += float(d.get("pnl_usd", 0.0))
+        return total + await self.stuck_loss_usd(mode, cutoff_iso)
+
+    async def stuck_loss_usd(self, mode: str | None, since_iso: str | None = None) -> float:
+        """Capital sitting in parked (exit_failed_terminal) rows: SOL spent on the buy that no sale ever returned.
+        Counted as a realised loss until the row resolves — the equity line must move with the wallet."""
+        q: dict = {"status": "exit_failed_terminal", "chain": {"$ne": "rh"}}
+        if mode in ("live", "paper"):
+            q["mode"] = mode
+        if since_iso:
+            q["exit_time"] = {"$gte": since_iso}
+        total = 0.0
+        async for d in self.db.trades.find(q, {"_id": 0, "entry_usd": 1, "real_entry_cost_sol": 1, "entry_sol": 1, "mark_usd": 1}):
+            total -= float(d.get("entry_usd") or 0.0)
+            total += float(d.get("mark_usd") or 0.0)
         return total
 
     async def pnl_stop_snapshot(self) -> dict:
@@ -3418,7 +3476,7 @@ class BotState:
                                       max_quote_amount_in=max_sol, base_token_program=base_tp),
                 pumpswap.build_close_wsol_ix(user, wsol_acc),
             ]
-            return await pumpfun.send_versioned_tx(kp, ixs, priority_fee, compute_unit_limit=400_000)
+            return (await self._land_buy(kp, ixs, priority_fee, 400_000, mint))[0]
         if not creator:
             raise RuntimeError("missing creator (required for creator_vault PDA)")
         tp = await pumpfun.get_mint_token_program(mint)
@@ -3426,7 +3484,12 @@ class BotState:
             pumpfun.build_create_ata_ix(user, user, mint_pk, tp),
             await pumpfun.build_buy_ix(user, mint_pk, tokens_out, max_sol, Pubkey.from_string(creator), tp),
         ]
-        return await pumpfun.send_versioned_tx(kp, ixs, priority_fee)
+        return (await self._land_buy(kp, ixs, priority_fee, 200_000, mint))[0]
+
+    async def _land_buy(self, kp, ixs: list, priority_fee: int, cu: int, mint: str) -> tuple[str, int]:
+        """Buys get one fee bump and a short budget — a slow buy is tracked by `_watch_late_buy`, never forced."""
+        return await landing.land_tx(kp, ixs, priority_ladder=[int(priority_fee), int(priority_fee) * 2], compute_unit_limit=cu,
+                                     rung_s=3.0, budget_s=10.0, use_sender=bool(self.config.exit_use_sender), sender_mode="swqos", label=f"buy {mint[:8]}")
 
     async def add_to_position(self, mint: str, usd: float) -> dict:
         """Operator add-on (the + on an LTH row): buy `usd` more of an open SOL position at market and fold it into the
@@ -4046,6 +4109,9 @@ class BotState:
                 trade.exit_reason = f"buy failed: {e}"
                 await self._refuse(launch.mint, _band, "buy-failed", self.classify_buy_error(str(e)))
                 await self._persist_trade(trade)
+                if isinstance(e, landing.NotLanded) and e.sigs:
+                    await self.db.trades.update_one({"id": trade.id}, {"$set": {"pending_entry_sigs": e.sigs}})
+                    asyncio.create_task(self._watch_late_buy(trade, launch, trade_extras, e.sigs))
                 # Cooldown the mint in the scanner so we don't retry the same
                 # broken tx every pass.
                 b = self.tracking.get(launch.mint)
@@ -4309,6 +4375,41 @@ class BotState:
             # the sell did not land: back to held (same intent), the watcher retries with backoff — never a ride by accident
             await self._hold_through_migrate(t["mint"], slot, original, intent="exit")
 
+    async def _resolve_gone_bag(self, t: dict) -> None:
+        """Parked row whose tokens are no longer in the wallet: find the sale on-chain and book it, else close at
+        −entry (pnl_reconciled=False so the reconciler reads the true entry cost). Never leave it as a $0 stuck row."""
+        found = await self._find_sale_on_chain(t["mint"], t)
+        if found:
+            await self._book_exit_from_chain(t["mint"], t, found[0], found[1], f"{t.get('held_exit_reason') or t.get('exit_reason') or 'parked'} | sale found on-chain while held")
+            return
+        entry_sol = float(t.get("entry_sol") or 0.0)
+        sol_price = await get_sol_usd_price() or 100.0
+        # the loss happened when the row was parked, not today — keep that date so daily PnL / kill switch stay honest
+        parked = t.get("held_parked_at") or t.get("exit_time") or now_utc().isoformat()
+        await self.db.trades.update_one({"id": t["id"], "status": "exit_failed_terminal"}, {"$set": {
+            "status": "closed", "exit_time": parked, "exit_sol": 0.0, "exit_usd": 0.0,
+            "exit_reason": f"{(t.get('exit_reason') or '')[:160]} | tokens gone from wallet, no sale found — closed at −entry",
+            "pnl_sol": -entry_sol, "pnl_usd": -entry_sol * sol_price, "pnl_pct": -100.0 if entry_sol else 0.0,
+            "pnl_reconciled": False, "held_watch_done": True, "held_done_reason": "tokens gone — closed", "mark_usd": None}})
+        logger.warning(f"HELD BAG GONE {t.get('symbol')} {t['mint'][:8]}… — no sale found on-chain, closed at −{entry_sol:.4f} SOL")
+
+    async def _resolve_gone_held_rows(self, limit: int = 6) -> int:
+        """Rows an older watcher left as 'wallet holds 0 tokens' (still exit_failed_terminal): resolve a few per pass."""
+        cur = self.db.trades.find({"status": "exit_failed_terminal", "mode": "live", "chain": {"$ne": "rh"}, "held_watch_done": True,
+                                   "held_done_reason": {"$regex": "^wallet holds 0 tokens"}}, {"_id": 0}).limit(limit)
+        n = 0
+        async for t in cur:
+            try:
+                bal = await self._held_token_balance(t["mint"])
+                if bal == 0:
+                    await self._resolve_gone_bag(t)
+                else:
+                    await self._held_patch(t, {"held_watch_done": False, "held_done_reason": None, "entry_tokens": bal})
+                n += 1
+            except Exception as e:
+                logger.debug(f"gone-row resolve failed {t.get('mint', '')[:8]}…: {e}")
+        return n
+
     async def _held_bag_watch_once(self) -> dict:
         now = time.time()
         min_depth = float(getattr(self.config, "held_bag_min_pool_sol", 10.0) or 0.0)
@@ -4322,7 +4423,7 @@ class BotState:
             if t.get("mode") == "live":
                 bal = await self._held_token_balance(mint)
                 if bal == 0:
-                    await self._held_patch(t, {"held_watch_done": True, "held_done_reason": "wallet holds 0 tokens — nothing left to recover"})
+                    await self._resolve_gone_bag(t)
                     out["gone"] += 1
                     continue
                 if bal:
@@ -4377,7 +4478,8 @@ class BotState:
             try:
                 if getattr(self.config, "held_bag_watcher_enabled", True):
                     res = await self._held_bag_watch_once()
-                    if res["reattached"] or res["sold"]:
+                    res["resolved_gone"] = await self._resolve_gone_held_rows()
+                    if res["reattached"] or res["sold"] or res["resolved_gone"]:
                         logger.warning(f"held-bag watcher: {res}")
             except asyncio.CancelledError:
                 raise
@@ -4943,16 +5045,14 @@ class BotState:
                             pumpswap.build_close_wsol_ix(user, wsol_ata),
                         ]
                         try:
-                            partial_sig = await pumpfun.send_versioned_tx(
-                                kp, ixs, eff_priority, compute_unit_limit=400_000,
-                            )
-                        except Exception as _se:
+                            partial_sig, eff_priority = await self._land_sell(kp, ixs, eff_priority, is_panic_partial, CU_PUMPSWAP, f"partial {mint[:8]} pumpswap")
+                        except landing.NotLanded as _nl:
+                            trade_doc["pending_partial_sigs"] = [*(trade_doc.get("pending_partial_sigs") or []), *_nl.sigs][-12:]
+                            raise
+                        except landing.LandedButFailed as _se:
                             last_err = _se
-                            if "Custom': 6003" in str(_se) and attempt_idx + 1 < len(slip_ladder):
-                                logger.info(
-                                    f"partial slip-retry {attempt_idx + 1}/{len(slip_ladder) - 1} "
-                                    f"for {mint[:8]} after {attempt_slip}bps: escalating"
-                                )
+                            if "6003" in str(_se.err) and attempt_idx + 1 < len(slip_ladder):
+                                logger.info(f"partial slip-retry {attempt_idx + 1}/{len(slip_ladder) - 1} for {mint[:8]} after {attempt_slip}bps: escalating")
                                 continue
                             raise
                     else:
@@ -4966,16 +5066,14 @@ class BotState:
                         is_cashback = bool((state or {}).get("is_cashback", False))
                         ix = await pumpfun.build_sell_ix(user, mint_pk, sell_tokens, attempt_min_sol, creator_pk, tp, cashback=is_cashback)
                         try:
-                            partial_sig = await pumpfun.send_versioned_tx(
-                                kp, [ix], eff_priority
-                            )
-                        except Exception as _se:
+                            partial_sig, eff_priority = await self._land_sell(kp, [ix], eff_priority, is_panic_partial, CU_PUMPFUN, f"partial {mint[:8]} pumpfun")
+                        except landing.NotLanded as _nl:
+                            trade_doc["pending_partial_sigs"] = [*(trade_doc.get("pending_partial_sigs") or []), *_nl.sigs][-12:]
+                            raise
+                        except landing.LandedButFailed as _se:
                             last_err = _se
-                            if "Custom': 6003" in str(_se) and attempt_idx + 1 < len(slip_ladder):
-                                logger.info(
-                                    f"partial slip-retry {attempt_idx + 1}/{len(slip_ladder) - 1} "
-                                    f"for {mint[:8]} after {attempt_slip}bps: escalating"
-                                )
+                            if "6003" in str(_se.err) and attempt_idx + 1 < len(slip_ladder):
+                                logger.info(f"partial slip-retry {attempt_idx + 1}/{len(slip_ladder) - 1} for {mint[:8]} after {attempt_slip}bps: escalating")
                                 continue
                             raise
                     # Landed — record actual slip used
@@ -5031,6 +5129,112 @@ class BotState:
         )
         return True
 
+    # ---------------- fast-landing sells + late-landing safety net ----------------
+    def _exit_fee_ladder(self, eff_priority: int, panic: bool) -> list[int]:
+        cfg = self.config
+        start = max(int(eff_priority), int(cfg.exit_priority_floor_microlamports))
+        if panic:
+            start = max(start, int(cfg.panic_exit_priority_microlamports))
+        return landing.fee_ladder(start, int(cfg.exit_priority_cap_microlamports))
+
+    async def _land_sell(self, kp, ixs: list, eff_priority: int, panic: bool, cu: int, label: str) -> tuple[str, int]:
+        cfg = self.config
+        return await landing.land_tx(kp, ixs, priority_ladder=self._exit_fee_ladder(eff_priority, panic), compute_unit_limit=cu,
+                                     rung_s=float(cfg.exit_land_rung_s), budget_s=float(cfg.exit_land_budget_s),
+                                     use_sender=bool(cfg.exit_use_sender), label=label)
+
+    async def _find_sale_on_chain(self, mint: str, trade_doc: dict) -> tuple[str, int] | None:
+        """(sig, lamports credited) of a sell that landed without being booked: pending sigs first, then the
+        token account's own history. None when the tokens never left through a sale we can see."""
+        wallet = str(get_pubkey())
+        sigs = [s for s in (trade_doc.get("pending_exit_sigs") or []) if s]
+        if sigs:
+            sig, err = await landing.wait_for_landing(sigs, timeout_s=0.2, interval_s=0.1)
+            if sig and err is None:
+                delta = await get_tx_wallet_delta_lamports(sig, wallet)
+                return sig, int(delta or 0)
+        try:
+            mint_pk = Pubkey.from_string(mint)
+            tp = await pumpfun.get_mint_token_program(mint)
+            ata = pumpswap.get_associated_token_address(get_pubkey(), mint_pk, tp)
+            res = await rpc_call("getSignaturesForAddress", [str(ata), {"limit": 8, "commitment": "confirmed"}])
+            skip = {trade_doc.get("entry_sig"), trade_doc.get("add_on_sig"), *(trade_doc.get("partial_sigs") or [])}
+            for row in res.get("result") or []:
+                sig = row.get("signature")
+                if row.get("err") is not None or not sig or sig in skip:
+                    continue
+                delta = await get_tx_wallet_delta_lamports(sig, wallet)
+                if delta is not None and delta > 0:
+                    return sig, int(delta)
+        except Exception as e:
+            logger.debug(f"on-chain sale lookup failed {mint[:8]}…: {e}")
+        return None
+
+    async def _book_exit_from_chain(self, mint: str, trade_doc: dict, sig: str, lamports: int, reason: str) -> bool:
+        """Close a row from a sale found on-chain. Atomic on status so a racing path can't close it twice."""
+        sol_price = await get_sol_usd_price() or 100.0
+        exit_sol = max(0.0, lamports / LAMPORTS_PER_SOL)
+        entry_sol = float(trade_doc.get("entry_sol") or 0.0)
+        tokens = int(trade_doc.get("entry_tokens") or 0)
+        pnl_sol = exit_sol - entry_sol + float(trade_doc.get("partial_realized_sol") or 0.0)
+        trade_doc.pop("pending_exit_sigs", None)
+        trade_doc.update(status="closed", exit_sig=sig, exit_time=now_utc().isoformat(), exit_reason=reason, exit_sol=exit_sol,
+                         exit_usd=exit_sol * sol_price, exit_price_sol=(exit_sol / tokens if tokens else 0.0), pnl_sol=pnl_sol,
+                         pnl_usd=pnl_sol * sol_price, pnl_pct=(pnl_sol / entry_sol * 100.0 if entry_sol else 0.0),
+                         pnl_reconciled=False, held_watch_done=False, mark_usd=None)
+        res = await self.db.trades.update_one({"id": trade_doc["id"], "status": {"$ne": "closed"}},
+                                              {"$set": trade_doc, "$unset": {"pending_exit_sigs": ""}})
+        self.active_trades.pop(mint, None)
+        self.recent_exit_until[mint] = time.time() + 90.0
+        if getattr(res, "matched_count", 1) == 0:
+            return False
+        await hub.broadcast("trade_exit", trade_doc)
+        logger.warning(f"LATE SELL BOOKED {trade_doc.get('symbol')} {mint[:8]}… sig={sig[:12]}… received {exit_sol:.6f} SOL — {reason}")
+        return True
+
+    async def _watch_late_sell(self, mint: str, sigs: list[str], reason: str, timeout_s: float = 120.0) -> None:
+        """A sell that missed the landing budget is still in flight: keep watching its signatures and book the exit
+        the moment one confirms, whether the row is still active or was parked meanwhile."""
+        sig, err = await landing.wait_for_landing(sigs, timeout_s)
+        if not sig or err is not None:
+            return
+        for _ in range(40):                       # a retry may be mid-flight — let it finish first
+            slot = self.active_trades.get(mint)
+            if not slot or not slot.get("exit_in_progress"):
+                break
+            await asyncio.sleep(0.5)
+        slot = self.active_trades.get(mint)
+        trade_doc = slot["trade"] if slot else await self.db.trades.find_one(
+            {"mint": mint, "status": {"$in": ["active", "exit_failed_terminal"]}}, {"_id": 0})
+        if not trade_doc or trade_doc.get("exit_sig"):
+            return
+        delta = await get_tx_wallet_delta_lamports(sig, str(get_pubkey()))
+        await self._book_exit_from_chain(mint, trade_doc, sig, int(delta or 0), f"{reason} | sell landed late (after landing budget)")
+
+    async def _watch_late_buy(self, trade: Trade, launch: Launch, trade_extras: dict, sigs: list[str], timeout_s: float = 120.0) -> None:
+        """A buy that missed its landing budget: if it lands anyway the tokens are ours — open the position
+        instead of leaving an untracked bag in the wallet."""
+        sig, err = await landing.wait_for_landing(sigs, timeout_s)
+        if not sig or err is not None:
+            await self.db.trades.update_one({"id": trade.id}, {"$set": {"exit_reason": f"{trade.exit_reason} | never landed"}})
+            return
+        try:
+            tp = await pumpfun.get_mint_token_program(trade.mint)
+            bal = await pumpswap.get_token_balance(pumpswap.get_associated_token_address(get_pubkey(), Pubkey.from_string(trade.mint), tp))
+            if bal > 0:
+                trade.entry_tokens = bal
+        except Exception as e:
+            logger.debug(f"late-buy balance read failed {trade.mint[:8]}…: {e}")
+        if trade.mint in self.active_trades:
+            return
+        trade.status, trade.entry_sig, trade.exit_reason = "active", sig, None
+        await self._persist_trade(trade)
+        await self.db.trades.update_one({"id": trade.id}, {"$unset": {"pending_entry_sigs": ""}})
+        self.active_trades[trade.mint] = {"trade": trade.model_dump(), "launch": launch.model_dump(), "_entry_ts_mono": time.time(), **trade_extras}
+        await hub.broadcast("trade_enter", trade.model_dump())
+        asyncio.create_task(self._monitor_position(trade.mint))
+        logger.warning(f"LATE BUY LANDED {trade.symbol} {trade.mint[:8]}… sig={sig[:12]}… — position opened and monitored")
+
     async def _attempt_emergency_pumpswap_sell(
         self,
         *,
@@ -5039,24 +5243,11 @@ class BotState:
         user,
         mint_pk,
         tokens_in: int,
+        trade_doc: dict | None = None,
     ) -> tuple[str, int, dict] | None:
-        """Last-resort sell via PumpSwap AMM. Used to auto-recover from:
-          - Bonding-curve 6005 (BondingCurveComplete) mid-sell — token just
-            graduated; classic curve sell will never work again.
-          - Normal-flow sell-ladder exhaustion (3 retries) on either protocol —
-            one final brute-force attempt before we give up and dump the
-            position into the stuck list.
-
-        Brute-force settings:
-          * 50% slippage (5000 bps) — accept whatever the pool gives us
-          * 5M µLamp priority fee — maximum landing odds
-          * 600k compute-unit limit — wide budget for the 4-ix combo
-          * 60s confirmation timeout — give Helius plenty of room
-
-        Returns (sig, sol_out_lamports, pool_state) on success, None if no
-        pool exists or the tx never lands. Never raises — failures are
-        logged and the caller decides whether to mark the position terminal.
-        """
+        """Last-resort sell via PumpSwap AMM (50% slip, panic fee ladder up to the cap, dual-routed).
+        Returns (sig, sol_out_lamports, pool_state) on success, None if no pool exists or nothing landed.
+        A still-in-flight tx leaves its signatures on `trade_doc.pending_exit_sigs` so a late landing is booked."""
         try:
             pool = await pumpswap.find_pool_for_mint(mint)
             if not pool:
@@ -5087,35 +5278,14 @@ class BotState:
                 ),
                 pumpswap.build_close_wsol_ix(user, wsol_ata),
             ]
-            # Try Helius Sender first (dual routing → validators + Jito,
-            # maximum landing odds; 0.0002 SOL tip overhead). Fall back to
-            # standard RPC submit if Sender errors so we never leave a
-            # position truly stuck for a transient network blip.
             try:
-                from helius_sender import send_via_sender
-                sig = await send_via_sender(
-                    kp, ixs,
-                    priority_fee_microlamports=5_000_000,
-                    compute_unit_limit=600_000,
-                    mode="dual",
-                    confirm_timeout_s=60.0,
-                )
-                logger.warning(
-                    f"EMERGENCY PUMPSWAP SELL (via Sender) succeeded for {mint[:8]}… — "
-                    f"sig={sig[:12]} sold={sell_amount} sol_out~={sol_out/1e9:.6f}"
-                )
-                return sig, sol_out, pool_state
-            except Exception as sender_err:
-                logger.warning(
-                    f"sender path failed for emergency sell {mint[:8]}…: {sender_err} "
-                    f"— falling back to standard RPC submit"
-                )
-            sig = await pumpfun.send_versioned_tx(
-                kp, ixs, priority_fee_microlamports=5_000_000,
-                compute_unit_limit=600_000, confirm_timeout_s=60.0,
-            )
+                sig, _ = await self._land_sell(kp, ixs, 5_000_000, True, 600_000, f"emergency {mint[:8]}")
+            except landing.NotLanded as nl:
+                if trade_doc is not None:
+                    trade_doc["pending_exit_sigs"] = [*(trade_doc.get("pending_exit_sigs") or []), *nl.sigs][-12:]
+                raise
             logger.warning(
-                f"EMERGENCY PUMPSWAP SELL (rpc fallback) succeeded for {mint[:8]}… — "
+                f"EMERGENCY PUMPSWAP SELL succeeded for {mint[:8]}… — "
                 f"sig={sig[:12]} sold={sell_amount} sol_out~={sol_out/1e9:.6f}"
             )
             return sig, sol_out, pool_state
@@ -5290,19 +5460,24 @@ class BotState:
                 ata = pumpswap.get_associated_token_address(user, mint_pk, tp)
                 actual = await pumpswap.get_token_balance(ata)
                 if actual == 0:
-                    # We hold zero of this mint — close the trade WITHOUT
-                    # attempting to sell. Sending a 0-amount sell IX would
-                    # revert with Custom:6022 (SellZeroAmount) and waste gas.
-                    logger.warning(
-                        f"sell skipped for {mint}: ATA balance is 0 "
-                        f"(already sold or never bought) — closing trade"
-                    )
+                    # We hold zero of this mint. Either an earlier sell landed late (book it from chain) or the
+                    # tokens are simply gone — never a $0 exit with the loss hidden.
+                    found = await self._find_sale_on_chain(mint, trade_doc)
+                    if found:
+                        await self._book_exit_from_chain(mint, trade_doc, found[0], found[1], f"{reason} | sell had already landed")
+                        return
+                    logger.warning(f"sell skipped for {mint}: ATA balance is 0 and no sale found on-chain — closing trade at −entry")
+                    entry_sol0 = float(trade_doc.get("entry_sol") or 0.0)
                     trade_doc["status"] = "closed"
-                    trade_doc["exit_reason"] = f"{reason} | balance was 0 at exit"
+                    trade_doc["exit_reason"] = f"{reason} | balance was 0 at exit (no sale found on-chain)"
                     trade_doc["exit_time"] = now_utc().isoformat()
                     trade_doc["exit_sol"] = 0.0
                     trade_doc["exit_usd"] = 0.0
                     trade_doc["exit_price_sol"] = 0.0
+                    trade_doc["pnl_sol"] = -entry_sol0
+                    trade_doc["pnl_usd"] = -entry_sol0 * (sol_price or 100.0)
+                    trade_doc["pnl_pct"] = (-100.0 if entry_sol0 else 0.0)   # tokens gone, no sale found: real loss, not a dead-curve quote
+                    trade_doc["pnl_reconciled"] = False
                     await self.db.trades.update_one(
                         {"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
                     )
@@ -5366,6 +5541,7 @@ class BotState:
         exit_price_sol = sol_out / tokens_in / LAMPORTS_PER_SOL if tokens_in > 0 else 0
 
         exit_sig = None
+        sell_err: Exception | None = None
         if trade_doc["mode"] == "live":
             # Last-line defence against Custom:6022 (SellZeroAmount): even if
             # the balance-read path above failed/skipped, refuse to build a
@@ -5402,12 +5578,22 @@ class BotState:
                             slip_ladder.append(int(floor_bps))
                 last_err: Exception | None = None
                 exit_sig = None
+                cu_sell = CU_PUMPSWAP if protocol == "pumpswap" else CU_PUMPFUN
                 for attempt_idx, attempt_slip in enumerate(slip_ladder):
-                    # Recompute min_sol for THIS attempt's slip — both protocols
+                    # Re-quote min_sol for THIS attempt's slip on FRESH state — the fee ladder may have spent
+                    # several seconds, and a stale quote is exactly what reverts with Custom:6003.
+                    if attempt_idx > 0:
+                        try:
+                            if protocol == "pumpswap":
+                                pumpswap_state = (await pumpswap.fetch_pool_state(slot.get("pumpswap_pool") or "")) or pumpswap_state
+                            else:
+                                state = (await pumpfun.fetch_bonding_curve_state(mint)) or state
+                        except Exception:
+                            pass
                     if protocol == "pumpswap":
-                        _, attempt_min_sol = pumpswap.quote_sell_sol(pumpswap_state, tokens_in, attempt_slip)
+                        sol_out, attempt_min_sol = pumpswap.quote_sell_sol(pumpswap_state, tokens_in, attempt_slip)
                     else:
-                        _, attempt_min_sol = pumpfun.quote_sell_sol(state, tokens_in, attempt_slip)
+                        sol_out, attempt_min_sol = pumpfun.quote_sell_sol(state, tokens_in, attempt_slip)
                     if protocol == "pumpswap":
                         # Token-2022 pools require explicit base_token_program +
                         # canonical user WSOL ATA (not seed-derived temp). Sells
@@ -5427,20 +5613,6 @@ class BotState:
                             # Unwrap wSOL → native SOL in the user wallet.
                             pumpswap.build_close_wsol_ix(user, wsol_ata),
                         ]
-                        try:
-                            exit_sig = await pumpfun.send_versioned_tx(
-                                kp, ixs, eff_priority,
-                                compute_unit_limit=400_000,
-                            )
-                        except Exception as _se:
-                            last_err = _se
-                            if "Custom': 6003" in str(_se) and attempt_idx + 1 < len(slip_ladder):
-                                logger.info(
-                                    f"sell slip-retry {attempt_idx + 1}/{len(slip_ladder) - 1} "
-                                    f"for {mint[:8]} after {attempt_slip}bps: escalating"
-                                )
-                                continue
-                            raise
                     else:
                         creator_str = trade_doc.get("creator") or (slot.get("launch") or {}).get("creator") or ""
                         if state and state.get("creator"):
@@ -5450,30 +5622,32 @@ class BotState:
                         creator_pk = Pubkey.from_string(creator_str)
                         tp = await pumpfun.get_mint_token_program(mint)
                         is_cashback = bool((state or {}).get("is_cashback", False))
-                        ix = await pumpfun.build_sell_ix(user, mint_pk, tokens_in, attempt_min_sol, creator_pk, tp, cashback=is_cashback)
-                        try:
-                            exit_sig = await pumpfun.send_versioned_tx(
-                                kp, [ix], eff_priority
-                            )
-                        except Exception as _se:
-                            last_err = _se
-                            if "Custom': 6003" in str(_se) and attempt_idx + 1 < len(slip_ladder):
-                                logger.info(
-                                    f"sell slip-retry {attempt_idx + 1}/{len(slip_ladder) - 1} "
-                                    f"for {mint[:8]} after {attempt_slip}bps: escalating"
-                                )
-                                continue
-                            raise
+                        ixs = [await pumpfun.build_sell_ix(user, mint_pk, tokens_in, attempt_min_sol, creator_pk, tp, cashback=is_cashback)]
+                    try:
+                        exit_sig, eff_priority = await self._land_sell(kp, ixs, eff_priority, is_panic, cu_sell, f"sell {mint[:8]} {protocol}")
+                    except landing.NotLanded as _nl:
+                        # still in flight — remember every signature so a late landing is booked, never orphaned
+                        trade_doc["pending_exit_sigs"] = [*(trade_doc.get("pending_exit_sigs") or []), *_nl.sigs][-12:]
+                        raise
+                    except landing.LandedButFailed as _se:
+                        last_err = _se
+                        if "6003" in str(_se.err) and attempt_idx + 1 < len(slip_ladder):
+                            logger.info(f"sell slip-retry {attempt_idx + 1}/{len(slip_ladder) - 1} for {mint[:8]} after {attempt_slip}bps: escalating")
+                            continue
+                        raise
                     # Success — record the slip that actually landed and bail
                     exit_slip = attempt_slip
+                    exit_sol = sol_out / LAMPORTS_PER_SOL
+                    exit_price_sol = sol_out / tokens_in / LAMPORTS_PER_SOL if tokens_in > 0 else 0
                     break
                 else:
                     # ladder exhausted — re-raise the final error
                     if last_err:
                         raise last_err
             except Exception as e:
+                sell_err = e
                 err_str = str(e)
-                logger.exception(f"Live sell failed: {e}")
+                (logger.warning if isinstance(e, landing.NotLanded) else logger.exception)(f"Live sell not booked: {e}")
                 trade_doc["exit_reason"] = f"{reason} | sell failed: {e}"
                 # Custom:6005 (BondingCurveComplete) — the token graduated to
                 # Raydium/PumpSwap mid-sell. Auto-fallback to PumpSwap AMM
@@ -5485,7 +5659,7 @@ class BotState:
                     )
                     emergency = await self._attempt_emergency_pumpswap_sell(
                         mint=mint, kp=kp, user=user, mint_pk=mint_pk,
-                        tokens_in=tokens_in,
+                        tokens_in=tokens_in, trade_doc=trade_doc,
                     )
                     if emergency is not None:
                         # Successful fallback — patch state so the rest of
@@ -5537,102 +5711,79 @@ class BotState:
             trade_doc["exit_retries"] = retries
             trade_doc["last_exit_attempt"] = now_utc().isoformat()
             trade_doc["last_exit_attempt_reason"] = reason
-            # Gas IS gone whether or not the sell landed — track it
-            trade_doc["exit_fee_sol_failed_attempts"] = (
-                float(trade_doc.get("exit_fee_sol_failed_attempts") or 0.0) + exit_fee_sol
-            )
-            # If we've burned too many tries on this position, attempt one
-            # emergency brute-force PumpSwap sell BEFORE giving up. Most
-            # "stuck" positions are recoverable on PumpSwap with 50% slip
-            # and a 5M µL priority fee — we just never tried that combo in
-            # the slip-ladder. This is the difference between "stuck position
-            # the user has to babysit" and "system always exits".
-            if retries >= 3:
+            pending = [s for s in (trade_doc.get("pending_exit_sigs") or []) if s]
+            in_flight = isinstance(sell_err, landing.NotLanded) and bool(pending)
+            landed_failures = int(trade_doc.get("exit_landed_failures") or 0)
+            if in_flight:
+                # Slow network, not a dead venue: the sell is still in flight. Watch every signature and keep the
+                # position active — a late landing gets booked, the next tick re-sends with a fresh fee ladder.
+                asyncio.create_task(self._watch_late_sell(mint, pending, reason))
+                slot["exit_blocked_until"] = time.time() + 1.0
+            else:
+                # A landed revert costs real gas and a higher fee can't fix it — count it, back off, escalate.
+                landed_failures += 1
+                trade_doc["exit_landed_failures"] = landed_failures
+                trade_doc["exit_fee_sol_failed_attempts"] = float(trade_doc.get("exit_fee_sol_failed_attempts") or 0.0) + exit_fee_sol
+                slot["exit_blocked_until"] = time.time() + min(20.0, 4.0 * landed_failures)
+            if landed_failures >= 3 and not in_flight:
+                # Three genuine reverts: liquidity / venue problem. One brute-force PumpSwap attempt, then park.
                 kp_em = get_keypair()
                 user_em = get_pubkey()
                 mint_pk_em = Pubkey.from_string(mint)
                 emergency = await self._attempt_emergency_pumpswap_sell(
                     mint=mint, kp=kp_em, user=user_em, mint_pk=mint_pk_em,
-                    tokens_in=tokens_in,
+                    tokens_in=tokens_in, trade_doc=trade_doc,
                 )
                 if emergency is not None:
                     sig_em, sol_out_em, _ = emergency
-                    # Book the emergency exit as a successful close
                     exit_sol_final = sol_out_em / LAMPORTS_PER_SOL
+                    trade_doc.pop("pending_exit_sigs", None)
                     trade_doc["status"] = "closed"
                     trade_doc["exit_time"] = now_utc().isoformat()
                     trade_doc["exit_sig"] = sig_em
                     trade_doc["exit_sol"] = exit_sol_final
                     trade_doc["exit_usd"] = exit_sol_final * (sol_price or 100.0)
                     trade_doc["exit_price_sol"] = sol_out_em / tokens_in / LAMPORTS_PER_SOL if tokens_in > 0 else 0
-                    trade_doc["exit_reason"] = (
-                        f"{reason} | EMERGENCY pumpswap fallback after {retries} "
-                        f"failed sells — recovered {exit_sol_final:.6f} SOL"
-                    )
+                    trade_doc["exit_reason"] = f"{reason} | EMERGENCY pumpswap fallback after {landed_failures} reverted sells — recovered {exit_sol_final:.6f} SOL"
                     trade_doc["protocol"] = "pumpswap"
-                    pnl_sol_em = exit_sol_final - trade_doc["entry_sol"]
-                    partial_realized_sol = float(trade_doc.get("partial_realized_sol") or 0.0)
-                    partial_realized_usd = float(trade_doc.get("partial_realized_usd") or 0.0)
-                    trade_doc["pnl_sol"] = pnl_sol_em + partial_realized_sol
-                    trade_doc["pnl_usd"] = trade_doc["pnl_sol"] * (sol_price or 100.0)
-                    trade_doc["pnl_pct"] = (
-                        (trade_doc["pnl_sol"] / trade_doc["entry_sol"]) * 100.0
-                        if trade_doc.get("entry_sol") else 0.0
-                    )
-                    await self.db.trades.update_one(
-                        {"id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
-                    )
+                    pnl_sol_em = exit_sol_final - trade_doc["entry_sol"] + float(trade_doc.get("partial_realized_sol") or 0.0)
+                    trade_doc["pnl_sol"] = pnl_sol_em
+                    trade_doc["pnl_usd"] = pnl_sol_em * (sol_price or 100.0)
+                    trade_doc["pnl_pct"] = (pnl_sol_em / trade_doc["entry_sol"]) * 100.0 if trade_doc.get("entry_sol") else 0.0
+                    await self.db.trades.update_one({"id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True)
                     self.active_trades.pop(mint, None)
                     self.recent_exit_until[mint] = time.time() + 90.0
                     await hub.broadcast("trade_exit", trade_doc)
-                    logger.warning(
-                        f"RESCUED {mint[:8]}… via emergency pumpswap sell after "
-                        f"{retries} normal-flow failures — pnl_sol={pnl_sol_em:+.6f}"
-                    )
+                    logger.warning(f"RESCUED {mint[:8]}… via emergency pumpswap sell after {landed_failures} reverts — pnl_sol={pnl_sol_em:+.6f}")
                     return
-                # Emergency also failed — mark terminal as before
+                if trade_doc.get("pending_exit_sigs"):
+                    asyncio.create_task(self._watch_late_sell(mint, list(trade_doc["pending_exit_sigs"]), reason))
+                # Venue won't take the tokens (liquidity): park as a held bag with PnL unset, −entry shows on equity.
                 trade_doc["status"] = "exit_failed_terminal"
+                trade_doc["venue_stage"] = "sell-reverted"
+                trade_doc["held_intent"] = "exit"
+                trade_doc["held_exit_reason"] = reason
+                trade_doc["held_parked_at"] = now_utc().isoformat()
                 trade_doc["exit_time"] = now_utc().isoformat()
-                trade_doc["exit_reason"] = f"GAVE UP after {retries} sell retries + emergency pumpswap failed — export privkey to recover manually: {reason}"
-                trade_doc["pnl_sol"] = 0.0
-                trade_doc["pnl_usd"] = 0.0
-                trade_doc["pnl_pct"] = 0.0
-                await self.db.trades.update_one(
-                    {"id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
-                )
+                trade_doc["exit_reason"] = f"sell reverted on-chain {landed_failures}× + emergency PumpSwap failed (liquidity/venue) — held, watcher retries: {reason} | {sell_err}"
+                trade_doc["pnl_sol"] = None
+                trade_doc["pnl_usd"] = None
+                trade_doc["pnl_pct"] = None
+                await self.db.trades.update_one({"id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True)
                 self.active_trades.pop(mint, None)
-                # Block re-entry on this mint for the cooldown window — even
-                # though the exit failed, the position is now considered
-                # abandoned and the bot must NOT re-buy it (we still hold
-                # stranded tokens that the user needs to recover manually).
                 self.recent_exit_until[mint] = time.time() + 90.0
                 await hub.broadcast("trade_exit_terminal", trade_doc)
-                logger.warning(
-                    f"GIVING UP on {mint} after {retries} failed sells + "
-                    f"emergency pumpswap fallback — manual recovery required"
-                )
-            else:
-                # Persist retry counter but keep position open
-                trade_doc["status"] = "active"  # ensure DB shows the truth
-                await self.db.trades.update_one(
-                    {"id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
-                )
-                # CRITICAL: re-insert into active_trades since _exit pop'd it
-                # at the top. Without this re-insert, the in-memory dict no
-                # longer tracks the mint → scanner thinks the slot is free →
-                # opens DUPLICATE position with a new trade.id → DB ends up
-                # with N "active" rows for the same mint, each with its own
-                # phantom monitor. This was the root cause of the 36-active /
-                # 12-in-memory desync.
-                self.active_trades[mint] = slot
-                await hub.broadcast("trade_exit_failed", {
-                    "mint": mint, "symbol": trade_doc.get("symbol"),
-                    "retries": retries, "reason": reason,
-                })
-                logger.warning(
-                    f"sell failed for {mint} (retry {retries}/3) — keeping "
-                    f"position active for monitor retry"
-                )
+                logger.warning(f"PARKED {mint} after {landed_failures} reverted sells + emergency fallback — liquidity/venue issue, held for watcher")
+                return
+            trade_doc["status"] = "active"
+            await self.db.trades.update_one({"id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True)
+            # re-insert: _exit popped the slot — without this the scanner thinks the slot is free and double-fills
+            self.active_trades[mint] = slot
+            await hub.broadcast("trade_exit_failed", {
+                "mint": mint, "symbol": trade_doc.get("symbol"), "retries": retries, "reason": reason,
+                "in_flight": in_flight, "pending_sigs": len(pending),
+            })
+            logger.warning(f"sell not booked for {mint} (attempt {retries}, {'in flight' if in_flight else f'revert #{landed_failures}'}) — position stays active, retrying")
             return
 
         pnl_sol = exit_sol - trade_doc["entry_sol"]

@@ -600,6 +600,26 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
                hint="A price tick more than this many × above (or 1/× below) the last accepted price is HELD until the next sample confirms it, so one corrupt sample cannot fire TP / SL / trailing. 4 = a 4× jump needs confirming. 0 = off."
                value={local.price_sanity_ratio ?? 4}
                onChange={(v) => setLocal({ ...local, price_sanity_ratio: parseFloat(v) || 0 })} step="0.5" />
+        <Field label="Sell fee floor (M µL)" testid="exit-prio-floor-input"
+               hint="Fast-landing sells: every live sell starts at this compute-unit price (millions of µLamports), is sent to Helius Sender + RPC at once, and the fee doubles each rung until it lands. 1 = 1,000,000 µL ≈ $0.02 at 200k CU."
+               value={(local.exit_priority_floor_microlamports ?? 1000000) / 1e6}
+               onChange={(v) => setLocal({ ...local, exit_priority_floor_microlamports: Math.round((parseFloat(v) || 0.1) * 1e6) })} step="0.5" />
+        <Field label="Sell fee cap (M µL)" testid="exit-prio-cap-input"
+               hint="Top of the sell fee ladder (millions of µLamports). 20 = 20,000,000 µL ≈ $0.40 per sell at 200k CU — 'land at any cost'. Only reached when the network ignores every cheaper rung."
+               value={(local.exit_priority_cap_microlamports ?? 20000000) / 1e6}
+               onChange={(v) => setLocal({ ...local, exit_priority_cap_microlamports: Math.round((parseFloat(v) || 1) * 1e6) })} step="1" />
+        <Field label="Sell rung (s)" testid="exit-rung-input"
+               hint="Seconds to wait for a landing before re-signing the sell at the next (double) fee. All signatures stay watched — a slow copy that lands later is still booked."
+               value={local.exit_land_rung_s ?? 2.5}
+               onChange={(v) => setLocal({ ...local, exit_land_rung_s: parseFloat(v) || 1 })} step="0.5" />
+        <Field label="Sell budget (s)" testid="exit-budget-input"
+               hint="Total seconds one sell attempt may take across the whole fee ladder. After this the position stays ACTIVE (never parked), a watcher follows the in-flight signatures for 2 more minutes, and the next tick re-sends."
+               value={local.exit_land_budget_s ?? 15}
+               onChange={(v) => setLocal({ ...local, exit_land_budget_s: parseFloat(v) || 5 })} step="1" />
+        <Field label="Rent reclaim ≥ (SOL)" testid="rent-reclaim-min-input"
+               hint="Every buy locks ~0.002 SOL of rent in a token account that stays behind after the sell. When the empty/dust accounts hold at least this much SOL, the bot closes them in one batch and the rent comes back to the wallet. 0.002 = every account, 0.02 ≈ 10 accounts."
+               value={local.rent_reclaim_min_sol ?? 0.02}
+               onChange={(v) => setLocal({ ...local, rent_reclaim_min_sol: parseFloat(v) || 0.002 })} step="0.01" />
         {showAdvancedFees && (
           <Field label="Priority µLamp" testid="prio-input"
                  hint="Compute-unit price in micro-lamports. Higher = better landing odds, higher fee. Speed Mode handles this; manual override only."

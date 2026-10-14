@@ -237,6 +237,15 @@ class BotConfig(BaseModel):
     # landing) without the MEV-sandwich invitation that wide slippage creates.
     panic_exit_priority_microlamports: int = 3_000_000
     panic_exit_cu_price_microlamports: int = 600_000
+    # Fast-landing sell executor: fee ladder floor/cap (µL), seconds per rung, total budget, Helius Sender dual-route.
+    exit_priority_floor_microlamports: int = 1_000_000
+    exit_priority_cap_microlamports: int = 20_000_000
+    exit_land_rung_s: float = 2.5
+    exit_land_budget_s: float = 15.0
+    exit_use_sender: bool = True
+    # Rent reclaim: close empty / dust token accounts once the reclaimable rent reaches this many SOL.
+    rent_reclaim_auto: bool = True
+    rent_reclaim_min_sol: float = 0.02
     # Entry filters (applied to scanner_momentum entries; reentry uses its own size logic)
     min_curve_liquidity_sol: float = 12.0  # skip thin/dead launches
     min_buyers_for_entry: int = 3          # require real interest

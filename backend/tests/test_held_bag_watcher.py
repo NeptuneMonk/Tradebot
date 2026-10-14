@@ -128,13 +128,15 @@ def test_legacy_gave_up_row_is_exit_intent_and_gate_off_means_no_tx():
     assert out["ready"] == 1 and row["status"] == "exit_failed_terminal" and not any(c[0] == "exit" for c in st.calls)
 
 
-def test_live_row_with_zero_balance_stops_watching():
+def test_live_row_with_zero_balance_is_resolved_from_chain():
+    """Tokens gone from the wallet = a sale landed unbooked or a real loss — the row is resolved, never left as $0 stuck."""
     row = _held_row("hold", mode="live")
     st = _patched(_bot_stub())
     st._held_rows = AsyncMock(return_value=[row])
     st._held_token_balance = AsyncMock(return_value=0)
+    st._resolve_gone_bag = AsyncMock()
     out = asyncio.run(st._held_bag_watch_once())
-    assert out["gone"] == 1 and row["held_watch_done"] is True and row["status"] == "exit_failed_terminal"
+    assert out["gone"] == 1 and st._resolve_gone_bag.await_count == 1 and st._resolve_gone_bag.await_args.args[0] is row
 
 
 def test_active_or_pending_mints_are_skipped():

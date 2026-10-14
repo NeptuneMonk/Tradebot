@@ -33,7 +33,7 @@ logger = logging.getLogger("pnl_reconciler")
 
 POLL_S = 30.0
 # Look back this far for un-reconciled live trades
-LOOKBACK_MIN = 60
+LOOKBACK_MIN = 24 * 60
 # Per-pass throttle so we don't slam the RPC
 MAX_TRADES_PER_PASS = 25
 
