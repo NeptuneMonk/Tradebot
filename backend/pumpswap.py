@@ -559,6 +559,20 @@ def build_wsol_ata_idempotent_ixs(user: Pubkey) -> tuple[Pubkey, list[Instructio
     return wsol_ata, [build_create_ata_ix(user, user, WSOL, TOKEN_PROGRAM)]
 
 
+def build_wsol_ata_fund_ixs(user: Pubkey, lamports: int) -> tuple[Pubkey, list[Instruction]]:
+    """BUY-side wrap on the canonical WSOL ATA: idempotent create + transfer + sync_native. ~100 bytes smaller than the
+    seed-derived temp account (`build_wsol_wrap_ixs`) — the 26-account PumpSwap buy + Sender tip no longer fits the
+    1232-byte packet with the temp-account flow ("base64 encoded too large", 2026-10-15)."""
+    from solders.system_program import TransferParams, transfer
+    from spl.token.instructions import SyncNativeParams, sync_native
+    wsol_ata = get_associated_token_address(user, WSOL, TOKEN_PROGRAM)
+    return wsol_ata, [
+        build_create_ata_ix(user, user, WSOL, TOKEN_PROGRAM),
+        transfer(TransferParams(from_pubkey=user, to_pubkey=wsol_ata, lamports=int(lamports))),
+        sync_native(SyncNativeParams(program_id=TOKEN_PROGRAM, account=wsol_ata)),
+    ]
+
+
 def build_create_ata_ix(payer: Pubkey, owner: Pubkey, mint: Pubkey,
                         token_program: Pubkey | None = None) -> Instruction:
     """Create an ATA (idempotent — safe to call when account already exists).

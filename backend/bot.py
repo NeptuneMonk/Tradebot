@@ -667,7 +667,7 @@ class BotState:
                 if protocol == "pumpswap":
                     base_tp = await pumpfun.get_mint_token_program(mint)
                     ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
-                    wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, max_sol)
+                    wsol_acc, wsol_ixs = pumpswap.build_wsol_ata_fund_ixs(user, max_sol)
                     ixs = [pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp), *wsol_ixs,
                            pumpswap.build_buy_ix(user, pool_state, ata, wsol_acc, base_amount_out=tokens_out,
                                                  max_quote_amount_in=max_sol, base_token_program=base_tp),
@@ -1427,10 +1427,10 @@ class BotState:
                 if protocol == "pumpswap":
                     base_tp = await pumpfun.get_mint_token_program(mint)
                     user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
-                    wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, max_sol)
+                    wsol_acc, wsol_ixs = pumpswap.build_wsol_ata_fund_ixs(user, max_sol)
                     tokens_out, max_sol = await pumpswap.calibrate_buy(kp, user, pumpswap_state, user_token_ata, wsol_acc, base_tp,
                                                                        sol_in_lamports, tokens_out, eff_slip, eff_priority)
-                    wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, max_sol)
+                    wsol_acc, wsol_ixs = pumpswap.build_wsol_ata_fund_ixs(user, max_sol)
                     ixs = [
                         pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp),
                         *wsol_ixs,
@@ -2114,7 +2114,7 @@ class BotState:
                 kp, user, mint_pk = get_keypair(), get_pubkey(), Pubkey.from_string(mint)
                 base_tp = await pumpfun.get_mint_token_program(mint)
                 user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
-                wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, max_sol)
+                wsol_acc, wsol_ixs = pumpswap.build_wsol_ata_fund_ixs(user, max_sol)
                 ixs = [pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp), *wsol_ixs,
                        pumpswap.build_buy_ix(user, pool_state, user_token_ata, wsol_acc, base_amount_out=tokens_out,
                                              max_quote_amount_in=max_sol, base_token_program=base_tp),
@@ -3483,7 +3483,7 @@ class BotState:
             # PumpSwap pools can hold Token-2022 base mints (like ETB) — thread the right token program through.
             base_tp = await pumpfun.get_mint_token_program(mint)
             user_token_ata = pumpswap.get_associated_token_address(user, mint_pk, base_tp)
-            wsol_acc, wsol_ixs = pumpswap.build_wsol_wrap_ixs(user, max_sol)
+            wsol_acc, wsol_ixs = pumpswap.build_wsol_ata_fund_ixs(user, max_sol)
             ixs = [
                 pumpswap.build_create_ata_ix(user, user, mint_pk, base_tp),
                 *wsol_ixs,

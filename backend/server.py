@@ -447,9 +447,7 @@ async def wallet_import(req: _ImportReq):
     """Make an existing key (Phantom / Solflare base58 or JSON array) THE bot wallet. Paper mode + no open live
     positions required. The key is persisted to Mongo so every pod (leader + follower) swaps within ~20 s and a
     redeploy keeps it; the previous key file is retired, never deleted. Optionally sweeps the old wallet's SOL."""
-    import pumpfun
     from wallet import parse_secret, set_keypair, get_pubkey_str, get_secret_b58
-    from solders.system_program import TransferParams, transfer
     if req.confirm != "IMPORT":
         raise HTTPException(400, 'confirm must be "IMPORT"')
     try:
@@ -3057,7 +3055,7 @@ async def scanner_candidates():
 async def scanner_skips():
     """Why seasoned / new / RH entries were skipped since process start. Read this before loosening any gate."""
     rh = (bot_state.rh_paper.stats or {}).get("skip_reasons", {})
-    return {**bot_state.skip_tallies(),
+    return {**bot_state.skip_tallies(), "scanner_heartbeat": bot_state.scanner.heartbeat,
             "rh": {"seasoned": {k.split(":", 1)[1]: v for k, v in rh.items() if k.startswith("seasoned:")},
                    "curve": {k.split(":", 1)[1]: v for k, v in rh.items() if k.startswith("curve:")},
                    "seasoned_tracked": sum(1 for b in bot_state.rh_discovery.tracking.values() if b.get("graduated")),

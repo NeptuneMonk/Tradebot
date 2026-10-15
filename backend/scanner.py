@@ -363,6 +363,7 @@ class MomentumScanner:
         return out[:80]
 
     _last_push_ts = 0.0
+    heartbeat: dict = {}
 
     async def _push_snapshot(self, st, now: float):
         """Push the ranking to the UI right after each scan tick (≤ 1×/2 s) so rows move when a gate flips."""
@@ -396,9 +397,12 @@ class MomentumScanner:
                 else:
                     await asyncio.sleep(interval)
                 st._prune_out_of_scope()                 # time gates / switches / tags, even while the scanner is off
+                self.heartbeat = {"ts": time.time(), "stage": "woke"}
                 if not cfg.scanner_enabled:
+                    self.heartbeat["stage"] = "scanner-off"
                     continue
                 if not cfg.enabled or st.kill_switch_tripped:
+                    self.heartbeat["stage"] = "bot-off" if not cfg.enabled else "kill-switch"
                     continue
                 # Helius kill switch — when the tracker is paused the scanner
                 # path that fetches authoritative pool/curve state would burn
@@ -407,15 +411,19 @@ class MomentumScanner:
                 try:
                     from helius_gate import is_helius_paused
                     if is_helius_paused():
+                        self.heartbeat["stage"] = "helius-paused"
                         continue
                 except Exception:
                     pass
                 if st.counted_open() >= cfg.max_concurrent_positions:
+                    self.heartbeat["stage"] = "slots-full"
                     continue
                 if await st.check_kill_switch():
+                    self.heartbeat["stage"] = "kill-switch"
                     continue
 
                 now = time.time()
+                self.heartbeat["stage"] = "prerank"
                 # Cooldown is only applied AFTER an entry tx is actually
                 # attempted (see below). Pre-_enter gate failures shouldn't
                 # lock a candidate out — the next pass can retry them.
@@ -501,6 +509,7 @@ class MomentumScanner:
                     )
                     scored.append((mint, b, m, rank_score, band))
 
+                self.heartbeat.update(stage="ranked", scored=len(scored))
                 if not scored:
                     await self._push_snapshot(st, now)
                     continue

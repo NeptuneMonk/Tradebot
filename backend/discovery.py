@@ -26,7 +26,9 @@ import httpx
 from models import Launch
 from solana_client import LAMPORTS_PER_SOL
 from pumpfun import LAUNCH_BASELINE_PRICE_SOL
+import pumpfun
 import pumpswap
+from quote_mints import quote_book, is_sol_quote
 from ws_hub import hub
 
 if TYPE_CHECKING:
@@ -86,21 +88,16 @@ class PumpfunDiscovery:
             await asyncio.sleep(GRADUATED_INTERVAL_S)
 
     async def fetch_recent_graduated(self, limit: int = GRADUATED_PAGE_SIZE) -> list[dict]:
-        """Most recently CREATED tokens that have `complete=true` — a close
-        proxy for 'recently graduated' since graduation follows creation by
-        minutes-to-hours. Each row carries `pool_address` (PumpSwap pool)."""
-        params = {
-            "offset": 0, "limit": limit, "sort": "created_timestamp",
-            "order": "DESC", "includeNsfw": "true", "complete": "true",
-        }
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            r = await client.get(f"{PUMPFUN_API}/coins", params=params,
-                                 headers={"accept": "application/json"})
-            r.raise_for_status()
-            page = r.json()
-        if isinstance(page, dict):
-            page = page.get("data") or page.get("coins") or []
-        return [c for c in (page or []) if isinstance(c, dict) and c.get("mint") and c.get("complete")]
+        """Recently graduated pump coins: Jupiter Tokens v2 activity lists (rows carry `graduatedPool` / `graduatedAt`),
+        newest graduation first; GeckoTerminal's newest-PumpSwap-pools list is the fallback. Pump.fun's own list
+        endpoint is Cloudflare-gated."""
+        import jup_tokens
+        coins = [c for c in await jup_tokens.seasoned_candidates() if c.get("graduated_at_s")]
+        if not coins:
+            import gecko
+            coins = await gecko.new_pools(pages=2, dex="pumpswap")
+        coins.sort(key=lambda c: -(c.get("graduated_at_s") or 0))
+        return [c for c in coins if c.get("mint") and c.get("complete")][:limit]
 
     async def graduated_once(self) -> int:
         """Seed newly-graduated tokens into tracking as pumpswap buckets.
@@ -227,7 +224,6 @@ class PumpfunDiscovery:
         if not targets:
             return
         now = time.time()
-        url = f"{PUMPFUN_API}/coins"
         # SOL price cached per-cycle so we don't refetch per-mint.
         try:
             from solana_client import get_sol_usd_price
@@ -250,189 +246,186 @@ class PumpfunDiscovery:
                 continue
             cold = 0 < float(b.get("usd_market_cap") or 0) < mc_floor and now - float(b.get("_pool_read_ts") or 0) < COLD_POOL_REFRESH_S
             (cold_pools.add if cold else hot.append)(pool)
+        helius_ok_global = True
         try:
             from helius_gate import is_helius_paused
-            if not is_helius_paused() and hot:
+            helius_ok_global = not is_helius_paused()
+            if helius_ok_global and hot:
                 pool_states.update(await pumpswap.fetch_pool_states_batch(hot))
         except Exception as e:
             logger.debug(f"discovery batched pool read failed: {e}")
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            for mint, bucket in targets:
-                # Pump.fun's per-mint coin endpoint returns HTTP 200 with an
-                # EMPTY BODY for graduated tokens. Treat that as "no fresh
-                # API data" — DO NOT bail out (the previous behaviour caused
-                # a permanent silent skip → mc_samples never grew → MC
-                # velocity stayed 0% forever → PumpSwap candidates never
-                # passed the seasoned gate → "PumpSwap never gets tapped").
-                # Fall through to pool-state-based metrics below.
-                c: dict = {}
+        for mint, bucket in targets:
+            # Pump.fun's per-mint endpoint is gone (404 / Cloudflare). Graduated buckets live off the batched pool
+            # read below; near-graduation CURVE buckets read the curve on-chain for the authoritative `complete`.
+            c: dict = {}
+            if bucket.get("protocol") != "pumpswap" and helius_ok_global:
                 try:
-                    r = await client.get(f"{url}/{mint}", headers={"accept": "application/json"})
-                    if r.status_code == 200 and r.content:
-                        try:
-                            c = r.json() or {}
-                        except Exception:
-                            c = {}
+                    cs = await pumpfun.fetch_bonding_curve_state(mint)
+                    if cs:
+                        quote_book.normalize(cs)
+                        c = {"complete": bool(cs.get("complete")), "virtual_sol_reserves": cs.get("virtual_sol_reserves"),
+                             "virtual_token_reserves": cs.get("virtual_token_reserves"), "real_sol_reserves": cs.get("real_sol_reserves"),
+                             "usd_market_cap": (float(cs.get("virtual_sol_reserves") or 0) / float(cs.get("virtual_token_reserves") or 1)
+                                                * 1e6 * sol_usd) if cs.get("virtual_token_reserves") and sol_usd > 0 else 0.0}
                 except Exception as e:
-                    logger.debug(f"refresh fetch failed for {mint}: {e}")
-                usd_mc = float(c.get("usd_market_cap") or 0.0)
-                last_trade_ms = int(c.get("last_trade_timestamp") or 0)
-                # `complete` flag from the API is authoritative when we have
-                # a response; otherwise infer from the bucket's current
-                # protocol (set at seed time / by the bot's tracker on
-                # graduation observation).
-                is_graduated = (
-                    bool(c.get("complete"))
-                    if c
-                    else bucket.get("protocol") == "pumpswap"
-                )
-                # Resolve current price per protocol
-                cur_price = 0.0
-                # Helius kill-switch — pool state fetch hits PumpSwap via
-                # RPC (Helius credits). Skip when paused; the rest of the
-                # refresh (Pump.fun HTTP API, MC update from cached values)
-                # is free and continues to run.
-                helius_ok = True
+                    logger.debug(f"refresh curve read failed for {mint}: {e}")
+            usd_mc = float(c.get("usd_market_cap") or 0.0)
+            last_trade_ms = int(c.get("last_trade_timestamp") or 0)
+            # `complete` flag from the API is authoritative when we have
+            # a response; otherwise infer from the bucket's current
+            # protocol (set at seed time / by the bot's tracker on
+            # graduation observation).
+            is_graduated = (
+                bool(c.get("complete"))
+                if c
+                else bucket.get("protocol") == "pumpswap"
+            )
+            # Resolve current price per protocol
+            cur_price = 0.0
+            # Helius kill-switch — pool state fetch hits PumpSwap via
+            # RPC (Helius credits). Skip when paused; the rest of the
+            # refresh (Pump.fun HTTP API, MC update from cached values)
+            # is free and continues to run.
+            helius_ok = True
+            try:
+                from helius_gate import is_helius_paused
+                helius_ok = not is_helius_paused()
+            except Exception:
+                pass
+            if is_graduated and helius_ok:
+                pool = bucket.get("pumpswap_pool") or c.get("pump_swap_pool") or ""
+                if pool and pool not in cold_pools:
+                    try:
+                        ps_state = pool_states.get(pool) or await pumpswap.fetch_pool_state(pool)
+                        bucket["_pool_read_ts"] = now
+                        if ps_state:
+                            if not ps_state.get("quote_is_sol", True):
+                                bucket["quote_mint"], bucket["quote_symbol"] = ps_state.get("quote_mint"), ps_state.get("quote_symbol")
+                            cur_price = pumpswap.price_sol_per_raw_token(ps_state)
+                            # PumpSwap quote_reserves IS the actual WSOL
+                            # in the pool — no virtual offset like Pump.fun.
+                            # Store as real_sol (not virtual) so the scanner
+                            # band gate sees the correct liquidity.
+                            bucket["last_real_sol_lamports"] = ps_state["quote_reserves"]
+                            bucket["last_vsr_lamports"] = ps_state["quote_reserves"]  # legacy compat
+                            # Fallback MC computation when Pump.fun API gave
+                            # us nothing (the usual case for graduated tokens).
+                            # Pump.fun's standard MC formula is `price * 1B`
+                            # (the full token supply). Compute it directly
+                            # from pool reserves so the seasoned gate has
+                            # live USD data instead of a stale seed value.
+                            #   MC_SOL  = (quote / base) * total_supply_raw
+                            #           = (quote/base) * 1e15 / 1e9 lamports/SOL
+                            #           = quote * 1e6 / base                 (in SOL)
+                            #   MC_USD  = MC_SOL * sol_usd
+                            # Always prefer the live pool MC: the Pump.fun API's usd_market_cap for graduated coins
+                            # lags / freezes, and mixing the two sources made MC velocity read -2 %/5m on a +100 %/h
+                            # token (operator report 2026-10-08).
+                            if sol_usd > 0:
+                                base = float(ps_state.get("base_reserves") or 0)
+                                quote = float(ps_state.get("quote_reserves") or 0)
+                                if base > 0 and quote > 0:
+                                    mc_sol = quote * 1e6 / base
+                                    usd_mc = mc_sol * sol_usd
+                                    bucket["mc_source"] = "pool"
+                            # holder count: PumpSwap swaps never hit the Pump.fun tape, so `buyers` stays empty for
+                            # graduated coins — count token accounts via Helius DAS every HOLDERS_REFRESH_S instead
+                            if now - float(bucket.get("_holders_ts") or 0) >= HOLDERS_REFRESH_S:
+                                bucket["_holders_ts"] = now
+                                asyncio.create_task(self._refresh_holders(mint, bucket))
+                            # Same proxy for `last_trade_timestamp` — when
+                            # the API gives us nothing we use NOW (we
+                            # successfully fetched live pool state, so
+                            # the token is reachable). Inaccurate by up
+                            # to the refresh interval (~60s) but bounded.
+                            if last_trade_ms <= 0:
+                                last_trade_ms = int(now * 1000)
+                    except Exception as e:
+                        logger.debug(f"refresh pool fetch failed for {mint}: {e}")
+            else:
+                vsr = int(c.get("virtual_sol_reserves") or 0)
+                vtr = int(c.get("virtual_token_reserves") or 0)
+                real_sol = int(c.get("real_sol_reserves") or 0)
+                if vsr and vtr:
+                    cur_price = vsr / vtr / LAMPORTS_PER_SOL
+                    bucket["last_vsr_lamports"] = vsr
+                    # Pump.fun returns real_sol_reserves directly in the
+                    # coin doc — prefer it over the legacy vsr-30 estimate.
+                    if real_sol > 0:
+                        bucket["last_real_sol_lamports"] = real_sol
+            # Update bucket — ONLY overwrite when we have a meaningful
+            # value. The Pump.fun API returns 0 for usd_market_cap on
+            # graduated tokens (or empty body, parsed as 0); never
+            # overwrite a healthy seed value with 0.
+            if usd_mc > 0:
+                bucket["usd_market_cap"] = usd_mc
+            if last_trade_ms > 0:
+                bucket["last_trade_ms"] = last_trade_ms
+            # Graduation transition — if the bucket is still tagged
+            # pumpfun but the API now reports complete=True, migrate it
+            # to pumpswap and stamp `graduated_at` so the scanner's
+            # Seasoned band can start counting age from this moment.
+            # (Tokens DISCOVERED post-graduation already have these set
+            # at seed time — this branch handles tokens we observed
+            # pre-grad that flipped mid-tracking.)
+            if is_graduated and bucket.get("protocol") != "pumpswap":
+                bucket["protocol"] = "pumpswap"
+                bucket["graduated_at"] = now
+                bucket["curve_fill_pct"] = 100.0
+                # Resolve a pool address now so the scanner doesn't need
+                # to fetch it on the next pass.
+                pool_addr = bucket.get("pumpswap_pool") or c.get("pump_swap_pool") or ""
+                if not pool_addr:
+                    try:
+                        pool_addr = await pumpswap.find_pool_for_mint(mint) or ""
+                    except Exception:
+                        pool_addr = ""
+                if pool_addr:
+                    bucket["pumpswap_pool"] = pool_addr
+                # Persist `graduated_at` on the launch doc so analytics
+                # and the post-restart scanner have a consistent origin.
                 try:
-                    from helius_gate import is_helius_paused
-                    helius_ok = not is_helius_paused()
+                    from datetime import datetime, timezone as _tz
+                    await st.db.launches.update_one(
+                        {"mint": mint, "graduated_at": {"$in": [None, ""]}},
+                        {"$set": {
+                            "graduated_at": datetime.fromtimestamp(now, _tz.utc).isoformat(),
+                        }},
+                    )
                 except Exception:
                     pass
-                if is_graduated and helius_ok:
-                    pool = bucket.get("pumpswap_pool") or c.get("pump_swap_pool") or ""
-                    if pool and pool not in cold_pools:
-                        try:
-                            ps_state = pool_states.get(pool) or await pumpswap.fetch_pool_state(pool)
-                            bucket["_pool_read_ts"] = now
-                            if ps_state:
-                                if not ps_state.get("quote_is_sol", True):
-                                    bucket["quote_mint"], bucket["quote_symbol"] = ps_state.get("quote_mint"), ps_state.get("quote_symbol")
-                                cur_price = pumpswap.price_sol_per_raw_token(ps_state)
-                                # PumpSwap quote_reserves IS the actual WSOL
-                                # in the pool — no virtual offset like Pump.fun.
-                                # Store as real_sol (not virtual) so the scanner
-                                # band gate sees the correct liquidity.
-                                bucket["last_real_sol_lamports"] = ps_state["quote_reserves"]
-                                bucket["last_vsr_lamports"] = ps_state["quote_reserves"]  # legacy compat
-                                # Fallback MC computation when Pump.fun API gave
-                                # us nothing (the usual case for graduated tokens).
-                                # Pump.fun's standard MC formula is `price * 1B`
-                                # (the full token supply). Compute it directly
-                                # from pool reserves so the seasoned gate has
-                                # live USD data instead of a stale seed value.
-                                #   MC_SOL  = (quote / base) * total_supply_raw
-                                #           = (quote/base) * 1e15 / 1e9 lamports/SOL
-                                #           = quote * 1e6 / base                 (in SOL)
-                                #   MC_USD  = MC_SOL * sol_usd
-                                # Always prefer the live pool MC: the Pump.fun API's usd_market_cap for graduated coins
-                                # lags / freezes, and mixing the two sources made MC velocity read -2 %/5m on a +100 %/h
-                                # token (operator report 2026-10-08).
-                                if sol_usd > 0:
-                                    base = float(ps_state.get("base_reserves") or 0)
-                                    quote = float(ps_state.get("quote_reserves") or 0)
-                                    if base > 0 and quote > 0:
-                                        mc_sol = quote * 1e6 / base
-                                        usd_mc = mc_sol * sol_usd
-                                        bucket["mc_source"] = "pool"
-                                # holder count: PumpSwap swaps never hit the Pump.fun tape, so `buyers` stays empty for
-                                # graduated coins — count token accounts via Helius DAS every HOLDERS_REFRESH_S instead
-                                if now - float(bucket.get("_holders_ts") or 0) >= HOLDERS_REFRESH_S:
-                                    bucket["_holders_ts"] = now
-                                    asyncio.create_task(self._refresh_holders(mint, bucket))
-                                # Same proxy for `last_trade_timestamp` — when
-                                # the API gives us nothing we use NOW (we
-                                # successfully fetched live pool state, so
-                                # the token is reachable). Inaccurate by up
-                                # to the refresh interval (~60s) but bounded.
-                                if last_trade_ms <= 0:
-                                    last_trade_ms = int(now * 1000)
-                        except Exception as e:
-                            logger.debug(f"refresh pool fetch failed for {mint}: {e}")
-                else:
-                    vsr = int(c.get("virtual_sol_reserves") or 0)
-                    vtr = int(c.get("virtual_token_reserves") or 0)
-                    real_sol = int(c.get("real_sol_reserves") or 0)
-                    if vsr and vtr:
-                        cur_price = vsr / vtr / LAMPORTS_PER_SOL
-                        bucket["last_vsr_lamports"] = vsr
-                        # Pump.fun returns real_sol_reserves directly in the
-                        # coin doc — prefer it over the legacy vsr-30 estimate.
-                        if real_sol > 0:
-                            bucket["last_real_sol_lamports"] = real_sol
-                # Update bucket — ONLY overwrite when we have a meaningful
-                # value. The Pump.fun API returns 0 for usd_market_cap on
-                # graduated tokens (or empty body, parsed as 0); never
-                # overwrite a healthy seed value with 0.
-                if usd_mc > 0:
-                    bucket["usd_market_cap"] = usd_mc
-                if last_trade_ms > 0:
-                    bucket["last_trade_ms"] = last_trade_ms
-                # Graduation transition — if the bucket is still tagged
-                # pumpfun but the API now reports complete=True, migrate it
-                # to pumpswap and stamp `graduated_at` so the scanner's
-                # Seasoned band can start counting age from this moment.
-                # (Tokens DISCOVERED post-graduation already have these set
-                # at seed time — this branch handles tokens we observed
-                # pre-grad that flipped mid-tracking.)
-                if is_graduated and bucket.get("protocol") != "pumpswap":
-                    bucket["protocol"] = "pumpswap"
-                    bucket["graduated_at"] = now
-                    bucket["curve_fill_pct"] = 100.0
-                    # Resolve a pool address now so the scanner doesn't need
-                    # to fetch it on the next pass.
-                    pool_addr = bucket.get("pumpswap_pool") or c.get("pump_swap_pool") or ""
-                    if not pool_addr:
-                        try:
-                            pool_addr = await pumpswap.find_pool_for_mint(mint) or ""
-                        except Exception:
-                            pool_addr = ""
-                    if pool_addr:
-                        bucket["pumpswap_pool"] = pool_addr
-                    # Persist `graduated_at` on the launch doc so analytics
-                    # and the post-restart scanner have a consistent origin.
-                    try:
-                        from datetime import datetime, timezone as _tz
-                        await st.db.launches.update_one(
-                            {"mint": mint, "graduated_at": {"$in": [None, ""]}},
-                            {"$set": {
-                                "graduated_at": datetime.fromtimestamp(now, _tz.utc).isoformat(),
-                            }},
-                        )
-                    except Exception:
-                        pass
-                # Refresh social proof fields ONLY when API gave us data.
-                # Without this guard, graduated tokens (empty API response)
-                # would have their seed socials silently nuked to "" / 0.
-                if c:
-                    bucket["reply_count"] = int(c.get("reply_count") or 0)
-                    bucket["twitter"] = (c.get("twitter") or "").strip()
-                    bucket["telegram"] = (c.get("telegram") or "").strip()
-                    bucket["website"] = (c.get("website") or "").strip()
-                    # Cumulative buyer count from the Pump.fun coin endpoint
-                    # (only refreshed when API responded — empty body would
-                    # have zeroed this out for graduated tokens). PumpSwap
-                    # pools don't generate Helius mempool events, so the
-                    # in-memory `buyers` set stays empty — `buy_count` is
-                    # one signal we have for "how many people are buying"
-                    # on seasoned tokens, though Pump.fun's API doesn't
-                    # track post-graduation buys (the value plateaus at
-                    # the graduation snapshot).
-                    if c.get("buy_count") is not None:
-                        bucket["buy_count"] = int(c["buy_count"])
-                if cur_price > 0:
-                    bucket["last_price_sol"] = cur_price
-                # Append rolling MC sample. Skip zero values so the velocity
-                # window doesn't get poisoned with a "MC dropped to 0" data
-                # point when Pump.fun's API has a transient failure.
-                if usd_mc > 0:
-                    mc_samples = bucket.setdefault("mc_samples", deque(maxlen=MC_SAMPLE_KEEP))
-                    mc_samples.append((now, usd_mc))
-                # Append rolling price sample (used by the entry-velocity gate)
-                if cur_price > 0:
-                    price_samples = bucket.setdefault("price_samples", deque(maxlen=120))
-                    price_samples.append((now, cur_price))
-                # Be polite to Pump.fun's per-mint endpoint
-                await asyncio.sleep(0.15)
+            # Refresh social proof fields ONLY when API gave us data.
+            # Without this guard, graduated tokens (empty API response)
+            # would have their seed socials silently nuked to "" / 0.
+            if c:
+                bucket["reply_count"] = int(c.get("reply_count") or 0)
+                bucket["twitter"] = (c.get("twitter") or "").strip()
+                bucket["telegram"] = (c.get("telegram") or "").strip()
+                bucket["website"] = (c.get("website") or "").strip()
+                # Cumulative buyer count from the Pump.fun coin endpoint
+                # (only refreshed when API responded — empty body would
+                # have zeroed this out for graduated tokens). PumpSwap
+                # pools don't generate Helius mempool events, so the
+                # in-memory `buyers` set stays empty — `buy_count` is
+                # one signal we have for "how many people are buying"
+                # on seasoned tokens, though Pump.fun's API doesn't
+                # track post-graduation buys (the value plateaus at
+                # the graduation snapshot).
+                if c.get("buy_count") is not None:
+                    bucket["buy_count"] = int(c["buy_count"])
+            if cur_price > 0:
+                bucket["last_price_sol"] = cur_price
+            # Append rolling MC sample. Skip zero values so the velocity
+            # window doesn't get poisoned with a "MC dropped to 0" data
+            # point when Pump.fun's API has a transient failure.
+            if usd_mc > 0:
+                mc_samples = bucket.setdefault("mc_samples", deque(maxlen=MC_SAMPLE_KEEP))
+                mc_samples.append((now, usd_mc))
+            # Append rolling price sample (used by the entry-velocity gate)
+            if cur_price > 0:
+                price_samples = bucket.setdefault("price_samples", deque(maxlen=120))
+                price_samples.append((now, cur_price))
+            await asyncio.sleep(0.05 if bucket.get("protocol") == "pumpswap" else 0.15)   # RPC pacing for curve reads
         self._evict_quiet(now)
         logger.debug(f"discovery refresh: updated {len(targets)} tokens")
 
@@ -488,16 +481,17 @@ class PumpfunDiscovery:
                 continue
             created_ms = c.get("created_timestamp") or 0
             created_s = created_ms / 1000.0
-            # _fetch_aged_coins already filtered to the band, but double-check
-            if not (lo_ts <= created_s <= hi_ts):
-                continue
             # Graduated tokens trade on PumpSwap AMM. We still want them — they're
             # often the biggest movers — so just tag the protocol.
             is_pumpswap = bool(c.get("complete"))
+            # _fetch_aged_coins already filtered to the band, but double-check (graduated pools use the Seasoned clock)
+            if not is_pumpswap and not (lo_ts <= created_s <= hi_ts):
+                continue
+            grad_s = float(c.get("graduated_at_s") or now) if is_pumpswap else None
             # Operator scope: a token outside its band's time gate, on a switched-off book, or with burnt re-entries
             # would be evicted the moment it was seeded — don't seed it.
             if st.scope_reason(mint, {"protocol": "pumpswap" if is_pumpswap else "pumpfun", "start": created_s,
-                                      "graduated_at": now if is_pumpswap else None}, now):
+                                      "graduated_at": grad_s}, now):
                 skipped_scope += 1
                 continue
             # Freshness pre-filter (cheap): skip tokens whose last curve trade is too stale.
@@ -593,57 +587,35 @@ class PumpfunDiscovery:
         return alive, stats
 
     async def _fetch_aged_coins(self, lo_ts: float, hi_ts: float) -> list[dict]:
-        """Pull tokens via TWO sort orders and merge:
-          1. `last_trade_timestamp DESC` — surfaces actively-traded tokens
-             (covers most NEW band candidates).
-          2. `market_cap DESC`           — surfaces high-MC and graduated
-             tokens whose bonding-curve `last_trade_timestamp` has gone stale
-             since they moved to the PumpSwap AMM.
-        Filtered to the [lo_ts, hi_ts] creation-time band. Sorting via two
-        orders bypasses Pump.fun's ~1000-offset creation-pagination cap and
-        ensures the seasoned band sees both active movers AND big-cap names."""
-        url = f"{PUMPFUN_API}/coins"
-        PAGE_SIZE = 240
-        MAX_PAGES_PER_SORT = 5  # 5×240 = ~1200 tokens per sort order
+        """Jupiter Tokens v2 lists (GeckoTerminal fallback; Pump.fun's own list API is Cloudflare-gated since 2026-10-14):
+          1. `pump-fun` dex pools (live bonding curves) by 24 h tx count + the newest pools → New-band candidates,
+             filtered to the [lo_ts, hi_ts] creation band.
+          2. `pumpswap` pools by 24 h tx count → Seasoned candidates (graduated, `complete=True`), kept when the pool
+             (= graduation) is younger than the Seasoned band's max age; `run_once` skips the New-band window for these."""
+        import jup_tokens
+        cfg = self.state.config
+        now = time.time()
+        seasoned_max_s = float(getattr(cfg, "band_seasoned_max_age_min", 240.0)) * 60.0
+        curves = (await jup_tokens.curve_candidates()) if cfg.book_scalp_enabled else []
+        pools = await jup_tokens.seasoned_candidates()
+        if not pools:
+            import gecko
+            pools = await gecko.dex_pools("pumpswap", pages=3)
         out: list[dict] = []
         seen: set[str] = set()
-        sort_orders = [
-            ("last_trade_timestamp", "DESC"),
-            ("market_cap", "DESC"),
-        ]
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            for sort_field, order in sort_orders:
-                offset = 0
-                for _ in range(MAX_PAGES_PER_SORT):
-                    params = {
-                        "offset": offset,
-                        "limit": PAGE_SIZE,
-                        "sort": sort_field,
-                        "order": order,
-                        "includeNsfw": "true",
-                    }
-                    try:
-                        r = await client.get(url, params=params, headers={"accept": "application/json"})
-                        r.raise_for_status()
-                        page = r.json()
-                        if isinstance(page, dict):
-                            page = page.get("data") or page.get("coins") or []
-                        if not isinstance(page, list) or not page:
-                            break
-                    except Exception as e:
-                        logger.warning(f"pumpfun coins API page sort={sort_field} offset={offset} failed: {e}")
-                        break
-                    for c in page:
-                        mint = c.get("mint")
-                        if not mint or mint in seen:
-                            continue
-                        seen.add(mint)
-                        ts_s = (c.get("created_timestamp") or 0) / 1000.0
-                        if lo_ts <= ts_s <= hi_ts:
-                            out.append(c)
-                    offset += PAGE_SIZE
-                    # Be a polite client between pages
-                    await asyncio.sleep(0.25)
+        for c in curves + pools:
+            mint = c["mint"]
+            if mint in seen:
+                continue
+            ts_s = (c.get("created_timestamp") or 0) / 1000.0
+            if c.get("complete"):
+                grad_s = float(c.get("graduated_at_s") or ts_s or 0)
+                if grad_s and now - grad_s > seasoned_max_s:
+                    continue
+            elif not (lo_ts <= ts_s <= hi_ts):
+                continue
+            seen.add(mint)
+            out.append(c)
         return out
 
     async def _refresh_holders(self, mint: str, bucket: dict) -> None:
@@ -666,11 +638,24 @@ class PumpfunDiscovery:
     async def _seed_token(self, coin: dict, created_s: float, is_pumpswap: bool = False, pool_state: dict | None = None):
         st = self.state
         mint = coin["mint"]
+        if not is_pumpswap and not coin.get("virtual_sol_reserves"):
+            # list sources without curve reserves (GeckoTerminal): read the curve once so price / liquidity / creator are real
+            try:
+                cs = await pumpfun.fetch_bonding_curve_state(mint)
+                if cs:
+                    quote_book.normalize(cs)
+                    coin = {**coin, "virtual_sol_reserves": cs.get("virtual_sol_reserves"), "virtual_token_reserves": cs.get("virtual_token_reserves"),
+                            "real_sol_reserves": cs.get("real_sol_reserves"), "creator": coin.get("creator") or cs.get("creator") or "",
+                            "complete": bool(cs.get("complete")), "quote_mint": coin.get("quote_mint") or cs.get("quote_mint")}
+            except Exception as e:
+                logger.debug(f"curve read for seed {mint[:8]} failed: {e}")
         vsr = int(coin.get("virtual_sol_reserves") or 0)
         vtr = int(coin.get("virtual_token_reserves") or 0)
         usd_mc = float(coin.get("usd_market_cap") or 0.0)
         last_trade_ms = int(coin.get("last_trade_timestamp") or 0)
         pool_quote: tuple = (None, None)                 # (quote_mint, quote_symbol) for non-SOL-paired pools
+        if coin.get("quote_mint") and not is_sol_quote(coin.get("quote_mint")):
+            pool_quote = (coin["quote_mint"], quote_book.symbol(coin["quote_mint"]))
         pool_address = coin.get("pump_swap_pool") or coin.get("pool_address") or ""
 
         # Resolve current price per protocol
@@ -712,7 +697,7 @@ class PumpfunDiscovery:
             # band's age clock would be massively inflated. Fall back to
             # "now" so freshly discovered post-grad tokens enter the band
             # at age 0 (the high-EV window starts when we SEE them).
-            "graduated_at": time.time() if is_pumpswap else None,
+            "graduated_at": (float(coin.get("graduated_at_s") or time.time())) if is_pumpswap else None,
             "buyers": set(),
             "buy_events": deque(maxlen=EVENT_KEEP),
             "sol_inflow_lamports": 0,
