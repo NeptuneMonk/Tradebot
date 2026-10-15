@@ -420,6 +420,28 @@ class _ImportReq(BaseModel):
     sweep_old: bool = False
 
 
+async def _sweep_sol(from_kp, to_pk) -> dict:
+    """Move ALL SOL from `from_kp` to `to_pk`. The account must end at exactly 0 lamports — the runtime rejects a
+    system account left between 0 and the rent-exempt minimum — so the fee is computed exactly and subtracted."""
+    import pumpfun
+    from solders.system_program import TransferParams, transfer
+    out = {"lamports": 0, "signature": None, "error": None}
+    try:
+        bal = int((await get_sol_balance(str(from_kp.pubkey()), fresh=True)) * 1_000_000_000)
+        cu, prio = 5_000, int(bot_state.config.priority_fee_microlamports)
+        fee = 5_000 + -(-cu * prio // 1_000_000)
+        amount = bal - fee
+        if amount <= 0:
+            out["error"] = f"nothing to sweep ({bal} lamports ≤ fee {fee})" if bal else None
+            return out
+        ix = transfer(TransferParams(from_pubkey=from_kp.pubkey(), to_pubkey=to_pk, lamports=amount))
+        sig = await pumpfun.send_versioned_tx(from_kp, [ix], prio, compute_unit_limit=cu)
+        out.update(lamports=amount, signature=sig)
+    except Exception as e:
+        out["error"] = str(e)
+    return out
+
+
 @api.post("/wallet/import")
 async def wallet_import(req: _ImportReq):
     """Make an existing key (Phantom / Solflare base58 or JSON array) THE bot wallet. Paper mode + no open live
@@ -449,15 +471,7 @@ async def wallet_import(req: _ImportReq):
                                                                   "updated_at": datetime.now(timezone.utc).isoformat(), "source": "import"}}, upsert=True)
     swept = {"lamports": 0, "signature": None, "error": None}
     if req.sweep_old:
-        try:
-            bal = int((await get_sol_balance(old_pk, fresh=True)) * 1_000_000_000)
-            amount = bal - 15_000
-            if amount > 0:
-                ix = transfer(TransferParams(from_pubkey=old_kp.pubkey(), to_pubkey=kp.pubkey(), lamports=amount))
-                sig = await pumpfun.send_versioned_tx(old_kp, [ix], bot_state.config.priority_fee_microlamports)
-                swept.update(lamports=amount, signature=sig)
-        except Exception as e:
-            swept["error"] = str(e)
+        swept = await _sweep_sol(old_kp, kp.pubkey())
     logger.critical(f"WALLET IMPORTED: {old_pk} → {get_pubkey_str()} (retired {retired.name if retired else 'env key'}); swept {swept['lamports']} lamports")
     try:
         await hub.broadcast("wallet", (await wallet_info()).model_dump())
@@ -466,6 +480,25 @@ async def wallet_import(req: _ImportReq):
     return {"ok": True, "old_public_key": old_pk, "public_key": get_pubkey_str(), "retired_key_file": str(retired) if retired else None, "swept": swept,
             "note": "the imported key is stored for every pod and survives redeploys; positions you open or sell from Phantom/Pump.fun on this "
                     "wallet are reconciled from chain (external sells are booked, closed token accounts are skipped)"}
+
+
+@api.post("/wallet/sweep-retired")
+async def wallet_sweep_retired():
+    """Re-run the SOL sweep from the most recently retired key file into the current wallet (for an import whose
+    sweep failed). Token dust on the old key is left alone — use Pump.fun / Phantom with that key if you need it."""
+    import json as _json
+    from wallet import WALLET_PATH, parse_secret, get_pubkey
+    retired = sorted(WALLET_PATH.parent.glob(f"{WALLET_PATH.name}.retired-*"), key=lambda p: p.stat().st_mtime)
+    if not retired:
+        raise HTTPException(404, "no retired key file on this pod")
+    old_kp = parse_secret(_json.loads(retired[-1].read_text())["secret_key_b58"])
+    swept = await _sweep_sol(old_kp, get_pubkey())
+    logger.warning(f"retired-wallet sweep {old_kp.pubkey()} → {get_pubkey()}: {swept}")
+    try:
+        await hub.broadcast("wallet", (await wallet_info()).model_dump())
+    except Exception:
+        pass
+    return {"ok": swept["error"] is None, "from": str(old_kp.pubkey()), "to": str(get_pubkey()), "swept": swept}
 
 
 @api.post("/trades/{trade_id}/force-recover")
