@@ -281,6 +281,45 @@ async def get_tx_wallet_delta_lamports(sig: str, wallet: str) -> int | None:
         return None
     return int(post[idx]) - int(pre[idx])
 
+STABLE_MINTS = {"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 6,       # USDC
+                "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": 6}      # USDT
+
+
+async def get_tx_sale_details(sig: str, wallet: str, mint: str) -> dict | None:
+    """What a confirmed tx did to `wallet`'s `mint` position: {tokens_sold, lamports (signed wallet SOL delta),
+    stable_usd (USDC/USDT gained), signer_is_wallet}. None when the tx failed / isn't found / did not reduce the
+    position — so an ATA close (rent reclaim) or an unrelated transfer is never mistaken for a sale."""
+    res = await rpc_call("getTransaction", [sig, {"encoding": "jsonParsed", "commitment": "confirmed", "maxSupportedTransactionVersion": 0}])
+    tx = res.get("result")
+    if not tx:
+        return None
+    meta = tx.get("meta") or {}
+    if meta.get("err") is not None:
+        return None
+    msg = (tx.get("transaction") or {}).get("message") or {}
+    keys = [k if isinstance(k, str) else (k.get("pubkey") or "") for k in (msg.get("accountKeys") or [])]
+
+    def _amt(rows: list, want_mint: str) -> int:
+        return sum(int((r.get("uiTokenAmount") or {}).get("amount") or 0) for r in rows if r.get("owner") == wallet and r.get("mint") == want_mint)
+
+    pre_rows, post_rows = meta.get("preTokenBalances") or [], meta.get("postTokenBalances") or []
+    sold = _amt(pre_rows, mint) - _amt(post_rows, mint)
+    if sold <= 0:
+        return None
+    lamports = 0
+    if wallet in keys:
+        idx = keys.index(wallet)
+        pre, post = meta.get("preBalances") or [], meta.get("postBalances") or []
+        if idx < len(pre) and idx < len(post):
+            lamports = int(post[idx]) - int(pre[idx])
+    stable_usd = 0.0
+    for smint, dec in STABLE_MINTS.items():
+        gained = _amt(post_rows, smint) - _amt(pre_rows, smint)
+        if gained > 0:
+            stable_usd += gained / (10 ** dec)
+    return {"tokens_sold": int(sold), "lamports": lamports, "stable_usd": stable_usd, "signer_is_wallet": bool(keys) and keys[0] == wallet}
+
+
 
 _sol_price_cache = {"price": 0.0, "ts": 0.0}
 

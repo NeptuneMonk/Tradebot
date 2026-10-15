@@ -20,7 +20,7 @@ from classifier import classify
 import pumpfun
 from quote_mints import quote_book, is_sol_quote
 import pumpswap
-from solana_client import get_sol_usd_price, LAMPORTS_PER_SOL, get_tx_wallet_delta_lamports, rpc_call
+from solana_client import get_sol_usd_price, LAMPORTS_PER_SOL, get_tx_wallet_delta_lamports, get_tx_sale_details, rpc_call
 import solana_client
 import landing
 import multihop
@@ -4070,6 +4070,20 @@ class BotState:
 
         cu = CU_PUMPSWAP if protocol == "pumpswap" else CU_PUMPFUN
         est_entry_fee_sol = estimate_tx_fee_sol(eff_priority, cu)
+        if mode == "live":
+            # Pre-flight: size + max-slip headroom + priority fee + tip + token-account rent (+ WSOL rent on pools) must
+            # already be in the wallet, else the buy lands and reverts with Custom:1 — burning the fee for nothing.
+            from solana_client import get_sol_balance
+            try:
+                bal_sol = float(await get_sol_balance(str(get_pubkey()), fresh=True))
+            except Exception:
+                bal_sol = -1.0
+            need_sol = (sol_in_lamports * (10_000 + eff_slip) / 10_000) / LAMPORTS_PER_SOL + est_entry_fee_sol + 0.0003 \
+                + 0.00204 * (2 if protocol == "pumpswap" or _qm else 1) + 0.001          # tip + ATA rent(s) + keep-alive
+            if 0 <= bal_sol < need_sol:
+                await self._refuse(launch.mint, _band, "wallet-balance",
+                                   f"wallet {bal_sol:.4f} SOL < {need_sol:.4f} SOL needed for ${trade_usd:.2f} + fees + rent — top up or lower the size")
+                return
 
         # Use the creator stored ON the bonding curve, NOT launch metadata.
         # For Pump.fun trades the program checks creator_vault PDA seeds against
@@ -5227,15 +5241,30 @@ class BotState:
                                      use_sender=bool(cfg.exit_use_sender), label=label, alts=alts)
 
     async def _find_sale_on_chain(self, mint: str, trade_doc: dict) -> tuple[str, int] | None:
-        """(sig, lamports credited) of a sell that landed without being booked: pending sigs first, then the
-        token account's own history. None when the tokens never left through a sale we can see."""
+        """(sig, lamports-equivalent credited) of a sell that landed without being booked: pending sigs first, then the
+        token account's own history. A tx only counts when it actually REDUCED our balance of `mint` — an ATA close
+        (rent reclaim), an airdrop or an unrelated transfer never does, so they can't be booked as the sale (2026-10-15:
+        a rent refund was booked as the exit of two positions at once). Sales routed to USDC/USDT by an external app
+        (Pump.fun mobile sells to USDC via a relayer) are priced through SOL/USD."""
         wallet = str(get_pubkey())
+        sol_usd = await get_sol_usd_price() or 0.0
+
+        async def proceeds(sig: str) -> int | None:
+            d = await get_tx_sale_details(sig, wallet, mint)
+            if not d:
+                return None
+            lam = max(0, int(d["lamports"]))
+            if d["stable_usd"] > 0 and sol_usd > 0:
+                lam += int(d["stable_usd"] / sol_usd * LAMPORTS_PER_SOL)
+            return lam
+
         sigs = [s for s in (trade_doc.get("pending_exit_sigs") or []) if s]
         if sigs:
             sig, err = await landing.wait_for_landing(sigs, timeout_s=0.2, interval_s=0.1)
             if sig and err is None:
-                delta = await get_tx_wallet_delta_lamports(sig, wallet)
-                return sig, int(delta or 0)
+                lam = await proceeds(sig)
+                if lam is not None:
+                    return sig, lam
         try:
             mint_pk = Pubkey.from_string(mint)
             tp = await pumpfun.get_mint_token_program(mint)
@@ -5246,9 +5275,9 @@ class BotState:
                 sig = row.get("signature")
                 if row.get("err") is not None or not sig or sig in skip:
                     continue
-                delta = await get_tx_wallet_delta_lamports(sig, wallet)
-                if delta is not None and delta > 0:
-                    return sig, int(delta)
+                lam = await proceeds(sig)
+                if lam is not None:
+                    return sig, lam
         except Exception as e:
             logger.debug(f"on-chain sale lookup failed {mint[:8]}…: {e}")
         return None

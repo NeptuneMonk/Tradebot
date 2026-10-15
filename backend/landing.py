@@ -35,6 +35,13 @@ def _remember(sig: str, land_s: float, prio: int, rungs: int, mode: str | None) 
     LAST[sig] = {"land_s": round(land_s, 2), "prio": int(prio), "rungs": int(rungs), "tip_sol": tip}
 
 
+MAX_TX_BYTES = 1232
+
+
+class TxTooLarge(RuntimeError):
+    """Oversized before send — no rung retry can help; the caller must re-route."""
+
+
 class NotLanded(RuntimeError):
     def __init__(self, sigs: list[str], budget_s: float):
         super().__init__(f"tx not landed in {budget_s:.0f}s across {len(sigs)} rung(s): {[s[:8] for s in sigs]}")
@@ -69,7 +76,10 @@ async def _sign(keypair, ixs: list, priority: int, cu_limit: int, sender_mode: s
     msg = MessageV0.try_compile(payer=payer, instructions=full, address_lookup_table_accounts=list(alts or []),
                                 recent_blockhash=Hash.from_string(bh["result"]["value"]["blockhash"]))
     tx = VersionedTransaction(msg, [keypair])
-    return str(tx.signatures[0]), base64.b64encode(bytes(tx)).decode()
+    raw = bytes(tx)
+    if len(raw) > MAX_TX_BYTES:
+        raise TxTooLarge(f"tx is {len(raw)} bytes > {MAX_TX_BYTES} ({len(msg.account_keys)} static accounts) — route needs a lookup table")
+    return str(tx.signatures[0]), base64.b64encode(raw).decode()
 
 
 async def _send_rpc(raw_b64: str) -> None:
@@ -135,6 +145,8 @@ async def land_tx(keypair, instructions: list, *, priority_ladder: list[int], co
                 await _broadcast(raw, mode)
                 sent.append((sig, raw, prio))
                 logger.info(f"LAND {label} rung {rung + 1}/{len(priority_ladder)} prio={prio} µL sig={sig[:12]}… t+{now - t0:.1f}s")
+            except TxTooLarge:
+                raise
             except Exception as e:
                 logger.warning(f"LAND {label} rung {rung + 1} send failed: {e}")
             rung += 1

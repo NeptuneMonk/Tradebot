@@ -22,18 +22,27 @@ CU_CAP = 900_000
 _ALT_CACHE: dict[str, AddressLookupTableAccount] = {}
 
 
+MAX_ROUTE_ACCOUNTS = (48, 64)    # tight first (fits with our compute-budget + Sender tip ixs), then Jupiter's default
+
+
 class JupiterError(RuntimeError):
     pass
 
 
 async def quote(input_mint: str, output_mint: str, amount: int, slippage_bps: int) -> dict:
-    params = {"inputMint": input_mint, "outputMint": output_mint, "amount": str(int(amount)), "slippageBps": int(slippage_bps)}
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        r = await client.get(f"{LITE}/quote", params=params)
-    j = r.json() if r.content else {}
-    if r.status_code != 200 or "routePlan" not in j:
-        raise JupiterError(f"quote {input_mint[:6]}→{output_mint[:6]}: {j.get('error') or j.get('message') or r.status_code}")
-    return j
+    last = "no route"
+    for max_acc in MAX_ROUTE_ACCOUNTS:
+        params = {"inputMint": input_mint, "outputMint": output_mint, "amount": str(int(amount)), "slippageBps": int(slippage_bps),
+                  "maxAccounts": max_acc}
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(f"{LITE}/quote", params=params)
+        j = r.json() if r.content else {}
+        if r.status_code == 200 and "routePlan" in j:
+            return j
+        last = j.get("error") or j.get("message") or r.status_code
+        if j.get("errorCode") != "NO_ROUTES_FOUND":
+            break
+    raise JupiterError(f"quote {input_mint[:6]}→{output_mint[:6]}: {last}")
 
 
 def _ix(d: dict) -> Instruction:
