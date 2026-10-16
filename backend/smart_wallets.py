@@ -44,7 +44,7 @@ class SmartWallets:
         self.learned: dict[str, dict] = {}
         self.fires: deque = deque()
         self.recent: deque = deque(maxlen=RECENT_EVENTS)
-        self.stats = {"hits": 0, "fired": 0, "opened": 0, "refused": 0, "out_of_window": 0, "rate_capped": 0,
+        self.stats = {"hits": 0, "fired": 0, "opened": 0, "refused": 0, "parked": 0, "out_of_window": 0, "rate_capped": 0,
                       "graded_buys": 0, "graded_launches": 0, "wins": 0, "misses": 0}
         self._dirty: set[str] = set()
         self._task: asyncio.Task | None = None
@@ -170,11 +170,30 @@ class SmartWallets:
             return
         early[wallet] = {"ts": now, "price": price, "peak": price, "sol": lamports / LAMPORTS_PER_SOL}
 
+    def parked(self, b: dict, now: float | None = None) -> dict | None:
+        """Smart buy that could not be taken (slots full, cap…): the token is held in the candidate window for a while."""
+        p = b.get("smart_parked")
+        if not p:
+            return None
+        now = now or time.time()
+        if float(p.get("until") or 0) <= now:
+            b.pop("smart_parked", None)
+            return None
+        return {**p, "left_s": int(float(p["until"]) - now)}
+
+    def _park(self, b: dict, ev: dict, reason: str, now: float) -> None:
+        ttl = float(self._cfg("smart_wallet_park_s", 300) or 0)
+        if ttl <= 0:
+            return
+        b["smart_parked"] = {"wallet": ev["wallet"], "kind": ev["kind"], "label": ev.get("label") or "", "sol": ev.get("sol"),
+                             "reason": reason, "ts": now, "until": now + ttl}
+        self.stats["parked"] = self.stats.get("parked", 0) + 1
+
     def _maybe_fire(self, mint: str, b: dict, wallet: str, kind: str, lamports: int, now: float) -> None:
         st = self.state
         from scanner import MomentumScanner
         ev = {"ts": now, "mint": mint, "symbol": b.get("symbol"), "wallet": wallet, "kind": kind,
-              "sol": round(lamports / LAMPORTS_PER_SOL, 4)}
+              "label": (self.manual.get(wallet) or {}).get("label") or "", "sol": round(lamports / LAMPORTS_PER_SOL, 4)}
         if not st.config.enabled or st.stopping_gracefully:
             return
         if MomentumScanner.classify_band(b, st.config, now) is None:
@@ -188,7 +207,8 @@ class SmartWallets:
             self.fires.popleft()
         if cap and len(self.fires) >= cap:
             self.stats["rate_capped"] += 1
-            self.recent.appendleft({**ev, "result": "rate-cap"})
+            self._park(b, ev, "rate-cap", now)
+            self.recent.appendleft({**ev, "result": "parked: rate-cap"})
             return
         b["_sw_fired"] = now
         self.fires.append(now)
@@ -220,7 +240,9 @@ class SmartWallets:
             self.stats["refused"] += 1
             b.pop("_sw_fired", None)                      # a refusal (hunt-cap, doctor pause…) lets the next smart buy retry
         ref = (b.get("entry_refusal") or {}) if not opened else {}
-        self.recent.appendleft({**ev, "result": "opened" if opened else f"refused: {ref.get('reason') or 'see log'}"})
+        if not opened:
+            self._park(b, ev, ref.get("reason") or "refused", time.time())
+        self.recent.appendleft({**ev, "result": "opened" if opened else f"parked: {ref.get('reason') or 'refused'}"})
         await hub.broadcast("smart_wallet_fire", {**ev, "opened": opened})
 
     # ---------- scanner hooks ----------
@@ -306,7 +328,7 @@ class SmartWallets:
                          "promoted": self._promoted(s), "last_seen": s["last_seen"], "last_win": s.get("last_win"),
                          "best_gain_pct": s.get("best_gain_pct", 0.0)})
         watching = [{"mint": m, "symbol": b.get("symbol"), "hits": len(b.get("smart_hits") or {}),
-                     "age_s": round(now - float(b.get("start") or now))}
+                     "age_s": round(now - float(b.get("start") or now)), "parked": self.parked(b, now)}
                     for m, b in self.state.tracking.items() if b.get("smart_hits")]
         return {"enabled": self.enabled(), "mode": self.mode(),
                 "manual": [{"wallet": w, **m} for w, m in self.manual.items()],

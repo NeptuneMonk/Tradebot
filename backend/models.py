@@ -560,6 +560,7 @@ class BotConfig(BaseModel):
     smart_wallet_mode: Literal["hard", "soft", "both"] = "both"   # hard = buy on a smart buy · soft = relax gates + rank boost · both
     smart_wallet_min_buy_sol: float = 0.2        # a smart wallet's buy must be at least this big to count
     smart_wallet_max_per_hour: int = 6           # hard-trigger rate cap
+    smart_wallet_park_s: int = 300               # a smart buy we could not take (slots full…) stays in the candidate window this long with a buy button
     smart_wallet_hit_ttl_s: int = 180            # how long a smart buy keeps boosting the scanner
     smart_wallet_soft_boost: float = 25.0        # rank points per fresh smart buy
     smart_wallet_gate_relax_pct: float = 50.0    # growth / inflow / new-buyer gates × (1 − this %) while a hit is fresh

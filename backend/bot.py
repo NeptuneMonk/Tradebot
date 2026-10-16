@@ -1615,7 +1615,7 @@ class BotState:
         """Why a bucket must NOT occupy a tracker slot: outside the operator's time gate, its book / the seasoned switch
         is off, the dev is FARMER / fake-chart tagged, or the mint has burnt its re-entry attempts. Held, pending and
         pinned mints are always in scope. Discovery calls this before seeding so out-of-scope tokens never enter."""
-        if b.get("pinned") or mint in self.active_trades or mint in self._pending_entry_mints:
+        if b.get("pinned") or mint in self.active_trades or mint in self._pending_entry_mints or self.smart_wallets.parked(b, now):
             return None
         cfg = self.config
         if b.get("rep_blocked"):
@@ -1814,7 +1814,8 @@ class BotState:
                 return True
             return not b.get("discovered") and now_e - b["start"] > TRACKER_DEAD_AFTER_S and int(b.get("buy_count") or 0) <= 1
         while len(self.tracking) > cap:
-            evictable = [kv for kv in self.tracking.items() if not kv[1].get("pinned") and kv[0] not in self.active_trades]
+            evictable = [kv for kv in self.tracking.items() if not kv[1].get("pinned") and kv[0] not in self.active_trades
+                         and not self.smart_wallets.parked(kv[1], now_e)]
             if not evictable:
                 break
             dead = [kv for kv in evictable if _dead(kv[1])]
@@ -4147,8 +4148,8 @@ class BotState:
             is_research_snipe=is_research_snipe,
             long_term_hold=action == "dev_watch",
             dev_watch=action == "dev_watch",
-            smart_wallet=bucket.get("smart_trigger_wallet") if action == "smart_wallet" else None,
-            smart_wallet_kind=((bucket.get("smart_hits") or {}).get(bucket.get("smart_trigger_wallet") or "") or {}).get("kind") if action == "smart_wallet" else None,
+            smart_wallet=bucket.get("smart_trigger_wallet") if action in ("smart_wallet", "manual") else None,
+            smart_wallet_kind=((bucket.get("smart_hits") or {}).get(bucket.get("smart_trigger_wallet") or "") or {}).get("kind") if action in ("smart_wallet", "manual") else None,
             **fill_cost,
             **plan["trade_fields"],
             # Persist the snipe ctx on the trade doc itself so a restart

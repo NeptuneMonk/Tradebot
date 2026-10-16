@@ -19,6 +19,7 @@ const MODES = [
 const KNOBS = [
   ["smart_wallet_min_buy_sol", "Min buy (SOL)", 0.05, "A smart wallet's buy must be at least this big to count."],
   ["smart_wallet_max_per_hour", "Fires / hour", 1, "Rate cap on hard-trigger entries."],
+  ["smart_wallet_park_s", "Park (s)", 30, "A smart buy the bot could not take (slots full, cap…) stays in the scanner's Smart picks strip with a buy button this long."],
   ["smart_wallet_hit_ttl_s", "Hit TTL (s)", 10, "How long a smart buy keeps boosting the scanner."],
   ["smart_wallet_soft_boost", "Rank boost", 5, "Rank points per fresh smart buy (soft mode)."],
   ["smart_wallet_gate_relax_pct", "Gate relax %", 5, "Growth / inflow / new-buyer gates are reduced by this % while a hit is fresh."],

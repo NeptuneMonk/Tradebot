@@ -68,8 +68,8 @@ function ScannerCandidatesCard({ candidates, config }) {
   const rhMaxM = config?.rh_max_age_min ?? 15;
   const rhRange = rhMinM > 0 ? `${fmt(rhMinM)}–${fmt(rhMaxM)}` : `< ${fmt(rhMaxM)}`;
   const seasonedRange = seasonedMin > 0 ? `${fmt(seasonedMin)}–${fmt(seasonedMax)}` : `< ${fmt(seasonedMax)}`;
-  const newBand = candidates.filter((c) => c.band === "new");
-  const seasonedBand = candidates.filter((c) => c.band === "seasoned");
+  const newBand = candidates.filter((c) => c.band === "new" && !c.smart_parked);
+  const seasonedBand = candidates.filter((c) => c.band === "seasoned" && !c.smart_parked);
   const rhBand = candidates.filter((c) => c.band === "rh_new");
   const totalPassing = candidates.filter((c) => c.passes && c.band !== "rh_new").length;
 
@@ -86,6 +86,8 @@ function ScannerCandidatesCard({ candidates, config }) {
           new {newRange} · seasoned {seasonedRange} · {totalPassing} passing
         </span>
       </div>
+
+      <SmartParkedStrip items={candidates.filter((c) => c.smart_parked)} onOpen={(t) => setDetail(t)} />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         <Band
@@ -115,6 +117,44 @@ function ScannerCandidatesCard({ candidates, config }) {
         />
       </div>
       <TokenDetailDialog token={detail} onClose={() => setDetail(null)} />
+    </div>
+  );
+}
+
+function SmartParkedStrip({ items, onOpen }) {
+  if (!items.length) return null;
+  const left = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  return (
+    <div className="mb-3 border border-amber-700/70 bg-amber-950/20 p-2" data-testid="smart-parked-strip">
+      <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-amber-300 mb-1.5">
+        <Zap className="w-3 h-3" /> Smart wallet picks · {items.length}
+        <span className="normal-case tracking-normal text-neutral-400">a smart wallet bought these inside your window but the bot could not take the slot — buy by hand before they expire</span>
+      </div>
+      <div className="space-y-1">
+        {items.map((c) => {
+          const p = c.smart_parked;
+          return (
+            <div key={c.mint} data-testid={`smart-parked-row-${c.mint}`}
+              className="flex items-center justify-between gap-2 px-2 py-1.5 border border-amber-800/60 bg-neutral-950/60 cursor-pointer"
+              onClick={(e) => { if (!e.target.closest("button, a")) onOpen?.({ chain: "sol", mint: c.mint, symbol: c.symbol, name: c.name }); }}>
+              <div className="min-w-0 flex items-center gap-2 flex-wrap">
+                <span className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-amber-600 text-amber-300 bg-amber-950/40"
+                  title={`${p.kind === "learned" ? "Tape-learned top trader" : "Manual list"} ${p.wallet} bought ${p.sol} SOL`}>
+                  SMART · {p.label || (p.kind === "learned" ? "learned" : `${p.wallet.slice(0, 4)}…${p.wallet.slice(-4)}`)}
+                </span>
+                <span className="font-mono font-semibold text-sm truncate">{c.symbol || "?"}</span>
+                <span className="text-[10px] font-mono text-neutral-500 truncate">{c.name || ""}</span>
+                <span className="text-[10px] font-mono text-neutral-500">{fmtAge(c.age_s)} old · {fmtUsd(c.usd_market_cap)} mc</span>
+                <span className="text-[9px] font-mono px-1.5 py-0.5 border border-neutral-700 text-neutral-400" title="Why the bot did not take it">{p.reason}</span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-[10px] font-mono text-amber-400" data-testid={`smart-parked-left-${c.mint}`}>{left(p.left_s)} left</span>
+                <ManualBuyButton c={c} isRh={false} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

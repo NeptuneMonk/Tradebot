@@ -101,7 +101,7 @@ def test_hard_trigger_fires_once_in_window_and_rate_caps():
         sw.on_buy("m1", b, "top", int(1 * LAMPORTS_PER_SOL), 1.0, now + 1)   # in flight: no second task
         await asyncio.sleep(0)
         assert st.entered == [("m1", "smart_wallet")]
-        assert sw.recent[0]["result"].startswith("refused")                   # stub _enter never opens
+        assert sw.recent[0]["result"].startswith("parked")                    # stub _enter never opens → parked for a manual buy
         assert "_sw_fired" not in b                                           # refusal re-arms the mint
         b2 = _bucket(now - 60)
         sw.on_buy("m2", b2, "top", int(1 * LAMPORTS_PER_SOL), 1.0, now + 2)  # rate cap 1/h
@@ -118,3 +118,24 @@ def test_disabled_still_learns_but_never_triggers():
     b = _bucket(now - 60)
     sw.on_buy("m", b, "top", int(1 * LAMPORTS_PER_SOL), 1.0, now)
     assert "smart_hits" not in b and st.entered == [] and "top" in b["_sw_early"]
+
+
+def test_refused_or_capped_trigger_parks_token_for_manual_buy():
+    async def run():
+        st = _state(smart_wallet_mode="hard", smart_wallet_max_per_hour=1, smart_wallet_park_s=300)
+        sw = SmartWallets(st)
+        sw.manual["top"] = {"label": "Aurelius"}
+        now = time.time()
+        b = _bucket(now - 60)
+        b["entry_refusal"] = {"reason": "hunt-cap", "ts": now}
+        sw.on_buy("m1", b, "top", int(1 * LAMPORTS_PER_SOL), 1.0, now)
+        await asyncio.sleep(0)
+        p = sw.parked(b)
+        assert p and p["reason"] == "hunt-cap" and p["label"] == "Aurelius" and 290 < p["left_s"] <= 300
+        assert sw.recent[0]["result"] == "parked: hunt-cap"
+        b2 = _bucket(now - 60)
+        sw.on_buy("m2", b2, "top", int(1 * LAMPORTS_PER_SOL), 1.0, now)
+        assert sw.parked(b2)["reason"] == "rate-cap"
+        b2["smart_parked"]["until"] = now - 1
+        assert sw.parked(b2) is None and "smart_parked" not in b2        # expired parks clear themselves
+    asyncio.run(run())

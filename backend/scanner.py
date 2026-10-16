@@ -277,9 +277,13 @@ class MomentumScanner:
             if mint in st.entered_mints or mint in st.active_trades:
                 continue
             band = self.classify_band(b, cfg, now)
+            parked = st.smart_wallets.parked(b, now)
             if band is None:
-                continue
+                if not parked:
+                    continue
+                band = "seasoned" if (b.get("protocol") or "pumpfun") == "pumpswap" else "new"   # parked smart pick stays visible
             m = self.score(b, None, now)
+            m["smart_parked"] = parked
             m["mint"] = mint
             m["symbol"] = b.get("symbol")
             m["name"] = b.get("name")

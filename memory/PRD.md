@@ -2583,3 +2583,9 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   `SMART · manual|learned · Abcd…wxyz` (`smart-badge-<mint>`), Trade History shows `SMART` (`smart-badge-<id>`).
 - Live state at hand-off: user added 7 manual top traders (Aurelius, SOSADOTkek, Marcel, Thokani, Whitewhaledev, Slingoor, Limfork), set min buy 2 SOL,
   bot RUNNING, mode both. Learned set ~515 wallets / 6 promoted after ~25 min of tape.
+- ✅ **Parked smart picks** (user ask 2026-10-16): when a hard trigger is refused (hunt-cap / max positions / doctor pause …) or rate-capped, the
+  bucket gets `smart_parked {wallet, kind, label, reason, until}` for `smart_wallet_park_s` (300 s). Parked tokens are in scope (no eviction, no
+  out-of-band drop), appear in `candidates_snapshot` even outside the band (`smart_parked` with `left_s`), and the cockpit CANDIDATES card pins
+  them on top with a `SMART · <label>` chip and a `m:ss · reason · buy` button (`cockpit-cand-smart-buy-<mint>`, → `/scanner/manual-buy`,
+  max positions still applies). Manual buys on a parked token inherit `smart_wallet` / `smart_wallet_kind` on the trade doc. Also surfaced in
+  `ScannerCandidatesCard` as a "Smart wallet picks" strip. Test: `test_refused_or_capped_trigger_parks_token_for_manual_buy`.

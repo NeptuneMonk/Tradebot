@@ -44,8 +44,12 @@ function useTopBlockers() {
   return top;
 }
 
+const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+const shortW = (w) => `${w.slice(0, 4)}…${w.slice(-4)}`;
+
 function Row({ c, onOpen }) {
   const growth = c.growth_pct ?? 0;
+  const p = c.smart_parked;
   const [buying, setBuying] = useState(false);
   const buyNow = async (e) => {
     e.stopPropagation();
@@ -60,9 +64,20 @@ function Row({ c, onOpen }) {
   };
   return (
     <tr data-testid={`cockpit-cand-${c.mint}`} onClick={() => onOpen({ chain: c.chain || "sol", mint: c.mint, symbol: c.symbol, name: c.name })}
-      className={`border-b border-neutral-900 cursor-pointer hover:bg-neutral-900/50 transition-colors duration-100 ${c.passes ? "" : "opacity-60"}`} title="Click for live market data, our record and a manual buy">
+      className={`border-b border-neutral-900 cursor-pointer hover:bg-neutral-900/50 transition-colors duration-100 ${p ? "bg-amber-950/20" : c.passes ? "" : "opacity-60"}`} title="Click for live market data, our record and a manual buy">
       <td className="py-1.5 pl-3"><span className={`font-mono text-[10px] uppercase tracking-[0.15em] ${BAND_CLS[c.band] || "text-neutral-500"}`}>{BAND_LABEL[c.band] || c.band}</span></td>
       <td className="font-mono text-xs"><ChainBadge chain={c.chain} mint={c.mint} /> <span className="text-neutral-100 ml-1">{c.symbol || "?"}</span> <RepBadge mint={c.mint} creator={c.creator} compact />
+        {p && (
+          <span data-testid={`cockpit-cand-smart-${c.mint}`}
+            title={`${p.kind === "learned" ? "Tape-learned top trader" : "Manual list"} ${p.wallet} bought ${p.sol} SOL inside your window — the bot could not take it (${p.reason}). Buy by hand before it expires.`}
+            className="ml-1 px-1 py-0 border border-amber-600 text-amber-300 bg-amber-950/40 text-[9px] font-mono align-middle">
+            SMART · {p.label || (p.kind === "learned" ? "learned" : shortW(p.wallet))}
+          </span>
+        )}
+        {!p && c.smart_hits > 0 && (
+          <span data-testid={`cockpit-cand-smarthit-${c.mint}`} title="A smart wallet bought this inside the window — gates relaxed, rank boosted"
+            className="ml-1 px-1 py-0 border border-amber-800 text-amber-300 text-[9px] font-mono align-middle">smart ×{c.smart_hits}</span>
+        )}
         {c.fill_cost && (
           <span data-testid={`cockpit-cand-fill-${c.mint}`} title={projectedFillTitle(c.fill_cost)}
             className={`ml-1 px-1 py-0 border text-[9px] font-mono align-middle ${fillTone(c.fill_cost.total_pct)}`}>fill −{c.fill_cost.total_pct.toFixed(1)}%</span>
@@ -70,7 +85,13 @@ function Row({ c, onOpen }) {
       </td>
       <td className="font-mono text-xs text-right"><span className={growth >= 0 ? "text-emerald-300" : "text-red-300"}>{growth >= 0 ? "+" : ""}{growth.toFixed(0)}%</span></td>
       <td className="text-right pr-3" data-testid={`cockpit-cand-gate-${c.mint}`}>
-        {c.passes && c.blocked ? (
+        {p ? (
+          <button type="button" onClick={buyNow} disabled={buying} data-testid={`cockpit-cand-smart-buy-${c.mint}`}
+            title={`Smart-wallet pick parked because: ${p.reason}. Click to BUY NOW manually (bypasses the gates; max positions still applies — free a slot first if needed).`}
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 border font-mono text-[10px] border-amber-500 text-amber-100 bg-amber-900/50 hover:bg-amber-700/60 disabled:opacity-50 transition-colors duration-100">
+            {buying ? "buying…" : `${mmss(p.left_s)} · ${p.reason} · buy`}
+          </button>
+        ) : c.passes && c.blocked ? (
           <button type="button" onClick={buyNow} disabled={buying} data-testid={`cockpit-cand-blocked-${c.mint}`}
             title={`gate ✓ but the entry path refused it: ${c.blocked.reason}\n${c.blocked.detail || ""}\n\nClick to BUY NOW manually (bypasses the gates and the inventory halt; max positions still applies)`}
             className="inline-flex items-center gap-1 px-1.5 py-0.5 border font-mono text-[10px] border-amber-700 text-amber-200 bg-amber-950/40 hover:bg-amber-800/50 disabled:opacity-50 transition-colors duration-100">
@@ -96,15 +117,18 @@ function CompactCandidates({ candidates, limit = 10, scannerEnabled = true, onEn
   const [detail, setDetail] = useState(null);
   const blockers = useTopBlockers();
   const sorted = [...(candidates || [])].sort((a, b) => (b.passes === true) - (a.passes === true) || (b.growth_pct ?? 0) - (a.growth_pct ?? 0));
-  const passing = sorted.filter((c) => c.passes);
-  const shown = passing.length ? passing.slice(0, limit) : sorted.slice(0, 5);
+  const parked = sorted.filter((c) => c.smart_parked);
+  const rest = sorted.filter((c) => !c.smart_parked);
+  const passing = rest.filter((c) => c.passes);
+  const shown = [...parked, ...(passing.length ? passing.slice(0, limit) : rest.slice(0, 5))];
   const blockers90 = passing.filter((c) => c.blocked);
   const topBlock = blockers90.length ? Object.entries(blockers90.reduce((a, c) => { a[c.blocked.reason] = (a[c.blocked.reason] || 0) + 1; return a; }, {})).sort((a, b) => b[1] - a[1])[0] : null;
   const topBlockDetail = topBlock ? (blockers90.find((c) => c.blocked.reason === topBlock[0])?.blocked.detail || "") : "";
   return (
     <div className="control-card h-full flex flex-col !p-0" data-testid="cockpit-candidates">
       <div className="px-3 py-2 border-b border-neutral-800 text-[11px] font-mono tracking-[0.2em] text-neutral-200 flex items-center justify-between">
-        <span>CANDIDATES <span className="text-neutral-500 tracking-normal">· {passing.length ? "passing" : "closest — none passing"}</span></span>
+        <span>CANDIDATES <span className="text-neutral-500 tracking-normal">· {passing.length ? "passing" : "closest — none passing"}</span>
+          {parked.length > 0 && <span className="ml-2 text-amber-300 tracking-normal" data-testid="cockpit-smart-parked-count">· {parked.length} smart pick{parked.length === 1 ? "" : "s"}</span>}</span>
         <span className="text-neutral-500 tracking-normal">{sorted.length} tracked</span>
       </div>
       {topBlock && (
