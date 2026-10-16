@@ -2589,3 +2589,7 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   them on top with a `SMART · <label>` chip and a `m:ss · reason · buy` button (`cockpit-cand-smart-buy-<mint>`, → `/scanner/manual-buy`,
   max positions still applies). Manual buys on a parked token inherit `smart_wallet` / `smart_wallet_kind` on the trade doc. Also surfaced in
   `ScannerCandidatesCard` as a "Smart wallet picks" strip. Test: `test_refused_or_capped_trigger_parks_token_for_manual_buy`.
+- Clarified (user: "manual buy should not count toward max positions"): it already doesn't — `_enter` skips the slot check for
+  `MANUAL_ENTRY_ACTIONS`, `counted_open()` excludes manual holds, book = scalp so no hunt-cap. Only the UI tooltips were wrong → fixed
+  (CompactCandidates / ScannerCandidatesCard). Stale backend docstrings (`manual_enter`, `scanner_manual_buy`) still say "max positions
+  applies" — left untouched to avoid a live restart; fix on the next backend edit.

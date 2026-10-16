@@ -79,7 +79,7 @@ function ScannerCandidatesCard({ candidates, config }) {
         <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-neutral-500">
           <Telescope className="w-3 h-3" /> Momentum Scanner ({candidates.length})
           <HelpHint label="Momentum Scanner">
-            Live feed of tokens passing your per-band gates. Bands are <strong>protocol-segregated</strong>: <span className="text-amber-300">New</span> = Pump.fun bonding curve only, <span className="text-cyan-300">Seasoned</span> = PumpSwap AMM (graduated) only. Only "Passing" rows are eligible for entry — each has a <strong>buy</strong> button to enter manually, skipping the gates (max positions still applies). <span className="text-lime-300">Robinhood</span> = PONS bonding curves on Robinhood Chain, paper-traded.
+            Live feed of tokens passing your per-band gates. Bands are <strong>protocol-segregated</strong>: <span className="text-amber-300">New</span> = Pump.fun bonding curve only, <span className="text-cyan-300">Seasoned</span> = PumpSwap AMM (graduated) only. Only "Passing" rows are eligible for entry — each has a <strong>buy</strong> button to enter manually as a manual hold — skips the gates and lives outside max positions. <span className="text-lime-300">Robinhood</span> = PONS bonding curves on Robinhood Chain, paper-traded.
           </HelpHint>
         </div>
         <span className="text-[10px] font-mono text-neutral-600">
@@ -128,7 +128,7 @@ function SmartParkedStrip({ items, onOpen }) {
     <div className="mb-3 border border-amber-700/70 bg-amber-950/20 p-2" data-testid="smart-parked-strip">
       <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-amber-300 mb-1.5">
         <Zap className="w-3 h-3" /> Smart wallet picks · {items.length}
-        <span className="normal-case tracking-normal text-neutral-400">a smart wallet bought these inside your window but the bot could not take the slot — buy by hand before they expire</span>
+        <span className="normal-case tracking-normal text-neutral-400">a smart wallet bought these inside your window but the bot could not take the slot — buy by hand (manual hold, outside max positions) before they expire</span>
       </div>
       <div className="space-y-1">
         {items.map((c) => {
@@ -180,7 +180,7 @@ function ManualBuyButton({ c, isRh }) {
       onClick={buy}
       disabled={busy}
       data-testid={`scanner-row-buy-${c.mint}`}
-      title="Manual buy — skips the momentum gates (max positions + kill switches still apply). Exits via normal SL/TP/trail."
+      title="Manual buy — a manual hold: skips the momentum gates, lives outside max positions (kill switches still apply). R-only exit, no clock."
       className={`flex items-center gap-1 px-2 py-1 border text-[10px] font-mono uppercase tracking-wider transition disabled:opacity-50 ${
         isRh
           ? "border-lime-700 text-lime-300 hover:bg-lime-950/60"

@@ -87,13 +87,13 @@ function Row({ c, onOpen }) {
       <td className="text-right pr-3" data-testid={`cockpit-cand-gate-${c.mint}`}>
         {p ? (
           <button type="button" onClick={buyNow} disabled={buying} data-testid={`cockpit-cand-smart-buy-${c.mint}`}
-            title={`Smart-wallet pick parked because: ${p.reason}. Click to BUY NOW manually (bypasses the gates; max positions still applies — free a slot first if needed).`}
+            title={`Smart-wallet pick parked because: ${p.reason}. Click to BUY NOW manually — a manual hold: bypasses the gates and lives OUTSIDE max positions (R-only exit, no clock).`}
             className="inline-flex items-center gap-1 px-1.5 py-0.5 border font-mono text-[10px] border-amber-500 text-amber-100 bg-amber-900/50 hover:bg-amber-700/60 disabled:opacity-50 transition-colors duration-100">
             {buying ? "buying…" : `${mmss(p.left_s)} · ${p.reason} · buy`}
           </button>
         ) : c.passes && c.blocked ? (
           <button type="button" onClick={buyNow} disabled={buying} data-testid={`cockpit-cand-blocked-${c.mint}`}
-            title={`gate ✓ but the entry path refused it: ${c.blocked.reason}\n${c.blocked.detail || ""}\n\nClick to BUY NOW manually (bypasses the gates and the inventory halt; max positions still applies)`}
+            title={`gate ✓ but the entry path refused it: ${c.blocked.reason}\n${c.blocked.detail || ""}\n\nClick to BUY NOW manually — a manual hold: bypasses the gates and the inventory halt, lives OUTSIDE max positions`}
             className="inline-flex items-center gap-1 px-1.5 py-0.5 border font-mono text-[10px] border-amber-700 text-amber-200 bg-amber-950/40 hover:bg-amber-800/50 disabled:opacity-50 transition-colors duration-100">
             {buying ? "buying…" : `gate ✓ · ${c.blocked.reason}`}
           </button>
