@@ -9,6 +9,7 @@ bot's `getUpdates` after the operator sends the bot any message, then persisted 
 from __future__ import annotations
 
 import asyncio
+import re
 import html
 import logging
 import os
@@ -21,6 +22,13 @@ if TYPE_CHECKING:
     from bot import BotState
 
 logger = logging.getLogger("alerts")
+
+# Exit / partial reasons that mean "a profit target was met" (see exits.py decision strings).
+_TARGET_RE = re.compile(r"^(?:runner )?(?:take-profit|target \+)|^ladder \+\d+R|^runner \+\d+R", re.IGNORECASE)
+
+
+def is_target_reason(reason: str) -> bool:
+    return bool(_TARGET_RE.match((reason or "").strip()))
 
 TG_API = "https://api.telegram.org/bot{token}/{method}"
 HTTP_TIMEOUT = 10.0
@@ -63,10 +71,16 @@ class Alerts:
             self._task = asyncio.create_task(self._loop())
 
     def snapshot(self) -> dict:
+        floor = float(getattr(self.state.config, "alert_trade_pnl_pct", 20.0) or 20.0)
+        if self._targets_only():
+            events = ["profit target met (take-profit / +R target / ladder leg / runner TP)"]
+        else:
+            events = [f"trade closed ≥ ±{floor:g} %"]
+        if self._system_ok():
+            events += ["kill switch / PnL stop", "profit sweep", "Doctor book breaker", "feed down > 2 min"]
         return {"configured": self.configured(), "connected": self.chat_id is not None, "chat_id": self.chat_id, "chat_title": self.chat_title,
-                "enabled": self.enabled(), "min_trade_pnl_pct": float(getattr(self.state.config, "alert_trade_pnl_pct", 20.0) or 20.0),
-                "events": ["kill switch / PnL stop", "profit sweep", f"trade closed ≥ ±{float(getattr(self.state.config, 'alert_trade_pnl_pct', 20.0) or 20.0):g} %",
-                           "Doctor book breaker", "feed down > 2 min"], **self.stats}
+                "enabled": self.enabled(), "min_trade_pnl_pct": floor, "targets_only": self._targets_only(), "system_events": self._system_ok(),
+                "events": events, **self.stats}
 
     # ---------- Telegram ----------
     async def _call(self, method: str, **params) -> dict:
@@ -97,8 +111,9 @@ class Alerts:
         self.chat_id = int(chat["id"])
         self.chat_title = chat.get("title") or " ".join(x for x in (chat.get("first_name"), chat.get("last_name")) if x) or chat.get("username")
         await self.state.db.alerts.update_one({"_id": "telegram"}, {"$set": {"chat_id": self.chat_id, "chat_title": self.chat_title, "connected_at": time.time()}}, upsert=True)
-        await self.send("test", "✅ <b>PUMP.BOT alerts connected</b>\nYou will get: kill switch / PnL stop · profit sweeps · trades closed beyond ±"
-                        f"{float(getattr(self.state.config, 'alert_trade_pnl_pct', 20.0) or 20.0):g} % · Doctor breakers · feed drops.")
+        await self.send("test", "✅ <b>PUMP.BOT alerts connected</b>\n" + ("You will get: profit targets met only (take-profit / +R target / ladder legs / runner TP)."
+                        if self._targets_only() else "You will get: kill switch / PnL stop · profit sweeps · trades closed beyond ±"
+                        f"{float(getattr(self.state.config, 'alert_trade_pnl_pct', 20.0) or 20.0):g} % · Doctor breakers · feed drops."))
         return {"ok": True, **self.snapshot()}
 
     async def send(self, kind: str, text: str) -> bool:
@@ -122,10 +137,27 @@ class Alerts:
             return False
 
     # ---------- event routing ----------
+    def _targets_only(self) -> bool:
+        return bool(getattr(self.state.config, "alert_targets_only", True))
+
+    def _system_ok(self) -> bool:
+        return bool(getattr(self.state.config, "alert_system_events", False)) or not self._targets_only()
+
     async def on_event(self, ev: str, data) -> None:
         if not self.enabled() or not isinstance(data, dict):
             return
         cfg = self.state.config
+        if ev == "trade_partial":
+            reason = str(data.get("reason") or "")
+            if not self._targets_only() or not is_target_reason(reason):
+                return
+            usd = data.get("partial_realized_usd")
+            await self.send("trade", f"🎯 <b>{html.escape(str(data.get('symbol') or data.get('mint', '')[:8]))}</b> target leg · "
+                                     f"sold {float(data.get('fraction') or 0) * 100:.0f}%{f' · banked {float(usd):+.2f} $' if usd is not None else ''}\n"
+                                     f"{html.escape(reason[:120])}")
+            return
+        if ev in ("pnl_stop_tripped", "kill_switch_tripped", "profit_sweep") and not self._system_ok():
+            return
         if ev == "pnl_stop_tripped":
             await self.send("kill", f"🛑 <b>PnL STOP TRIPPED</b> ({html.escape(str(data.get('mode', '')))})\n"
                                     f"Session PnL {float(data.get('pnl_usd') or 0):+.2f} $ ≤ −{float(data.get('limit_usd') or 0):.2f} $\n"
@@ -138,12 +170,17 @@ class Alerts:
                                      f"<code>{html.escape(str(data.get('sig') or '')[:24])}…</code>")
         elif ev == "trade_exit":
             pnl = data.get("pnl_pct")
-            floor = float(getattr(cfg, "alert_trade_pnl_pct", 20.0) or 20.0)
-            if pnl is None or abs(float(pnl)) < floor:
-                return
-            pnl = float(pnl)
+            reason = str(data.get("exit_reason") or "")
+            if self._targets_only():
+                if not is_target_reason(reason):
+                    return
+            else:
+                floor = float(getattr(cfg, "alert_trade_pnl_pct", 20.0) or 20.0)
+                if pnl is None or abs(float(pnl)) < floor:
+                    return
+            pnl = float(pnl or 0.0)
             usd = data.get("pnl_usd")
-            await self.send("trade", f"{'🟢' if pnl >= 0 else '🔴'} <b>{html.escape(str(data.get('symbol') or data.get('mint', '')[:8]))}</b> closed "
+            await self.send("trade", f"{'🎯' if self._targets_only() else ('🟢' if pnl >= 0 else '🔴')} <b>{html.escape(str(data.get('symbol') or data.get('mint', '')[:8]))}</b> closed "
                                      f"<b>{pnl:+.1f} %</b>{f' ({float(usd):+.2f} $)' if usd is not None else ''}\n"
                                      f"{html.escape(str(data.get('book') or ''))} · {html.escape(str(data.get('mode') or ''))} · "
                                      f"{html.escape(str(data.get('exit_reason') or '')[:120])}")
@@ -164,6 +201,9 @@ class Alerts:
         ld = getattr(self.state, "live_doctor", None)
         if ld is None or not getattr(self.state.config, "live_doctor_breakers_enabled", True):
             return
+        if not self._system_ok():
+            self._paused_books = set(ld.book_paused_until().keys())
+            return
         paused = set(ld.book_paused_until().keys())
         for book in sorted(paused - self._paused_books):
             why = (getattr(ld, "last_book_breakers", {}).get(book) or {}).get("reason") or "book paused"
@@ -173,6 +213,8 @@ class Alerts:
     async def _poll_feeds(self) -> None:
         st = self.state
         now = time.time()
+        if not self._system_ok():
+            return
         feeds = {}
         if getattr(st.config, "helius_tracker_enabled", True):
             feeds["SOL Pump.fun"] = bool(getattr(st, "listener_connected", False))

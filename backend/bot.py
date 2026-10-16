@@ -3256,7 +3256,7 @@ class BotState:
     # ---------- Entry / exit (live + paper) ----------
     async def manual_enter(self, mint: str, as_runner: bool = False) -> dict:
         """Operator override from the scanner card. Bypasses momentum gates;
-        honours Helius pause, daily kill switch and max positions. Once open
+        honours Helius pause and the daily kill switch; manual holds sit OUTSIDE max positions. Once open
         the position is monitored like any other (SL/TP/trail).
         A graduated PumpSwap mint the scanner no longer tracks is seeded into a temp bucket from its pool.
         `as_runner` (operator flag, default off) converts the fill straight into the runner book."""

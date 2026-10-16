@@ -455,6 +455,11 @@ class BotConfig(BaseModel):
     # Telegram phone alerts (alerts.py): master switch + |PnL %| floor for "trade closed" pings
     alerts_enabled: bool = True
     alert_trade_pnl_pct: float = 20.0
+    # Targets-only: Telegram fires ONLY when a profit target is met (take-profit / +xR target / ladder leg / runner TP). No SL, no
+    # momentum / trail / clock exits even if green, no partial banks that aren't targets. System alerts (kill switch, PnL stop,
+    # sweeps, Doctor breakers, feed down) are a separate switch, OFF by default.
+    alert_targets_only: bool = True
+    alert_system_events: bool = False
     pnl_stop_armed_ts: float = 0.0
     pnl_stop_flatten: bool = True
     inventory_halt_n: int = 5

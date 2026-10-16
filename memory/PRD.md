@@ -2597,3 +2597,12 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   backend already accumulates across manual adds / fast-fail add / flush add-on) with a `+$x · N adds` tag and a tooltip breakdown
   (initial, each add, total, worth now); the P/L cell now also shows the unrealized $ next to the %. testids `active-invested-<mint>`,
   `active-adds-<mint>`, `active-pnl-usd-<mint>`. Frontend only.
+- ✅ **Telegram: targets only** (user ask 2026-10-16): `alert_targets_only=True` (default) → `alerts.py` sends ONLY when a profit target is met:
+  `is_target_reason()` regex matches `take-profit…`, `target +xR…`, `ladder +NR…`, `runner take-profit / runner target / runner +NR` — never
+  stop-loss, trail, clock, no-momentum, spike bank, promotion bank, giveback, pnl stop, hard stop, external sells. Partial ladder legs now alert
+  too (`trade_partial` → 🎯 target leg). System alerts (kill switch / PnL stop / sweeps / Doctor breakers / feed down) moved behind
+  `alert_system_events` (default OFF). Legacy ±% mode still available (`targets` chip off). CONTROL → Alerts: `alerts-targets-only`, `alerts-system`
+  chips; ±% input only in legacy mode. `/api/alerts` snapshot reports `targets_only`, `system_events`, `events`. Tests: `tests/test_alert_targets.py` (3).
+- Invested column refined: total = remaining `entry_usd` + cost of legs already sold (`partial_sell_usd − partial_realized_usd`); shows
+  `$x open · banked ±$y` when legs sold; unrealized $ is on the open part.
+- Backend restarts during this step auto-disabled the bot (enabled=false) — user must press Start.

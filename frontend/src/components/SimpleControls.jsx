@@ -148,10 +148,12 @@ function Alerts({ config, patch }) {
   const on = config.alerts_enabled !== false;
   const run = (fn, okMsg) => { setBusy(true); fn().then((r) => { if (r.ok === false) toast.error(r.reason || "failed"); else toast.success(okMsg); setSnap(r.ok === false ? snap : r); }).catch((e) => toast.error(e?.response?.data?.detail || e.message)).finally(() => setBusy(false)); };
   const connected = !!snap?.connected;
+  const targetsOnly = config.alert_targets_only !== false;
+  const systemOn = !!config.alert_system_events;
   return (
     <div className="flex flex-col gap-1" data-testid="alerts">
       <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500"
-        title={`Telegram phone alerts: kill switch / PnL stop · profit sweeps · trades closed beyond ±${Number(config.alert_trade_pnl_pct ?? 20)} % · Doctor breakers · feed down > 2 min.${snap?.last_error ? `\nlast error: ${snap.last_error}` : ""}`}>
+        title={`Telegram phone alerts. ${targetsOnly ? "TARGETS ONLY: a message only when a profit target is met (take-profit / +R target / ladder leg / runner TP). No stop-loss, no trail / clock / momentum exits even if green." : `Legacy: trades closed beyond ±${Number(config.alert_trade_pnl_pct ?? 20)} %.`}${systemOn || !targetsOnly ? " + system: kill switch / PnL stop / sweeps / Doctor breakers / feed down." : " System alerts off."}${snap?.last_error ? `\nlast error: ${snap.last_error}` : ""}`}>
         Alerts{connected ? <span className="ml-2 normal-case tracking-normal text-neutral-400" data-testid="alerts-chat">→ {snap.chat_title || snap.chat_id}{snap.sent ? ` · ${snap.sent} sent` : ""}</span> : null}
       </span>
       <div className="flex items-center gap-1">
@@ -167,11 +169,23 @@ function Alerts({ config, patch }) {
           <button type="button" disabled={busy} onClick={() => run(api.alertsTest, "Test alert sent")} data-testid="alerts-test"
             className="px-2 py-1.5 text-[11px] uppercase tracking-[0.18em] border border-neutral-800 text-neutral-400 hover:text-neutral-100">test</button>
         )}
-        <input type="number" min="1" step="5" value={config.alert_trade_pnl_pct ?? 20} data-testid="alerts-pnl-pct"
-          onChange={(e) => patch({ alert_trade_pnl_pct: Math.max(1, parseFloat(e.target.value) || 20) }, `Trade alerts beyond ±${e.target.value} %`)}
-          title="Alert when a trade closes beyond ± this many percent"
-          className="w-14 bg-neutral-950 border border-neutral-800 px-2 py-1 text-[11px] font-mono text-neutral-200" />
-        <span className="text-[10px] text-neutral-600">±%</span>
+        <button type="button" onClick={() => patch({ alert_targets_only: !targetsOnly }, !targetsOnly ? "Alerts: targets only" : "Alerts: every close beyond ±%")} data-testid="alerts-targets-only"
+          title={targetsOnly ? "TARGETS ONLY — only take-profit / +R target / ladder leg / runner TP hits ping your phone. Click for the legacy ±% mode." : "Legacy — any close beyond ±% pings. Click for targets-only."}
+          className={`px-2 py-1.5 text-[11px] uppercase tracking-[0.18em] border transition-colors ${targetsOnly ? "border-amber-700 bg-amber-950/40 text-amber-200" : "border-neutral-800 text-neutral-500 hover:text-neutral-200"}`}>
+          targets
+        </button>
+        <button type="button" onClick={() => patch({ alert_system_events: !systemOn }, !systemOn ? "System alerts ON" : "System alerts OFF")} data-testid="alerts-system"
+          title="System alerts: kill switch / PnL stop / profit sweeps / Doctor breakers / feed down. Off = targets only, nothing else."
+          className={`px-2 py-1.5 text-[11px] uppercase tracking-[0.18em] border transition-colors ${systemOn ? "border-sky-800 bg-sky-950/40 text-sky-200" : "border-neutral-800 text-neutral-500 hover:text-neutral-200"}`}>
+          sys
+        </button>
+        {!targetsOnly && (<>
+          <input type="number" min="1" step="5" value={config.alert_trade_pnl_pct ?? 20} data-testid="alerts-pnl-pct"
+            onChange={(e) => patch({ alert_trade_pnl_pct: Math.max(1, parseFloat(e.target.value) || 20) }, `Trade alerts beyond ±${e.target.value} %`)}
+            title="Alert when a trade closes beyond ± this many percent"
+            className="w-14 bg-neutral-950 border border-neutral-800 px-2 py-1 text-[11px] font-mono text-neutral-200" />
+          <span className="text-[10px] text-neutral-600">±%</span>
+        </>)}
       </div>
     </div>
   );

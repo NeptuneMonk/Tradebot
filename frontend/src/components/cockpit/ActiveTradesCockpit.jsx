@@ -57,21 +57,26 @@ const isLTH = (t) => t.long_term_hold === true;
 const usd = (n) => `$${Number(n || 0).toFixed(2)}`;
 
 function investedParts(t) {
-  const total = Number(t.entry_usd ?? t.size_usd ?? 0);
+  const remaining = Number(t.entry_usd ?? t.size_usd ?? 0);                      // cost basis still in the position
+  const soldCost = Math.max(0, Number(t.partial_sell_usd || 0) - Number(t.partial_realized_usd || 0));   // cost of legs already sold
+  const total = remaining + soldCost;                                             // everything you ever put in
   const adds = (t.adds || []).map((a) => Number(a.usd || 0));
   const fastFail = Number(t.fast_fail_add?.usd || 0);
   const flush = Number(t.flush_addon_usd || 0);
   const extra = adds.reduce((a, b) => a + b, 0) + fastFail + flush;
   const initial = Math.max(0, total - extra);
   const pnl = t.unrealized_pnl_pct;
-  const value = pnl == null ? null : total * (1 + Number(pnl) / 100);
+  const value = pnl == null ? null : remaining * (1 + Number(pnl) / 100);
+  const banked = Number(t.partial_realized_usd || 0);
   const lines = [`initial buy ${usd(initial)}`];
   adds.forEach((a, i) => lines.push(`manual add #${i + 1} +${usd(a)}`));
   if (fastFail) lines.push(`fast-fail add +${usd(fastFail)}`);
   if (flush) lines.push(`flush dip add-on +${usd(flush)}`);
   lines.push(`= total invested ${usd(total)}`);
-  if (value != null) lines.push(`worth now ≈ ${usd(value)} (${value - total >= 0 ? "+" : "−"}${usd(Math.abs(value - total))})`);
-  return { total, extra, nAdds: adds.length + (fastFail ? 1 : 0) + (flush ? 1 : 0), value, title: lines.join("\n") };
+  if (soldCost) lines.push(`already sold ${t.partial_legs || 1} leg(s): ${usd(soldCost)} of cost out, banked ${banked >= 0 ? "+" : "−"}${usd(Math.abs(banked))}`);
+  if (soldCost) lines.push(`still in the position ${usd(remaining)}`);
+  if (value != null) lines.push(`open part worth now ≈ ${usd(value)} (${value - remaining >= 0 ? "+" : "−"}${usd(Math.abs(value - remaining))})`);
+  return { total, remaining, extra, nAdds: adds.length + (fastFail ? 1 : 0) + (flush ? 1 : 0), value, banked, soldCost, title: lines.join("\n") };
 }
 
 function Row({ t, onExit, onOpen, onLth, onAdd }) {
@@ -100,10 +105,11 @@ function Row({ t, onExit, onOpen, onLth, onAdd }) {
       <td className="font-mono text-xs text-right whitespace-nowrap" data-testid={`active-invested-${t.mint}`} title={inv.title}>
         <span className="text-neutral-100">{usd(inv.total)}</span>
         {inv.nAdds > 0 && <span className="ml-1 text-[9px] text-emerald-400" data-testid={`active-adds-${t.mint}`}>+{usd(inv.extra)} · {inv.nAdds} add{inv.nAdds === 1 ? "" : "s"}</span>}
+        {inv.soldCost > 0 && <span className="ml-1 text-[9px] text-sky-400" data-testid={`active-banked-${t.mint}`}>{usd(inv.remaining)} open · banked {inv.banked >= 0 ? "+" : "−"}{usd(Math.abs(inv.banked))}</span>}
       </td>
       <td className="font-mono text-xs text-right whitespace-nowrap" data-testid={`active-pnl-${t.mint}`}>
         {pnl == null ? <span className="text-neutral-600">—</span> : <span className={pnl >= 0 ? "text-emerald-300" : "text-red-300"}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(1)}%</span>}
-        {inv.value != null && <span className={`ml-1 text-[10px] ${inv.value - inv.total >= 0 ? "text-emerald-400/80" : "text-red-400/80"}`} data-testid={`active-pnl-usd-${t.mint}`}>{inv.value - inv.total >= 0 ? "+" : "−"}{usd(Math.abs(inv.value - inv.total))}</span>}
+        {inv.value != null && <span className={`ml-1 text-[10px] ${inv.value - inv.remaining >= 0 ? "text-emerald-400/80" : "text-red-400/80"}`} data-testid={`active-pnl-usd-${t.mint}`}>{inv.value - inv.remaining >= 0 ? "+" : "−"}{usd(Math.abs(inv.value - inv.remaining))}</span>}
         {t.drawdown_from_peak_pct > 5 && <span className="ml-1 text-[9px] text-neutral-500">↓{t.drawdown_from_peak_pct.toFixed(0)}</span>}
       </td>
       <td className="font-mono text-[11px] text-neutral-300 pl-4" title={st.hint} data-testid={`active-stage-${t.mint}`}>{st.text}</td>

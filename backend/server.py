@@ -3130,7 +3130,7 @@ async def creator_audit_run(chain: str, mint: str, force: bool = False):
 @api.post("/scanner/manual-buy/{mint}")
 async def scanner_manual_buy(mint: str, runner: bool = False):
     """Operator override: buy a scanner candidate now, bypassing the momentum
-    gates (max positions + kill switches still apply). RH tokens route to the
+    gates (kill switches still apply; a manual hold sits OUTSIDE max positions). RH tokens route to the
     paper engine; SOL tokens follow the normal live/paper mode. `runner=true`
     (explicit operator flag) opens a graduated PumpSwap mint straight into the runner book."""
     if mint in bot_state.rh_discovery.tracking or mint.lower().startswith("0x"):
