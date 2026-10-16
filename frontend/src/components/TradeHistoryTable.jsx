@@ -221,6 +221,10 @@ function TradeHistoryTable({ history: liveHistory }) {
                       <span data-testid={`quote-badge-${t.id}`} title={`Curve paired with a non-SOL quote (${t.quote_mint}); live legs route SOL → quote → coin via ${t.router === "jupiter" ? "Jupiter (listed quote: PUMP / USDC / xStock)" : "PumpSwap multi_hop_swap (pump-coin quote)"}`}
                         className="mr-1 inline-block px-1 py-0 border border-amber-800 text-amber-300 text-[9px] font-mono align-middle">{t.router === "jupiter" ? "JUP" : t.router === "multihop" ? "HOP" : "QUOTE"}</span>
                     )}
+                    {t.smart_wallet && (
+                      <span data-testid={`smart-badge-${t.id}`} title={`Smart-wallet trigger (${t.smart_wallet_kind || "wallet"}): ${t.smart_wallet}`}
+                        className="mr-1 inline-block px-1 py-0 border border-amber-600 text-amber-300 text-[9px] font-mono align-middle">SMART</span>
+                    )}
                     {t.exit_land_s != null && (
                       <span data-testid={`land-badge-${t.id}`}
                         title={`Sell landed in ${t.exit_land_s}s at ${(t.exit_land_prio / 1e6).toFixed(1)}M µL (fee rung ${t.exit_land_rungs}${t.exit_tip_sol ? `, Sender tip ${t.exit_tip_sol} SOL` : ""})${t.entry_land_s != null ? ` · buy landed in ${t.entry_land_s}s at ${(t.entry_land_prio / 1e6).toFixed(1)}M µL` : ""}`}

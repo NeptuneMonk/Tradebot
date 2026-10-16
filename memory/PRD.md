@@ -2576,3 +2576,10 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   TRIGGER badge), recent triggers, knobs. Scanner rows show an amber `smart ×N` badge. WS event `smart_wallet_fire`.
 - Tests: `tests/test_smart_wallets.py` (6) + book/source/scanner regressions green (116).
 - Note: backend edits restart uvicorn → bot auto-disables (`enabled=false`). User must press Start again.
+- Follow-ups (testing agent iteration_40 → fixed): `smart_wallet_mode` is `Literal["hard","soft","both"]` (bogus → 400); Mongo `_id`s namespaced
+  `manual:<w>` / `learned:<w>` so a manual add never overwrites learned history (522 legacy docs migrated); Knobs save keeps the new value
+  (onConfigUpdate); "wipe learned" asks for confirmation; per-row `smart-wallet-forget-<wallet>`; learned table scrolls (max-h-72).
+- ✅ **Active-trade badge** (user ask): trade doc carries `smart_wallet` + `smart_wallet_kind` from entry (Trade model); Active Trades shows
+  `SMART · manual|learned · Abcd…wxyz` (`smart-badge-<mint>`), Trade History shows `SMART` (`smart-badge-<id>`).
+- Live state at hand-off: user added 7 manual top traders (Aurelius, SOSADOTkek, Marcel, Thokani, Whitewhaledev, Slingoor, Limfork), set min buy 2 SOL,
+  bot RUNNING, mode both. Learned set ~515 wallets / 6 promoted after ~25 min of tape.

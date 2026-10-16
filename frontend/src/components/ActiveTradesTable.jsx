@@ -60,6 +60,13 @@ function ActiveTradesTable({ trades, onExit }) {
                     <span data-testid={`grad-badge-${t.mint}`} title="Graduated token — bought on its PumpSwap pool (seasoned band); priced from the pool vaults"
                       className="mr-1.5 px-1 py-0 border border-fuchsia-700 text-fuchsia-300 bg-fuchsia-950/40 text-[9px] font-mono align-middle">GRAD · pumpswap</span>
                   )}
+                  {t.smart_wallet && (
+                    <span data-testid={`smart-badge-${t.mint}`}
+                      title={`Smart-wallet trigger — ${t.smart_wallet_kind === "learned" ? "tape-learned top trader" : "manual list"} ${t.smart_wallet} bought inside the window`}
+                      className="mr-1.5 px-1 py-0 border border-amber-600 text-amber-300 bg-amber-950/40 text-[9px] font-mono align-middle">
+                      SMART · {t.smart_wallet_kind || "wallet"} · {t.smart_wallet.slice(0, 4)}…{t.smart_wallet.slice(-4)}
+                    </span>
+                  )}
                   <span className="mr-1.5 align-middle inline-flex"><ChainBadge chain={t.chain} mint={t.mint} /></span>
                   {t.symbol ? <span className="text-neutral-200">{t.symbol}</span> : <span className="text-neutral-500">—</span>}
                   {t.fill_cost_pct != null && (

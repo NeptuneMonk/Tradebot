@@ -65,9 +65,9 @@ class SmartWallets:
     async def load(self) -> None:
         self.manual.clear()
         self.learned.clear()
-        async for d in self.state.db.smart_wallets.find({}, {"_id": 1, "kind": 1, "label": 1, "added_at": 1, "wins": 1,
+        async for d in self.state.db.smart_wallets.find({}, {"_id": 1, "wallet": 1, "kind": 1, "label": 1, "added_at": 1, "wins": 1,
                                                            "misses": 1, "last_seen": 1, "last_win": 1, "best_gain_pct": 1}):
-            w = d.pop("_id")
+            w = d.get("wallet") or d.pop("_id")
             if d.get("kind") == "manual":
                 self.manual[w] = {"label": d.get("label") or "", "added_at": d.get("added_at")}
             else:
@@ -86,8 +86,8 @@ class SmartWallets:
         ops = []
         for w in list(self._dirty):
             s = self.learned.get(w)
-            if s is not None and w not in self.manual:
-                ops.append(UpdateOne({"_id": w}, {"$set": {"kind": "learned", **s}}, upsert=True))
+            if s is not None:
+                ops.append(UpdateOne({"_id": f"learned:{w}"}, {"$set": {"kind": "learned", "wallet": w, **s}}, upsert=True))
         self._dirty.clear()
         if ops:
             try:
@@ -97,18 +97,18 @@ class SmartWallets:
 
     async def add_manual(self, wallet: str, label: str = "") -> dict:
         self.manual[wallet] = {"label": label or "", "added_at": time.time()}
-        await self.state.db.smart_wallets.update_one({"_id": wallet}, {"$set": {"kind": "manual", "label": label or "", "added_at": time.time()}}, upsert=True)
+        await self.state.db.smart_wallets.update_one({"_id": f"manual:{wallet}"}, {"$set": {"kind": "manual", "wallet": wallet, "label": label or "", "added_at": time.time()}}, upsert=True)
         return self.snapshot()
 
     async def remove_manual(self, wallet: str) -> dict:
         self.manual.pop(wallet, None)
-        await self.state.db.smart_wallets.delete_one({"_id": wallet, "kind": "manual"})
+        await self.state.db.smart_wallets.delete_one({"_id": f"manual:{wallet}"})
         return self.snapshot()
 
     async def forget_learned(self, wallet: str | None = None) -> dict:
         if wallet:
             self.learned.pop(wallet, None)
-            await self.state.db.smart_wallets.delete_one({"_id": wallet, "kind": "learned"})
+            await self.state.db.smart_wallets.delete_one({"_id": f"learned:{wallet}"})
         else:
             self.learned.clear()
             await self.state.db.smart_wallets.delete_many({"kind": "learned"})

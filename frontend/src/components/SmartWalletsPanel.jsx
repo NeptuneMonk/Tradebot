@@ -54,21 +54,25 @@ function ModeRow({ config, onConfigUpdate }) {
   );
 }
 
-function Knobs({ config }) {
+function Knobs({ config, onConfigUpdate }) {
   const [local, setLocal] = useState({});
   useEffect(() => { setLocal({}); }, [config]);
   const val = (k) => (local[k] !== undefined ? local[k] : config?.[k]);
   const dirty = Object.keys(local).some((k) => local[k] !== config?.[k]);
   const save = async () => {
-    try { await api.updateConfig(local); toast.success("Smart-wallet knobs saved"); setLocal({}); }
-    catch (e) { toast.error(`save failed: ${e.message || e}`); }
+    try {
+      const updated = await api.updateConfig(local);
+      onConfigUpdate && onConfigUpdate(updated);
+      setLocal({});
+      toast.success("Smart-wallet knobs saved");
+    } catch (e) { toast.error(`save failed: ${e.message || e}`); }
   };
   return (
     <div data-testid="smart-wallets-knobs">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-2">
         {KNOBS.map(([k, label, step, hint]) => (
           <label key={k} className="flex flex-col gap-0.5" title={hint}>
-            <span className="text-[9px] uppercase tracking-[0.15em] text-neutral-500">{label}</span>
+            <span className="text-[9px] uppercase tracking-[0.15em] text-neutral-400">{label}</span>
             {step === "bool" ? (
               <button type="button" data-testid={`sw-${k}`} onClick={() => setLocal({ ...local, [k]: !val(k) })}
                 className={`text-[11px] font-mono px-2 py-1 border text-left ${val(k) ? "border-emerald-700 text-emerald-300" : "border-neutral-700 text-neutral-500"}`}>
@@ -103,7 +107,7 @@ function ManualList({ snap, onChange }) {
   };
   return (
     <div data-testid="smart-wallets-manual">
-      <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-500 mb-1">Manual list · {snap?.manual?.length || 0}</div>
+      <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1">Manual list · {snap?.manual?.length || 0}</div>
       <div className="flex gap-1 flex-wrap">
         <input value={wallet} onChange={(e) => setWallet(e.target.value)} placeholder="wallet address" data-testid="smart-wallets-add-input"
           className="flex-1 min-w-[220px] bg-neutral-950 border border-neutral-700 text-neutral-200 text-[11px] font-mono px-2 py-1 focus:border-amber-600 outline-none" />
@@ -123,7 +127,7 @@ function ManualList({ snap, onChange }) {
               className="ml-auto text-neutral-600 hover:text-rose-400"><Trash2 className="w-3 h-3" /></button>
           </li>
         ))}
-        {!(snap?.manual || []).length && <li className="text-[10px] text-neutral-600">no manual wallets yet — paste a top trader's address above</li>}
+        {!(snap?.manual || []).length && <li className="text-[10px] text-neutral-500">no manual wallets yet — paste a top trader's address above</li>}
       </ul>
     </div>
   );
@@ -132,12 +136,13 @@ function ManualList({ snap, onChange }) {
 function LearnedList({ snap, onChange }) {
   const rows = snap?.learned || [];
   const forget = async (w) => {
+    if (!w && !window.confirm(`Wipe all ${snap?.learned_total || 0} learned wallets? The tape will start grading from zero.`)) return;
     try { onChange(await api.smartWalletForget(w)); } catch (e) { toast.error(e.message || "failed"); }
   };
   return (
     <div data-testid="smart-wallets-learned">
       <div className="flex items-center gap-2 mb-1">
-        <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">
+        <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-400">
           Learned · {snap?.promoted || 0} promoted / {snap?.learned_total || 0} graded
         </span>
         <span className="text-[10px] font-mono text-neutral-600">
@@ -145,14 +150,15 @@ function LearnedList({ snap, onChange }) {
         </span>
         {rows.length > 0 && (
           <button type="button" onClick={() => forget(null)} data-testid="smart-wallets-forget-all"
-            className="ml-auto text-[9px] uppercase tracking-[0.15em] text-neutral-600 hover:text-rose-400">wipe learned</button>
+            className="ml-auto text-[9px] uppercase tracking-[0.15em] text-neutral-500 hover:text-rose-400">wipe learned</button>
         )}
       </div>
       {rows.length === 0 ? (
-        <div className="text-[10px] text-neutral-600">nothing graded yet — the tape grades each launch's first buyers after the learn horizon</div>
+        <div className="text-[10px] text-neutral-500">nothing graded yet — the tape grades each launch's first buyers after the learn horizon</div>
       ) : (
+        <div className="max-h-72 overflow-y-auto border border-neutral-800/60">
         <table className="w-full text-[11px] font-mono">
-          <thead className="text-[9px] uppercase tracking-[0.15em] text-neutral-600">
+          <thead className="text-[9px] uppercase tracking-[0.15em] text-neutral-500 sticky top-0 bg-neutral-950">
             <tr><th className="text-left font-normal">wallet</th><th className="text-right font-normal">W</th><th className="text-right font-normal">M</th>
               <th className="text-right font-normal">rate</th><th className="text-right font-normal">best</th><th className="text-left font-normal pl-2">last win</th><th /></tr>
           </thead>
@@ -164,11 +170,12 @@ function LearnedList({ snap, onChange }) {
                 <td className="text-right">{Math.round(r.win_rate * 100)}%</td>
                 <td className="text-right">+{Math.round(r.best_gain_pct || 0)}%</td>
                 <td className="pl-2 text-neutral-500">{r.last_win || "—"}</td>
-                <td className="text-right"><button type="button" onClick={() => forget(r.wallet)} className="text-neutral-700 hover:text-rose-400"><Trash2 className="w-3 h-3" /></button></td>
+                <td className="text-right"><button type="button" onClick={() => forget(r.wallet)} data-testid={`smart-wallet-forget-${r.wallet}`} className="text-neutral-600 hover:text-rose-400"><Trash2 className="w-3 h-3" /></button></td>
               </tr>
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );
@@ -178,10 +185,10 @@ function Recent({ snap }) {
   const rows = snap?.recent || [];
   return (
     <div data-testid="smart-wallets-recent">
-      <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-500 mb-1">
+      <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-400 mb-1">
         Triggers · {snap?.fires_last_hour || 0} fired this hour · {snap?.stats?.hits || 0} hits · {snap?.stats?.opened || 0} opened
       </div>
-      {rows.length === 0 ? <div className="text-[10px] text-neutral-600">no smart buys seen yet</div> : (
+      {rows.length === 0 ? <div className="text-[10px] text-neutral-500">no smart buys seen yet</div> : (
         <ul className="space-y-0.5 text-[11px] font-mono">
           {rows.slice(0, 12).map((e, i) => (
             <li key={`${e.mint}-${e.ts}-${i}`} className="flex gap-2">
@@ -208,7 +215,7 @@ function SmartWalletsPanel({ config, onConfigUpdate }) {
       <div className="flex items-center gap-2">
         <Crosshair className="w-4 h-4 text-amber-400" />
         <span className="text-[11px] uppercase tracking-[0.25em] text-neutral-300">Smart wallets</span>
-        <span className="text-[10px] text-neutral-600">top-trader buys inside your time window as a trigger</span>
+        <span className="text-[10px] text-neutral-500">top-trader buys inside your time window as a trigger</span>
         <button type="button" onClick={load} data-testid="smart-wallets-refresh" className="ml-auto text-neutral-600 hover:text-neutral-300"><RefreshCw className="w-3 h-3" /></button>
       </div>
       <ModeRow config={config} onConfigUpdate={onConfigUpdate} />
@@ -217,7 +224,7 @@ function SmartWalletsPanel({ config, onConfigUpdate }) {
         <Recent snap={snap} />
       </div>
       <LearnedList snap={snap} onChange={setSnap} />
-      <div className="border-t border-neutral-800 pt-2"><Knobs config={config} /></div>
+      <div className="border-t border-neutral-800 pt-2"><Knobs config={config} onConfigUpdate={onConfigUpdate} /></div>
     </div>
   );
 }

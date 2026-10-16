@@ -557,7 +557,7 @@ class BotConfig(BaseModel):
     reputation_enabled: bool = False
     # Smart wallets ("top trader buys as a trigger") — manual list + auto-learned early winners off the Helius tape.
     smart_wallet_enabled: bool = True
-    smart_wallet_mode: str = "both"              # hard = buy on a smart buy · soft = relax gates + rank boost · both
+    smart_wallet_mode: Literal["hard", "soft", "both"] = "both"   # hard = buy on a smart buy · soft = relax gates + rank boost · both
     smart_wallet_min_buy_sol: float = 0.2        # a smart wallet's buy must be at least this big to count
     smart_wallet_max_per_hour: int = 6           # hard-trigger rate cap
     smart_wallet_hit_ttl_s: int = 180            # how long a smart buy keeps boosting the scanner
@@ -755,6 +755,8 @@ class Trade(BaseModel):
     is_research_snipe: bool = False
     long_term_hold: bool = False     # LTH: no automatic exit of any kind — operator ✕ only (set at entry by dev_watch, or toggled later)
     dev_watch: bool = False          # CRAZY-dev watch entry: min stake, no gates, parked for the operator to exit by hand
+    smart_wallet: Optional[str] = None       # top-trader wallet whose buy triggered this entry (action == "smart_wallet")
+    smart_wallet_kind: Optional[str] = None  # "manual" | "learned"
     # R sizing + cost gate + entry policy (persisted at entry)
     r_usd: Optional[float] = None            # ACTUAL cash at risk after the operator cap: size × (SL + exit slip)
     r_usd_nominal: Optional[float] = None    # bankroll × risk_per_trade_pct (shows the cap's distortion)

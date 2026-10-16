@@ -1,0 +1,41 @@
+{
+  "summary": "Tested the Smart Wallets feature (backend API + Doctor > SMART WALLETS UI) and two regression checks. Backend: 9/10 pytest pass. GET snapshot has every field; at test time learned_total was 296, graded_launches 105 and promoted 2-3. Manual add/remove works, an invalid address returns 400, all 13 config keys exist, mode soft/both is saved and stays after reload, and forgetting one learned wallet took learned_total from 296 to 295. One failure: smart_wallet_mode accepts any string. Frontend: the panel and every requested data-testid render. Mode buttons get the amber highlight and the choice survives a reload. Manual add shows the row and the 'wallet added' toast, then remove works. An invalid address shows an error toast. The learned table has 50 rows with W/M/rate/best/last-win and 3 TRIGGER badges. Bug found in the Knobs save flow (see ui_bugs). The GREYLIST sub-tab and the LIVE scanner/launch cards still render. All test changes were restored (mode both, max_per_hour 6, test wallet removed).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PUT /api/bot/config", "issue": "smart_wallet_mode is a plain str in models.py:560, so {smart_wallet_mode:'bogus'} returns 200 and is saved. At runtime mode() falls back to 'both', but GET /bot/config shows 'bogus' and the UI then highlights no mode button. Use Literal['hard','soft','both']."},
+      {"endpoint": "POST /api/smart-wallets/manual", "issue": "Adding a wallet that is already learned upserts the same _id with kind=manual and overwrites the learned doc. A later remove_manual deletes the doc completely, so the learned history is lost from the DB (it stays in memory until restart, but _flush skips wallets that are in manual)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "SmartWalletsPanel > Knobs", "issue": "After Save, the input jumps back to the old value. Repro: set Fires/hour 6->5, Save, toast shows, API now has 5, but the input shows 6 again and still shows 6 after 6 s. Cause: Knobs gets no onConfigUpdate and calls setLocal({}) after api.updateConfig, so it falls back to the stale config prop. Side effect: typing the original value (6) no longer marks the form dirty, so the user cannot save it back without a page reload. Fix: pass onConfigUpdate to Knobs and call onConfigUpdate(updated) with the PUT response (as ModeRow already does).", "selector": "[data-testid='sw-smart_wallet_max_per_hour'], [data-testid='smart-wallets-knobs-save']", "priority": "HIGH"},
+      {"component": "SmartWalletsPanel > LearnedList", "issue": "The 'wipe learned' button (smart-wallets-forget-all) deletes ALL learned wallets in one click with no confirmation. It is a small grey link right next to the table. Add a confirm dialog.", "selector": "[data-testid='smart-wallets-forget-all']", "priority": "MEDIUM"},
+      {"component": "SmartWalletsPanel > LearnedList", "issue": "The per-row forget (trash) button has no data-testid. Suggest smart-wallet-forget-<wallet>.", "selector": "tr[data-testid^='smart-wallet-learned-'] button", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Doctor > SMART WALLETS", "issues": ["The learned table shows all 50 rows inline with no pagination or collapse, so the knobs end up far below the fold. Consider a max-height scroll area or capping it at ~15 rows with 'show more'.", "Section labels (text-neutral-600 at 9-10px) have low contrast on the near-black background."]}
+    ]
+  },
+  "test_report_links": ["/app/tests/test_smart_wallets_api.py", "/app/test_reports/pytest/smart_wallets.xml"],
+  "action_items": [
+    "Fix Knobs stale-value-after-save: pass onConfigUpdate into <Knobs> and call it with the PUT response",
+    "Validate smart_wallet_mode as Literal['hard','soft','both'] in BotConfig",
+    "Add a confirmation to 'wipe learned'",
+    "Do not let add_manual overwrite and later delete an existing learned record (e.g. use a separate _id/collection, or keep the learned fields)",
+    "Add data-testid to the per-row learned forget button"
+  ],
+  "critical_code_review_comments": [
+    "Knobs: setLocal({}) after save with no parent config update means the UI is out of sync with the server (confirmed in the browser).",
+    "Knobs number inputs map an empty field to 0 (e.g. Fires/hour 0 = no cap, because `if cap and ...`). Clearing a field and saving disables the rate cap without warning.",
+    "Note for the main agent: GET /api/bot/config shows enabled=true and live_trading=true, and the UI shows BOT RUNNING · LIVE TRADING. Backend logs show POST /api/bot/start calls from external IPs. This was not caused by these tests, which only PUT smart_wallet_mode and smart_wallet_max_per_hour."
+  ],
+  "updated_files": ["/app/tests/test_smart_wallets_api.py (new; placed outside backend/tests so uvicorn --reload is not triggered)"],
+  "success_rate": {"backend": "90% (9/10)", "frontend": "92% (all flows pass except the knobs post-save display)"},
+  "seed_data_creation": "Seeded session token pytest_session_1792116878406 via conftest._seed_session_token(). Test wallet GDfn...7XmG was added and then removed. One low-ranked learned wallet was forgotten via ?wallet= (expected by the test plan).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: export REACT_APP_BACKEND_URL=... SW_TOKEN=<seeded token>; pytest /app/tests/test_smart_wallets_api.py -p no:cacheprovider. test_mode_invalid_value fails until Literal validation is added. To retest the UI knobs bug: set sw-smart_wallet_max_per_hour to 5, Save; the input should stay 5 (currently it reverts to 6). Restore 6/both afterwards. 7 user-owned manual wallets exist (Aurelius, SOSADOTkek, etc.); do not delete them. Never call DELETE /api/smart-wallets/learned without ?wallet=.",
+  "rca of the issue": "Knobs revert: SmartWalletsPanel.jsx:220 renders <Knobs config={config}/> without onConfigUpdate. save() at line 63 calls api.updateConfig(local) and then setLocal({}), so val(k) falls back to the old config prop until the parent refetches config."
+}

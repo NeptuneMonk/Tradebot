@@ -4147,6 +4147,8 @@ class BotState:
             is_research_snipe=is_research_snipe,
             long_term_hold=action == "dev_watch",
             dev_watch=action == "dev_watch",
+            smart_wallet=bucket.get("smart_trigger_wallet") if action == "smart_wallet" else None,
+            smart_wallet_kind=((bucket.get("smart_hits") or {}).get(bucket.get("smart_trigger_wallet") or "") or {}).get("kind") if action == "smart_wallet" else None,
             **fill_cost,
             **plan["trade_fields"],
             # Persist the snipe ctx on the trade doc itself so a restart
