@@ -2549,3 +2549,30 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
 - ⚠️ Depth-2 pump-coin chains (3 hops) overflow the 1232-byte packet without a lookup table → fall to Jupiter, which often has no route for a minutes-old coin → `buy-failed`. Fix later with an owned address lookup table.
 - Tests: `tests/test_multihop_route.py` (9) + regressions green. Config restored after the test (min $8 / max $15, paper, Helius feed OFF).
 - P2 still open: PumpSwap price display ×1e6 (user: skip for now).
+
+
+## 2026-10-16 — Smart wallets: top-trader buys as a trigger (user picked "C" = hybrid, both modes, own tape)
+- ✅ **`backend/smart_wallets.py`** (`BotState.smart_wallets`, Mongo `smart_wallets` collection): ONE smart set from two sources —
+  **manual** (operator-pasted addresses) + **learned** (auto-promoted). Separate from the creator greylist (keyed by BUYER wallet,
+  graded on their own early-buy outcomes; dev's own buys excluded).
+- Learning: `on_trade` → `on_buy` records the first `EARLY_K=20` distinct non-creator buyers (≥ 0.05 SOL) inside `smart_wallet_learn_early_s`
+  of a launch with their buy price; every later print updates each early buyer's post-buy peak. `grade_bucket` (20 s loop at the learn
+  horizon, or `final=True` on tracker eviction ≥ 60 s) → WIN when peak ≥ +`smart_wallet_learn_min_gain_pct` or the token graduated, else
+  MISS. Promoted (= trigger) while wins ≥ `learn_min_wins` AND win-rate ≥ `learn_min_win_rate`; demotes automatically. Flushed to Mongo
+  every 60 s (dirty set), pruned at 20k wallets.
+- Trigger (`smart_wallet_mode`): **hard** → `_enter(action="smart_wallet")` (HUNT book, momentum gates bypassed like greylist_snipe; kill
+  switch / max positions / hunt cap / doctor pause / cooldowns / slippage cap untouched; `smart_wallet_max_per_hour`; one fire per mint, a
+  refusal re-arms it). **soft** → bucket `smart_hits`; scanner relaxes growth/inflow/new-buyer gates by `smart_wallet_gate_relax_pct`
+  and adds `smart_wallet_soft_boost` rank points per fresh hit (`smart_wallet_hit_ttl_s`). **both** (default) = hard + soft.
+  Window = `MomentumScanner.classify_band` (the operator's New / Seasoned age gates). Trades carry `smart_wallet` / `smart_wallet_kind`;
+  P/L source bucket "Smart Wallet".
+- `scope_reason`: with scalp OFF, curve tokens stay tracked when smart wallets + hunt are ON (the trigger is a hunt entry); the scanner
+  skips their New-band gates with `book-off:scalp` so nothing else changes.
+- ⚠️ Tape coverage: triggers + learning run on the Pump.fun **bonding-curve** tape (Helius logs for the pump program). Graduated
+  PumpSwap pools have no trade tape → no smart hits there yet. Next step if wanted: a second logsSubscribe on `pAMMBay…` + BuyEvent decode.
+- API: `GET /api/smart-wallets`, `POST /api/smart-wallets/manual {wallet,label}`, `DELETE /api/smart-wallets/manual/{wallet}`,
+  `DELETE /api/smart-wallets/learned[?wallet=]`. Config keys `smart_wallet_*` (13) on BotConfig.
+- UI: Doctor → **SMART WALLETS** tab (`SmartWalletsPanel.jsx`): ON/OFF + mode chips, manual list add/remove, learned table (W/M/rate/best,
+  TRIGGER badge), recent triggers, knobs. Scanner rows show an amber `smart ×N` badge. WS event `smart_wallet_fire`.
+- Tests: `tests/test_smart_wallets.py` (6) + book/source/scanner regressions green (116).
+- Note: backend edits restart uvicorn → bot auto-disables (`enabled=false`). User must press Start again.

@@ -226,6 +226,15 @@ function CandidateRow({ c, passing, onOpen }) {
                 grad feed
               </span>
             )}
+            {c.smart_hits > 0 && (
+              <span
+                className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-amber-700 text-amber-300 bg-amber-950/40"
+                data-testid={`scanner-row-smart-${c.mint}`}
+                title="A smart wallet (manual list / learned top trader) bought this inside the window — gates relaxed, rank boosted"
+              >
+                smart ×{c.smart_hits}
+              </span>
+            )}
           </div>
           <div className="text-[10px] font-mono text-neutral-500 mt-0.5">
             {isRh ? "token" : "mint"} <span className="text-neutral-300">{short(c.mint)}</span>

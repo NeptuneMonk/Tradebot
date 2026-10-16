@@ -1237,6 +1237,34 @@ async def book_exits_restore_defaults():
     return {"ok": True, "book_exits": bx}
 
 
+@api.get("/smart-wallets")
+async def smart_wallets_snapshot(limit: int = 50):
+    """Top-trader trigger: manual list, learned wallets (wins/misses/promoted), recent fires, live hits."""
+    return bot_state.smart_wallets.snapshot(limit=max(1, min(int(limit), 200)))
+
+
+@api.post("/smart-wallets/manual")
+async def smart_wallets_add_manual(body: dict = Body(...)):
+    wallet = str(body.get("wallet") or "").strip()
+    try:
+        from solders.pubkey import Pubkey
+        Pubkey.from_string(wallet)
+    except Exception:
+        raise HTTPException(400, "not a valid Solana wallet address")
+    return await bot_state.smart_wallets.add_manual(wallet, str(body.get("label") or "").strip()[:40])
+
+
+@api.delete("/smart-wallets/manual/{wallet}")
+async def smart_wallets_remove_manual(wallet: str):
+    return await bot_state.smart_wallets.remove_manual(wallet)
+
+
+@api.delete("/smart-wallets/learned")
+async def smart_wallets_forget_learned(wallet: str | None = None):
+    """Forget one learned wallet (`?wallet=`) or wipe the whole learned set."""
+    return await bot_state.smart_wallets.forget_learned(wallet)
+
+
 @api.get("/reputation/status")
 async def reputation_status():
     """Phase 3b adapter: configured? + lookup / skip counters. Dark (configured=false) until REPUTATION_BASE_URL is set."""

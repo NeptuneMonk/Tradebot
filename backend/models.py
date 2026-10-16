@@ -555,6 +555,20 @@ class BotConfig(BaseModel):
     greylist_snipe_pattern_exits: bool = True
     # Dev-reputation adapter (reputation.family). OFF = hunt uses the internal greylist score only (site down 2026-10-15).
     reputation_enabled: bool = False
+    # Smart wallets ("top trader buys as a trigger") — manual list + auto-learned early winners off the Helius tape.
+    smart_wallet_enabled: bool = True
+    smart_wallet_mode: str = "both"              # hard = buy on a smart buy · soft = relax gates + rank boost · both
+    smart_wallet_min_buy_sol: float = 0.2        # a smart wallet's buy must be at least this big to count
+    smart_wallet_max_per_hour: int = 6           # hard-trigger rate cap
+    smart_wallet_hit_ttl_s: int = 180            # how long a smart buy keeps boosting the scanner
+    smart_wallet_soft_boost: float = 25.0        # rank points per fresh smart buy
+    smart_wallet_gate_relax_pct: float = 50.0    # growth / inflow / new-buyer gates × (1 − this %) while a hit is fresh
+    smart_wallet_learn_enabled: bool = True
+    smart_wallet_learn_early_s: int = 120        # buys inside the first N s of a launch are graded
+    smart_wallet_learn_horizon_s: int = 300      # grade a launch's early buyers after this long
+    smart_wallet_learn_min_gain_pct: float = 50.0   # post-buy peak ≥ +this % = WIN (graduation always wins)
+    smart_wallet_learn_min_wins: int = 3         # promotion: at least this many wins…
+    smart_wallet_learn_min_win_rate: float = 0.6  # …and this win-rate
     greylist_snipe_peak_mc_proximity_pct: float = 75.0  # 2026-06-06: 85→75 —
                                                         # exit earlier vs expected peak MC
     greylist_snipe_curve_buffer_pct: float = 8.0        # 2026-06-06: 5→8 —

@@ -21,7 +21,7 @@ FETCH_TIMEOUT_S = 2.5
 _cache: dict[str, tuple[float | None, float]] = {}      # addr → (balance or None on error, ts)
 stats = {"fetches": 0, "cache_hits": 0, "errors": 0}
 
-IN_SCOPE_ACTIONS = {"greylist_snipe", "scanner_momentum", "runner_promote", "reentry"}
+IN_SCOPE_ACTIONS = {"greylist_snipe", "scanner_momentum", "runner_promote", "reentry", "smart_wallet"}
 
 
 def in_scope(cfg, action: str, protocol: str) -> bool:

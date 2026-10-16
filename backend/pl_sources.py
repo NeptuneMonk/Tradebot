@@ -15,6 +15,7 @@ SOURCE_LABELS = {
     "seasoned": "Seasoned Momentum",
     "reentry": "Winner Re-entry",
     "greylist_snipe": "Greylist Sniper",
+    "smart_wallet": "Smart Wallet",
     "rh_pons": "RH · PONS (paper)",
     "manual": "Manual Buy",
     "legacy": "Pre-classifier",
@@ -30,6 +31,8 @@ def classify_source(classifier_action: str | None) -> str:
         return "reentry"
     if classifier_action == "greylist_snipe":
         return "greylist_snipe"
+    if classifier_action == "smart_wallet":
+        return "smart_wallet"
     if classifier_action in ("rh_pons_paper", "rh_pons_reentry"):
         return "rh_pons"
     if classifier_action in ("manual", "rh_pons_manual"):
@@ -99,6 +102,6 @@ async def compute_pl_by_source(db, days: int = 7) -> dict:
 
     return {
         "days": days,
-        "sources": [_finalize(buckets[s]) for s in ("new", "seasoned", "reentry", "greylist_snipe", "rh_pons", "manual", "legacy")],
+        "sources": [_finalize(buckets[s]) for s in ("new", "seasoned", "reentry", "greylist_snipe", "smart_wallet", "rh_pons", "manual", "legacy")],
         "total": _finalize(total),
     }

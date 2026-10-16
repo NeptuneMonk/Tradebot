@@ -292,6 +292,7 @@ class MomentumScanner:
             m["fill_cost"] = self._projected_fill_cost(b, m)                                  # what the configured size would cost over mid
             m["discovered"] = bool(b.get("discovered"))
             m["graduated_feed"] = bool(b.get("graduated_feed"))
+            m["smart_hits"] = st.smart_wallets.fresh_hits(b, now) if b.get("smart_hits") else 0
             m["protocol"] = b.get("protocol") or "pumpfun"
             m["graduated_at"] = b.get("graduated_at")
             m["usd_market_cap"] = float(b.get("usd_market_cap") or 0.0)
@@ -451,8 +452,11 @@ class MomentumScanner:
                     if band == "new" and not b.get("buy_events"):
                         tally(band, verdict("no-buy-events"))
                         continue
+                    if band == "new" and not cfg.book_scalp_enabled:
+                        verdict("book-off:scalp", "tracked for smart-wallet triggers only")
+                        continue
                     m = self.score(b, None, now)
-                    g = self._gates(cfg, band)
+                    g = st.smart_wallets.relax_gates(self._gates(cfg, band), b, now)
                     if m["growth_pct_rolling"] < g["min_growth_pct"]:
                         tally(band, verdict("growth", f"{m['growth_pct_rolling']:+.1f}% rolling < {g['min_growth_pct']:g}%"))
                         continue
@@ -506,6 +510,7 @@ class MomentumScanner:
                         m["growth_pct_rolling"]
                         + m["recent_inflow_sol"] * 5
                         + m["new_buyers_recent"] * 2
+                        + st.smart_wallets.rank_boost(b, now)
                     )
                     scored.append((mint, b, m, rank_score, band))
 
@@ -569,7 +574,7 @@ class MomentumScanner:
                             _Verdict(b)("curve-complete" if curve_state else "curve-state")
                             continue
                     m = self.score(b, curve_state, now)
-                    g = self._gates(cfg, band)
+                    g = st.smart_wallets.relax_gates(self._gates(cfg, band), b, now)
                     verdict = _Verdict(b)
                     if m["real_sol_reserves"] < g["min_liquidity_sol"]:
                         verdict("liquidity", f"on-chain {m['real_sol_reserves']:.2f} SOL < {g['min_liquidity_sol']:g}")

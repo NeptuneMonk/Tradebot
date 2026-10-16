@@ -189,6 +189,8 @@ class BotState:
         self.rh_paper = RHPaperTrader(self)
         from stream_floor import StreamFloor
         self.stream_floor = StreamFloor(self)           # live inflow floor off the Helius tape (seeds in-gate tokens in ~3 s)
+        from smart_wallets import SmartWallets
+        self.smart_wallets = SmartWallets(self)         # top-trader buys as a trigger: manual list + tape-learned early winners
         from alerts import Alerts
         self.alerts = Alerts(self)                       # Telegram phone alerts (dark until TELEGRAM_BOT_TOKEN is set)
         listeners = getattr(hub, "listeners", None)      # test stubs replace the hub with bare namespaces
@@ -434,6 +436,10 @@ class BotState:
         # Start Pump.fun discovery (aged tokens)
         self.discovery.start()
         self.stream_floor.start()
+        if not getattr(self, "_sw_loaded", False):
+            self._sw_loaded = True
+            await self.smart_wallets.load()
+        self.smart_wallets.start()
         quote_book.start()
         # Robinhood Chain watch-only feed (no Helius, no entries)
         self.rh_discovery.start()
@@ -1625,8 +1631,8 @@ class BotState:
             if (now - grad_at) / 60.0 > float(cfg.band_seasoned_max_age_min):
                 return "seasoned-age"
             return None
-        if not cfg.book_scalp_enabled:
-            return "book-off:scalp"
+        if not cfg.book_scalp_enabled and not (self.smart_wallets.enabled() and cfg.book_hunt_enabled):
+            return "book-off:scalp"          # smart-wallet triggers are hunt entries: curve tokens stay tracked for them
         age_min = (now - float(b.get("start") or now)) / 60.0
         if age_min > float(cfg.band_new_max_age_min):
             return "new-age"
@@ -1643,6 +1649,7 @@ class BotState:
             why = self.scope_reason(mint, b, now)
             if why is None:
                 continue
+            self.smart_wallets.grade_bucket(b, now, final=True)
             self.tracking.pop(mint, None)
             gone += 1
             key = f"evicted_scope:{why.split(':', 1)[0]}"
@@ -1813,6 +1820,7 @@ class BotState:
             dead = [kv for kv in evictable if _dead(kv[1])]
             pool = dead or evictable
             oldest = min(pool, key=lambda kv: kv[1].get("graduated_at") or kv[1]["start"])[0]
+            self.smart_wallets.grade_bucket(self.tracking[oldest], now_e, final=True)
             self.tracking.pop(oldest, None)
             key = "evicted_dead" if dead else "evicted_lru"
             self.stats[key] = self.stats.get(key, 0) + 1
@@ -1942,6 +1950,7 @@ class BotState:
             bucket["sol_inflow_lamports"] += int(trade_data.get("sol_amount", 0))
             bucket["buy_count"] = (bucket.get("buy_count") or 0) + 1
             bucket["buy_events"].append((now, int(trade_data.get("sol_amount", 0)), trade_data["user"]))
+            self.smart_wallets.on_buy(mint, bucket, trade_data["user"], int(trade_data.get("sol_amount", 0)), cur_price, now)
             rules = self.rules
             n_buyers, inflow_sol = len(bucket["buyers"]), bucket["sol_inflow_lamports"] / LAMPORTS_PER_SOL
             if (n_buyers == rules.many_buyers_count or (inflow_sol >= rules.low_inflow_sol > inflow_sol - trade_data.get("sol_amount", 0) / LAMPORTS_PER_SOL)) \
@@ -3785,15 +3794,15 @@ class BotState:
 
         # Resolve band-specific gates: "new" (action=momentum_new) uses tighter
         # thresholds, "seasoned" (action=scanner_momentum) uses base thresholds.
-        is_new_band = action == "momentum_new" or (action in MANUAL_ENTRY_ACTIONS and protocol == "pumpfun")
+        is_new_band = action == "momentum_new" or (action in MANUAL_ENTRY_ACTIONS + ("smart_wallet",) and protocol == "pumpfun")
         # Greylist Sniper bypasses MOMENTUM-side gates entirely. The whole
         # point of the greylist is sniping creators on predictable curves,
         # so growth/inflow/buyer/velocity gates would defeat the strategy.
         # SAFETY gates already ran in `_enter()` (kill switch, max_concurrent,
         # cooldowns, doctor pause). Pool state checks above also already ran.
         is_greylist_snipe = action == "greylist_snipe"
-        # Manual buys (operator override) skip the same momentum-side gates.
-        bypass_gates = is_greylist_snipe or action in MANUAL_ENTRY_ACTIONS
+        # Manual buys (operator override) and smart-wallet triggers skip the same momentum-side gates.
+        bypass_gates = is_greylist_snipe or action == "smart_wallet" or action in MANUAL_ENTRY_ACTIONS
         if is_greylist_snipe:
             logger.info(
                 f"greylist_snipe: bypassing momentum gates for {launch.mint[:8]}… "
@@ -4134,7 +4143,7 @@ class BotState:
                        "creator_graduated_before": int((self.tracking.get(launch.mint) or {}).get("creator_tokens_graduated") or 0) >= 1,
                        "project_score": int((self.tracking.get(launch.mint) or {}).get("project_score") or getattr(launch, "project_score", 0) or 0),
                        "project_flags": (self.tracking.get(launch.mint) or {}).get("project_flags") or {},
-                       "band": "new" if action == "momentum_new" else "seasoned"},
+                       "band": "new" if (action == "momentum_new" or (action == "smart_wallet" and is_new_band)) else "seasoned"},
             is_research_snipe=is_research_snipe,
             long_term_hold=action == "dev_watch",
             dev_watch=action == "dev_watch",

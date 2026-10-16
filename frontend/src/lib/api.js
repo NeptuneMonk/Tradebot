@@ -171,6 +171,11 @@ export const api = {
   brainImportStatus: (uploadId) => client.get(`/brain/import/status/${uploadId}`).then(r => r.data),
   configApplyRecommended: () => client.post("/config/apply-recommended").then(r => r.data),
   recipientHealth: () => client.get("/diagnostics/recipient-health").then(r => r.data),
+  // Smart wallets (top-trader buys as a trigger)
+  smartWallets: (limit = 50) => client.get(`/smart-wallets`, { params: { limit } }).then(r => r.data),
+  smartWalletAdd: (wallet, label = "") => client.post(`/smart-wallets/manual`, { wallet, label }).then(r => r.data),
+  smartWalletRemove: (wallet) => client.delete(`/smart-wallets/manual/${wallet}`).then(r => r.data),
+  smartWalletForget: (wallet = null) => client.delete(`/smart-wallets/learned`, { params: wallet ? { wallet } : {} }).then(r => r.data),
   // Creator greylist (Phase 2 — telemetry-now / live-soon)
   creatorGreylist: (limit = 25, minScore = 30.0) =>
     client.get(`/creator-greylist`, { params: { limit, min_score: minScore } }).then(r => r.data),
