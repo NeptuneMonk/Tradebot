@@ -448,6 +448,10 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
                  value={local.slippage_bps}
                  onChange={(v) => setLocal({ ...local, slippage_bps: parseInt(v, 10) || 0 })} step="50" />
         )}
+        <Field label="Max Slippage (bps)" testid="max-slippage-input"
+               hint="Hard ceiling on EVERY slippage the bot sends — entry (incl. thin-pool floors), exit, panic exits, the retry ladder and routed legs. 300 = 3%. 0 = no cap."
+               value={local.max_slippage_bps ?? 300}
+               onChange={(v) => setLocal({ ...local, max_slippage_bps: parseInt(v, 10) || 0 })} step="50" />
         <Field label="Kill Switch ($)" testid="killswitch-input"
                hint="If LIVE PnL drops by this much in a single day, the bot auto-disables. Manual reset required."
                value={local.daily_kill_switch_usd}

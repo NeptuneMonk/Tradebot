@@ -39,7 +39,7 @@ from discovery import PumpfunDiscovery
 from rh_discovery import RHDiscovery
 from rh_paper import RHPaperTrader
 from book_params import book_for_action, book_size_mult, exit_param, FIRST_TARGET_R
-from slippage import pool_depth_sol, auto_exit_slip_bps, recent_vol_pct, entry_slip_bps
+from slippage import pool_depth_sol, auto_exit_slip_bps, recent_vol_pct, entry_slip_bps, capped as slip_capped
 import cost_gate
 import creator_solvency
 import r_sizer
@@ -513,7 +513,7 @@ class BotState:
         """Return (priority_fee_microlamports, slippage_bps, exit_slippage_bps)
         applying the current speed_mode preset. Falls back to raw config when
         speed_mode='manual' or unrecognised."""
-        return speed_mode_resolve(
+        prio, slip, exit_slip = speed_mode_resolve(
             self.config.speed_mode,
             self.config.priority_fee_microlamports,
             self.config.slippage_bps,
@@ -522,6 +522,7 @@ class BotState:
              else self.config.slippage_bps),
             auto_priority_cache=auto_tuner.current_value,
         )
+        return prio, slip_capped(slip, self.config), slip_capped(exit_slip, self.config)
 
     def _is_panic_exit(self, reason: str) -> bool:
         """Return True for exits where landing the sell matters more than the
@@ -559,8 +560,8 @@ class BotState:
         the resolved exit slippage from speed_mode/config."""
         if self._is_panic_exit(reason):
             panic = int(getattr(self.config, "panic_exit_slippage_bps", 2500) or 2500)
-            return max(panic, base_exit_slip_bps)
-        return base_exit_slip_bps
+            return slip_capped(max(panic, base_exit_slip_bps), self.config)
+        return slip_capped(base_exit_slip_bps, self.config)
 
     # ---------- Intelligent Exit v2 helpers ----------
     def _flush_holds_sol(self, mint: str, slot: dict, kind: str, pct_change: float, cur_price_sol: float) -> bool:
@@ -1366,7 +1367,7 @@ class BotState:
         if real_sol < self.config.min_curve_liquidity_sol:
             return
         eff_priority, eff_slip, _ = self._resolve_fees()
-        eff_slip = entry_slip_bps(protocol, pool_depth_sol(pumpswap_state if protocol == "pumpswap" else state, protocol), eff_slip)
+        eff_slip = entry_slip_bps(protocol, pool_depth_sol(pumpswap_state if protocol == "pumpswap" else state, protocol), eff_slip, self.config)
         plan = await self._plan_entry(mint, "hunt", protocol, eff_slip, eff_priority, sol_price,
                                       depth_sol=pool_depth_sol(pumpswap_state if protocol == "pumpswap" else state, protocol),
                                       book_mult_override=book_size_mult(self.config, "hunt") * float(w["size_multiplier"]))
@@ -4001,7 +4002,7 @@ class BotState:
         # reverts. Auto-widen slippage for thin curves. Even deep curves
         # need a 8% floor on hot launches because a few sniper buys land
         # in the same slot and move price >3% before our tx confirms.
-        eff_slip = entry_slip_bps(protocol, pool_depth_sol(pumpswap_state if protocol == "pumpswap" else state, protocol), eff_slip)
+        eff_slip = entry_slip_bps(protocol, pool_depth_sol(pumpswap_state if protocol == "pumpswap" else state, protocol), eff_slip, self.config)
 
         reentry_mult = self._reentry_gate_mult.pop(launch.mint, None)
         if action == "dev_watch":
@@ -5099,11 +5100,11 @@ class BotState:
                 user = get_pubkey()
                 mint_pk = Pubkey.from_string(mint)
                 # Slip-escalation ladder for the partial (same pattern as full-exit)
-                slip_ladder = [exit_slip]
+                slip_ladder = [slip_capped(exit_slip, self.config)]
                 if self.config.intelligent_exit_v2:
                     for floor_bps in (self.config.auto_exit_retry_slip_floors_bps or []):
-                        if int(floor_bps) > slip_ladder[-1]:
-                            slip_ladder.append(int(floor_bps))
+                        if slip_capped(floor_bps, self.config) > slip_ladder[-1]:
+                            slip_ladder.append(slip_capped(floor_bps, self.config))
                 last_err: Exception | None = None
                 for attempt_idx, attempt_slip in enumerate(slip_ladder):
                     if protocol == "pumpswap":
@@ -5688,11 +5689,11 @@ class BotState:
                 # Build slip-escalation ladder. Attempt 0 = current exit_slip.
                 # Attempts 1..N escalate to auto_exit_retry_slip_floors_bps if
                 # the on-chain tx reverts with Custom:6003 (slippage).
-                slip_ladder = [exit_slip]
+                slip_ladder = [slip_capped(exit_slip, self.config)]
                 if self.config.intelligent_exit_v2:
                     for floor_bps in (self.config.auto_exit_retry_slip_floors_bps or []):
-                        if int(floor_bps) > slip_ladder[-1]:
-                            slip_ladder.append(int(floor_bps))
+                        if slip_capped(floor_bps, self.config) > slip_ladder[-1]:
+                            slip_ladder.append(slip_capped(floor_bps, self.config))
                 last_err: Exception | None = None
                 exit_sig = None
                 cu_sell = CU_PUMPSWAP if protocol == "pumpswap" else CU_PUMPFUN

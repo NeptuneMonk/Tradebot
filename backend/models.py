@@ -108,6 +108,8 @@ class BotConfig(BaseModel):
     min_trade_usd: float = 0.50
     max_trade_usd: float = 1.00
     slippage_bps: int = 500          # 5% entry slippage
+    # Hard ceiling on EVERY slippage we send — entry (incl. thin-pool floors), exit, panic, retry ladder, routed legs.
+    max_slippage_bps: int = 300
     # Risk / exit behaviour
     daily_kill_switch_usd: float = 20.00
     priority_fee_microlamports: int = 500_000
