@@ -50,7 +50,7 @@ def test_targets_only_filters_exits_partials_and_system_events():
         await a.on_event("kill_switch_tripped", {"reason": "daily loss"})
         await a.on_event("profit_sweep", {"amount_usd": 5, "mode": "live"})
     asyncio.run(run())
-    syms = [t.split("<b>")[1].split("</b>")[0] for _, t in a.sent]
+    syms = [t.split("<b>$")[1].split("</b>")[0] for _, t in a.sent]
     assert syms == ["C", "D", "E"]
 
 
@@ -71,3 +71,25 @@ def test_legacy_mode_and_system_switch():
         await b.on_event("trade_exit", {"symbol": "A", "pnl_pct": 45.0, "exit_reason": "trailing-stop hit (peak +60.0%, now +45.0%)"})
     asyncio.run(run2())
     assert [k for k, _ in b.sent] == ["kill"]
+
+
+def test_alert_text_has_ticker_mc_and_link():
+    from alerts import mc_usd, fmt_mc
+    # 2.5e-11 SOL per raw unit · 6 dec · 1e9 supply · $200 SOL → $5.0M
+    assert fmt_mc(mc_usd(2.5e-11, 200.0, 6)) == "$5.00M"
+    assert fmt_mc(mc_usd(2.5e-13, 200.0, 6)) == "$50.0K"
+    assert mc_usd(0, 200.0) is None and fmt_mc(None) == "?"
+    a = _alerts()
+
+    async def run():
+        await a.on_event("trade_exit", {"symbol": "WIF", "mint": "So11111111111111111111111111111111111111112", "pnl_pct": 31.0,
+                                        "exit_reason": "take-profit +30% hit (+31.0%)", "book": "scalp", "mode": "live", "pnl_usd": 0.31,
+                                        "entry_sol": 0.01, "entry_usd": 2.0, "exit_sol": 0.0131, "exit_usd": 2.62,
+                                        "entry_price_sol": 5e-11, "exit_price_sol": 6.55e-11, "decimals": 6})
+        await a.on_event("trade_partial", {"symbol": "WIF", "mint": "So11111111111111111111111111111111111111112", "reason": "ladder +1R: sell 40% (+22.0%)",
+                                           "fraction": 0.4, "partial_realized_usd": 0.12, "entry_price_sol": 5e-11, "leg_price_sol": 6.1e-11,
+                                           "sol_price": 200.0, "entry_sol_price": 200.0, "decimals": 6})
+    asyncio.run(run())
+    close, leg = a.sent[0][1], a.sent[1][1]
+    assert "<b>$WIF</b>" in close and "MC $10.00M → $13.10M" in close and 'href="https://pump.fun/coin/So1111' in close and "in 2.00 $" in close
+    assert "<b>$WIF</b>" in leg and "MC $10.00M → $12.20M" in leg and "pump.fun" in leg

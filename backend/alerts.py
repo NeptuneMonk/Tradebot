@@ -30,6 +30,41 @@ _TARGET_RE = re.compile(r"^(?:runner )?(?:take-profit|target \+)|^ladder \+\d+R|
 def is_target_reason(reason: str) -> bool:
     return bool(_TARGET_RE.match((reason or "").strip()))
 
+
+PUMP_SUPPLY = 1_000_000_000
+
+
+def mc_usd(price_sol_per_raw: float | None, sol_usd: float | None, decimals: int | None = 6) -> float | None:
+    """Pump.fun market cap from a raw-unit SOL price: price × 10^decimals × 1e9 supply × SOL/USD."""
+    try:
+        p, sp = float(price_sol_per_raw or 0), float(sol_usd or 0)
+    except (TypeError, ValueError):
+        return None
+    if p <= 0 or sp <= 0:
+        return None
+    return p * (10 ** int(decimals if decimals is not None else 6)) * PUMP_SUPPLY * sp
+
+
+def fmt_mc(v: float | None) -> str:
+    if v is None:
+        return "?"
+    if v >= 1_000_000:
+        return f"${v / 1_000_000:.2f}M"
+    if v >= 1_000:
+        return f"${v / 1_000:.1f}K"
+    return f"${v:.0f}"
+
+
+def token_link(mint: str, chain: str | None = None) -> str:
+    if chain == "rh":
+        return ""
+    return f'<a href="https://pump.fun/coin/{html.escape(mint)}">pump.fun ↗</a>'
+
+
+def _ticker(data: dict) -> str:
+    sym = str(data.get("symbol") or "").strip()
+    return html.escape(f"${sym}" if sym else str(data.get("mint") or "")[:8])
+
 TG_API = "https://api.telegram.org/bot{token}/{method}"
 HTTP_TIMEOUT = 10.0
 POLL_S = 30.0
@@ -152,9 +187,13 @@ class Alerts:
             if not self._targets_only() or not is_target_reason(reason):
                 return
             usd = data.get("partial_realized_usd")
-            await self.send("trade", f"🎯 <b>{html.escape(str(data.get('symbol') or data.get('mint', '')[:8]))}</b> target leg · "
-                                     f"sold {float(data.get('fraction') or 0) * 100:.0f}%{f' · banked {float(usd):+.2f} $' if usd is not None else ''}\n"
-                                     f"{html.escape(reason[:120])}")
+            dec = data.get("decimals")
+            mc_in = mc_usd(data.get("entry_price_sol"), data.get("entry_sol_price") or data.get("sol_price"), dec)
+            mc_out = mc_usd(data.get("leg_price_sol"), data.get("sol_price"), dec)
+            await self.send("trade", f"🎯 <b>{_ticker(data)}</b> target leg · sold {float(data.get('fraction') or 0) * 100:.0f}%"
+                                     f"{f' · banked {float(usd):+.2f} $' if usd is not None else ''}\n"
+                                     f"MC {fmt_mc(mc_in)} → {fmt_mc(mc_out)}\n"
+                                     f"{html.escape(reason[:120])}\n{token_link(str(data.get('mint') or ''), data.get('chain'))}")
             return
         if ev in ("pnl_stop_tripped", "kill_switch_tripped", "profit_sweep") and not self._system_ok():
             return
@@ -180,10 +219,18 @@ class Alerts:
                     return
             pnl = float(pnl or 0.0)
             usd = data.get("pnl_usd")
-            await self.send("trade", f"{'🎯' if self._targets_only() else ('🟢' if pnl >= 0 else '🔴')} <b>{html.escape(str(data.get('symbol') or data.get('mint', '')[:8]))}</b> closed "
+            dec = data.get("decimals")
+            e_sol, e_usd = float(data.get("entry_sol") or 0), float(data.get("entry_usd") or 0)
+            x_sol, x_usd = float(data.get("exit_sol") or 0), float(data.get("exit_usd") or 0)
+            sp_in = e_usd / e_sol if e_sol > 0 and e_usd > 0 else None
+            sp_out = x_usd / x_sol if x_sol > 0 and x_usd > 0 else sp_in
+            mc_in = mc_usd(data.get("entry_price_sol"), sp_in, dec)
+            mc_out = mc_usd(data.get("exit_price_sol"), sp_out, dec)
+            await self.send("trade", f"{'🎯' if self._targets_only() else ('🟢' if pnl >= 0 else '🔴')} <b>{_ticker(data)}</b> closed "
                                      f"<b>{pnl:+.1f} %</b>{f' ({float(usd):+.2f} $)' if usd is not None else ''}\n"
+                                     f"MC {fmt_mc(mc_in)} → {fmt_mc(mc_out)} · in {e_usd:.2f} $\n"
                                      f"{html.escape(str(data.get('book') or ''))} · {html.escape(str(data.get('mode') or ''))} · "
-                                     f"{html.escape(str(data.get('exit_reason') or '')[:120])}")
+                                     f"{html.escape(str(data.get('exit_reason') or '')[:120])}\n{token_link(str(data.get('mint') or ''), data.get('chain'))}")
 
     async def _loop(self) -> None:
         await asyncio.sleep(POLL_S)

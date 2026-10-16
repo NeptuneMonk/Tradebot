@@ -2606,3 +2606,8 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
 - Invested column refined: total = remaining `entry_usd` + cost of legs already sold (`partial_sell_usd − partial_realized_usd`); shows
   `$x open · banked ±$y` when legs sold; unrealized $ is on the open part.
 - Backend restarts during this step auto-disabled the bot (enabled=false) — user must press Start.
+- ✅ **Alert content** (user ask): target alerts now read `🎯 $TICKER closed +31.0 % (+0.31 $) / MC $10.0K → $13.1K · in 1.00 $ / book · mode ·
+  reason / pump.fun ↗` (HTML link `https://pump.fun/coin/<mint>`, no preview). MC = `price_sol_per_raw × 10^decimals × 1e9 × SOL/USD`
+  (`alerts.mc_usd`), SOL/USD derived from entry_usd/entry_sol and exit_usd/exit_sol so entry/exit MCs use the prices of the moment.
+  `trade_partial` broadcast now carries `leg_price_sol`, `sol_price`, `entry_price_sol`, `entry_sol_price`, `decimals`, `book`, `mode`, `chain`.
+  A sample message was sent to the user's chat. Tests: `test_alert_text_has_ticker_mc_and_link`.

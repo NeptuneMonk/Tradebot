@@ -5234,8 +5234,11 @@ class BotState:
             {"_id": trade_doc["id"]}, {"$set": trade_doc}, upsert=True
         )
         await hub.broadcast("trade_partial", {
-            "id": trade_doc["id"], "mint": mint, "symbol": trade_doc.get("symbol"),
+            "id": trade_doc["id"], "mint": mint, "symbol": trade_doc.get("symbol"), "chain": trade_doc.get("chain"),
             "partial_realized_usd": realized_usd, "fraction": fraction, "reason": reason,
+            "leg_price_sol": (partial_sol / sell_tokens if sell_tokens else 0.0), "sol_price": sol_price,
+            "entry_price_sol": entry_sol_per_token, "entry_sol_price": (float(trade_doc.get("entry_usd") or 0) / float(trade_doc.get("entry_sol") or 1) if float(trade_doc.get("entry_sol") or 0) > 0 else sol_price),
+            "book": trade_doc.get("book"), "mode": trade_doc.get("mode"), "decimals": trade_doc.get("decimals"),
         })
         logger.info(
             f"partial exit {mint} ({fraction*100:.0f}%): banked ${realized_usd:+.2f}, "
