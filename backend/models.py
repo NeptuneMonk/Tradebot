@@ -551,6 +551,8 @@ class BotConfig(BaseModel):
     #   4. Pattern-suggested TP hits (locks profit on parabolic moves)
     # `_check_snipe_pattern_exit()` in bot.py is the single source of truth.
     greylist_snipe_pattern_exits: bool = True
+    # Dev-reputation adapter (reputation.family). OFF = hunt uses the internal greylist score only (site down 2026-10-15).
+    reputation_enabled: bool = False
     greylist_snipe_peak_mc_proximity_pct: float = 75.0  # 2026-06-06: 85→75 —
                                                         # exit earlier vs expected peak MC
     greylist_snipe_curve_buffer_pct: float = 8.0        # 2026-06-06: 5→8 —

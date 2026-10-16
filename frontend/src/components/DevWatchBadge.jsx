@@ -20,7 +20,7 @@ export default function DevWatchBadge({ watch }) {
     away: "CRAZY-dev watch dormant — no dashboard session seen on the trading pod. Keep this tab open to arm it.",
     autopilot: "CRAZY-dev watch paused — Autopilot is driving; CRAZY launches go through the normal entry path instead.",
     off: "CRAZY-dev watch switched OFF in Controls — CRAZY launches go through the normal entry path.",
-    dark: "CRAZY-dev watch dark — REPUTATION_BASE_URL is not set on the backend.",
+    dark: "CRAZY-dev watch dark — the dev-reputation adapter is switched off (Switches → Dev reputation) or REPUTATION_BASE_URL is not set.",
   }[s] + `\nCRAZY devs seen ${watch.crazy_seen || 0} · auto-bought ${watch.fired || 0} · open positions flipped to LTH ${watch.tagged_open || 0}` +
     `\nskipped: away ${watch.skipped_away || 0} · autopilot ${watch.skipped_autopilot || 0} · kill-switch ${watch.skipped_kill || 0}` +
     (last ? `\nlast buy ${watch.last_symbol || ""} at ${last}` : "");

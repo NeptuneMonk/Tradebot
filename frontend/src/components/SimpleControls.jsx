@@ -248,6 +248,11 @@ function SimpleControls({ config, status, wallet, pl, onPatch, onStart, onStop }
           </div>
         </div>
         <div className="flex flex-col gap-1">
+          <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500" title="Dev-reputation adapter (reputation.family). ON: FARMER / fake-chart devs are skipped on every book and hunt needs an allow-tier. OFF: hunt relies on the internal greylist / creator score only — use this while the site is down (a dead site would otherwise refuse every hunt as UNKNOWN).">Dev reputation</span>
+          <Book k="reputation" label={config.reputation_enabled ? "on" : "off · greylist"} on={!!config.reputation_enabled}
+            onFlip={(v) => patch({ reputation_enabled: v }, v ? "Dev reputation ON — reputation.family tiers gate hunt" : "Dev reputation OFF — hunt uses the internal greylist score only")} />
+        </div>
+        <div className="flex flex-col gap-1">
           <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500" title="reputation.family CRAZY-ranked devs: buy min stake with no gates, park as long-term hold — only while this dashboard is open and Autopilot is off">Crazy dev</span>
           <button type="button" onClick={() => patch({ dev_watch_enabled: config.dev_watch_enabled === false }, config.dev_watch_enabled === false ? "Crazy-dev watch ON — CRAZY devs go straight to LTH" : "Crazy-dev watch OFF")}
             data-testid="simple-dev-watch" aria-pressed={config.dev_watch_enabled !== false}

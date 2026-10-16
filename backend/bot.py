@@ -1601,7 +1601,7 @@ class BotState:
         # Cut-the-fat (2026-10-03): no greylist sniper on the launch path.
         asyncio.create_task(self._assess_and_enter(launch, creator_rugs))
         asyncio.create_task(self._tracker_cleanup(launch.mint))
-        if reputation.configured():
+        if self._reputation_on():
             asyncio.create_task(self._crazy_dev_watch(launch))
 
     def scope_reason(self, mint: str, b: dict, now: float) -> str | None:
@@ -1771,6 +1771,10 @@ class BotState:
                 logger.debug(f"window feed tick failed: {e}")
             await asyncio.sleep(WINDOW_FEED_INTERVAL_S)
 
+    def _reputation_on(self) -> bool:
+        """Adapter wired (env) AND switched on (config). Off → hunt relies on the internal greylist / creator score."""
+        return reputation.configured() and bool(getattr(self.config, "reputation_enabled", False))
+
     def tag_reputation(self, mint: str, rep: dict) -> None:
         """FARMER / fake-chart dev → the token is untradeable on every book: tag the bucket and free its slot now."""
         if not rep or not (rep.get("tier") == "FARMER" or rep.get("fake_chart")):
@@ -1825,7 +1829,7 @@ class BotState:
     async def dev_watch_snapshot(self) -> dict:
         present = await self.operator_present()
         autopilot = bool(getattr(self.config, "autopilot_enabled", False))
-        configured = reputation.configured()
+        configured = self._reputation_on()
         enabled = bool(getattr(self.config, "dev_watch_enabled", True))
         state = "dark" if not configured else "off" if not enabled else "autopilot" if autopilot else "away" if not present else "watching"
         return {"state": state, "present": present, "autopilot": autopilot, "configured": configured, "enabled": enabled,
@@ -3366,8 +3370,8 @@ class BotState:
             await self._skip_event({"mint": launch.mint, "symbol": launch.symbol, "band": _band, "reason": f"book-off:{book}",
                                     "details": [f"{book} book is switched off in Controls"]})
             return
-        if not is_manual and reputation.configured():
-            # Phase 3b: outsourced dev reputation. FARMER / fake-chart = master skip on every book; hunt needs an allow-tier.
+        if not is_manual and self._reputation_on():
+            # Phase 3b: outsourced dev reputation (switch: reputation_enabled; OFF → internal greylist score only). FARMER / fake-chart = master skip on every book; hunt needs an allow-tier.
             rep = await self.reputation.lookup(launch.mint, launch.creator)
             why = self.reputation.gate(rep, book)
             if why and book == "hunt" and self.reputation.gate(rep, "scalp") is None and getattr(self.config, "book_scalp_enabled", True):
