@@ -5,12 +5,14 @@ import StrategyDoctorPanel, { TempoGauge } from "../StrategyDoctorPanel";
 import DoctorLivePanels from "../DoctorLivePanels";
 import LearningBooksPanel from "../LearningBooksPanel";
 import CostTrackerCard from "../CostTrackerCard";
+import CreatorGreylistPanel from "../CreatorGreylistPanel";
 import Explain from "./Explain";
 
 const TABS = [
   ["now", "NOW", "what is driving right now — bankrolls, sizing, breakers, canary, tempo, budget"],
   ["proposals", "PROPOSALS", "what the Doctor wants to change — apply, dismiss, revert"],
   ["forensics", "FORENSICS", "why — technique lab, learning books, autopsies, replay, costs"],
+  ["greylist", "GREYLIST", "creator greylist — scored devs, snipe path, pattern-exit knobs"],
 ];
 
 function Chip({ active, onClick, children, testid, cls = "border-emerald-700 text-emerald-300" }) {
@@ -71,6 +73,11 @@ function DoctorWorkspace({ config, onConfigUpdate, onApplied, status, auto, onRe
           <div key="proposals" className="space-y-3 tile-in" data-testid="doctor-proposals">
             <StrategyDoctorPanel config={config} onConfigUpdate={onConfigUpdate} onApplied={onApplied} section="proposals" filter={filter} />
             <DoctorLivePanels parts={["history"]} />
+          </div>
+        )}
+        {tab === "greylist" && (
+          <div key="greylist" className="p-3 animate-in fade-in duration-200" data-testid="doctor-greylist-tab">
+            <CreatorGreylistPanel config={config} onConfigUpdate={onConfigUpdate} />
           </div>
         )}
         {tab === "forensics" && (

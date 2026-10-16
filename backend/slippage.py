@@ -15,8 +15,9 @@ ENTRY_SLIP_FLOORS = {
 def pool_depth_sol(state: dict | None, protocol: str) -> float:
     if not state:
         return 0.0
-    key = "quote_reserves" if protocol == "pumpswap" else "virtual_sol_reserves"
-    return (state.get(key) or 0) / LAMPORTS_PER_SOL
+    if protocol == "pumpswap":
+        return (state.get("real_quote_reserves", state.get("quote_reserves")) or 0) / LAMPORTS_PER_SOL
+    return (state.get("virtual_sol_reserves") or 0) / LAMPORTS_PER_SOL
 
 
 def slip_cap_bps(cfg) -> int:

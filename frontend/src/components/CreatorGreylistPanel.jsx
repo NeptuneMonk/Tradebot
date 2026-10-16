@@ -993,12 +993,82 @@ function CreatorGreylistPanel({ config, onConfigUpdate }) {
         )}
       </div>
 
+      <GreylistKnobs config={config} />
+
       <div className="mt-2 text-[10px] font-mono text-neutral-600">
         scoring: profitability 28% · predictability 20% · peak mc 25% · activity 13% · volume 9% · links 5% ·
         decay ~1%/hr · tiers at 45 (hybrid) and 70 (aggressive) ·
         F-band <span className="text-neutral-400">{config?.creator_greylist_min_fails ?? 2}–{config?.creator_greylist_max_fails ?? 100}</span>{" "}
         (outside band → stats kept, score suppressed) · living list: silent &gt;{inactiveDays}d → hidden, revived on next launch
       </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+const KNOBS = [
+  ["greylist_snipe_enabled", "Snipe path", "bool", "Open the greylist snipe entry path on every NEW launch by a scored creator (bypasses momentum gates; safety gates still apply)."],
+  ["greylist_snipe_min_score", "Min score", 1, "Creator greylist score needed to snipe / to count as a hunt creator. 45 = hybrid, 70 = aggressive."],
+  ["greylist_snipe_max_per_hour", "Snipes / hour", 1, "Rate cap on greylist snipes."],
+  ["greylist_snipe_settle_seconds", "Settle (s)", 1, "Wait after launch before the snipe fires (lets the tracking bucket fill)."],
+  ["creator_greylist_min_fails", "F-band min", 1, "Creators with fewer rugs than this are not scored."],
+  ["creator_greylist_max_fails", "F-band max", 1, "Creators with more rugs than this are not scored (stats kept)."],
+  ["greylist_snipe_pattern_exits", "Pattern exits", "bool", "Hunt/snipe exits on the creator's pattern (peak-MC proximity, curve fill, rip-cord, stale). OFF = book SL/TP ladder only."],
+  ["greylist_snipe_peak_mc_proximity_pct", "Peak-MC exit %", 1, "Exit when MC reaches this % of the creator's typical peak MC."],
+  ["greylist_snipe_curve_buffer_pct", "Curve buffer %", 0.5, "Exit this many % of curve fill before the creator's typical rug point."],
+  ["greylist_snipe_ripcord_drawdown_pct", "Rip-cord DD %", 1, "Drawdown from the observed peak that exits immediately (the rug already happened)."],
+  ["greylist_snipe_ripcord_grace_seconds", "Rip-cord grace (s)", 1, "Drawdown must persist this long before the rip-cord fires."],
+  ["greylist_snipe_stale_seconds", "Stale (s)", 5, "No new high for this long → exit if profit ≥ stale min profit."],
+  ["greylist_snipe_stale_min_profit_pct", "Stale min profit %", 0.5, "Profit floor for the stale exit."],
+  ["greylist_snipe_require_classified_pattern", "Need classified pattern", "bool", "Only snipe creators whose rug pattern is classified."],
+  ["greylist_snipe_velocity_exits_enabled", "Velocity exits", "bool", "Exit when SOL-inflow / new-holder velocity collapses vs the baseline window."],
+  ["greylist_snipe_sol_vel_drop_pct", "SOL vel drop %", 5, "Inflow-rate drop (recent vs baseline) that fires the velocity exit."],
+  ["greylist_snipe_holder_vel_drop_pct", "Holder vel drop %", 5, "New-holder-rate drop that fires the velocity exit."],
+];
+
+function GreylistKnobs({ config }) {
+  const [local, setLocal] = useState({});
+  const [open, setOpen] = useState(false);
+  useEffect(() => { setLocal({}); }, [config]);
+  const val = (k) => (local[k] !== undefined ? local[k] : config?.[k]);
+  const dirty = Object.keys(local).some((k) => local[k] !== config?.[k]);
+  const save = async () => {
+    try {
+      await api.updateConfig(local);
+      toast.success("Greylist knobs saved");
+      setLocal({});
+    } catch (e) { toast.error(`save failed: ${e.message || e}`); }
+  };
+  return (
+    <div className="mt-3 border-t border-neutral-800 pt-2" data-testid="greylist-knobs">
+      <button type="button" onClick={() => setOpen((v) => !v)} data-testid="greylist-knobs-toggle"
+        className="flex items-center gap-1 text-[10px] uppercase tracking-[0.2em] text-neutral-500 hover:text-neutral-300">
+        {open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />} Greylist knobs
+      </button>
+      {open && (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-2 mt-2">
+            {KNOBS.map(([k, label, step, hint]) => (
+              <label key={k} className="flex flex-col gap-0.5" title={hint}>
+                <span className="text-[9px] uppercase tracking-[0.15em] text-neutral-500">{label}</span>
+                {step === "bool" ? (
+                  <button type="button" data-testid={`gl-${k}`} onClick={() => setLocal({ ...local, [k]: !val(k) })}
+                    className={`text-[11px] font-mono px-2 py-1 border text-left ${val(k) ? "border-emerald-700 text-emerald-300" : "border-neutral-700 text-neutral-500"}`}>
+                    {val(k) ? "ON" : "OFF"}
+                  </button>
+                ) : (
+                  <input type="number" step={step} data-testid={`gl-${k}`} value={val(k) ?? ""}
+                    onChange={(e) => setLocal({ ...local, [k]: e.target.value === "" ? 0 : Number(e.target.value) })}
+                    className="bg-neutral-950 border border-neutral-700 text-neutral-200 text-[11px] font-mono px-2 py-1 focus:border-amber-600 outline-none" />
+                )}
+              </label>
+            ))}
+          </div>
+          <button type="button" disabled={!dirty} onClick={save} data-testid="greylist-knobs-save"
+            className={`mt-2 text-[10px] uppercase tracking-[0.2em] px-3 py-1 border ${dirty ? "border-amber-600 text-amber-300 hover:bg-amber-950/40" : "border-neutral-800 text-neutral-600"}`}>
+            Save knobs
+          </button>
         </>
       )}
     </div>

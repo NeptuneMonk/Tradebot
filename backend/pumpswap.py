@@ -142,6 +142,9 @@ def _decode_pool_static(pool: str, raw: bytes) -> Optional[dict]:
         "coin_creator": str(Pubkey.from_bytes(raw[211:243])),
         "is_mayhem_mode": bool(raw[243]) if len(raw) > 243 else False,
         "is_cashback": bool(raw[244]) if len(raw) > 244 else False,
+        # Synthetic-migration pools price on real + VIRTUAL quote (i128 @245). Ignoring it under-quotes buys by the
+        # virtual share (8 % on a 313 SOL pool → every buy reverted 6004 at a 3 % cap, 2026-10-16).
+        "virtual_quote_reserves": max(0, int.from_bytes(raw[245:261], "little", signed=True)) if len(raw) >= 261 else 0,
     }
 
 
@@ -161,11 +164,15 @@ def _with_reserves(static: dict, base_acct: Optional[dict], quote_acct: Optional
     rate = quote_book.lamports_per_raw(quote_mint)
     if not quote_is_sol:
         quote_book.note(quote_mint)
-    quote_sol = quote_amt if quote_is_sol else (int(quote_amt * rate) if rate else 0)
+    virtual = int(static.get("virtual_quote_reserves") or 0)
+    eff_amt = quote_amt + virtual                    # what the AMM prices on
+    quote_sol = eff_amt if quote_is_sol else (int(eff_amt * rate) if rate else 0)
+    real_sol = quote_amt if quote_is_sol else (int(quote_amt * rate) if rate else 0)
     return {
         **static,
         "base_reserves": base_amt,
-        "quote_reserves": quote_sol,                 # SOL-equivalent lamports
+        "quote_reserves": quote_sol,                 # SOL-equivalent lamports incl. virtual (pricing / quotes)
+        "real_quote_reserves": real_sol,             # SOL-equivalent lamports actually in the vault (liquidity depth)
         "quote_reserves_raw": quote_amt,             # raw quote units (what the pool actually holds)
         "quote_is_sol": quote_is_sol,
         "quote_priced": quote_is_sol or rate is not None,

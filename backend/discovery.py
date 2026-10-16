@@ -306,7 +306,7 @@ class PumpfunDiscovery:
                             # in the pool — no virtual offset like Pump.fun.
                             # Store as real_sol (not virtual) so the scanner
                             # band gate sees the correct liquidity.
-                            bucket["last_real_sol_lamports"] = ps_state["quote_reserves"]
+                            bucket["last_real_sol_lamports"] = ps_state.get("real_quote_reserves", ps_state["quote_reserves"])
                             bucket["last_vsr_lamports"] = ps_state["quote_reserves"]  # legacy compat
                             # Fallback MC computation when Pump.fun API gave
                             # us nothing (the usual case for graduated tokens).
@@ -676,7 +676,7 @@ class PumpfunDiscovery:
                     ps_state = pool_state or await pumpswap.fetch_pool_state(pool_address)
                     if ps_state:
                         cur_price = pumpswap.price_sol_per_raw_token(ps_state)
-                        real_sol_lamports = ps_state["quote_reserves"]
+                        real_sol_lamports = ps_state.get("real_quote_reserves", ps_state["quote_reserves"])
                         if not ps_state.get("quote_is_sol", True):
                             pool_quote = (ps_state.get("quote_mint"), ps_state.get("quote_symbol"))
                 except Exception as e:

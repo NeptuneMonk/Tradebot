@@ -1358,7 +1358,7 @@ class BotState:
             pumpswap_state = await pumpswap.fetch_pool_state(pool) if pool else None
             if not pumpswap_state:
                 return
-            state = {"real_sol_reserves": pumpswap_state["quote_reserves"], "complete": False}
+            state = {"real_sol_reserves": pumpswap_state.get("real_quote_reserves", pumpswap_state["quote_reserves"]), "complete": False}
         else:
             state = await pumpfun.fetch_bonding_curve_state(mint)
             if not state or state["complete"]:
@@ -2105,7 +2105,7 @@ class BotState:
             return False
         sol_price = await get_sol_usd_price()
         eff_priority, eff_slip, eff_exit_slip = self._resolve_fees()
-        depth_usd = float(pool_state["quote_reserves"]) / LAMPORTS_PER_SOL * sol_price
+        depth_usd = float(pool_state.get("real_quote_reserves", pool_state["quote_reserves"])) / LAMPORTS_PER_SOL * sol_price
         plan = runner.add_on_plan(cfg, trade_doc, depth_usd=depth_usd, exit_slip_bps=eff_exit_slip, entry_slip_bps=eff_slip,
                                   fee_usd_round_trip=estimate_tx_fee_sol(eff_priority, CU_PUMPSWAP) * 2 * sol_price, max_trade_usd=cfg.max_trade_usd)
         if not plan or not plan["cost_gate_pass"]:
@@ -3769,7 +3769,7 @@ class BotState:
                 return
             bucket["pumpswap_pool"] = pool
             state = {
-                "real_sol_reserves": pumpswap_state["quote_reserves"],
+                "real_sol_reserves": pumpswap_state.get("real_quote_reserves", pumpswap_state["quote_reserves"]),
                 "complete": False,
             }
         else:
@@ -4407,7 +4407,7 @@ class BotState:
             st = await pumpswap.fetch_pool_state(pool)
             if not st:
                 return None, 0.0
-            return pool, float(st.get("quote_reserves") or 0) / LAMPORTS_PER_SOL
+            return pool, float(st.get("real_quote_reserves", st.get("quote_reserves")) or 0) / LAMPORTS_PER_SOL
         except Exception as e:
             logger.debug(f"held-bag pool probe failed {t.get('mint', '')[:8]}…: {e}")
             return None, 0.0
@@ -4857,7 +4857,7 @@ class BotState:
                         await asyncio.sleep(1.0)
                         continue
                     cur_price_sol = pumpswap.price_sol_per_raw_token(pool_state)
-                    slot["_depth_sol"] = float(pool_state.get("quote_reserves") or 0) / LAMPORTS_PER_SOL
+                    slot["_depth_sol"] = float(pool_state.get("real_quote_reserves", pool_state.get("quote_reserves")) or 0) / LAMPORTS_PER_SOL
                     slot.pop("_runner_pool_missing_since", None)
                 else:
                     state = await self._monitor_curve_state(mint, slot, watch_account)

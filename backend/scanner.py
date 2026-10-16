@@ -560,7 +560,7 @@ class MomentumScanner:
                         curve_state = {
                             "virtual_sol_reserves": pool_state["quote_reserves"],
                             "virtual_token_reserves": pool_state["base_reserves"],
-                            "real_sol_reserves": pool_state["quote_reserves"],
+                            "real_sol_reserves": pool_state.get("real_quote_reserves", pool_state["quote_reserves"]),
                             "complete": False,
                         }
                     else:
