@@ -2593,3 +2593,7 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   `MANUAL_ENTRY_ACTIONS`, `counted_open()` excludes manual holds, book = scalp so no hunt-cap. Only the UI tooltips were wrong → fixed
   (CompactCandidates / ScannerCandidatesCard). Stale backend docstrings (`manual_enter`, `scanner_manual_buy`) still say "max positions
   applies" — left untouched to avoid a live restart; fix on the next backend edit.
+- ✅ **Invested column on Active Trades** (user ask): cockpit `ActiveTradesCockpit` shows total $ in each position (`entry_usd`, which the
+  backend already accumulates across manual adds / fast-fail add / flush add-on) with a `+$x · N adds` tag and a tooltip breakdown
+  (initial, each add, total, worth now); the P/L cell now also shows the unrealized $ next to the %. testids `active-invested-<mint>`,
+  `active-adds-<mint>`, `active-pnl-usd-<mint>`. Frontend only.

@@ -54,8 +54,29 @@ export function stageFor(t) {
 const isManualHold = (t) => t.manual === true || t.long_term_hold === true || t.classifier_action === "manual" || t.classifier_action === "rh_pons_manual";
 const isLTH = (t) => t.long_term_hold === true;
 
+const usd = (n) => `$${Number(n || 0).toFixed(2)}`;
+
+function investedParts(t) {
+  const total = Number(t.entry_usd ?? t.size_usd ?? 0);
+  const adds = (t.adds || []).map((a) => Number(a.usd || 0));
+  const fastFail = Number(t.fast_fail_add?.usd || 0);
+  const flush = Number(t.flush_addon_usd || 0);
+  const extra = adds.reduce((a, b) => a + b, 0) + fastFail + flush;
+  const initial = Math.max(0, total - extra);
+  const pnl = t.unrealized_pnl_pct;
+  const value = pnl == null ? null : total * (1 + Number(pnl) / 100);
+  const lines = [`initial buy ${usd(initial)}`];
+  adds.forEach((a, i) => lines.push(`manual add #${i + 1} +${usd(a)}`));
+  if (fastFail) lines.push(`fast-fail add +${usd(fastFail)}`);
+  if (flush) lines.push(`flush dip add-on +${usd(flush)}`);
+  lines.push(`= total invested ${usd(total)}`);
+  if (value != null) lines.push(`worth now ≈ ${usd(value)} (${value - total >= 0 ? "+" : "−"}${usd(Math.abs(value - total))})`);
+  return { total, extra, nAdds: adds.length + (fastFail ? 1 : 0) + (flush ? 1 : 0), value, title: lines.join("\n") };
+}
+
 function Row({ t, onExit, onOpen, onLth, onAdd }) {
   const pnl = t.unrealized_pnl_pct;
+  const inv = investedParts(t);
   const book = t.book || (t.chain === "rh" ? "rh_pons" : "scalp");
   const lth = isLTH(t);
   const st = lth ? { text: <span className="text-sky-300">long-term hold · manual exit only</span>, pct: 0, hint: "LTH: every automatic exit is suspended (SL / trail / TP / clock / momentum / ladder / runner). Only ✕ sells." } : stageFor(t);
@@ -76,8 +97,13 @@ function Row({ t, onExit, onOpen, onLth, onAdd }) {
             className={`ml-1 px-1 py-0 border text-[9px] font-mono align-middle ${fillTone(Number(t.fill_cost_pct))}`}>paid +{Number(t.fill_cost_pct).toFixed(1)}%</span>
         )}
       </td>
-      <td className="font-mono text-xs text-right" data-testid={`active-pnl-${t.mint}`}>
+      <td className="font-mono text-xs text-right whitespace-nowrap" data-testid={`active-invested-${t.mint}`} title={inv.title}>
+        <span className="text-neutral-100">{usd(inv.total)}</span>
+        {inv.nAdds > 0 && <span className="ml-1 text-[9px] text-emerald-400" data-testid={`active-adds-${t.mint}`}>+{usd(inv.extra)} · {inv.nAdds} add{inv.nAdds === 1 ? "" : "s"}</span>}
+      </td>
+      <td className="font-mono text-xs text-right whitespace-nowrap" data-testid={`active-pnl-${t.mint}`}>
         {pnl == null ? <span className="text-neutral-600">—</span> : <span className={pnl >= 0 ? "text-emerald-300" : "text-red-300"}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(1)}%</span>}
+        {inv.value != null && <span className={`ml-1 text-[10px] ${inv.value - inv.total >= 0 ? "text-emerald-400/80" : "text-red-400/80"}`} data-testid={`active-pnl-usd-${t.mint}`}>{inv.value - inv.total >= 0 ? "+" : "−"}{usd(Math.abs(inv.value - inv.total))}</span>}
         {t.drawdown_from_peak_pct > 5 && <span className="ml-1 text-[9px] text-neutral-500">↓{t.drawdown_from_peak_pct.toFixed(0)}</span>}
       </td>
       <td className="font-mono text-[11px] text-neutral-300 pl-4" title={st.hint} data-testid={`active-stage-${t.mint}`}>{st.text}</td>
@@ -117,15 +143,15 @@ function ActiveTradesCockpit({ trades, onExit, onLth, onAdd }) {
         <table className="w-full text-xs" data-testid="active-trades-table">
           <thead>
             <tr className="text-[9px] uppercase tracking-[0.2em] text-neutral-500 border-b border-neutral-800">
-              <th className="text-left py-2 pl-3 font-normal">book</th><th className="text-left font-normal">symbol</th><th className="text-right font-normal">unrealized p/l</th>
+              <th className="text-left py-2 pl-3 font-normal">book</th><th className="text-left font-normal">symbol</th><th className="text-right font-normal" title="Total $ in the position: initial buy + every manual add / fast-fail add / flush add-on">invested</th><th className="text-right font-normal">unrealized p/l</th>
               <th className="text-left pl-4 font-normal">stage</th><th className="font-normal" /><th className="font-normal" />
             </tr>
           </thead>
           <tbody>
-            {trades.length === 0 && <tr><td colSpan="6" className="text-center py-8 text-[10px] uppercase tracking-[0.2em] text-neutral-600">no active positions</td></tr>}
+            {trades.length === 0 && <tr><td colSpan="7" className="text-center py-8 text-[10px] uppercase tracking-[0.2em] text-neutral-600">no active positions</td></tr>}
             {auto.map((t) => <Row key={t.id} t={t} onExit={onExit} onLth={onLth} onAdd={onAdd} onOpen={setDetail} />)}
             {manual.length > 0 && (
-              <tr data-testid="manual-holds-divider"><td colSpan="6" className="py-1 pl-3 text-[9px] uppercase tracking-[0.2em] text-fuchsia-400/80 bg-fuchsia-950/20 border-y border-fuchsia-900/40"
+              <tr data-testid="manual-holds-divider"><td colSpan="7" className="py-1 pl-3 text-[9px] uppercase tracking-[0.2em] text-fuchsia-400/80 bg-fuchsia-950/20 border-y border-fuchsia-900/40"
                 title="Operator buys (Buy Now / Graduate Ladder) and LTH positions. R-only exits (manual) or ✕-only (LTH) — no clock, no momentum kill, not counted toward max positions.">
                 manual holds · {manual.length} · outside max positions{manual.some(isLTH) ? <span className="text-sky-400"> · {manual.filter(isLTH).length} LTH</span> : null}</td></tr>
             )}
