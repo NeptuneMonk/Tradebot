@@ -6,6 +6,7 @@ Solana RPC helpers — provider-agnostic JSON-RPC (QuickNode, Helius, Triton, �
 """
 import os
 import time
+import logging
 import httpx
 import asyncio
 
@@ -90,7 +91,26 @@ _primary_dead_until = 0.0
 _cool_until: dict[str, float] = {}      # endpoint → cooldown end after a 429
 _inflight: asyncio.Semaphore | None = None
 _http: httpx.AsyncClient | None = None
-stats = {"calls": 0, "ok": 0, "429_primary": 0, "429_fallback": 0, "5xx": 0, "net_err": 0, "failed": 0, "cooled": 0, "quota_dead": 0}
+logger = logging.getLogger("solana_client")
+
+stats = {"calls": 0, "ok": 0, "429_primary": 0, "429_fallback": 0, "5xx": 0, "net_err": 0, "failed": 0, "cooled": 0, "quota_dead": 0,
+         "day": "", "day_calls": 0, "day_by_method": {}, "last_hour_log": 0.0}
+
+
+def _count_daily(method: str) -> None:
+    """#10 — RPC calls per UTC day (total + per method), logged hourly and on the day rollover."""
+    day = time.strftime("%Y-%m-%d", time.gmtime())
+    now = time.time()
+    if stats["day"] != day:
+        if stats["day"]:
+            top = sorted(stats["day_by_method"].items(), key=lambda kv: -kv[1])[:6]
+            logger.warning(f"RPC CALLS {stats['day']}: {stats['day_calls']} total — top {top}")
+        stats["day"], stats["day_calls"], stats["day_by_method"] = day, 0, {}
+    stats["day_calls"] += 1
+    stats["day_by_method"][method] = stats["day_by_method"].get(method, 0) + 1
+    if now - stats["last_hour_log"] >= 3600.0:
+        stats["last_hour_log"] = now
+        logger.info(f"RPC calls today ({day}): {stats['day_calls']} (~{stats['day_calls'] / max(1.0, (now % 86400) / 3600.0):.0f}/h)")
 
 _pace_next = 0.0
 
@@ -168,6 +188,7 @@ async def rpc_call(method: str, params: list, timeout: float = 10.0,
     last_exc: Exception | None = None
     global _primary_dead_until
     stats["calls"] += 1
+    _count_daily(method)
     attempts = max_retries + (1 if RPC_FALLBACK_URL else 0)
     async with _sem():
         for attempt in range(attempts):
@@ -281,17 +302,14 @@ async def get_tx_wallet_delta_lamports(sig: str, wallet: str) -> int | None:
         return None
     return int(post[idx]) - int(pre[idx])
 
-TOKEN_ACCOUNT_RENT_LAMPORTS = 2_039_280
+TOKEN_ACCOUNT_RENT_LAMPORTS = 2_039_280      # SPL Token minimum; Token-2022 accounts are larger (~2,074,080) — never compare against this
 
 
-async def get_tx_wallet_summary(sig: str, wallet: str) -> dict | None:
-    """One getTransaction → {delta, failed, rent_created}: signed lamport delta of `wallet` (fee-inclusive, failed txs
-    included), whether the tx failed on-chain, and token-account rent created in the tx (accounts whose balance went
-    0 → rent-exempt minimum). None when the tx is not indexed yet."""
-    res = await rpc_call("getTransaction", [sig, {"encoding": "json", "commitment": "confirmed", "maxSupportedTransactionVersion": 0}])
-    tx = res.get("result")
-    if not tx:
-        return None
+def summarize_tx_meta(tx: dict, wallet: str, mint: str | None = None) -> dict | None:
+    """#7 — pure function over a getTransaction result: {delta, failed, rent_created, rent_reclaimed, tokens_delta}.
+    Rent is read from the ACTUAL lamports of token accounts that appear in postTokenBalances but not preTokenBalances
+    (created) or vice-versa (closed) — SPL and Token-2022 sizes both work. `tokens_delta` is the wallet's raw balance
+    change in `mint` (buy legs → tokens received)."""
     meta = tx.get("meta") or {}
     msg = (tx.get("transaction") or {}).get("message") or {}
     keys = [k if isinstance(k, str) else (k.get("pubkey") or "") for k in (msg.get("accountKeys") or [])]
@@ -302,8 +320,32 @@ async def get_tx_wallet_summary(sig: str, wallet: str) -> dict | None:
         return None
     if idx >= len(pre) or idx >= len(post):
         return None
-    rent = sum(int(b) for a, b in zip(pre, post) if int(a) == 0 and int(b) == TOKEN_ACCOUNT_RENT_LAMPORTS)
-    return {"delta": int(post[idx]) - int(pre[idx]), "failed": meta.get("err") is not None, "rent_created": int(rent)}
+    pre_tb, post_tb = meta.get("preTokenBalances") or [], meta.get("postTokenBalances") or []
+    pre_idx = {int(r.get("accountIndex")) for r in pre_tb if r.get("accountIndex") is not None}
+    post_idx = {int(r.get("accountIndex")) for r in post_tb if r.get("accountIndex") is not None}
+    created = [i for i in post_idx - pre_idx if i < len(pre) and i < len(post) and int(pre[i]) == 0 and int(post[i]) > 0]
+    closed = [i for i in pre_idx - post_idx if i < len(pre) and i < len(post) and int(pre[i]) > 0 and int(post[i]) == 0]
+    rent_created = sum(int(post[i]) for i in created)
+    rent_reclaimed = sum(int(pre[i]) for i in closed)
+    if not pre_tb and not post_tb:
+        # legacy fallback (no token balance meta): a non-wallet account going 0 → ≥ SPL minimum is a fresh token account
+        rent_created = sum(int(b) for i, (a, b) in enumerate(zip(pre, post)) if i != idx and int(a) == 0 and int(b) >= TOKEN_ACCOUNT_RENT_LAMPORTS)
+    tokens_delta = 0
+    if mint:
+        def _amt(rows):
+            return sum(int((r.get("uiTokenAmount") or {}).get("amount") or 0) for r in rows if r.get("owner") == wallet and r.get("mint") == mint)
+        tokens_delta = _amt(post_tb) - _amt(pre_tb)
+    return {"delta": int(post[idx]) - int(pre[idx]), "failed": meta.get("err") is not None,
+            "rent_created": int(rent_created), "rent_reclaimed": int(rent_reclaimed), "tokens_delta": int(tokens_delta)}
+
+
+async def get_tx_wallet_summary(sig: str, wallet: str, mint: str | None = None) -> dict | None:
+    """One getTransaction → summarize_tx_meta(). None when the tx is not indexed yet."""
+    res = await rpc_call("getTransaction", [sig, {"encoding": "json", "commitment": "confirmed", "maxSupportedTransactionVersion": 0}])
+    tx = res.get("result")
+    if not tx:
+        return None
+    return summarize_tx_meta(tx, wallet, mint)
 
 
 STABLE_MINTS = {"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 6,       # USDC

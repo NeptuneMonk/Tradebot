@@ -11,7 +11,26 @@ from pathlib import Path
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 
-WALLET_PATH = Path(os.environ.get("WALLET_PATH") or os.environ.get("WALLET_SECRET_PATH") or "/app/backend/wallet.json")
+
+
+def _default_wallet_path() -> Path:
+    """Paper-mode throwaway key lives OUTSIDE the repo: WALLET_PATH env → /data/paper_wallet.json (if writable) → ~/.pumpbot/."""
+    env = os.environ.get("WALLET_PATH") or os.environ.get("WALLET_SECRET_PATH")
+    if env:
+        return Path(env)
+    data = Path("/data")
+    try:
+        data.mkdir(parents=True, exist_ok=True)
+        if os.access(data, os.W_OK):
+            return data / "paper_wallet.json"
+    except Exception:
+        pass
+    home = Path.home() / ".pumpbot"
+    home.mkdir(parents=True, exist_ok=True)
+    return home / "paper_wallet.json"
+
+
+WALLET_PATH = _default_wallet_path()
 ENV_KEY_VARS = ("SOLANA_PRIVATE_KEY", "WALLET_SECRET_B58")   # either name; SOLANA_PRIVATE_KEY wins (EMERGENT_CHANGES S)
 
 

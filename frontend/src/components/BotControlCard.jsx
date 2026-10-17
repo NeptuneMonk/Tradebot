@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { wikiSectionFor } from "@/lib/wikiNav";
 import SpeedModeSlider from "./SpeedModeSlider";
 import ConfigSyncPanel from "./ConfigSyncPanel";
+import ExecutionSafetyPanel from "./ExecutionSafetyPanel";
 import BrainSyncPanel from "./BrainSyncPanel";
 import BookExitsEditor from "./BookExitsEditor";
 import HelpHint from "./HelpHint";
@@ -1142,6 +1143,7 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
         </div>
       )}
 
+      <ExecutionSafetyPanel local={local} setLocal={setLocal} />
       <ConfigSyncPanel onApplied={(cfg) => setLocal(cfg)} />
       <BrainSyncPanel onApplied={(cfg) => { setLocal(cfg); setBaseline(cfg); }} />
     </div>

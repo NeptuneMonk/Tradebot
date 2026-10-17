@@ -85,7 +85,8 @@ def test_pool_within_grace_migrates_and_the_exit_books_amm_proceeds():
     assert s["protocol"] == "pumpswap" and s["pumpswap_pool"] == "PoolAddr111"
     assert t["status"] == "closed" and t["exit_sig"] is None            # paper fill, booked from the AMM quote
     exp_sol, _ = botmod.pumpswap.quote_sell_sol(POOL_STATE, t["entry_tokens"], 800)
-    assert abs(t["exit_sol"] - exp_sol / 1e9) < 1e-12
+    import fills as _fills
+    assert abs(t["exit_sol"] - _fills.paper_exit_sol(exp_sol, st.config)) < 1e-12      # paper: quote − paper_extra_slip_bps
     assert t["pnl_pct"] > -100 and t["exit_sol"] > 0
     assert any(d.get("protocol") == "pumpswap" and d.get("venue_stage") == "pumpswap" for d in _db_sets(st))
 

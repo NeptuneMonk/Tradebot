@@ -363,22 +363,38 @@ def decode_bonding_curve(data: bytes) -> dict | None:
 
 
 # ---------- Quote math (unchanged constant-product) ----------
-def quote_buy_tokens(state: dict, sol_in_lamports: int, slippage_bps: int = 500) -> tuple[int, int]:
+FEE_BPS = 125   # curve protocol + creator fee, charged ON TOP of sol_cost (buy) / taken OUT of sol_out (sell); set from BotConfig
+
+
+def set_fee_bps(bps: int) -> None:
+    global FEE_BPS
+    FEE_BPS = max(0, int(bps))
+
+
+def quote_buy_tokens(state: dict, sol_in_lamports: int, slippage_bps: int = 500, fee_bps: int | None = None) -> tuple[int, int]:
+    """(tokens_out, max_sol_cost). Verified against pump docs: `max_sol_cost` must cover sol_cost + protocol/creator fee
+    (TooMuchSolRequired otherwise) — so the fee is added BEFORE the slippage tolerance, else the tolerance silently shrinks by ~1.25 %."""
+    fee = FEE_BPS if fee_bps is None else int(fee_bps)
     vsr = state["virtual_sol_reserves"]
     vtr = state["virtual_token_reserves"]
     new_vsr = vsr + sol_in_lamports
     new_vtr = (vsr * vtr) // new_vsr
     tokens_out = vtr - new_vtr
-    max_sol = sol_in_lamports + (sol_in_lamports * slippage_bps) // 10_000
+    with_fee = sol_in_lamports + (sol_in_lamports * fee) // 10_000
+    max_sol = with_fee + (with_fee * slippage_bps) // 10_000
     return tokens_out, max_sol
 
 
-def quote_sell_sol(state: dict, tokens_in: int, slippage_bps: int = 500) -> tuple[int, int]:
+def quote_sell_sol(state: dict, tokens_in: int, slippage_bps: int = 500, fee_bps: int | None = None) -> tuple[int, int]:
+    """(sol_out_net_of_fee, min_sol_output). `min_sol_output` is checked AFTER the fee (TooLittleSolReceived), so the fee
+    comes off first and the slippage tolerance applies to the net amount. sol_out is what the wallet actually receives."""
+    fee = FEE_BPS if fee_bps is None else int(fee_bps)
     vsr = state["virtual_sol_reserves"]
     vtr = state["virtual_token_reserves"]
     new_vtr = vtr + tokens_in
     new_vsr = (vsr * vtr) // new_vtr
-    sol_out = vsr - new_vsr
+    gross = vsr - new_vsr
+    sol_out = gross - (gross * fee) // 10_000
     min_sol = sol_out - (sol_out * slippage_bps) // 10_000
     return sol_out, max(0, min_sol)
 

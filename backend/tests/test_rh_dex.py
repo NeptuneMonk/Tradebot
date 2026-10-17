@@ -120,7 +120,7 @@ def test_live_sell_routes_to_pool_when_graduated(monkeypatch):
     async def fake_balance(token, owner=None):
         return 10**21
 
-    async def fake_dex_sell(token, raw, slip, quote=rp.rh_dex.NATIVE):
+    async def fake_dex_sell(token, raw, slip, quote=rp.rh_dex.NATIVE, **_kw):
         calls.append(("pool", token, raw, slip))
         return {"tx": "0xabc", "tokens_raw": raw, "quote_wei": 10**15, "fee_wei": 0, "gas_cost_wei": 10**12,
                 "latency_s": 0.3, "block": 5, "venue": "pool"}
@@ -153,7 +153,7 @@ def test_live_sell_falls_back_to_pool_when_curve_closed(monkeypatch):
     async def fake_spot(token, quote=rp.rh_dex.NATIVE, dec=18):
         return 2e-9                                    # pool initialised ⇒ graduated
 
-    async def fake_dex_sell(token, raw, slip, quote=rp.rh_dex.NATIVE):
+    async def fake_dex_sell(token, raw, slip, quote=rp.rh_dex.NATIVE, **_kw):
         calls.append("pool")
         return {"tx": "0xdef", "tokens_raw": raw, "quote_wei": 10**15, "fee_wei": 0, "gas_cost_wei": 10**12,
                 "latency_s": 0.3, "block": 6, "venue": "pool"}

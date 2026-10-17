@@ -123,6 +123,20 @@ function CostTrackerCard({ apiBase }) {
               {landing.entry_avg_s != null && <span>buys avg {landing.entry_avg_s}s</span>}
             </div>
           ) : <div className="text-neutral-600">no live sells with landing data yet</div>}
+          {landing.latency && (
+            <div className="mt-2" data-testid="entry-latency-stats">
+              <div className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 mb-1">Entry latency · median of last {landing.latency.n} entries</div>
+              {landing.latency.n ? (
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-neutral-300">
+                  <span title="first seen on tape → gates passed">signal→decision <b data-testid="lat-signal-decision">{landing.latency.signal_to_decision_ms ?? "—"}ms</b></span>
+                  <span title="gates passed → first rung broadcast (live)">decision→sent <b data-testid="lat-decision-sent">{landing.latency.decision_to_sent_ms ?? "—"}ms</b></span>
+                  <span title="first rung broadcast → confirmed (live)">sent→landed <b data-testid="lat-sent-landed" className={landing.latency.sent_to_landed_ms > 3000 ? "text-amber-300" : ""}>{landing.latency.sent_to_landed_ms ?? "—"}ms</b></span>
+                  <span title="gates passed → confirmed (live)">decision→landed <b data-testid="lat-decision-landed">{landing.latency.decision_to_landed_ms ?? "—"}ms</b></span>
+                  {landing.latency.paper_decision_to_fill_ms != null && <span title="paper: decision → booked fill (includes paper_entry_latency_ms)">paper fill <b data-testid="lat-paper-fill">{landing.latency.paper_decision_to_fill_ms}ms</b></span>}
+                </div>
+              ) : <div className="text-neutral-600">no entries with latency stamps yet</div>}
+            </div>
+          )}
         </div>
       )}
 

@@ -125,6 +125,7 @@ class BotConfig(BaseModel):
     cu_limit_pumpfun_sell: int = 80_000
     cu_limit_pumpswap_sell: int = 130_000
     cu_limit_routed_mult: float = 1.2            # routed: simulate → unitsConsumed × mult (fallback 300_000)
+    exit_fee_budget_pct_of_position: float = 5.0   # TOTAL priority+tip spent across ALL sell attempts of one trade ≤ this % of position value
     exit_fee_max_pct_of_position: float = 2.0    # priority+tip of ONE sell attempt ≤ this % of position value
     entry_fee_max_pct_of_position: float = 1.0
     exit_sender_mode_normal: Literal["swqos", "dual"] = "swqos"   # 5,000-lamport tip on normal exits
@@ -756,6 +757,8 @@ class Trade(BaseModel):
     # priority_fee_microlamports × compute_unit_limit / 1e6 + base 5000 lamports
     # signature fee. Slippage cost computed from quoted-vs-actual fills).
     entry_fee_sol: float = 0.0
+    paper_failed_txs: int = 0            # #4(e): simulated failed paper txs (each paid the tx fee)
+    latency: dict | None = None          # {t_signal, t_decision, t_sent, t_landed, *_ms} — entry pipeline timestamps (wall clock)
     exit_fee_sol: float = 0.0
     partial_fee_sol: float = 0.0
     speed_mode_at_entry: Optional[str] = None

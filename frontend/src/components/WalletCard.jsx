@@ -4,7 +4,6 @@ import { QRCodeSVG } from "qrcode.react";
 import { toast } from "sonner";
 import WithdrawDialog from "@/components/WithdrawDialog";
 import StuckPositions from "@/components/StuckPositions";
-import RevealPrivateKey from "@/components/RevealPrivateKey";
 import RotateWallet from "@/components/RotateWallet";
 import ImportWallet from "@/components/ImportWallet";
 import { RentReclaimChip } from "@/components/RentReclaimChip";
@@ -104,7 +103,9 @@ function WalletCard({ wallet }) {
       <StuckPositions />
 
       <div className="border-t border-neutral-800 pt-3">
-        <RevealPrivateKey />
+        <p data-testid="wallet-key-source-note" className="font-mono text-[10px] text-neutral-500 mb-2">
+          Live signing key comes from <span className="text-neutral-300">SOLANA_PRIVATE_KEY</span> in the service env — the app never stores or reveals it.
+        </p>
         <RotateWallet />
         <ImportWallet />
       </div>

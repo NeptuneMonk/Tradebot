@@ -20,7 +20,7 @@ def _curve(real_sol=12.0):
 
 
 def test_curve_paper_fill_is_impact_plus_fee_plus_slip():
-    cfg = BotConfig(paper_extra_slip_bps=100)
+    cfg = BotConfig(paper_extra_slip_bps=100, protocol_fee_pct_pumpfun=1.0)
     st = _curve(12.0)                                 # 42 SOL virtual
     pf = fills.paper_fill("pumpfun", st, int(0.42 * SOL), cfg)
     assert abs(pf["impact_pct"] - 1.0) < 1e-6        # 0.42 / 42
@@ -30,7 +30,7 @@ def test_curve_paper_fill_is_impact_plus_fee_plus_slip():
 
 
 def test_pumpswap_paper_fill_no_longer_books_worst_case():
-    cfg = BotConfig(paper_extra_slip_bps=100, slippage_bps=600)
+    cfg = BotConfig(paper_extra_slip_bps=100, slippage_bps=600, protocol_fee_pct_pumpswap=0.3)
     pool = {"base_reserves": 10**14, "quote_reserves": 200 * SOL}
     pf = fills.paper_fill("pumpswap", pool, int(0.25 * SOL), cfg)
     assert pf["fee_pct"] == 0.3 and abs(pf["impact_pct"] - 0.125) < 1e-6
@@ -40,7 +40,7 @@ def test_pumpswap_paper_fill_no_longer_books_worst_case():
 
 
 def test_projected_cost_for_candidates():
-    cfg = BotConfig(paper_extra_slip_bps=100)
+    cfg = BotConfig(paper_extra_slip_bps=100, protocol_fee_pct_pumpfun=1.0)
     c = fills.projected_cost_pct("pumpfun", 35 * SOL, int(3.5 * SOL), cfg)
     assert c["impact_pct"] == 10.0 and c["total_pct"] == 12.0
     assert fills.projected_cost_pct("pumpfun", 0, SOL, cfg) is None

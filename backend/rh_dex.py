@@ -197,20 +197,37 @@ async def ensure_permit2(token: str, tokens_raw: int) -> int:
     return gas + rc["gas_cost_wei"]
 
 
-async def sell(token: str, tokens_raw: int, slippage_pct: float, quote: str = NATIVE) -> dict:
-    """Sell `tokens_raw` for the pool's quote asset. Same fill shape as rh_live.sell; quote_wei is raw quote units."""
+def sell_min_out(quote_out: int, slippage_pct: float, fee_pct: float) -> int:
+    """#3 — fee off the quote first, then the tolerance; never 0."""
+    return max(1, int(quote_out * (1.0 - float(fee_pct) / 100.0) * (1.0 - float(slippage_pct) / 100.0)))
+
+
+async def sell(token: str, tokens_raw: int, slippage_pct: float, quote: str = NATIVE, cfg=None) -> dict:
+    """Sell `tokens_raw` for the pool's quote asset. Same fill shape as rh_live.sell; quote_wei is raw quote units.
+    #3: when the simulation reverts, ONE fresh quote → min_out = quote × (1 − rh_sell_fallback_slippage_pct) × (1 − rh_protocol_fee_pct).
+    No zero floor, ever; if the re-quote fails the sell is aborted and the position is kept."""
+    fee_pct = float(getattr(cfg, "rh_protocol_fee_pct", 1.0) if cfg is not None else 1.0)
+    fallback_pct = float(getattr(cfg, "rh_sell_fallback_slippage_pct", 20.0) if cfg is not None else 20.0)
     est_out = await quote_sell(token, tokens_raw, quote)
     if est_out <= 0:
         raise RuntimeError("pool quote returned 0")
-    min_out = int(est_out * (1.0 - slippage_pct / 100.0))
+    min_out = max(1, int(est_out * (1.0 - slippage_pct / 100.0)))      # the pool quote is already post-fee
     approve_gas = await ensure_permit2(token, tokens_raw)
     data = build_sell_calldata(token, tokens_raw, min_out, quote=quote)
     try:
         await rh_wallet.simulate(UNIVERSAL_ROUTER, data, 0)
     except rh_wallet.RhRpcError as e:
-        logger.warning(f"rh_dex sell sim failed ({e}); retrying with minOut=0")
-        data = build_sell_calldata(token, tokens_raw, 0, quote=quote)
-        await rh_wallet.simulate(UNIVERSAL_ROUTER, data, 0)
+        try:
+            fresh = await quote_sell(token, tokens_raw, quote)
+        except Exception as qe:
+            raise RuntimeError(f"rh_dex sell sim failed ({e}) and re-quote failed ({qe}) — keeping the position") from e
+        if fresh <= 0:
+            raise RuntimeError(f"rh_dex sell sim failed ({e}) and re-quote returned 0 — keeping the position") from e
+        wide = max(float(slippage_pct), fallback_pct)
+        min_out = sell_min_out(fresh, wide, fee_pct)
+        logger.warning(f"rh_dex sell sim failed ({e}); ONE retry at {wide:.0f}% slippage − {fee_pct:g}% fee, min_out={min_out}")
+        data = build_sell_calldata(token, tokens_raw, min_out, quote=quote)
+        await rh_wallet.simulate(UNIVERSAL_ROUTER, data, 0)   # raises → caller keeps the position
     me = rh_wallet.address()
     native = is_native(quote)
     pre = await (rh_wallet.balance_wei(me) if native else rh_wallet.erc20_balance(quote, me))

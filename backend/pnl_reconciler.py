@@ -37,6 +37,8 @@ POLL_S = 30.0
 LOOKBACK_MIN = 24 * 60
 # Per-pass throttle so we don't slam the RPC
 MAX_TRADES_PER_PASS = 25
+# #7 — a leg that never indexes is retried this many passes, then the row is booked from what we have (reconcile_incomplete)
+MAX_SIG_ATTEMPTS = 8
 
 
 class PnLReconciler:
@@ -78,6 +80,7 @@ class PnLReconciler:
                 "entry_sol": 1, "exit_sol": 1, "partial_sell_sol": 1, "entry_tokens": 1, "status": 1,
                 "partial_realized_sol": 1, "pnl_sol": 1, "pnl_usd": 1, "all_sigs": 1, "fast_fail_add": 1,
                 "flush_addon_sig": 1, "adds": 1, "failed_sigs": 1, "pending_exit_sigs": 1, "rent_locked_lamports": 1,
+                "mint": 1, "reconcile_attempts": 1, "sigs_reconciled": 1,
             },
         ).limit(MAX_TRADES_PER_PASS)
         wallet = os.environ.get("WALLET_PUBKEY") or ""
@@ -116,38 +119,65 @@ class PnLReconciler:
         sigs |= set(t.get("pending_exit_sigs") or []) | set(t.get("failed_sigs") or [])
         sigs.discard(None)
         sigs.discard("")
+        mint = t.get("mint")
         summaries: dict[str, dict] = {}
+        missing: list[str] = []
         for sig in sorted(sigs):
-            sm = await get_tx_wallet_summary(sig, wallet)
+            sm = await get_tx_wallet_summary(sig, wallet, mint)
             if sm is None:
-                if sig == entry_sig or sig == t.get("exit_sig"):
-                    return                                   # a leg that matters is not indexed yet — retry next pass
-                continue                                     # dropped rung that never landed: nothing to count
+                missing.append(sig)
+                continue                                     # dropped rung that never landed / not indexed yet
             summaries[sig] = sm
+        attempts = int(t.get("reconcile_attempts") or 0) + 1
+        key_missing = [sg for sg in missing if sg in (entry_sig, t.get("exit_sig"))]
+        incomplete = False
+        if key_missing:
+            if attempts < MAX_SIG_ATTEMPTS:
+                # a leg that matters is not indexed yet — retry next pass, bounded
+                await self.state.db.trades.update_one({"id": t["id"]}, {"$set": {"reconcile_attempts": attempts}})
+                return
+            incomplete = True
+            logger.warning(f"reconcile {t.get('id')}: legs {', '.join(s[:10] for s in key_missing)} never indexed after {attempts} passes — booking from available legs (reconcile_incomplete)")
         if entry_sig not in summaries:
-            return
+            if not incomplete:
+                return
+            summaries[entry_sig] = {"delta": 0, "failed": False, "rent_created": 0, "rent_reclaimed": 0, "tokens_delta": 0}
         entry_delta = summaries[entry_sig]["delta"]
         exit_delta = summaries.get(t.get("exit_sig") or "", {}).get("delta", 0)
         partial_delta = sum(sm["delta"] for sg, sm in summaries.items() if sg not in (entry_sig, t.get("exit_sig")) and not sm["failed"])
         fees_failed = -sum(sm["delta"] for sm in summaries.values() if sm["failed"])
-        rent_locked = sum(sm["rent_created"] for sm in summaries.values() if not sm["failed"])
+        # #7: rent from token accounts actually created / closed in these txs (actual lamports — SPL or Token-2022)
+        rent_created = sum(sm["rent_created"] for sm in summaries.values() if not sm["failed"])
+        rent_reclaimed = sum(sm.get("rent_reclaimed", 0) for sm in summaries.values() if not sm["failed"])
+        rent_locked = max(0, rent_created - rent_reclaimed)
         net_lamports = sum(sm["delta"] for sm in summaries.values())          # wallet truth, incl. failed fees + rent
-        trading_lamports = net_lamports + rent_locked                         # rent is refundable → not a trading cost
+        trading_lamports = net_lamports + rent_locked                         # rent still locked is refundable → not a trading cost
         real_pnl_sol = trading_lamports / LAMPORTS_PER_SOL
         real_pnl_usd = real_pnl_sol * sol_price
         cost_sol = max(0.0, (abs(entry_delta) - summaries[entry_sig]["rent_created"]) / LAMPORTS_PER_SOL) if entry_delta else 0
         real_pnl_pct = (real_pnl_sol / cost_sol * 100) if cost_sol > 0 else 0.0
-        is_ghost_entry = abs(entry_delta) < 200_000
-        entry_tokens = int(t.get("entry_tokens") or 0)
+        is_ghost_entry = abs(entry_delta) < 200_000 and not incomplete
+        # #7: real entry price from the tokens the buy legs actually delivered (entry + adds), not the quoted entry_tokens
+        buy_legs = [entry_sig, t.get("add_on_sig"), t.get("flush_addon_sig"), (t.get("fast_fail_add") or {}).get("sig"),
+                    *[a.get("sig") for a in (t.get("adds") or []) if isinstance(a, dict)]]
+        tokens_received = sum(max(0, int(summaries[sg].get("tokens_delta") or 0)) for sg in buy_legs if sg and sg in summaries and not summaries[sg]["failed"])
+        buy_cost_lamports = sum(abs(summaries[sg]["delta"]) - summaries[sg]["rent_created"] for sg in buy_legs if sg and sg in summaries and not summaries[sg]["failed"] and summaries[sg]["delta"] < 0)
         real_entry_price = None
-        if entry_tokens > 0 and not is_ghost_entry:
-            real_entry_price = cost_sol / entry_tokens
+        if tokens_received > 0 and buy_cost_lamports > 0 and not is_ghost_entry:
+            real_entry_price = buy_cost_lamports / LAMPORTS_PER_SOL / tokens_received
+        elif int(t.get("entry_tokens") or 0) > 0 and not is_ghost_entry and cost_sol > 0:
+            real_entry_price = cost_sol / int(t["entry_tokens"])
 
         update = {
             "wallet_delta_lamports": int(net_lamports),
             "rent_locked_lamports": int(rent_locked),
+            "rent_reclaimed_lamports": int(rent_reclaimed),
             "fees_failed_lamports": int(fees_failed),
             "sigs_reconciled": sorted(summaries.keys()),
+            "sigs_unindexed": sorted(missing),
+            "reconcile_incomplete": incomplete,
+            "reconcile_attempts": attempts,
+            "real_entry_tokens": int(tokens_received) if tokens_received > 0 else None,
             "pnl_provisional": False,
             "real_entry_cost_sol": abs(entry_delta) / LAMPORTS_PER_SOL,
             "real_exit_received_sol": exit_delta / LAMPORTS_PER_SOL,

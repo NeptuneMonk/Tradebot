@@ -43,7 +43,8 @@ def test_recorded_graduate_complete_then_pool_then_exit_books_amm_proceeds():
     assert s["protocol"] == "pumpswap" and s["pumpswap_pool"] == FIX["pool"] and t["protocol"] == "pumpswap"
     assert t["status"] == "closed" and t["exit_sol"] > 0
     exp, _ = botmod.pumpswap.quote_sell_sol(FIX["pool_state"], FIX["entry"]["entry_tokens"], 800)
-    assert abs(t["exit_sol"] - exp / 1e9) < 1e-12
+    import fills as _fills
+    assert abs(t["exit_sol"] - _fills.paper_exit_sol(exp, st.config)) < 1e-12
     assert t["pnl_pct"] > 0 and t["pnl_pct"] != -100
     assert t["mint"] == FIX["mint"]                          # same CA end to end — only the venue changed
     persisted = [d for d in _db_sets(st) if d.get("status") == "closed"]

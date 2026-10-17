@@ -391,28 +391,6 @@ async def wallet_rotate(req: _RotateReq):
                     "set SOLANA_PRIVATE_KEY in the Published service env so redeploys keep the same wallet"}
 
 
-@api.get("/wallet/export-private-key")
-async def wallet_export_private_key(confirm: str = ""):
-    """Return the bot wallet's private key (base58 + JSON-array forms) for import into Phantom / Solflare / CLI.
-    Gated by the single-user Google session plus an explicit `?confirm=EXPORT` from the reveal dialog."""
-    if confirm != "EXPORT":
-        raise HTTPException(400, 'confirm must be "EXPORT" — use the Reveal dialog')
-    from wallet import get_secret_b58, get_keypair, get_pubkey_str, key_source
-    kp = get_keypair()
-    # JSON-array form is what `solana-keygen` and most CLI tools expect
-    secret_array = list(bytes(kp))
-    logger.critical(f"PRIVATE KEY EXPORTED for {get_pubkey_str()} ({key_source()})")
-    return {
-        "public_key": get_pubkey_str(),
-        "secret_key_b58": get_secret_b58(),
-        "secret_key_json_array": secret_array,
-        "warning": (
-            "ANYONE WITH THIS KEY CAN DRAIN YOUR WALLET. Never share, never paste "
-            "into chat, never commit. Preview-only diagnostic."
-        ),
-    }
-
-
 class _ImportReq(BaseModel):
     secret: str
     confirm: str = ""
@@ -446,15 +424,16 @@ async def wallet_import(req: _ImportReq):
     """Make an existing key (Phantom / Solflare base58 or JSON array) THE bot wallet. Paper mode + no open live
     positions required. The key is persisted to Mongo so every pod (leader + follower) swaps within ~20 s and a
     redeploy keeps it; the previous key file is retired, never deleted. Optionally sweeps the old wallet's SOL."""
-    from wallet import parse_secret, set_keypair, get_pubkey_str, get_secret_b58
+    from wallet import parse_secret, set_keypair, get_pubkey_str
     if req.confirm != "IMPORT":
         raise HTTPException(400, 'confirm must be "IMPORT"')
     try:
         kp = parse_secret(req.secret)
     except Exception as e:
         raise HTTPException(400, f"could not parse key: {e}")
-    if bot_state.config.live_trading:
-        raise HTTPException(409, "switch to paper first — importing a key mid-live would strand open positions on the old key")
+    if bot_state.config.live_trading or wallet.key_from_env():
+        # #1: the LIVE signing key is env-only (SOLANA_PRIVATE_KEY); import only ever swaps the paper-mode throwaway file key
+        raise HTTPException(410, "key import is paper-mode only — the live signing key comes from SOLANA_PRIVATE_KEY in the service env (never stored in the app)")
     live_open = await db.trades.count_documents({"status": "active", "mode": "live", "chain": {"$ne": "rh"}})
     if live_open:
         raise HTTPException(409, f"{live_open} live position(s) still open — close or force-recover them first")
@@ -464,8 +443,6 @@ async def wallet_import(req: _ImportReq):
     if str(kp.pubkey()) == old_pk:
         return {"ok": True, "public_key": old_pk, "unchanged": True}
     old_kp, retired = set_keypair(kp)
-    await db.wallet_keys.update_one({"_id": "current"}, {"$set": {"public_key": get_pubkey_str(), "secret_key_b58": get_secret_b58(),
-                                                                  "updated_at": datetime.now(timezone.utc).isoformat(), "source": "import"}}, upsert=True)
     swept = {"lamports": 0, "signature": None, "error": None}
     if req.sweep_old:
         swept = await _sweep_sol(old_kp, kp.pubkey())
@@ -669,6 +646,7 @@ async def update_config(body: dict = Body(...)):
     cfg.buy_fee_ladder_rungs = max(1, min(int(cfg.buy_fee_ladder_rungs), 3))
     cfg.land_late_watch_s = max(0, min(int(cfg.land_late_watch_s), 120))
     cfg.fast_fail_add_at_pct = max(0.5, min(float(cfg.fast_fail_add_at_pct), 50.0))
+    cfg.exit_fee_budget_pct_of_position = max(float(cfg.exit_fee_max_pct_of_position), min(float(cfg.exit_fee_budget_pct_of_position), 25.0))
     cfg.entry_balance_cache_s = max(0, min(int(cfg.entry_balance_cache_s), 60))
     cfg.rh_sell_fallback_slippage_pct = max(1.0, min(float(cfg.rh_sell_fallback_slippage_pct), 50.0))
     cfg.rh_protocol_fee_pct = max(0.0, min(float(cfg.rh_protocol_fee_pct), 5.0))
@@ -2507,10 +2485,22 @@ async def costs_landing(days: int = 7):
         k = f"{(int(r.get('exit_land_prio') or 0)) / 1e6:g}M"
         prios[k] = prios.get(k, 0) + 1
     entry = [float(r["entry_land_s"]) for r in rows if r.get("entry_land_s") is not None]
+    # entry-pipeline latency medians (signal → decision → sent → landed) over the last 200 entries of either mode
+    lat_rows = await db.trades.find({"latency.t_decision": {"$ne": None}, "entry_time": {"$gte": since}},
+                                    {"_id": 0, "latency": 1, "mode": 1}).sort("entry_time", -1).to_list(200)
+    import statistics as _stats
+
+    def _med(key, mode=None):
+        vals = [int(r["latency"][key]) for r in lat_rows if (mode is None or r.get("mode") == mode) and (r.get("latency") or {}).get(key) is not None]
+        return int(_stats.median(vals)) if vals else None
+    latency = {"n": len(lat_rows),
+               "signal_to_decision_ms": _med("signal_to_decision_ms"), "decision_to_sent_ms": _med("decision_to_sent_ms", "live"),
+               "sent_to_landed_ms": _med("sent_to_landed_ms", "live"), "decision_to_landed_ms": _med("decision_to_landed_ms", "live"),
+               "paper_decision_to_fill_ms": _med("decision_to_landed_ms", "paper")}
     return {"days": days, "sells": n, "p50_s": pct(0.5), "p90_s": pct(0.9), "max_s": secs[-1] if n else None,
             "avg_s": round(sum(secs) / n, 2) if n else None, "first_rung_pct": round(100 * rungs.get("1", 0) / n, 1) if n else None,
             "rungs": rungs, "prio_landed": prios, "tip_sol_total": round(sum(float(r.get("exit_tip_sol") or 0) for r in rows), 6),
-            "entry_avg_s": round(sum(entry) / len(entry), 2) if entry else None}
+            "entry_avg_s": round(sum(entry) / len(entry), 2) if entry else None, "latency": latency}
 
 
 @api.get("/costs/network")

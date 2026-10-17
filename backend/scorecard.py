@@ -87,7 +87,8 @@ class Scorecard:
         """Roll a closed trade into its cell (windowed recompute over the cell's last 200 fills)."""
         key = cell_for_trade(t)
         await self.db.trades.update_one({"_id": t.get("id")}, {"$set": {"scorecard_cell": key}})
-        rows = [d async for d in self.db.trades.find({"scorecard_cell": key, "status": "closed"}).sort("exit_time", -1).limit(200)]
+        # parked losers (exit_failed_terminal, provisional −entry P&L) grade the cell too — a bag that will not sell is a loss
+        rows = [d async for d in self.db.trades.find({"scorecard_cell": key, "status": {"$in": ["closed", "exit_failed_terminal"]}}).sort("exit_time", -1).limit(200)]
         st = stats(rows)
         prev = await self.db[COL].find_one({"_id": key}) or {}
         doc = {**st, "updated_at": time.time(), "disabled": bool(prev.get("disabled")),

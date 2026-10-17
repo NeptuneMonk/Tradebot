@@ -19,8 +19,36 @@ def reserves(protocol: str, state: dict) -> tuple[int, int]:
     return int(state.get("virtual_sol_reserves") or 0), int(state.get("virtual_token_reserves") or 0)
 
 
-def fee_bps(protocol: str) -> int:
-    return PUMPSWAP_FEE_BPS if protocol == "pumpswap" else PUMPFUN_FEE_BPS
+def fee_bps(protocol: str, cfg=None) -> int:
+    """Protocol fee in bps from BotConfig (protocol_fee_pct_pumpfun / _pumpswap); module constants are the fallback."""
+    key = "protocol_fee_pct_pumpswap" if protocol == "pumpswap" else "protocol_fee_pct_pumpfun"
+    v = getattr(cfg, key, None) if cfg is not None else None
+    if v is None:
+        return PUMPSWAP_FEE_BPS if protocol == "pumpswap" else PUMPFUN_FEE_BPS
+    return int(round(float(v) * 100))
+
+
+def paper_tx_fee_sol(cfg, priority_fee: int, cu: int, sender_mode: str | None = "swqos", rng=None) -> dict:
+    """What ONE paper tx costs the wallet: base sig fee + priority × CU + Sender tip — and, mirroring live, a simulated
+    failed attempt with probability cost_gate_failed_tx_allowance_pct (each failure pays the same fee again, ≤ 2 extra).
+    Returns {fee_sol, per_tx_sol, failed_attempts}."""
+    import random as _r
+    from helius_sender import TIP_LAMPORTS_DUAL, TIP_LAMPORTS_SWQOS
+    rng = rng or _r
+    tip = TIP_LAMPORTS_DUAL if sender_mode == "dual" else (TIP_LAMPORTS_SWQOS if sender_mode == "swqos" else 0)
+    per_tx = 5_000 + int(priority_fee) * int(cu) / 1e6 + tip
+    p = max(0.0, float(_cfg(cfg, "cost_gate_failed_tx_allowance_pct", 1.5))) / 100.0
+    failed = 0
+    while failed < 2 and rng.random() < p:
+        failed += 1
+    return {"fee_sol": per_tx * (1 + failed) / 1e9, "per_tx_sol": per_tx / 1e9, "failed_attempts": failed}
+
+
+def paper_exit_sol(sol_out_net_lamports: int, cfg) -> float:
+    """Paper sell proceeds: the venue quote is already net of the protocol fee (#8); take paper_extra_slip_bps off on top
+    (what the live sell loses between decision and inclusion)."""
+    extra = int(_cfg(cfg, "paper_extra_slip_bps", 100))
+    return sol_out_net_lamports * (10_000 - extra) / 10_000 / 1e9
 
 
 def projected_cost_pct(protocol: str, quote_lamports: int, sol_in_lamports: int, cfg, *, extra_slip_bps: int | None = None) -> dict | None:
@@ -28,7 +56,7 @@ def projected_cost_pct(protocol: str, quote_lamports: int, sol_in_lamports: int,
     if quote_lamports <= 0 or sol_in_lamports <= 0:
         return None
     impact = sol_in_lamports / quote_lamports * 100.0
-    fee = fee_bps(protocol) / 100.0
+    fee = fee_bps(protocol, cfg) / 100.0
     slip = (int(_cfg(cfg, "paper_extra_slip_bps", 100)) if extra_slip_bps is None else int(extra_slip_bps)) / 100.0
     return {"impact_pct": round(impact, 3), "fee_pct": round(fee, 3), "slip_pct": round(slip, 3), "total_pct": round(impact + fee + slip, 3)}
 
@@ -40,7 +68,7 @@ def paper_fill(protocol: str, state: dict, sol_in_lamports: int, cfg) -> dict | 
     if quote <= 0 or base <= 0 or sol_in_lamports <= 0:
         return None
     tokens_raw = base - (quote * base) // (quote + sol_in_lamports)
-    haircut_bps = fee_bps(protocol) + int(_cfg(cfg, "paper_extra_slip_bps", 100))
+    haircut_bps = fee_bps(protocol, cfg) + int(_cfg(cfg, "paper_extra_slip_bps", 100))
     tokens_out = tokens_raw * (10_000 - haircut_bps) // 10_000
     if tokens_out <= 0:
         return None

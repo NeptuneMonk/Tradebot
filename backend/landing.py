@@ -27,12 +27,14 @@ def stats_for(sig: str | None) -> dict:
     return dict(LAST.get(sig or "", {}))
 
 
-def _remember(sig: str, land_s: float, prio: int, rungs: int, mode: str | None, sigs: list[str] | None = None) -> None:
+def _remember(sig: str, land_s: float, prio: int, rungs: int, mode: str | None, sigs: list[str] | None = None,
+              t_sent: float | None = None) -> None:
     if len(LAST) > 400:
         for k in list(LAST)[:200]:
             LAST.pop(k, None)
     tip = (TIP_LAMPORTS_DUAL if mode == "dual" else TIP_LAMPORTS_SWQOS if mode else 0) / 1e9
-    LAST[sig] = {"land_s": round(land_s, 2), "prio": int(prio), "rungs": int(rungs), "tip_sol": tip, "sigs": list(sigs or [sig])}
+    LAST[sig] = {"land_s": round(land_s, 2), "prio": int(prio), "rungs": int(rungs), "tip_sol": tip, "sigs": list(sigs or [sig]),
+                 "t_sent": t_sent, "t_landed": time.time()}
 
 
 MAX_TX_BYTES = 1232
@@ -82,14 +84,22 @@ async def recent_blockhash(max_age_s: float = BH_MAX_AGE_S) -> str:
     return bh
 
 
-async def blockhash_refresher(every_s: float = 2.0) -> None:
+BH_BUSY_S, BH_IDLE_S = 2.0, 10.0
+
+
+def refresh_interval_s(busy: bool) -> float:
+    """#10 — 2 s while positions are open / entries pending, 10 s when idle (a 10 s-old blockhash is still fresh)."""
+    return BH_BUSY_S if busy else BH_IDLE_S
+
+
+async def blockhash_refresher(is_busy=None) -> None:
     """Background task: keep the blockhash cache warm so no signing path pays a getLatestBlockhash round trip."""
     while True:
         try:
             await recent_blockhash(max_age_s=0.0)
         except Exception as e:
             logger.debug(f"blockhash refresh failed: {e}")
-        await asyncio.sleep(every_s)
+        await asyncio.sleep(refresh_interval_s(bool(is_busy()) if is_busy else True))
 
 
 async def _sign(keypair, ixs: list, priority: int, cu_limit: int, sender_mode: str | None, alts: list | None = None,
@@ -162,6 +172,7 @@ async def land_tx(keypair, instructions: list, *, priority_ladder: list[int], co
     mode = sender_mode if use_sender else None
     t0 = time.monotonic()
     sent: list[tuple[str, str, int]] = []          # (sig, raw, priority)
+    t_first_send: float | None = None
     failed: dict[str, object] = {}
     rung = 0
     last_send = -1e9
@@ -175,6 +186,8 @@ async def land_tx(keypair, instructions: list, *, priority_ladder: list[int], co
                     shared_bh = await recent_blockhash()
                 sig, raw = await _sign(keypair, instructions, prio, compute_unit_limit, mode, alts, blockhash=shared_bh)
                 await _broadcast(raw, mode)
+                if t_first_send is None:
+                    t_first_send = time.time()
                 sent.append((sig, raw, prio))
                 logger.info(f"LAND {label} rung {rung + 1}/{len(priority_ladder)} prio={prio} µL sig={sig[:12]}… t+{now - t0:.1f}s")
             except TxTooLarge:
@@ -200,7 +213,7 @@ async def land_tx(keypair, instructions: list, *, priority_ladder: list[int], co
                     if meta_err is not None:
                         failed[sig] = meta_err
                         continue
-                    _remember(sig, time.monotonic() - t0, prio, len(sent), mode, [x[0] for x in sent])
+                    _remember(sig, time.monotonic() - t0, prio, len(sent), mode, [x[0] for x in sent], t_sent=t_first_send)
                     logger.info(f"LAND {label} landed sig={sig[:12]}… prio={prio} µL rung {len(sent)} in {time.monotonic() - t0:.1f}s")
                     return sig, prio
             if sent and len(failed) == len(sent) and rung >= len(priority_ladder):

@@ -7,7 +7,7 @@ For learning and experimentation only — no deployment outside preview.
 
 ## User explicit choices (verbatim)
 - "Real funds will be sent to this wallet and used"
-- "Helius RPC: https://beta.helius-rpc.com/?api-key=c8d03259-d874-42eb-bbbb-22b6750bcc6e"
+- Helius RPC: read from env `HELIUS_RPC_URL` (backend/.env) — never written in docs or code
 - "Generate fresh keypair in sandbox — store in backend .env"
 - Daily kill switch: $20
 - "Allow me to increase trades with UI functions if needed" — UI configurable; server-side hard cap raised to $100/trade (2026-09-06, was $5)

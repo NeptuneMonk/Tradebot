@@ -940,7 +940,7 @@ class RHPaperTrader:
             try:
                 slip = float(cfg.rh_live_slippage_pct) * (attempt + 1)
                 if pool:
-                    fill = await rh_dex.sell(token, raw, slip, quote=pair)
+                    fill = await rh_dex.sell(token, raw, slip, quote=pair, cfg=cfg)
                 else:
                     fill = await rh_live.sell(curve, raw, price, slip, token=token, cfg=cfg)
                 self.stats["live_sells"] = self.stats.get("live_sells", 0) + 1

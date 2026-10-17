@@ -123,7 +123,6 @@ export const api = {
   forceRecoverStuck: (tradeId) => longClient.post(`/trades/${tradeId}/force-recover`, null, { timeout: 90000 }).then(r => r.data),
   // Export the bot wallet's private key (b58 + JSON array). Use to import
   // the wallet into Phantom / Solflare / a CLI signer for manual recovery.
-  walletExportPrivateKey: () => client.get("/wallet/export-private-key?confirm=EXPORT").then(r => r.data),
   walletImport: (secret, sweepOld = false) => client.post("/wallet/import", { secret, confirm: "IMPORT", sweep_old: sweepOld }).then(r => r.data),
   walletRotate: () => client.post("/wallet/rotate", { confirm: "ROTATE", sweep: true }).then(r => r.data),
   // Strategy Doctor

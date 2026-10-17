@@ -1,0 +1,48 @@
+title = "pump-bot gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "helius-api-key-url"
+description = "Helius / RPC provider URL with embedded api-key"
+regex = '''(?i)api[-_]?key=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'''
+tags = ["rpc", "helius"]
+
+[[rules]]
+id = "solana-base58-secret"
+description = "Base58 64-byte Solana secret key (87-88 chars)"
+regex = '''\b[1-9A-HJ-NP-Za-km-z]{87,88}\b'''
+tags = ["solana", "wallet"]
+
+[[rules]]
+id = "solana-json-secret-array"
+description = "solana-keygen JSON byte array (64 bytes)"
+regex = '''\[\s*(?:\d{1,3}\s*,\s*){63}\d{1,3}\s*\]'''
+tags = ["solana", "wallet"]
+
+[[rules]]
+id = "telegram-bot-token"
+description = "Telegram bot token"
+regex = '''\b\d{8,10}:[A-Za-z0-9_-]{35}\b'''
+tags = ["telegram"]
+
+[allowlist]
+description = "lockfiles, build output, and the preview session token files that are git-ignored anyway"
+paths = [
+  '''yarn\.lock''',
+  '''package-lock\.json''',
+  '''frontend/build/.*''',
+  '''frontend/node_modules/.*''',
+  '''\.gitleaks\.toml''',
+]
+regexes = [
+  '''So11111111111111111111111111111111111111112''',
+  '''6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P''',
+  '''pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA''',
+  '''TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA''',
+  '''TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb''',
+  '''ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL''',
+  '''ComputeBudget111111111111111111111111111111''',
+  '''11111111111111111111111111111111''',
+]

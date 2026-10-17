@@ -21,7 +21,7 @@ def test_all_sigs_summed_once_and_rent_refundable(monkeypatch):
         "DROPPED": None,                                                           # rung that never landed
     }
 
-    async def fake_summary(sig, wallet):
+    async def fake_summary(sig, wallet, mint=None):
         calls.append(sig)
         return chain[sig]
     monkeypatch.setattr(pr, "get_tx_wallet_summary", fake_summary)

@@ -68,7 +68,12 @@ SELL_DISCRIMINATOR = bytes.fromhex("33e685a4017f83ad")
 # Fees (basis points)
 LP_FEE_BPS = 20      # 0.20%
 PROTOCOL_FEE_BPS = 5  # 0.05%
-TOTAL_FEE_BPS = LP_FEE_BPS + PROTOCOL_FEE_BPS  # 25 bps
+TOTAL_FEE_BPS = LP_FEE_BPS + PROTOCOL_FEE_BPS  # 25 bps default; BotConfig.protocol_fee_pct_pumpswap overrides via set_fee_bps
+
+
+def set_fee_bps(bps: int) -> None:
+    global TOTAL_FEE_BPS
+    TOTAL_FEE_BPS = max(0, int(bps))
 
 
 def derive_creator_vault(coin_creator: Pubkey) -> Pubkey:
@@ -258,8 +263,10 @@ def price_sol_per_raw_token(state: dict) -> float:
     return quote / base / LAMPORTS_PER_SOL
 
 
-def quote_buy_tokens(state: dict, sol_in_lamports: int, slippage_bps: int = 500) -> tuple[int, int]:
-    """SOL → tokens. Returns (expected_tokens_out, max_sol_cost_with_slippage)."""
+def quote_buy_tokens(state: dict, sol_in_lamports: int, slippage_bps: int = 500, fee_bps: int | None = None) -> tuple[int, int]:
+    """SOL → tokens. Returns (expected_tokens_out, max_sol_cost_with_slippage). pump-amm checks
+    `max_quote_amount_in >= quote_in + lp/protocol/creator fees`, so the fee is added before the tolerance (#8)."""
+    fee = TOTAL_FEE_BPS if fee_bps is None else int(fee_bps)
     base_r = state["base_reserves"]
     quote_r = state["quote_reserves"]
     if base_r <= 0 or quote_r <= 0 or sol_in_lamports <= 0:
@@ -269,17 +276,19 @@ def quote_buy_tokens(state: dict, sol_in_lamports: int, slippage_bps: int = 500)
     new_base = (base_r * quote_r) // new_quote
     tokens_out = base_r - new_base
     # NB: PumpSwap charges fees on the SOL side. Use a slight tokens_out reduction.
-    tokens_out_after_fee = tokens_out - (tokens_out * TOTAL_FEE_BPS) // 10_000
+    tokens_out_after_fee = tokens_out - (tokens_out * fee) // 10_000
     # buy(base_amount_out, max_quote_in): the program sizes the quote it pulls for a FIXED base_amount_out, so the
     # slippage tolerance must come off the tokens we ask for as well — with no margin here any adverse tick between
     # the pool read and inclusion reverts Custom:6004 ExceededSlippage (3× in a row on a 61 SOL pool).
     min_tokens_out = tokens_out_after_fee - (tokens_out_after_fee * slippage_bps) // 10_000
-    max_sol = sol_in_lamports + (sol_in_lamports * slippage_bps) // 10_000
+    with_fee = sol_in_lamports + (sol_in_lamports * fee) // 10_000
+    max_sol = with_fee + (with_fee * slippage_bps) // 10_000
     return min_tokens_out, max_sol
 
 
-def quote_sell_sol(state: dict, tokens_in: int, slippage_bps: int = 500) -> tuple[int, int]:
-    """Tokens → SOL. Returns (expected_sol_out_after_fees, min_sol_out_with_slippage)."""
+def quote_sell_sol(state: dict, tokens_in: int, slippage_bps: int = 500, fee_bps: int | None = None) -> tuple[int, int]:
+    """Tokens → SOL. Returns (expected_sol_out_after_fees, min_sol_out_with_slippage) — min is checked post-fee on-chain."""
+    fee = TOTAL_FEE_BPS if fee_bps is None else int(fee_bps)
     base_r = state["base_reserves"]
     quote_r = state["quote_reserves"]
     if base_r <= 0 or quote_r <= 0 or tokens_in <= 0:
@@ -287,7 +296,7 @@ def quote_sell_sol(state: dict, tokens_in: int, slippage_bps: int = 500) -> tupl
     new_base = base_r + tokens_in
     new_quote = (base_r * quote_r) // new_base
     sol_out_gross = quote_r - new_quote
-    fees = (sol_out_gross * TOTAL_FEE_BPS) // 10_000
+    fees = (sol_out_gross * fee) // 10_000
     sol_out = sol_out_gross - fees
     min_sol = sol_out - (sol_out * slippage_bps) // 10_000
     return sol_out, max(0, min_sol)
