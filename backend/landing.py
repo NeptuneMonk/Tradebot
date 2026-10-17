@@ -27,12 +27,12 @@ def stats_for(sig: str | None) -> dict:
     return dict(LAST.get(sig or "", {}))
 
 
-def _remember(sig: str, land_s: float, prio: int, rungs: int, mode: str | None) -> None:
+def _remember(sig: str, land_s: float, prio: int, rungs: int, mode: str | None, sigs: list[str] | None = None) -> None:
     if len(LAST) > 400:
         for k in list(LAST)[:200]:
             LAST.pop(k, None)
     tip = (TIP_LAMPORTS_DUAL if mode == "dual" else TIP_LAMPORTS_SWQOS if mode else 0) / 1e9
-    LAST[sig] = {"land_s": round(land_s, 2), "prio": int(prio), "rungs": int(rungs), "tip_sol": tip}
+    LAST[sig] = {"land_s": round(land_s, 2), "prio": int(prio), "rungs": int(rungs), "tip_sol": tip, "sigs": list(sigs or [sig])}
 
 
 MAX_TX_BYTES = 1232
@@ -49,9 +49,10 @@ class NotLanded(RuntimeError):
 
 
 class LandedButFailed(RuntimeError):
-    def __init__(self, sig: str, err):
+    def __init__(self, sig: str, err, sigs: list[str] | None = None):
         super().__init__(f"tx {sig[:16]}… landed but failed: {err}")
         self.sig, self.err = sig, err
+        self.sigs = list(sigs or [sig])          # every rung broadcast for this attempt (EMERGENT_CHANGES #5/#7)
 
 
 def fee_ladder(start: int, cap: int = DEFAULT_CAP_MICROLAMPORTS, mult: float = 2.0) -> list[int]:
@@ -67,14 +68,42 @@ def fee_ladder(start: int, cap: int = DEFAULT_CAP_MICROLAMPORTS, mult: float = 2
     return out
 
 
-async def _sign(keypair, ixs: list, priority: int, cu_limit: int, sender_mode: str | None, alts: list | None = None) -> tuple[str, str]:
+_BH_CACHE: tuple[str, float] | None = None     # (blockhash, monotonic ts) — EMERGENT_CHANGES #10
+BH_MAX_AGE_S = 20.0
+
+
+async def recent_blockhash(max_age_s: float = BH_MAX_AGE_S) -> str:
+    """Cached recent blockhash (< max_age_s old) or a fresh fetch. The refresher task keeps it ~2 s fresh."""
+    global _BH_CACHE
+    if _BH_CACHE and time.monotonic() - _BH_CACHE[1] < max_age_s:
+        return _BH_CACHE[0]
+    bh = (await rpc_call("getLatestBlockhash", [{"commitment": "confirmed"}]))["result"]["value"]["blockhash"]
+    _BH_CACHE = (bh, time.monotonic())
+    return bh
+
+
+async def blockhash_refresher(every_s: float = 2.0) -> None:
+    """Background task: keep the blockhash cache warm so no signing path pays a getLatestBlockhash round trip."""
+    while True:
+        try:
+            await recent_blockhash(max_age_s=0.0)
+        except Exception as e:
+            logger.debug(f"blockhash refresh failed: {e}")
+        await asyncio.sleep(every_s)
+
+
+async def _sign(keypair, ixs: list, priority: int, cu_limit: int, sender_mode: str | None, alts: list | None = None,
+                blockhash: str | None = None) -> tuple[str, str]:
+    """`blockhash`: EMERGENT_CHANGES #7 — land_tx fetches ONE blockhash per call and signs every rung with it, so all
+    copies expire together (bounded duplicate window)."""
     payer = keypair.pubkey()
     full = [set_compute_unit_limit(cu_limit), set_compute_unit_price(priority), *ixs]
     if sender_mode:
         full.append(_build_tip_transfer_ix(payer, TIP_LAMPORTS_DUAL if sender_mode == "dual" else TIP_LAMPORTS_SWQOS))
-    bh = await rpc_call("getLatestBlockhash", [{"commitment": "confirmed"}])
+    if not blockhash:
+        blockhash = await recent_blockhash()
     msg = MessageV0.try_compile(payer=payer, instructions=full, address_lookup_table_accounts=list(alts or []),
-                                recent_blockhash=Hash.from_string(bh["result"]["value"]["blockhash"]))
+                                recent_blockhash=Hash.from_string(blockhash))
     tx = VersionedTransaction(msg, [keypair])
     raw = bytes(tx)
     if len(raw) > MAX_TX_BYTES:
@@ -136,12 +165,15 @@ async def land_tx(keypair, instructions: list, *, priority_ladder: list[int], co
     failed: dict[str, object] = {}
     rung = 0
     last_send = -1e9
+    shared_bh: str | None = None
     while True:
         now = time.monotonic()
         if rung < len(priority_ladder) and now - last_send >= rung_s and (rung == 0 or now - t0 + 1.0 < budget_s):
             prio = int(priority_ladder[rung])
             try:
-                sig, raw = await _sign(keypair, instructions, prio, compute_unit_limit, mode, alts)
+                if shared_bh is None:
+                    shared_bh = await recent_blockhash()
+                sig, raw = await _sign(keypair, instructions, prio, compute_unit_limit, mode, alts, blockhash=shared_bh)
                 await _broadcast(raw, mode)
                 sent.append((sig, raw, prio))
                 logger.info(f"LAND {label} rung {rung + 1}/{len(priority_ladder)} prio={prio} µL sig={sig[:12]}… t+{now - t0:.1f}s")
@@ -168,21 +200,21 @@ async def land_tx(keypair, instructions: list, *, priority_ladder: list[int], co
                     if meta_err is not None:
                         failed[sig] = meta_err
                         continue
-                    _remember(sig, time.monotonic() - t0, prio, len(sent), mode)
+                    _remember(sig, time.monotonic() - t0, prio, len(sent), mode, [x[0] for x in sent])
                     logger.info(f"LAND {label} landed sig={sig[:12]}… prio={prio} µL rung {len(sent)} in {time.monotonic() - t0:.1f}s")
                     return sig, prio
             if sent and len(failed) == len(sent) and rung >= len(priority_ladder):
                 sig, err = next(iter(failed.items()))
-                raise LandedButFailed(sig, err)
+                raise LandedButFailed(sig, err, [x[0] for x in sent])
             if failed and len(failed) == len(sent):
                 # every copy so far reverted on-chain — a higher fee won't change the program's answer
                 sig, err = next(iter(failed.items()))
-                raise LandedButFailed(sig, err)
+                raise LandedButFailed(sig, err, [x[0] for x in sent])
         if time.monotonic() - t0 >= budget_s:
             pending = [s for s, _, _ in sent if s not in failed]
             if not pending and failed:
                 sig, err = next(iter(failed.items()))
-                raise LandedButFailed(sig, err)
+                raise LandedButFailed(sig, err, [x[0] for x in sent])
             raise NotLanded(pending, budget_s)
         await asyncio.sleep(0.4)
 

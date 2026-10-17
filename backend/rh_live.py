@@ -23,6 +23,7 @@ SELL_SIG = "sell(uint256,uint256,address)"
 GAS_BUY = 160_000
 GAS_SELL = 160_000
 WEI = 10**18
+DEFAULT_FEE_PCT = 1.0   # curve protocol fee on the quote side (BotConfig.rh_protocol_fee_pct overrides on sells)
 
 
 def _trade_log(receipt: dict, contract: str, topic: str) -> tuple[int, int, int] | None:
@@ -37,7 +38,7 @@ def _trade_log(receipt: dict, contract: str, topic: str) -> tuple[int, int, int]
 
 async def quote_buy(curve: str, quote_wei: int, est_price_quote: float, quote_token: str | None = None,
                     quote_decimals: int = 18) -> int:
-    """Expected raw tokens out. Tries eth_call on buy(minOut=0) for the exact
+    """Expected raw tokens out. Tries a read-only eth_call on buy() with a zero floor for the exact
     return value; falls back to the feed price. `quote_wei` is raw quote units (ETH wei or ERC-20 raw)."""
     try:
         data = rh_wallet.calldata(BUY_SIG, ["uint256", "uint256", "address"], [quote_wei, 0, rh_wallet.address()])
@@ -48,7 +49,8 @@ async def quote_buy(curve: str, quote_wei: int, est_price_quote: float, quote_to
                 return v
     except Exception as e:
         logger.debug(f"rh_live quote_buy simulate failed {curve[:10]}: {e}")
-    return int(quote_wei / 10 ** quote_decimals / est_price_quote * WEI) if est_price_quote > 0 else 0
+    # feed-price fallback is pre-fee → take the curve's ~1% quote-side fee off (the eth_call path above is already post-fee)
+    return int(quote_wei * (1.0 - DEFAULT_FEE_PCT / 100.0) / 10 ** quote_decimals / est_price_quote * WEI) if est_price_quote > 0 else 0
 
 
 async def buy(curve: str, quote_wei: int, est_price_quote: float, slippage_pct: float,
@@ -80,9 +82,30 @@ async def buy(curve: str, quote_wei: int, est_price_quote: float, slippage_pct: 
             "block": int(rc.get("blockNumber", "0x0"), 16)}
 
 
-async def sell(curve: str, tokens_raw: int, est_price_quote: float, slippage_pct: float, token: str | None = None) -> dict:
+async def quote_sell(curve: str, tokens_raw: int) -> int:
+    """Expected raw quote out for `tokens_raw`, read-only eth_call on sell() with a zero floor (nothing is sent).
+    Returns 0 when the call reverts or yields nothing."""
+    try:
+        data = rh_wallet.calldata(SELL_SIG, ["uint256", "uint256", "address"], [tokens_raw, 0, rh_wallet.address()])
+        res = await rh_wallet.simulate(curve, data, 0)
+        if res and res != "0x":
+            return int(res[2:66], 16)
+    except Exception as e:
+        logger.debug(f"rh_live quote_sell simulate failed {curve[:10]}: {e}")
+    return 0
+
+
+def sell_min_out(est_quote: int, slippage_pct: float, fee_pct: float) -> int:
+    """EMERGENT_CHANGES #11 — curve fee comes off the quote side BEFORE our tolerance, so the tolerance is what was configured."""
+    return int(est_quote * (1.0 - float(fee_pct) / 100.0) * (1.0 - float(slippage_pct) / 100.0))
+
+
+async def sell(curve: str, tokens_raw: int, est_price_quote: float, slippage_pct: float, token: str | None = None,
+               cfg=None) -> dict:
+    fee_pct = float(getattr(cfg, "rh_protocol_fee_pct", 1.0) if cfg is not None else 1.0)
+    fallback_pct = float(getattr(cfg, "rh_sell_fallback_slippage_pct", 20.0) if cfg is not None else 20.0)
     est_quote = int(tokens_raw * est_price_quote) if est_price_quote > 0 else 0
-    min_out = int(est_quote * (1.0 - slippage_pct / 100.0))
+    min_out = sell_min_out(est_quote, slippage_pct, fee_pct)
     me = rh_wallet.address()
     approve_gas = 0
     if token:
@@ -90,14 +113,20 @@ async def sell(curve: str, tokens_raw: int, est_price_quote: float, slippage_pct
         approve_tx = await rh_wallet.ensure_allowance(token, curve, tokens_raw)
         if approve_tx:
             approve_gas = (await rh_wallet.wait_receipt(approve_tx))["gas_cost_wei"]
-    data = rh_wallet.calldata(SELL_SIG, ["uint256", "uint256", "address"], [tokens_raw, min_out, me])
+    data = rh_wallet.calldata(SELL_SIG, ["uint256", "uint256", "address"], [tokens_raw, max(1, min_out), me])
     try:
         await rh_wallet.simulate(curve, data, 0)
     except rh_wallet.RhRpcError as e:
-        # price moved past slippage — emergency: sell with minOut=0 rather than be stranded
-        logger.warning(f"rh_live sell sim failed ({e}); retrying with minOut=0")
-        data = rh_wallet.calldata(SELL_SIG, ["uint256", "uint256", "address"], [tokens_raw, 0, me])
-        await rh_wallet.simulate(curve, data, 0)
+        # price moved past slippage — re-quote from the curve, then ONE retry at a capped wider slippage. Never a zero floor.
+        wide = max(float(slippage_pct), fallback_pct)
+        fresh_quote = await quote_sell(curve, tokens_raw)
+        if fresh_quote > 0:
+            min_out = int(fresh_quote * (1.0 - wide / 100.0))        # exact post-fee output from the curve itself
+        else:
+            min_out = sell_min_out(est_quote, wide, fee_pct)
+        logger.warning(f"rh_live sell sim failed ({e}); ONE retry at {wide:.0f}% slippage min_out={min_out} (requote={'curve' if fresh_quote else 'feed'})")
+        data = rh_wallet.calldata(SELL_SIG, ["uint256", "uint256", "address"], [tokens_raw, max(1, min_out), me])
+        await rh_wallet.simulate(curve, data, 0)   # raises → caller retries next tick / parks
     t0 = time.time()
     tx = await rh_wallet.send(curve, data, 0, gas_limit=GAS_SELL)
     rc = await rh_wallet.wait_receipt(tx)

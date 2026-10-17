@@ -42,6 +42,7 @@ class _RH:
 class _State:
     def __init__(self, **cfg):
         self.db = _DB()
+        cfg = {"alert_targets_only": False, "alert_system_events": True, **cfg}   # these tests cover the legacy ±% mode
         self.config = BotConfig(**cfg)
         self.live_doctor = _Doctor()
         self.listener_connected = True

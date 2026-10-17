@@ -2,6 +2,51 @@ import { useRef, useState } from "react";
 import { Download, Upload, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+
+const KeyList = ({ label, keys, tone, testId }) => (
+  <div data-testid={testId} className="flex flex-col gap-1">
+    <div className={`text-[10px] uppercase tracking-[0.2em] ${tone}`}>{label} · {keys.length}</div>
+    {keys.length ? (
+      <div className="flex flex-wrap gap-1">
+        {keys.map((k) => (
+          <span key={k} className="px-1.5 py-0.5 border border-neutral-800 bg-neutral-900/60 font-mono text-[10px] text-neutral-300">{k}</span>
+        ))}
+      </div>
+    ) : (
+      <span className="font-mono text-[10px] text-neutral-600">none</span>
+    )}
+  </div>
+);
+
+function ImportReportDialog({ report, onClose }) {
+  if (!report) return null;
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent data-testid="config-import-report-dialog" className="max-w-lg bg-neutral-950 border-neutral-800 text-neutral-200">
+        <DialogHeader>
+          <DialogTitle className="font-mono text-sm tracking-wide">Config imported · bot paused for review</DialogTitle>
+          <DialogDescription className="font-mono text-[11px] text-neutral-400">
+            {report.applied.length} settings applied · {report.changed.length} changed
+            {report.kept_local?.length ? ` · ${report.kept_local.length} feed/arming switches kept local` : ""}.
+            Press Start when you have reviewed the values.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-3 max-h-[50vh] overflow-y-auto pr-1">
+          <KeyList label="Clamped (file value out of range → sanitised)" keys={report.clamped || []}
+                   tone={report.clamped?.length ? "text-amber-400" : "text-neutral-500"} testId="config-import-clamped" />
+          <KeyList label="Ignored (unknown to this build)" keys={report.ignored_unknown || []}
+                   tone={report.ignored_unknown?.length ? "text-red-400" : "text-neutral-500"} testId="config-import-ignored" />
+          <KeyList label="Changed" keys={report.changed || []} tone="text-emerald-400" testId="config-import-changed" />
+        </div>
+        <button data-testid="config-import-report-close" onClick={onClose}
+                className="self-end px-3 py-1.5 border border-neutral-700 font-mono text-[10px] uppercase tracking-[0.15em] hover:bg-neutral-900">
+          close
+        </button>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 /**
  * Sync the bot's config between preview & production environments — and
@@ -16,6 +61,7 @@ import { api } from "@/lib/api";
  */
 export default function ConfigSyncPanel({ onApplied }) {
   const [busy, setBusy] = useState(false);
+  const [report, setReport] = useState(null);
   const fileInput = useRef(null);
 
   const handleExport = async () => {
@@ -44,11 +90,15 @@ export default function ConfigSyncPanel({ onApplied }) {
     setBusy(true);
     try {
       const text = await file.text();
-      const firstLine = text.slice(0, text.indexOf("\n") > 0 ? text.indexOf("\n") : undefined);
-      if (text.charCodeAt(0) === 0x1f || /\.(brain|gz|ndjson)$/i.test(file.name) || /"schema_version"/.test(firstLine)) {
+      // Brain files: gzip magic byte, brain/gz/ndjson extension, or a parsed object with schema_version but no config.
+      // (A minified one-line config export also contains "schema_version" — never regex the first line.)
+      if (text.charCodeAt(0) === 0x1f || /\.(brain|gz|ndjson)$/i.test(file.name)) {
         throw new Error("that is a Brain file — use “Import brain” below, not the config import");
       }
       const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object" && parsed.schema_version !== undefined && !parsed.config) {
+        throw new Error("that is a Brain file — use “Import brain” below, not the config import");
+      }
       // Accept either { config: {...} } export shape or a raw config object
       const cfg = parsed.config && typeof parsed.config === "object" ? parsed.config : parsed;
       if (!cfg || typeof cfg !== "object") throw new Error("file is not a valid config JSON");
@@ -62,13 +112,8 @@ export default function ConfigSyncPanel({ onApplied }) {
       const rep = res?.report;
       onApplied?.(fresh);
       if (rep) {
-        const bits = [`${rep.applied.length} settings applied`, `${rep.changed.length} changed`];
-        if (rep.kept_local?.length) bits.push(`${rep.kept_local.length} feed/arming switches kept local`);
-        if (rep.clamped?.length) bits.push(`${rep.clamped.length} clamped: ${rep.clamped.slice(0, 4).join(", ")}`);
-        toast.success(`Config imported · bot paused for review — ${bits.join(" · ")}`, { duration: 8000 });
-        if (rep.ignored_unknown?.length) {
-          toast.warning(`${rep.ignored_unknown.length} setting(s) in the file are unknown to this build and were ignored: ${rep.ignored_unknown.join(", ")}. Deploy the latest build, then import again.`, { duration: 15000 });
-        }
+        setReport(rep);
+        toast.success(`Config imported · ${rep.applied.length} applied · ${rep.clamped?.length || 0} clamped · ${rep.ignored_unknown?.length || 0} ignored`, { duration: 6000 });
       } else {
         toast.success("Config imported · bot paused for review");
       }
@@ -109,6 +154,7 @@ export default function ConfigSyncPanel({ onApplied }) {
       data-testid="config-sync-panel"
       className="mt-1 pt-3 border-t border-neutral-800/70 flex flex-col gap-2"
     >
+      <ImportReportDialog report={report} onClose={() => setReport(null)} />
       <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-500 flex items-center gap-2">
         <Sparkles className="w-3 h-3" />
         Config Sync

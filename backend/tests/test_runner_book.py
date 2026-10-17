@@ -198,7 +198,7 @@ def test_stages_launch_graduating_graduated_retail_exhausted():
 def test_add_on_once_cost_gated_and_second_refused():
     cfg = BotConfig(max_trade_usd=10.0)
     t = {"r_usd": 4.0}
-    plan = runner.add_on_plan(cfg, t, depth_usd=5000.0, exit_slip_bps=800, entry_slip_bps=500, fee_usd_round_trip=0.05, max_trade_usd=10.0)
+    plan = runner.add_on_plan(cfg, t, depth_usd=5000.0, exit_slip_bps=800, entry_slip_bps=500, fee_usd_round_trip=0.01, max_trade_usd=10.0)
     assert plan and plan["size_usd"] == 2.0 and plan["cost_gate_pass"] is True
     t["runner_add_on_done"] = True
     assert runner.add_on_plan(cfg, t, depth_usd=5000.0, exit_slip_bps=800, entry_slip_bps=500, fee_usd_round_trip=0.05, max_trade_usd=10.0) is None

@@ -70,7 +70,7 @@ def test_switches_purge_their_band_immediately():
 
 
 def test_held_pending_and_pinned_tokens_are_never_evicted():
-    st = _state(book_scalp_enabled=False, scanner_seasoned_entries_enabled=False)
+    st = _state(book_scalp_enabled=False, scanner_seasoned_entries_enabled=False, smart_wallet_enabled=False)
     st.tracking = {"held": _curve(90), "pending": _pool(500), "pinned": _curve(400, pinned=True), "loose": _curve(1)}
     st.active_trades["held"] = {"trade": {}}
     st._pending_entry_mints.add("pending")

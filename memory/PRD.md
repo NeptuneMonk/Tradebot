@@ -2611,3 +2611,30 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   (`alerts.mc_usd`), SOL/USD derived from entry_usd/entry_sol and exit_usd/exit_sol so entry/exit MCs use the prices of the moment.
   `trade_partial` broadcast now carries `leg_price_sol`, `sol_price`, `entry_price_sol`, `entry_sol_price`, `decimals`, `book`, `mode`, `chain`.
   A sample message was sent to the user's chat. Tests: `test_alert_text_has_ticker_mc_and_link`.
+
+## 2026-10-17 — EMERGENT_CHANGES.md (user spec, 12 items + S). Live OFF (paper) for the whole batch.
+- ✅ #1 exits: `slippage.exit_capped/exit_slip_cap_bps`; `max_slippage_bps` entry-only; `max_exit_slippage_bps=2000`, `exit_requote_every_attempt`,
+  `exit_max_landed_reverts=5`, `exit_terminal_slippage_bps=3000` (≤5000, one extra rung on the last round via `_exit_slip_ladder`); re-quote every
+  attempt with `EXIT attempt i/n slip= min_out= quote_age_ms=` logs; parked rows carry provisional −stake P&L (`pnl_provisional`).
+- ✅ #2 stops: hold layers read their flags at call time (`exit_momentum_gate_enabled`, `flush_hold_enabled`, `flush_cohort_enabled`,
+  `recovery_watch_enabled`); `hard_stop_extra_pct=5` (pnl ≤ −(book SL + extra) → `hard-stop …`, panic class), `max_hold_any_book_s=900`
+  (`max-hold Ns`), `dead_tape_exit_on_red=True`. Manual holds / LTH exempt.
+- ✅ #3 CU/fees: `cu_limit(protocol, side)` everywhere (135k/150k buy, 80k/130k sell; CU_* constants fallback), routed legs = simulated
+  unitsConsumed × `cu_limit_routed_mult` (min 80k, fallback 300k; Jupiter keeps its own estimate — ALT simulation not wired),
+  `ComputationalBudgetExceeded` → one retry at ×1.5, `_exit_fee_ladder(…, position_sol, cu)` + `_buy_fee_ladder` capped at
+  `exit/entry_fee_max_pct_of_position`, `_land_sell` sender mode = `exit_sender_mode_normal|panic` (swqos/dual), trade doc stores
+  `exit_cu_limit/exit_sender_mode/exit_slip_bps_used`, `rent_locked_sol`.
+- ✅ #4 cost gate: `cost_gate.quote(cfg=…)` reads `cost_gate_max_round_trip_pct/cost_mult/failed_tx_allowance_pct`, `protocol_fee_pct_pumpfun/pumpswap`
+  (1.25 %); `round_trip_fee_sol()` = base + buy prio×CU + swqos tip + base + exit-floor prio×CU + exit tip; exit slip on the PLANNED size;
+  skip event carries the breakdown (`failed_pct` added).
+- ✅ #6 mayhem: `skip_mayhem_coins=True` refuses mayhem curves at entry (`mayhem-mode`); `build_buy_ix/build_sell_ix(mayhem=)` swap the fee
+  recipient to MAYHEM_FEE_RECIPIENT (pump-public-docs 8.1); Token-2022 already threaded. Multi-hop builder stays non-mayhem.
+  ⚠ Spec said "currently skipped (skip_mayhem=True)" — there was NO such flag; mayhem buys simply failed (6108). Now explicitly skipped.
+- Extra (not in spec, harmless, off by default): `scanner_max_mc_usd_seasoned` MC ceiling + Gates UI input.
+- Config: user's `bot_config.json` (297 keys + 21 known pending fields) imported via `POST /api/config/import`; 8 pending keys for #7–#11
+  not yet in this build were ignored (`buy_fee_ladder_rungs, entry_balance_cache_s, fast_fail_add_at_pct, fast_fail_split_enabled,
+  land_late_watch_s, rh_protocol_fee_pct, rh_sell_fallback_slippage_pct, socials_fetch_blocking`). enabled/live_trading stay OFF.
+- Tests: test_slip_cap (+2), test_stop_layers (4), test_cu_and_fee_caps (5), test_cost_gate_real_fees (4), test_mayhem_builders (2); legacy
+  tests updated for new defaults (fast_landing_exit, panic_slip, alerts, runner_book, profitability_refactor, scanner_band_protocol).
+- TODO next: #5 P&L reconciler, #7 idempotency, #8 quote_mint into exit, #9 half-now/half-later, #10 entry latency, #11 RH sell min-out, #12, S.
+- Spec file cached at /tmp/changes.md (re-download from the artifact URL if missing).

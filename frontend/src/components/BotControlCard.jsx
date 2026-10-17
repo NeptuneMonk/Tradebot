@@ -867,11 +867,14 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
                      seasonedValue={local.scanner_min_mc_usd_seasoned}
                      onSeasonedChange={(v) => setLocal({ ...local, scanner_min_mc_usd_seasoned: parseFloat(v) || 0 })}
                      step="1000" />
-            <GateRow label="Max MC ($)" newOnly
-                     hint="NEW band ceiling: skip curve tokens whose live market cap is already above this (too late for a micro-stake bounce). 0 = off."
+            <GateRow label="Max MC ($)"
+                     hint="Market-cap ceiling per band: skip tokens whose market cap is already above this (too late for a micro-stake bounce). 0 = off."
                      newTestid="scanner-mc-max-new-input"
                      newValue={local.scanner_max_mc_usd_new ?? 0}
                      onNewChange={(v) => setLocal({ ...local, scanner_max_mc_usd_new: parseFloat(v) || 0 })}
+                     seasonedTestid="scanner-mc-max-seasoned-input"
+                     seasonedValue={local.scanner_max_mc_usd_seasoned ?? 0}
+                     onSeasonedChange={(v) => setLocal({ ...local, scanner_max_mc_usd_seasoned: parseFloat(v) || 0 })}
                      step="1000" />
             {/* Seasoned-only: Pump.fun API polled signals */}
             <GateRow label="Min MC vel (5m %)" seasonedOnly last

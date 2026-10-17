@@ -30,7 +30,21 @@ def slip_cap_bps(cfg) -> int:
 
 
 def capped(bps: int, cfg) -> int:
+    """ENTRY-side ceiling (max_slippage_bps)."""
     return max(1, min(int(bps), slip_cap_bps(cfg)))
+
+
+def exit_slip_cap_bps(cfg) -> int:
+    """EXIT-side ceiling (max_exit_slippage_bps); 0 / missing → falls back to the entry cap (old behaviour)."""
+    try:
+        cap = int(getattr(cfg, "max_exit_slippage_bps", 0) or 0)
+    except (TypeError, ValueError):
+        cap = 0
+    return cap if cap > 0 else slip_cap_bps(cfg)
+
+
+def exit_capped(bps: int, cfg) -> int:
+    return max(1, min(int(bps), exit_slip_cap_bps(cfg)))
 
 
 def entry_slip_bps(protocol: str, depth_sol: float, base_bps: int, cfg=None) -> int:
@@ -52,7 +66,7 @@ def auto_exit_slip_bps(cfg, *, panic: bool, pool_depth_sol: float, recent_vol_pc
         bps += int(cfg.auto_exit_slip_high_vol_extra_bps)
     if panic:
         bps += int(cfg.auto_exit_slip_panic_extra_bps)
-    return capped(min(bps, int(cfg.auto_exit_slip_cap_bps)), cfg)
+    return exit_capped(min(bps, int(cfg.auto_exit_slip_cap_bps)), cfg)
 
 
 def recent_vol_pct(samples: list[tuple[float, float]], window_s: int) -> float | None:

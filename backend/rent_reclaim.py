@@ -122,6 +122,15 @@ class RentReclaimer:
                                                    rung_s=4.0, budget_s=20.0, use_sender=False, label=f"rent x{len(batch)}")
                     sigs.append(sig)
                     closed += len(batch)
+                    # EMERGENT_CHANGES #5 — stamp the refund on the most recent closed trade of each mint
+                    for r in batch:
+                        try:
+                            last = await self.state.db.trades.find_one({"mint": r["mint"], "status": {"$in": ["closed", "exit_failed_terminal"]}},
+                                                                       {"_id": 1}, sort=[("exit_time", -1)])
+                            if last:
+                                await self.state.db.trades.update_one({"_id": last["_id"]}, {"$set": {"rent_refunded_lamports": int(r["lamports"]), "rent_refund_sig": sig}})
+                        except Exception:
+                            pass
                 except Exception as e:
                     errors.append(str(e)[:160])
                     logger.warning(f"rent batch {i // PER_TX + 1} failed: {e}")

@@ -24,7 +24,7 @@ def test_panic_helper_classification():
     from bot import BotState
     # Build a stub with just the config wired (avoid full BotState init)
     class _StubBot:
-        config = BotConfig(max_slippage_bps=0)   # legacy widening semantics under test; the operator cap is covered in test_slip_cap
+        config = BotConfig(max_slippage_bps=0, max_exit_slippage_bps=5000)   # legacy widening semantics under test; the operator cap is covered in test_slip_cap
         _is_panic_exit = BotState._is_panic_exit
         _exit_slip_for = BotState._exit_slip_for
     s = _StubBot()

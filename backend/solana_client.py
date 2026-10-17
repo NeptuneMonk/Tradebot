@@ -281,6 +281,31 @@ async def get_tx_wallet_delta_lamports(sig: str, wallet: str) -> int | None:
         return None
     return int(post[idx]) - int(pre[idx])
 
+TOKEN_ACCOUNT_RENT_LAMPORTS = 2_039_280
+
+
+async def get_tx_wallet_summary(sig: str, wallet: str) -> dict | None:
+    """One getTransaction → {delta, failed, rent_created}: signed lamport delta of `wallet` (fee-inclusive, failed txs
+    included), whether the tx failed on-chain, and token-account rent created in the tx (accounts whose balance went
+    0 → rent-exempt minimum). None when the tx is not indexed yet."""
+    res = await rpc_call("getTransaction", [sig, {"encoding": "json", "commitment": "confirmed", "maxSupportedTransactionVersion": 0}])
+    tx = res.get("result")
+    if not tx:
+        return None
+    meta = tx.get("meta") or {}
+    msg = (tx.get("transaction") or {}).get("message") or {}
+    keys = [k if isinstance(k, str) else (k.get("pubkey") or "") for k in (msg.get("accountKeys") or [])]
+    pre, post = meta.get("preBalances") or [], meta.get("postBalances") or []
+    try:
+        idx = keys.index(wallet)
+    except ValueError:
+        return None
+    if idx >= len(pre) or idx >= len(post):
+        return None
+    rent = sum(int(b) for a, b in zip(pre, post) if int(a) == 0 and int(b) == TOKEN_ACCOUNT_RENT_LAMPORTS)
+    return {"delta": int(post[idx]) - int(pre[idx]), "failed": meta.get("err") is not None, "rent_created": int(rent)}
+
+
 STABLE_MINTS = {"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 6,       # USDC
                 "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": 6}      # USDT
 

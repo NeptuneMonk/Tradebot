@@ -407,8 +407,10 @@ async def build_buy_ix(
     max_sol_cost_lamports: int,
     creator: Pubkey,
     token_program: Pubkey = TOKEN_PROGRAM,
+    mayhem: bool = False,
 ) -> Instruction:
-    """Build a Pump.fun buy instruction with the post-2026-04-28 18-account layout."""
+    """Build a Pump.fun buy instruction with the post-2026-04-28 18-account layout.
+    `mayhem=True` (curve.is_mayhem) swaps the fee recipient for MAYHEM_FEE_RECIPIENT (pump-public-docs 8.1) — otherwise 6108."""
     bonding_curve = derive_bonding_curve(mint)
     associated_bonding_curve = derive_associated_token_for_program(bonding_curve, mint, token_program)
     associated_user = derive_associated_token_for_program(user, mint, token_program)
@@ -418,7 +420,7 @@ async def build_buy_ix(
     fee_config = derive_fee_config()
     bonding_curve_v2 = derive_bonding_curve_v2(mint)
     breaking_fee = _pick_breaking_fee_recipient()
-    fee_recipient = await pick_fee_recipient()
+    fee_recipient = MAYHEM_FEE_RECIPIENT if mayhem else await pick_fee_recipient()
 
     data = (
         BUY_DISCRIMINATOR
@@ -459,6 +461,7 @@ async def build_sell_ix(
     creator: Pubkey,
     token_program: Pubkey = TOKEN_PROGRAM,
     cashback: bool = False,
+    mayhem: bool = False,
 ) -> Instruction:
     """Build a Pump.fun sell instruction with the post-2026-04-28 layout.
 
@@ -472,7 +475,7 @@ async def build_sell_ix(
     fee_config = derive_fee_config()
     bonding_curve_v2 = derive_bonding_curve_v2(mint)
     breaking_fee = _pick_breaking_fee_recipient()
-    fee_recipient = await pick_fee_recipient()
+    fee_recipient = MAYHEM_FEE_RECIPIENT if mayhem else await pick_fee_recipient()
 
     data = (
         SELL_DISCRIMINATOR

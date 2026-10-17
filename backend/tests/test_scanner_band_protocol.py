@@ -215,6 +215,8 @@ def test_candidates_snapshot_excludes_out_of_band(monkeypatch):
                 band_seasoned_max_age_min=60.0,
             )
             self.tracking = {}
+            from smart_wallets import SmartWallets
+            self.smart_wallets = SmartWallets(self)
             self.entered_mints = set()
             self.active_trades = {}
 

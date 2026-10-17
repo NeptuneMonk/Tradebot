@@ -23,6 +23,7 @@ CURVE = {"complete": False, "virtual_sol_reserves": 30_000_000_000, "virtual_tok
 def _st():
     st = _patched(_bot_stub())
     st.config.paper_exit_latency_ms = 0
+    st.config.exit_max_landed_reverts = 3        # these tests exercise the 3-revert escalation (default is now 5)
     st.scorecard = SimpleNamespace(record=AsyncMock(return_value="x"))
     st.db.launches = SimpleNamespace(find_one=AsyncMock(return_value=None), update_one=AsyncMock())
     st.check_kill_switch = AsyncMock()
@@ -89,7 +90,7 @@ def test_landed_reverts_escalate_to_emergency_then_park_as_liquidity():
     t = s["trade"]
     assert st._attempt_emergency_pumpswap_sell.await_count == 1
     assert MINT not in st.active_trades and t["status"] == "exit_failed_terminal" and t["venue_stage"] == "sell-reverted"
-    assert t["pnl_sol"] is None and t["held_intent"] == "exit"
+    assert t["pnl_sol"] < 0 and t["pnl_provisional"] is True and t["held_intent"] == "exit"   # provisional −stake P&L (EMERGENT_CHANGES #1.7)
 
 
 def test_emergency_fill_after_reverts_books_closed():

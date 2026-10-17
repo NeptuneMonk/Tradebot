@@ -472,6 +472,10 @@ class MomentumScanner:
                         if mc < cfg.scanner_min_mc_usd_seasoned:
                             tally(band, verdict("mc", f"${mc:,.0f} < ${cfg.scanner_min_mc_usd_seasoned:,.0f}"))
                             continue
+                        _mx = float(getattr(cfg, "scanner_max_mc_usd_seasoned", 0) or 0)
+                        if _mx > 0 and mc > _mx:
+                            tally(band, verdict("mc-max", f"${mc:,.0f} > ${_mx:,.0f}"))
+                            continue
                         v = _mc_velocity(b.get("mc_samples") or (), now)
                         if v < cfg.scanner_min_mc_velocity_5m_pct_seasoned:
                             tally(band, verdict("mc-velocity", f"{v:+.1f}%/5m < {cfg.scanner_min_mc_velocity_5m_pct_seasoned:g}%"))
@@ -590,6 +594,10 @@ class MomentumScanner:
                         mc = float(b.get("usd_market_cap") or 0.0)
                         if mc < cfg.scanner_min_mc_usd_seasoned:
                             verdict("mc")
+                            continue
+                        _mx = float(getattr(cfg, "scanner_max_mc_usd_seasoned", 0) or 0)
+                        if _mx > 0 and mc > _mx:
+                            verdict("mc-max")
                             continue
                         v = _mc_velocity(b.get("mc_samples") or (), now)
                         if v < cfg.scanner_min_mc_velocity_5m_pct_seasoned:

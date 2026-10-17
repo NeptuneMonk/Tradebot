@@ -253,7 +253,8 @@ def _planner(decision="full", disabled_cells=()):
     os.environ.setdefault("HELIUS_RPC_URL", "http://x"); os.environ.setdefault("HELIUS_API_KEY", "x")
     from bot import BotState
     st = BotState.__new__(BotState)
-    st.config = BotConfig(max_trade_usd=1.0, min_trade_usd=0.4, paper_bankroll_usd=1000.0)
+    # EMERGENT_CHANGES #4: real round-trip fees on a $1 stake are ~8.4 % → lift the ceiling so the planner path is exercised
+    st.config = BotConfig(max_trade_usd=1.0, min_trade_usd=0.4, paper_bankroll_usd=1000.0, cost_gate_max_round_trip_pct=12.0)
     st.scorecard = scorecard.Scorecard(None); st.scorecard._disabled = {c: {} for c in disabled_cells}
     st.live_doctor = _FakeDoctor(decision)
     st.skips = []
@@ -457,6 +458,7 @@ def test_unknown_dev_on_hunt_demotes_to_scalp_instead_of_skipping(monkeypatch):
     import bot as bot_mod
     monkeypatch.setattr(bot_mod.reputation, "configured", lambda: True)
     st = _bot_stub()
+    st.config.reputation_enabled = True          # adapter is OFF by default since 2026-10-15 (reputation.family down)
     st.stats = {}
     seen = {}
     async def _impl(launch, risk, action): seen["action"] = action

@@ -109,7 +109,46 @@ class BotConfig(BaseModel):
     max_trade_usd: float = 1.00
     slippage_bps: int = 500          # 5% entry slippage
     # Hard ceiling on EVERY slippage we send — entry (incl. thin-pool floors), exit, panic, retry ladder, routed legs.
-    max_slippage_bps: int = 300
+    max_slippage_bps: int = 300                  # ENTRY-side hard ceiling (3%). Exits use max_exit_slippage_bps.
+    # EMERGENT_CHANGES #1 — exits: separate cap, re-quote every attempt, more landed reverts, one capped terminal attempt
+    max_exit_slippage_bps: int = 2000        # ceiling for ALL exit-side slippage (normal, panic, retries, routed sells)
+    exit_requote_every_attempt: bool = True  # fresh curve/pool fetch + re-quote before EVERY exit attempt incl. #0
+    exit_max_landed_reverts: int = 5         # was hardcoded 3
+    exit_terminal_slippage_bps: int = 3000   # one last capped attempt before parking (never unlimited / never min-out 0)
+    # EMERGENT_CHANGES #2 — absolute hard stop + universal max hold that no hold layer can defer (manual holds / LTH exempt)
+    hard_stop_extra_pct: float = 5.0         # pnl ≤ −(book stop_loss_pct + this) → exit NOW
+    max_hold_any_book_s: int = 900           # absolute clock for every non-manual position (0 = off)
+    dead_tape_exit_on_red: bool = True       # search_dead_tape may also close red positions
+    # EMERGENT_CHANGES #3 — CU limits ≈ 1.2× measured use, fee caps scaled to position size, cheaper tips on normal exits
+    cu_limit_pumpfun_buy: int = 135_000
+    cu_limit_pumpswap_buy: int = 150_000
+    cu_limit_pumpfun_sell: int = 80_000
+    cu_limit_pumpswap_sell: int = 130_000
+    cu_limit_routed_mult: float = 1.2            # routed: simulate → unitsConsumed × mult (fallback 300_000)
+    exit_fee_max_pct_of_position: float = 2.0    # priority+tip of ONE sell attempt ≤ this % of position value
+    entry_fee_max_pct_of_position: float = 1.0
+    exit_sender_mode_normal: Literal["swqos", "dual"] = "swqos"   # 5,000-lamport tip on normal exits
+    exit_sender_mode_panic: Literal["swqos", "dual"] = "dual"     # 200,000-lamport tip on panic exits
+    # EMERGENT_CHANGES #4 — cost gate with real fee figures (constants in cost_gate.py are the fallbacks)
+    cost_gate_max_round_trip_pct: float = 8.0
+    cost_gate_cost_mult: float = 2.0
+    cost_gate_failed_tx_allowance_pct: float = 1.5
+    protocol_fee_pct_pumpfun: float = 1.25
+    protocol_fee_pct_pumpswap: float = 1.25
+    # EMERGENT_CHANGES #7 — idempotency across fee-ladder rungs
+    buy_fee_ladder_rungs: int = 1            # 1 = single rung (no second copy); 2 = [p, 2p]; 3 = [p, 2p, 4p]
+    land_late_watch_s: int = 45              # keep polling unchosen rung sigs this long after a landing
+    # EMERGENT_CHANGES #9 — half-now / half-later entry is opt-in
+    fast_fail_split_enabled: bool = False
+    fast_fail_add_at_pct: float = 5.0
+    # EMERGENT_CHANGES #10 — entry latency
+    socials_fetch_blocking: bool = False     # socials gate never blocks the entry path; missing metadata → skip (socials-pending)
+    entry_balance_cache_s: int = 10          # reuse a wallet balance read this fresh (minus SOL committed since)
+    # EMERGENT_CHANGES #11 — Robinhood Chain sell min-out
+    rh_sell_fallback_slippage_pct: float = 20.0   # ONE retry at this capped slippage when the sell simulation reverts — never min-out 0
+    rh_protocol_fee_pct: float = 1.0              # curve fee taken on the quote side, subtracted in min-out
+    # EMERGENT_CHANGES #6 — mayhem-mode curves: builders ready (mayhem fee recipient + Token-2022), entry skipped until flipped
+    skip_mayhem_coins: bool = True
     # Risk / exit behaviour
     daily_kill_switch_usd: float = 20.00
     priority_fee_microlamports: int = 500_000
@@ -309,6 +348,7 @@ class BotConfig(BaseModel):
     scanner_min_mc_usd_seasoned: float = 30000.0      # $30K market cap floor
     scanner_min_mc_usd_new: float = 0.0               # NEW band (curve) MC floor from the live tape price; 0 = off
     scanner_max_mc_usd_new: float = 0.0               # NEW band MC ceiling; 0 = off
+    scanner_max_mc_usd_seasoned: float = 0.0          # SEASONED band MC ceiling (EMERGENT_CHANGES #4); 0 = off
     scanner_min_mc_velocity_5m_pct_seasoned: float = 5.0  # +5% MC change over 5min
     # Discovery: only seed tokens whose last trade is fresher than this (minutes).
     # Set 0 to disable the freshness gate.
@@ -706,6 +746,12 @@ class Trade(BaseModel):
     pnl_sol: float = 0.0
     pnl_usd: float = 0.0
     pnl_pct: float = 0.0
+    pnl_provisional: bool = False
+    rent_locked_sol: float = 0.0           # ATA rent tied up while open (refunded on close — capital, not a cost)
+    all_sigs: list = []                    # every sig broadcast for this trade — landed, failed or dropped rungs (reconciler truth)
+    exit_cu_limit: Optional[int] = None
+    exit_sender_mode: Optional[str] = None
+    exit_slip_bps_used: Optional[int] = None     # parked (exit_failed_terminal) rows carry a provisional −stake P&L until the bag really sells
     # Trading-cost breakdown (estimated at tx-submit time using
     # priority_fee_microlamports × compute_unit_limit / 1e6 + base 5000 lamports
     # signature fee. Slippage cost computed from quoted-vs-actual fills).

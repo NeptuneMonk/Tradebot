@@ -26,7 +26,8 @@ from datetime import datetime, timedelta, timezone
 from solana_client import (
     LAMPORTS_PER_SOL,
     get_sol_usd_price,
-    get_tx_wallet_delta_lamports,
+    get_tx_wallet_delta_lamports,  # noqa: F401  (kept for other callers / tests)
+    get_tx_wallet_summary,
 )
 
 logger = logging.getLogger("pnl_reconciler")
@@ -64,7 +65,7 @@ class PnLReconciler:
         cursor = self.state.db.trades.find(
             {
                 "mode": "live",
-                "status": "closed",
+                "status": {"$in": ["closed", "exit_failed_terminal"]},
                 "exit_time": {"$gte": cutoff},
                 "$or": [
                     {"pnl_reconciled": {"$exists": False}},
@@ -74,8 +75,9 @@ class PnLReconciler:
             {
                 "_id": 0,
                 "id": 1, "entry_sig": 1, "exit_sig": 1, "partial_sig": 1, "partial_sigs": 1, "add_on_sig": 1,
-                "entry_sol": 1, "exit_sol": 1, "partial_sell_sol": 1,
-                "partial_realized_sol": 1, "pnl_sol": 1, "pnl_usd": 1,
+                "entry_sol": 1, "exit_sol": 1, "partial_sell_sol": 1, "entry_tokens": 1, "status": 1,
+                "partial_realized_sol": 1, "pnl_sol": 1, "pnl_usd": 1, "all_sigs": 1, "fast_fail_add": 1,
+                "flush_addon_sig": 1, "adds": 1, "failed_sigs": 1, "pending_exit_sigs": 1, "rent_locked_lamports": 1,
             },
         ).limit(MAX_TRADES_PER_PASS)
         wallet = os.environ.get("WALLET_PUBKEY") or ""
@@ -104,63 +106,49 @@ class PnLReconciler:
         we explicitly DON'T add the fee back in, because what the user cares
         about is "how much did my wallet change" — which is fee-inclusive."""
         entry_sig = t.get("entry_sig")
-        exit_sig = t.get("exit_sig")
-        partial_sig = t.get("partial_sig")
-
-        # Need at least an entry signature to be worth reconciling. If no
-        # exit_sig (sell failed), the position is still open in chain terms —
-        # we can still measure the entry leg's real cost but PnL is unrealised.
         if not entry_sig:
             return
-
-        entry_delta = await get_tx_wallet_delta_lamports(entry_sig, wallet)
-        if entry_delta is None:
-            return  # tx not yet indexed by RPC
-
-        exit_delta = 0
-        if exit_sig:
-            ex = await get_tx_wallet_delta_lamports(exit_sig, wallet)
-            if ex is None:
-                return
-            exit_delta = ex
-
-        partial_delta = 0
-        legs = list(t.get("partial_sigs") or ([partial_sig] if partial_sig else []))
-        if t.get("add_on_sig"):
-            legs.append(t["add_on_sig"])
-        for sig in legs:
-            pd = await get_tx_wallet_delta_lamports(sig, wallet)
-            if pd is None:
-                return
-            partial_delta += pd
-
-        # entry_delta is negative (lamports left wallet). exit/partial positive.
-        net_lamports = entry_delta + partial_delta + exit_delta
-        real_pnl_sol = net_lamports / LAMPORTS_PER_SOL
+        # EMERGENT_CHANGES #5 — every sig the trade ever broadcast is the source of truth (failed rungs pay fees too).
+        sigs = set(t.get("all_sigs") or [])
+        sigs |= {entry_sig, t.get("exit_sig"), t.get("partial_sig"), t.get("add_on_sig"), t.get("flush_addon_sig"),
+                 (t.get("fast_fail_add") or {}).get("sig")}
+        sigs |= set(t.get("partial_sigs") or []) | {a.get("sig") for a in (t.get("adds") or []) if isinstance(a, dict)}
+        sigs |= set(t.get("pending_exit_sigs") or []) | set(t.get("failed_sigs") or [])
+        sigs.discard(None)
+        sigs.discard("")
+        summaries: dict[str, dict] = {}
+        for sig in sorted(sigs):
+            sm = await get_tx_wallet_summary(sig, wallet)
+            if sm is None:
+                if sig == entry_sig or sig == t.get("exit_sig"):
+                    return                                   # a leg that matters is not indexed yet — retry next pass
+                continue                                     # dropped rung that never landed: nothing to count
+            summaries[sig] = sm
+        if entry_sig not in summaries:
+            return
+        entry_delta = summaries[entry_sig]["delta"]
+        exit_delta = summaries.get(t.get("exit_sig") or "", {}).get("delta", 0)
+        partial_delta = sum(sm["delta"] for sg, sm in summaries.items() if sg not in (entry_sig, t.get("exit_sig")) and not sm["failed"])
+        fees_failed = -sum(sm["delta"] for sm in summaries.values() if sm["failed"])
+        rent_locked = sum(sm["rent_created"] for sm in summaries.values() if not sm["failed"])
+        net_lamports = sum(sm["delta"] for sm in summaries.values())          # wallet truth, incl. failed fees + rent
+        trading_lamports = net_lamports + rent_locked                         # rent is refundable → not a trading cost
+        real_pnl_sol = trading_lamports / LAMPORTS_PER_SOL
         real_pnl_usd = real_pnl_sol * sol_price
-        # PnL % off the original buy cost (abs of entry_delta)
-        cost_sol = abs(entry_delta) / LAMPORTS_PER_SOL if entry_delta else 0
+        cost_sol = max(0.0, (abs(entry_delta) - summaries[entry_sig]["rent_created"]) / LAMPORTS_PER_SOL) if entry_delta else 0
         real_pnl_pct = (real_pnl_sol / cost_sol * 100) if cost_sol > 0 else 0.0
-
-        # Ghost-position guard: if the BUY tx only debited the signature fee
-        # (|entry_delta| < ~200k lamports = 0.0002 SOL), the on-chain buy
-        # actually failed (Custom:XXXX / IncorrectProgramId / etc.) but the
-        # bot's send_versioned_tx mis-detected it as success. Don't pollute
-        # PnL stats with "-300%" gas-on-gas rows — flag explicitly.
-        # Real entries cost >= ~$0.04 worth of SOL even at $0.50 trade sizes.
         is_ghost_entry = abs(entry_delta) < 200_000
-
-        # Recompute `entry_price_sol` from REAL on-chain cost. The original
-        # value stored at entry uses quoted sol_in/tokens_out (audit #3) —
-        # off by ~0.5-2% due to priority fee + slippage drift. Backfilling
-        # here means any downstream UI / dashboard read sees the price the
-        # wallet actually paid, not the optimistic pre-trade quote.
         entry_tokens = int(t.get("entry_tokens") or 0)
         real_entry_price = None
         if entry_tokens > 0 and not is_ghost_entry:
-            real_entry_price = (abs(entry_delta) / LAMPORTS_PER_SOL) / entry_tokens
+            real_entry_price = cost_sol / entry_tokens
 
         update = {
+            "wallet_delta_lamports": int(net_lamports),
+            "rent_locked_lamports": int(rent_locked),
+            "fees_failed_lamports": int(fees_failed),
+            "sigs_reconciled": sorted(summaries.keys()),
+            "pnl_provisional": False,
             "real_entry_cost_sol": abs(entry_delta) / LAMPORTS_PER_SOL,
             "real_exit_received_sol": exit_delta / LAMPORTS_PER_SOL,
             "real_partial_received_sol": partial_delta / LAMPORTS_PER_SOL,

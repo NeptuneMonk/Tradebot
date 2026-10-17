@@ -388,7 +388,7 @@ async def wallet_rotate(req: _RotateReq):
         pass
     return {"ok": True, "old_public_key": old_pk, "new_public_key": get_pubkey_str(), "retired_key_file": str(retired), "swept": swept,
             "next": "fund the new address; token accounts left on the retired key can be recovered with that key file; "
-                    "set WALLET_SECRET_B58 in the Published service env so redeploys keep the same wallet"}
+                    "set SOLANA_PRIVATE_KEY in the Published service env so redeploys keep the same wallet"}
 
 
 @api.get("/wallet/export-private-key")
@@ -655,6 +655,28 @@ async def update_config(body: dict = Body(...)):
     cfg.exit_land_rung_s = max(1.0, min(float(cfg.exit_land_rung_s), 10.0))
     cfg.exit_land_budget_s = max(5.0, min(float(cfg.exit_land_budget_s), 60.0))
     cfg.rent_reclaim_min_sol = max(0.002, min(float(cfg.rent_reclaim_min_sol), 1.0))
+    # EMERGENT_CHANGES clamps (#1 exits)
+    cfg.max_exit_slippage_bps = max(100, min(int(cfg.max_exit_slippage_bps), 5000))
+    cfg.exit_max_landed_reverts = max(1, min(int(cfg.exit_max_landed_reverts), 10))
+    cfg.exit_terminal_slippage_bps = max(cfg.max_exit_slippage_bps, min(int(cfg.exit_terminal_slippage_bps), 5000))
+    cfg.hard_stop_extra_pct = max(0.0, min(float(cfg.hard_stop_extra_pct), 50.0))
+    for _k in ("cu_limit_pumpfun_buy", "cu_limit_pumpswap_buy", "cu_limit_pumpfun_sell", "cu_limit_pumpswap_sell"):
+        setattr(cfg, _k, max(40_000, min(int(getattr(cfg, _k)), 1_400_000)))
+    cfg.cu_limit_routed_mult = max(1.05, min(float(cfg.cu_limit_routed_mult), 2.0))
+    cfg.exit_fee_max_pct_of_position = max(0.2, min(float(cfg.exit_fee_max_pct_of_position), 20.0))
+    cfg.entry_fee_max_pct_of_position = max(0.2, min(float(cfg.entry_fee_max_pct_of_position), 20.0))
+    cfg.cost_gate_max_round_trip_pct = max(1.0, min(float(cfg.cost_gate_max_round_trip_pct), 50.0))
+    cfg.buy_fee_ladder_rungs = max(1, min(int(cfg.buy_fee_ladder_rungs), 3))
+    cfg.land_late_watch_s = max(0, min(int(cfg.land_late_watch_s), 120))
+    cfg.fast_fail_add_at_pct = max(0.5, min(float(cfg.fast_fail_add_at_pct), 50.0))
+    cfg.entry_balance_cache_s = max(0, min(int(cfg.entry_balance_cache_s), 60))
+    cfg.rh_sell_fallback_slippage_pct = max(1.0, min(float(cfg.rh_sell_fallback_slippage_pct), 50.0))
+    cfg.rh_protocol_fee_pct = max(0.0, min(float(cfg.rh_protocol_fee_pct), 5.0))
+    cfg.cost_gate_cost_mult = max(1.0, min(float(cfg.cost_gate_cost_mult), 5.0))
+    cfg.cost_gate_failed_tx_allowance_pct = max(0.0, min(float(cfg.cost_gate_failed_tx_allowance_pct), 10.0))
+    cfg.protocol_fee_pct_pumpfun = max(0.0, min(float(cfg.protocol_fee_pct_pumpfun), 5.0))
+    cfg.protocol_fee_pct_pumpswap = max(0.0, min(float(cfg.protocol_fee_pct_pumpswap), 5.0))
+    cfg.max_hold_any_book_s = 0 if int(cfg.max_hold_any_book_s) <= 0 else max(60, min(int(cfg.max_hold_any_book_s), 86400))
     if cfg.daily_kill_switch_usd > 1000:
         cfg.daily_kill_switch_usd = 1000
     if cfg.reentry_max_attempts < 0:
@@ -693,6 +715,7 @@ async def update_config(body: dict = Body(...)):
     cfg.scanner_min_mc_usd_seasoned = max(0.0, min(1e9, cfg.scanner_min_mc_usd_seasoned))
     cfg.scanner_min_mc_usd_new = max(0.0, min(1e9, float(cfg.scanner_min_mc_usd_new)))
     cfg.scanner_max_mc_usd_new = max(0.0, min(1e9, float(cfg.scanner_max_mc_usd_new)))
+    cfg.scanner_max_mc_usd_seasoned = max(0.0, min(1e9, float(cfg.scanner_max_mc_usd_seasoned)))
     cfg.scanner_min_mc_velocity_5m_pct_seasoned = max(-100.0, min(1000.0, cfg.scanner_min_mc_velocity_5m_pct_seasoned))
     cfg.scanner_discovery_max_idle_minutes = max(0, min(1440, cfg.scanner_discovery_max_idle_minutes))
     # Exit-behavior clamps
@@ -727,9 +750,15 @@ async def update_config(body: dict = Body(...)):
     cfg.rh_max_trade_usd = max(0.0, min(100.0, float(cfg.rh_max_trade_usd)))
     cfg.rh_fee_drag_max_pct = max(0.5, min(50.0, float(cfg.rh_fee_drag_max_pct)))
     if cfg.rh_live_trading and not bot_state.config.rh_live_trading:
+        if not os.environ.get("RH_WALLET_PRIVATE_KEY", "").strip():
+            raise HTTPException(409, "refusing to arm RH live trading: set RH_WALLET_PRIVATE_KEY in the service environment "
+                                     "(the current RH key comes from a file inside the container — paper mode only)")
         bot_state.rh_paper.live_kill_tripped = False
         logger.warning("RH LIVE TRADING ENABLED — ETH-quoted PONS curves will be bought with real ETH")
     if cfg.live_trading and not bot_state.config.live_trading:
+        _ok, _why = wallet.live_key_check()
+        if not _ok:
+            raise HTTPException(409, f"refusing to arm Solana live trading: {_why}")
         import wallet_integrity
         integ = await wallet_integrity.check(wallet.get_pubkey_str())
         if not integ["ok"]:
@@ -2235,6 +2264,10 @@ async def launches_unpin(launch_id: str):
 @api.get("/trades/active")
 async def trades_active():
     docs = await db.trades.find({"status": "active"}, {"_id": 0}).sort("entry_time", -1).to_list(100)
+    try:
+        _sol_usd = float(await get_sol_usd_price())
+    except Exception:
+        _sol_usd = 0.0
     # Augment each row with LIVE PnL%: pull cur price from the in-memory
     # slot's `peak_price_sol` (last seen by the monitor) or the slot's
     # recorded current price. For snipes this is the operator's single
@@ -2263,6 +2296,10 @@ async def trades_active():
             pnl_pct = (cur - entry) / entry * 100.0
             d["current_price_sol"] = cur
             d["unrealized_pnl_pct"] = round(pnl_pct, 2)
+            try:
+                d["net_if_sold"] = bot_state.net_if_sold(d, slot, _sol_usd)   # after exit slip + protocol fee + shave + tx fee
+            except Exception as e:
+                logger.debug(f"net_if_sold skipped for {d['mint'][:8]}: {e}")
             d["peak_price_sol"] = slot.get("peak_price_sol") or cur
             if d["peak_price_sol"] > 0:
                 d["drawdown_from_peak_pct"] = round(

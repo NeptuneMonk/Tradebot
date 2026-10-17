@@ -47,7 +47,7 @@ async def _hop_for(base: str, quote: str) -> dict:
     curve_q = str(WSOL) if is_sol_quote((curve or {}).get("quote_mint")) else (curve or {}).get("quote_mint")
     if curve and not curve.get("complete") and curve_q == quote:
         if curve.get("is_mayhem"):
-            raise NotPumpRoutable(f"{base[:8]}… is a mayhem-mode curve (6108)")
+            raise NotPumpRoutable(f"{base[:8]}… is a mayhem-mode curve — the multi-hop builder is not mayhem-ready (direct curve path only)")
         venue = pumpfun.derive_bonding_curve(Pubkey.from_string(base))
         return {"venue": "curve", "base": base, "quote": quote, "addr": venue}
     pool = canonical_pool_with_quote(Pubkey.from_string(base), Pubkey.from_string(quote))
@@ -120,6 +120,9 @@ async def _buyback_ata_ixs(user: Pubkey) -> list[Instruction]:
     return [build_create_ata_ix(user, pumpfun.BREAKING_FEE_RECIPIENTS[0], WSOL, TOKEN_PROGRAM)]
 
 
+LAST_UNITS_CONSUMED: dict[str, int] = {}   # mint → unitsConsumed of the last successful route simulation (EMERGENT_CHANGES #3)
+
+
 async def simulate_out(user: Pubkey, ixs: list[Instruction], cu: int, side: str, mint: str) -> int:
     """Exact route output from an unsigned simulateTransaction: the user's lamport delta (sell, base fee added back)
     or the coin ATA's token delta (buy). pump-amm's return data is not set on every route, so balances are the truth."""
@@ -151,6 +154,10 @@ async def simulate_out(user: Pubkey, ixs: list[Instruction], cu: int, side: str,
     if v.get("err") is not None:
         tail = " | ".join(line for line in (v.get("logs") or [])[-4:])
         raise RuntimeError(f"route simulation failed: {v['err']} {tail}")
+    try:
+        LAST_UNITS_CONSUMED[mint] = int(v.get("unitsConsumed") or 0)
+    except (TypeError, ValueError):
+        pass
     acc = ((v.get("accounts") or [None])[0]) or {}
     if side == "sell":
         post = int(acc.get("lamports") or 0)
@@ -213,3 +220,11 @@ async def sell_ixs(user: Pubkey, mint: str, quote_mint: str, tokens_in: int, min
         build_multi_hop_ix(user, user_in, wsol_ata, metas, tokens_in, min_lamports_out),
         build_close_wsol_ix(user, wsol_ata),
     ], cu_for(route)
+
+
+def cu_from_simulation(mint: str, mult: float, fallback: int = 300_000) -> int:
+    """CU limit for a routed leg: last simulated unitsConsumed × mult (min 80k); `fallback` when no simulation is known."""
+    units = int(LAST_UNITS_CONSUMED.get(mint) or 0)
+    if units <= 0:
+        return int(fallback)
+    return max(80_000, int(units * float(mult)))

@@ -22,6 +22,8 @@ def _state():
     st.stats = {}
     st.active_trades = {}
     st.entered_mints = set()
+    from smart_wallets import SmartWallets
+    st.smart_wallets = SmartWallets(st)
     return st
 
 

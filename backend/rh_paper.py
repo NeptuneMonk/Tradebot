@@ -942,7 +942,7 @@ class RHPaperTrader:
                 if pool:
                     fill = await rh_dex.sell(token, raw, slip, quote=pair)
                 else:
-                    fill = await rh_live.sell(curve, raw, price, slip, token=token)
+                    fill = await rh_live.sell(curve, raw, price, slip, token=token, cfg=cfg)
                 self.stats["live_sells"] = self.stats.get("live_sells", 0) + 1
                 logger.warning(f"rh_live SELL {t.get('symbol')} {token[:10]} {fill['quote_wei'] / 10 ** dec:.5f} {t.get('quote_symbol') or 'ETH'} tx={fill['tx'][:12]} "
                                f"({fill['latency_s']}s){' [pool]' if pool else ''}")

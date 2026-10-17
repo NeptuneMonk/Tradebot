@@ -175,5 +175,5 @@ def add_on_plan(cfg, trade_doc: dict, *, depth_usd: float, exit_slip_bps: int, e
     if size <= 0:
         return None
     q = cost_gate.quote(size_usd=size, r_usd=r_usd, first_target_r=1.0, protocol=protocol, entry_slip_bps=entry_slip_bps,
-                        exit_slip_bps=exit_slip_bps, fee_usd_round_trip=fee_usd_round_trip, ladder=False, depth_usd=depth_usd)
+                        exit_slip_bps=exit_slip_bps, fee_usd_round_trip=fee_usd_round_trip, ladder=False, depth_usd=depth_usd, cfg=cfg)
     return {"size_usd": round(size, 4), **q}

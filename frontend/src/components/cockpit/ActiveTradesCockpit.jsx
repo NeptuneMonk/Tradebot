@@ -79,6 +79,35 @@ function investedParts(t) {
   return { total, remaining, extra, nAdds: adds.length + (fastFail ? 1 : 0) + (flush ? 1 : 0), value, banked, soldCost, title: lines.join("\n") };
 }
 
+function netTitle(n) {
+  if (!n) return "net if sold now: waiting for the first price mark (or pool depth unknown)";
+  const c = n.costs_usd || {};
+  return [
+    `NET IF SOLD NOW — full market sell of the open part, after every cost`,
+    `gross value now ${usd(n.gross_usd)}`,
+    `− exit slippage ${usd(c.slip)} (${n.slip_pct}% impact on ${n.depth_sol} SOL depth, cap ${(n.exit_slip_cap_bps / 100).toFixed(1)}%)`,
+    `− protocol fee ${usd(c.protocol)} (${n.protocol_pct}%)`,
+    `− dust shave ${usd(c.shave)}`,
+    `− sell tx fee + tip ${usd(c.tx_fee)}`,
+    `= net proceeds ${usd(n.net_usd)}`,
+    `− stake in + entry fee ${usd(c.entry_fee)}`,
+    `= net P/L ${n.net_pnl_usd >= 0 ? "+" : "−"}${usd(Math.abs(n.net_pnl_usd))} (${n.net_pnl_pct >= 0 ? "+" : ""}${n.net_pnl_pct}%)`,
+  ].join("\n");
+}
+
+function NetCell({ t }) {
+  const n = t.net_if_sold;
+  if (!n) return <td className="font-mono text-xs text-right text-neutral-600" data-testid={`active-net-${t.mint}`} title={netTitle(null)}>—</td>;
+  const pos = n.net_pnl_usd >= 0;
+  return (
+    <td className="font-mono text-xs text-right whitespace-nowrap" data-testid={`active-net-${t.mint}`} title={netTitle(n)}>
+      <span className={pos ? "text-emerald-300" : "text-red-300"}>{pos ? "+" : "−"}{usd(Math.abs(n.net_pnl_usd))}</span>
+      {n.net_pnl_pct != null && <span className={`ml-1 text-[10px] ${pos ? "text-emerald-400/80" : "text-red-400/80"}`} data-testid={`active-net-pct-${t.mint}`}>{n.net_pnl_pct >= 0 ? "+" : ""}{n.net_pnl_pct.toFixed(1)}%</span>}
+      <span className="ml-1 text-[9px] text-neutral-500" data-testid={`active-net-costs-${t.mint}`}>−{usd((n.gross_usd - n.net_usd) + (n.costs_usd?.entry_fee || 0))} costs</span>
+    </td>
+  );
+}
+
 function Row({ t, onExit, onOpen, onLth, onAdd }) {
   const pnl = t.unrealized_pnl_pct;
   const inv = investedParts(t);
@@ -112,6 +141,7 @@ function Row({ t, onExit, onOpen, onLth, onAdd }) {
         {inv.value != null && <span className={`ml-1 text-[10px] ${inv.value - inv.remaining >= 0 ? "text-emerald-400/80" : "text-red-400/80"}`} data-testid={`active-pnl-usd-${t.mint}`}>{inv.value - inv.remaining >= 0 ? "+" : "−"}{usd(Math.abs(inv.value - inv.remaining))}</span>}
         {t.drawdown_from_peak_pct > 5 && <span className="ml-1 text-[9px] text-neutral-500">↓{t.drawdown_from_peak_pct.toFixed(0)}</span>}
       </td>
+      <NetCell t={t} />
       <td className="font-mono text-[11px] text-neutral-300 pl-4" title={st.hint} data-testid={`active-stage-${t.mint}`}>{st.text}</td>
       <td className="w-20"><span className="block h-1.5 w-16 bg-neutral-900 border border-neutral-800 overflow-hidden"><span className="block h-full bg-emerald-500/80" style={{ width: `${st.pct}%`, transition: "width 400ms ease" }} /></span></td>
       <td className="text-right pr-3 whitespace-nowrap">
@@ -150,14 +180,15 @@ function ActiveTradesCockpit({ trades, onExit, onLth, onAdd }) {
           <thead>
             <tr className="text-[9px] uppercase tracking-[0.2em] text-neutral-500 border-b border-neutral-800">
               <th className="text-left py-2 pl-3 font-normal">book</th><th className="text-left font-normal">symbol</th><th className="text-right font-normal" title="Total $ in the position: initial buy + every manual add / fast-fail add / flush add-on">invested</th><th className="text-right font-normal">unrealized p/l</th>
+              <th className="text-right font-normal" title="What you would actually bank if you market-sold the open part right now: after exit slippage on the pool's current depth, the protocol fee, dust shave, the sell tx fee + tip, and the entry fee already paid. Hover a value for the breakdown.">net if sold</th>
               <th className="text-left pl-4 font-normal">stage</th><th className="font-normal" /><th className="font-normal" />
             </tr>
           </thead>
           <tbody>
-            {trades.length === 0 && <tr><td colSpan="7" className="text-center py-8 text-[10px] uppercase tracking-[0.2em] text-neutral-600">no active positions</td></tr>}
+            {trades.length === 0 && <tr><td colSpan="8" className="text-center py-8 text-[10px] uppercase tracking-[0.2em] text-neutral-600">no active positions</td></tr>}
             {auto.map((t) => <Row key={t.id} t={t} onExit={onExit} onLth={onLth} onAdd={onAdd} onOpen={setDetail} />)}
             {manual.length > 0 && (
-              <tr data-testid="manual-holds-divider"><td colSpan="7" className="py-1 pl-3 text-[9px] uppercase tracking-[0.2em] text-fuchsia-400/80 bg-fuchsia-950/20 border-y border-fuchsia-900/40"
+              <tr data-testid="manual-holds-divider"><td colSpan="8" className="py-1 pl-3 text-[9px] uppercase tracking-[0.2em] text-fuchsia-400/80 bg-fuchsia-950/20 border-y border-fuchsia-900/40"
                 title="Operator buys (Buy Now / Graduate Ladder) and LTH positions. R-only exits (manual) or ✕-only (LTH) — no clock, no momentum kill, not counted toward max positions.">
                 manual holds · {manual.length} · outside max positions{manual.some(isLTH) ? <span className="text-sky-400"> · {manual.filter(isLTH).length} LTH</span> : null}</td></tr>
             )}

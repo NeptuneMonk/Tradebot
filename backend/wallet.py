@@ -11,14 +11,35 @@ from pathlib import Path
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 
-WALLET_PATH = Path(os.environ.get("WALLET_SECRET_PATH", "/app/backend/wallet.json"))
+WALLET_PATH = Path(os.environ.get("WALLET_PATH") or os.environ.get("WALLET_SECRET_PATH") or "/app/backend/wallet.json")
+ENV_KEY_VARS = ("SOLANA_PRIVATE_KEY", "WALLET_SECRET_B58")   # either name; SOLANA_PRIVATE_KEY wins (EMERGENT_CHANGES S)
+
+
+def env_secret() -> str:
+    for k in ENV_KEY_VARS:
+        v = os.environ.get(k, "").strip()
+        if v:
+            return v
+    return ""
+
+
+def key_from_env() -> bool:
+    return bool(env_secret())
+
+
+def live_key_check() -> tuple[bool, str]:
+    """EMERGENT_CHANGES S — live trading needs the key from the environment, never from a file inside the repo.
+    Paper mode works without any key (a throwaway file key is generated)."""
+    if key_from_env():
+        return True, "key from env"
+    return False, ("live trading refused: set SOLANA_PRIVATE_KEY (base58 or JSON byte array) in the service environment — "
+                   f"the current key comes from {WALLET_PATH} (paper mode only)")
 
 
 def _load_or_create_keypair() -> Keypair:
-    # Published/containers: keep the key out of git and out of the ephemeral filesystem — WALLET_SECRET_B58 wins.
-    env_secret = os.environ.get("WALLET_SECRET_B58", "").strip()
-    if env_secret:
-        return Keypair.from_bytes(base58.b58decode(env_secret))
+    # Published/containers: keep the key out of git and out of the ephemeral filesystem — the env key wins.
+    if env_secret():
+        return parse_secret(env_secret())
     if WALLET_PATH.exists():
         with open(WALLET_PATH, "r") as f:
             data = json.load(f)
@@ -55,15 +76,18 @@ def get_secret_b58() -> str:
 
 
 def key_source() -> str:
-    return "env:WALLET_SECRET_B58" if os.environ.get("WALLET_SECRET_B58", "").strip() else f"file:{WALLET_PATH}"
+    for k in ENV_KEY_VARS:
+        if os.environ.get(k, "").strip():
+            return f"env:{k}"
+    return f"file:{WALLET_PATH}"
 
 
 def rotate_keypair() -> tuple[Keypair, Keypair, Path]:
     """Retire the current key file (kept as wallet.json.retired-<ts>, 0600) and hot-swap a fresh keypair.
     Refused when the key comes from the environment — rotate the secret there instead."""
     global _KEYPAIR
-    if os.environ.get("WALLET_SECRET_B58", "").strip():
-        raise RuntimeError("wallet key comes from WALLET_SECRET_B58 — rotate the secret in the service env, not here")
+    if key_from_env():
+        raise RuntimeError(f"wallet key comes from {key_source()} — rotate the secret in the service env, not here")
     old = _KEYPAIR
     retired = WALLET_PATH.with_name(f"{WALLET_PATH.name}.retired-{int(time.time())}")
     if WALLET_PATH.exists():
@@ -97,7 +121,7 @@ def set_keypair(kp: Keypair, *, persist: bool = True) -> tuple[Keypair, Path | N
     global _KEYPAIR
     old = _KEYPAIR
     retired = None
-    if persist and not os.environ.get("WALLET_SECRET_B58", "").strip():
+    if persist and not key_from_env():
         if WALLET_PATH.exists() and str(old.pubkey()) != str(kp.pubkey()):
             retired = WALLET_PATH.with_name(f"{WALLET_PATH.name}.retired-{int(time.time())}")
             WALLET_PATH.rename(retired)
