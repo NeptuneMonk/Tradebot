@@ -123,7 +123,8 @@ def test_curve_buy_with_erc20_quote_approves_the_curve_and_sends_zero_value():
     assert calls["approve"] == (USDG, curve, 12 * 10**6) and calls["send"] == (curve, 0) and set(calls["sim_values"]) == {0}
     assert fill["quote_wei"] == 12 * 10**6 and fill["tokens_raw"] == 10**21 and fill["gas_cost_wei"] == 100
     # fallback estimate when the simulation is unavailable: 12 USDG at 2 USDG/token → 6 tokens (18-dec)
-    assert asyncio.run(rh_live.quote_buy(curve, 12 * 10**6, 2.0, USDG, 6)) == 6 * 10**18
+    # feed-price fallback takes the curve's 1 % quote-side fee off (EMERGENT_CHANGES #11 symmetry): 6 × 0.99
+    assert asyncio.run(rh_live.quote_buy(curve, 12 * 10**6, 2.0, USDG, 6)) == int(6 * 10**18 * 0.99)
 
 
 def test_live_ok_gates_erc20_quotes_behind_the_flag_and_a_price():

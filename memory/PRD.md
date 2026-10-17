@@ -2636,5 +2636,30 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   land_late_watch_s, rh_protocol_fee_pct, rh_sell_fallback_slippage_pct, socials_fetch_blocking`). enabled/live_trading stay OFF.
 - Tests: test_slip_cap (+2), test_stop_layers (4), test_cu_and_fee_caps (5), test_cost_gate_real_fees (4), test_mayhem_builders (2); legacy
   tests updated for new defaults (fast_landing_exit, panic_slip, alerts, runner_book, profitability_refactor, scanner_band_protocol).
-- TODO next: #5 P&L reconciler, #7 idempotency, #8 quote_mint into exit, #9 half-now/half-later, #10 entry latency, #11 RH sell min-out, #12, S.
+- 2026-10-17 (fork, later): ALL remaining chunks DONE — #5/#7/#8 were already in; this pass finished #9/#10/#11/#12/S + "net if sold".
 - Spec file cached at /tmp/changes.md (re-download from the artifact URL if missing).
+
+## 2026-10-17 (fork 2) — EMERGENT_CHANGES batch COMPLETE + "net if sold now" column
+- **#9/#10/#11 config fields** added to `BotConfig` with clamps (`fast_fail_split_enabled=False`, `fast_fail_add_at_pct=5` [0.5–50],
+  `socials_fetch_blocking=False`, `entry_balance_cache_s=10` [0–60], `rh_sell_fallback_slippage_pct=20` [1–50], `rh_protocol_fee_pct=1` [0–5]).
+  User's `bot_config.json` re-imported with `pending_new_fields` merged: 327 applied, **0 clamped, 0 ignored** (all 8 previously-ignored keys now live).
+- **#10**: wallet balance read cached `entry_balance_cache_s` minus SOL committed since (`BotState._bal_cache`); blockhash cache in `landing.py`
+  (`recent_blockhash()`, 2 s background `blockhash_refresher` started in `load()`), `_sign`/`land_tx` use it.
+- **#11**: `rh_live.sell()` → `min_out = quote × (1−fee) × (1−slip)`; on sim revert ONE retry at `max(slip, rh_sell_fallback_slippage_pct)` using a
+  read-only curve re-quote (`quote_sell`) or feed price — **never min-out 0**. `quote_buy` feed fallback also takes the 1 % fee. Tests `test_rh_sell_min_out.py`.
+- **S (secrets)**: `wallet.py` reads `SOLANA_PRIVATE_KEY` (base58 or JSON byte array; `WALLET_SECRET_B58` still accepted) / `WALLET_PATH`.
+  `live_key_check()`: arming `live_trading` → **409** unless the key comes from env; `rh_live_trading` → 409 unless `RH_WALLET_PRIVATE_KEY` set.
+  Startup forces both live flags OFF (persisted) if the env key is missing. Paper mode needs no key. Untracked from git: `wallet.json.retired-*`,
+  `memory/.tok`, `.rh_tok`, `.preview_tok`; `.gitignore` covers `backend/wallet.json*`, `memory/.*tok`, `*.pass`, `*.key`.
+  **Before going live set in Emergent env: `SOLANA_PRIVATE_KEY` (Solana) and `RH_WALLET_PRIVATE_KEY` (Robinhood Chain, only if RH live).**
+- **#12 UI**: `ConfigSyncPanel` Brain-file detection = gzip byte / extension / parsed `schema_version` without `config` (no first-line regex);
+  import result shown in `config-import-report-dialog` with clamped / ignored / changed key lists.
+- **Net if sold now** (user: "shows each position's profit after fees which we keep getting wrong"): `BotState.net_if_sold(d, slot, sol_usd)` =
+  gross mark of the OPEN part − exit slip (impact on current `_depth_sol`, capped at exit tolerance) − protocol fee − dust shave − sell tx fee+tip,
+  then − (stake + entry fee) → `net_pnl_usd/pct` + itemised `costs_usd`. Served on `GET /api/trades/active` and on WS `trade_update` (2 s).
+  Cockpit column "net if sold" (`active-net-<mint>`, hover = full breakdown). Tests `test_net_if_sold.py`.
+- Test hygiene: `/app/memory/.tok` reseeded (401 tests), 4 tests still assert on live config values the user's import changed
+  (dev_watch off → `dark`, `regime_gate_mult` empty, graduated feed off) — environment, not code.
+- Found: paper bankroll was $0 (100 − 146 realised) → every entry refused `r-size`; user chose to reset paper himself and run for hours.
+- Testing: iteration 41 (testing agent) backend 6/6, frontend 3/3; pytest 920+ green except the 4 config-value tests above.
+- Open gap: `net_if_sold` not yet observed on a real open row (no positions at test time) — verify after the user's paper reset.
