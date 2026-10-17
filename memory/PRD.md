@@ -2663,3 +2663,4 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
 - Found: paper bankroll was $0 (100 − 146 realised) → every entry refused `r-size`; user chose to reset paper himself and run for hours.
 - Testing: iteration 41 (testing agent) backend 6/6, frontend 3/3; pytest 920+ green except the 4 config-value tests above.
 - Open gap: `net_if_sold` not yet observed on a real open row (no positions at test time) — verify after the user's paper reset.
+- 2026-10-17 21:05 UTC: paper reset executed by agent at user request (117 closed paper rows wiped, bankroll back to $100); first paper entries within 45 s; `net_if_sold` verified on a real row (MUFFLE: −3.04 %% gross → −6.0 %% net, costs itemised).
