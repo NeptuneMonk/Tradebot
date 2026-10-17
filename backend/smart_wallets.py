@@ -42,7 +42,8 @@ class SmartWallets:
         self.state = state
         self.manual: dict[str, dict] = {}
         self.learned: dict[str, dict] = {}
-        self.fires: deque = deque()
+        self.fires: deque = deque()          # OPENED smart entries (wall-clock) — the per-hour cap counts positions, not attempts
+        self._inflight: set[str] = set()     # mints whose smart entry is being attempted right now
         self.recent: deque = deque(maxlen=RECENT_EVENTS)
         self.stats = {"hits": 0, "fired": 0, "opened": 0, "refused": 0, "parked": 0, "out_of_window": 0, "rate_capped": 0,
                       "graded_buys": 0, "graded_launches": 0, "wins": 0, "misses": 0}
@@ -202,16 +203,20 @@ class SmartWallets:
             return
         if mint in st.active_trades or mint in st._pending_entry_mints or mint in st.entered_mints:
             return
+        if mint in self._inflight:
+            return
         cap = max(0, int(self._cfg("smart_wallet_max_per_hour", 6) or 0))
         while self.fires and now - self.fires[0] > 3600:
             self.fires.popleft()
-        if cap and len(self.fires) >= cap:
+        # cap = OPENED positions in the last hour (+ attempts in flight). Refused attempts (hunt cap, doctor pause, mayhem,
+        # cost gate…) never consume it — otherwise a handful of refusals parked every later smart buy as "rate-cap".
+        if cap and len(self.fires) + len(self._inflight) >= cap:
             self.stats["rate_capped"] += 1
             self._park(b, ev, "rate-cap", now)
             self.recent.appendleft({**ev, "result": "parked: rate-cap"})
             return
         b["_sw_fired"] = now
-        self.fires.append(now)
+        self._inflight.add(mint)
         self.stats["fired"] += 1
         asyncio.create_task(self._fire(mint, b, ev))
 
@@ -228,8 +233,11 @@ class SmartWallets:
             await st._enter(launch, 50, "smart_wallet")
         except Exception as e:
             logger.exception(f"smart wallet entry failed for {mint}: {e}")
+        finally:
+            self._inflight.discard(mint)
         opened = mint in st.active_trades
         if opened:
+            self.fires.append(time.time())
             self.stats["opened"] += 1
             t = (st.active_trades[mint].get("trade") or {})
             t["smart_wallet"] = ev["wallet"]

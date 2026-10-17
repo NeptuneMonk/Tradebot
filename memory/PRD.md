@@ -2693,3 +2693,4 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   4 remaining failures assert on config VALUES the user's import changed (dev_watch off, regime_gate_mult {}, graduated feed off) — environment, not code.
 - Testing agent iteration 42 (backend 7/8 + fixed `/costs/landing` latency date filter); frontend verified by screenshots (panel, note, latency, net column).
 - **GitHub push**: not possible from the agent — user uses "Save to GitHub". Pre-commit hook needs `pre-commit install` locally.
+- 2026-10-17 23:05 UTC: smart-wallet rate cap bug — `fires` counted every ATTEMPT (10 of 12 fires were refusals → cap 6/h saturated → 497 "parked: rate-cap"). Now only OPENED entries (+ in-flight attempts) count; refusals never consume the cap. test_smart_wallets updated.

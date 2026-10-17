@@ -104,9 +104,25 @@ def test_hard_trigger_fires_once_in_window_and_rate_caps():
         assert sw.recent[0]["result"].startswith("parked")                    # stub _enter never opens → parked for a manual buy
         assert "_sw_fired" not in b                                           # refusal re-arms the mint
         b2 = _bucket(now - 60)
-        sw.on_buy("m2", b2, "top", int(1 * LAMPORTS_PER_SOL), 1.0, now + 2)  # rate cap 1/h
+        sw.on_buy("m2", b2, "top", int(1 * LAMPORTS_PER_SOL), 1.0, now + 2)  # m1 was REFUSED → the 1/h cap is still free
         await asyncio.sleep(0)
-        assert len(st.entered) == 1 and sw.stats["rate_capped"] == 1
+        assert len(st.entered) == 2 and sw.stats["rate_capped"] == 0
+        # an OPENED smart entry consumes the cap: the next smart buy is parked as rate-cap
+        orig = st._enter
+
+        async def _enter_opens(launch, risk, action):
+            st.entered.append((launch.mint, action))
+            st.active_trades[launch.mint] = {"trade": {}}
+        st._enter = _enter_opens
+        b3 = _bucket(now - 60)
+        sw.on_buy("m3", b3, "top", int(1 * LAMPORTS_PER_SOL), 1.0, now + 3)
+        await asyncio.sleep(0)
+        assert sw.stats["opened"] == 1 and len(sw.fires) == 1
+        b4 = _bucket(now - 60)
+        sw.on_buy("m4", b4, "top", int(1 * LAMPORTS_PER_SOL), 1.0, now + 4)
+        await asyncio.sleep(0)
+        assert sw.stats["rate_capped"] == 1 and sw.parked(b4)["reason"] == "rate-cap"
+        st._enter = orig
     asyncio.run(run())
 
 
@@ -133,6 +149,7 @@ def test_refused_or_capped_trigger_parks_token_for_manual_buy():
         p = sw.parked(b)
         assert p and p["reason"] == "hunt-cap" and p["label"] == "Aurelius" and 290 < p["left_s"] <= 300
         assert sw.recent[0]["result"] == "parked: hunt-cap"
+        sw.fires.append(now)                                              # one smart position already opened this hour
         b2 = _bucket(now - 60)
         sw.on_buy("m2", b2, "top", int(1 * LAMPORTS_PER_SOL), 1.0, now)
         assert sw.parked(b2)["reason"] == "rate-cap"
