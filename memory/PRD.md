@@ -2664,3 +2664,32 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
 - Testing: iteration 41 (testing agent) backend 6/6, frontend 3/3; pytest 920+ green except the 4 config-value tests above.
 - Open gap: `net_if_sold` not yet observed on a real open row (no positions at test time) — verify after the user's paper reset.
 - 2026-10-17 21:05 UTC: paper reset executed by agent at user request (117 closed paper rows wiped, bankroll back to $100); first paper entries within 45 s; `net_if_sold` verified on a real row (MUFFLE: −3.04 %% gross → −6.0 %% net, costs itemised).
+
+## 2026-10-17 (fork 2, later) — Code review of ba5782d: #1–#10 + follow-ups DONE
+- **#1 key handling**: `_sync_wallet_key` now only PURGES legacy Mongo `wallet_keys` rows (done: 1 row deleted). Live signing key = env only
+  (`SOLANA_PRIVATE_KEY`; RH `RH_WALLET_PRIVATE_KEY`). `POST /wallet/import` → 410 when live or env key set (paper file key only).
+  `/wallet/export-private-key` + `RevealPrivateKey.jsx` REMOVED. Paper wallet default path `/data/paper_wallet.json` (env `WALLET_PATH`, fallback `~/.pumpbot/`);
+  `backend/.env` `WALLET_SECRET_PATH` → `/data/paper_wallet.json` (preview now shows a new throwaway paper address). Tests `test_code_review_ba5782d.py::test_1_*`.
+- **#2** `_is_slip_revert(err, router, protocol)`: 6004 = slippage on PumpSwap (direct or routed); on a plain curve 6004 is MintDoesNotMatch (unchanged).
+- **#3** `rh_dex.sell(cfg=)`: no minOut=0; ONE fresh quote → `quote × (1−fallback%) × (1−fee%)`; re-quote failure → RuntimeError "keeping the position".
+- **#4 paper realism**: `fills.fee_bps(protocol, cfg)` from `protocol_fee_pct_*`; `fills.paper_exit_sol()` applies `paper_extra_slip_bps`;
+  `fills.paper_tx_fee_sol()` = base + prio×CU + Sender tip, plus simulated failed attempts with probability `cost_gate_failed_tx_allowance_pct` (≤2);
+  `paper_entry_latency_ms` sleep + venue re-read before the fill; `Trade.paper_failed_txs`.
+- **#5** Helius URL scrubbed from PRD.md:10; `.gitleaks.toml` (+Solana/Helius/Telegram rules), `.pre-commit-config.yaml`, `.github/workflows/gitleaks.yml`.
+- **#6** emergency PumpSwap sell: `cu_limit("pumpswap","sell")`, `_resolve_fees()` prio, `position_sol` → capped `_exit_fee_ladder`, panic sender mode.
+  Re-entry, flush add-on and runner add-on buys now go through `_live_buy` (fee cap + land_tx + mayhem refusal inside `_live_buy`).
+- **#7** `solana_client.summarize_tx_meta()`: rent from token accounts in post-not-pre (created) / pre-not-post (closed) token balances with ACTUAL lamports
+  (Token-2022 ok), `tokens_delta` for the mint; reconciler: `rent_reclaimed_lamports`, `real_entry_price` from tokens RECEIVED across buy legs,
+  bounded retries (`MAX_SIG_ATTEMPTS=8` → `reconcile_incomplete`), `pnl_reconciled=False` on every close path (parked rows sold later re-read).
+- **#8 verified** (pump docs): buy `max_sol_cost` must cover sol_cost + fee; sell `min_sol_output` is checked post-fee → `pumpfun.quote_buy_tokens/quote_sell_sol`
+  and `pumpswap.*` apply the fee BEFORE slippage; module fee set from config via `BotState._sync_venue_fees()` (load + save_config). Sell quotes return NET sol.
+- **#9** `BotState._entry_epoch(t)` from persisted `entry_time`; reattach + max-hold use it (restart never resets the 900 s clock).
+- **#10** `landing.blockhash_refresher(is_busy)`: 2 s busy / 10 s idle (`BotState._rpc_busy`); `solana_client._count_daily()` logs RPC calls/day (hourly + rollover).
+- **Follow-ups**: `Trade.latency` {t_signal,t_decision,t_sent,t_landed,*_ms} (`_latency_fields`, landing `t_sent/t_landed` in `stats_for`),
+  medians in `GET /api/costs/landing.latency` → Doctor › Forensics › Trading Costs "Entry latency" (`entry-latency-stats`; live: paper fill ≈ 558 ms);
+  `ExecutionSafetyPanel.jsx` (33 knobs, Control › Advanced › Bot Control, `exec-<field>` testids); scorecard counts `exit_failed_terminal` rows + records at the PARKED path;
+  `exit_fee_budget_pct_of_position` (default 5, clamp [exit_fee_max, 25]) caps TOTAL fees across all sell attempts (`_exit_fee_ladder(fee_spent_sol=)`).
+- Tests: `test_code_review_ba5782d.py` (15), `test_review_followups.py` (3); legacy tests updated to the new fee/paper semantics. pytest 935 passed;
+  4 remaining failures assert on config VALUES the user's import changed (dev_watch off, regime_gate_mult {}, graduated feed off) — environment, not code.
+- Testing agent iteration 42 (backend 7/8 + fixed `/costs/landing` latency date filter); frontend verified by screenshots (panel, note, latency, net column).
+- **GitHub push**: not possible from the agent — user uses "Save to GitHub". Pre-commit hook needs `pre-commit install` locally.

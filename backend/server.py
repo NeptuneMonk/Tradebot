@@ -2486,7 +2486,9 @@ async def costs_landing(days: int = 7):
         prios[k] = prios.get(k, 0) + 1
     entry = [float(r["entry_land_s"]) for r in rows if r.get("entry_land_s") is not None]
     # entry-pipeline latency medians (signal → decision → sent → landed) over the last 200 entries of either mode
-    lat_rows = await db.trades.find({"latency.t_decision": {"$ne": None}, "entry_time": {"$gte": since}},
+    _since_dt = datetime.fromisoformat(since)   # entry_time is a BSON Date on most rows (ISO string on a few) — match both
+    lat_rows = await db.trades.find({"latency.t_decision": {"$ne": None},
+                                     "$or": [{"entry_time": {"$gte": _since_dt}}, {"entry_time": {"$gte": since}}]},
                                     {"_id": 0, "latency": 1, "mode": 1}).sort("entry_time", -1).to_list(200)
     import statistics as _stats
 

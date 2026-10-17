@@ -1,0 +1,30 @@
+{
+  "summary": "Iter42: checked the ba5782d code-review fixes. Backend: 7/8 pytest passed. Found and fixed one bug in /api/costs/landing (latency n was always 0). Frontend: only partly tested. Dashboard loads (RUNNING, PAPER, active trades has a NET IF SOLD column). The Wallet card note, entry-latency-stats, active-net and the Control-tab Execution safety panel did NOT get verified: the Live tab had not rendered those cards when the probe ran, and the Control tab is not a role=tab (get_by_text('Control', exact) timed out because the label shows as 'CONTROL').",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/costs/landing", "issue": "FIXED by T1: lat_rows filtered entry_time >= ISO string but entry_time is a BSON Date on most rows, so n was always 0. Now matches both types. After the fix: n=7, paper_decision_to_fill_ms=557, signal_to_decision_ms=23830."},
+      {"endpoint": "hunt book entries (bot.py ~1423-1460, smart-wallet/hunt entry path)", "issue": "Hunt trades entered after 21:50 (e.g. 3ZjRd8BB hunt at 21:51:44) have latency=None. Only the main _enter path (bot.py:4218/4286) stamps latency."},
+      {"endpoint": "POST /api/wallet/import", "issue": "Docstring is stale: it still says the key is persisted to Mongo, which conflicts with the env-only policy."},
+      {"endpoint": "trades docs", "issue": "entry_time is mixed (BSON Date vs ISO string on some rows, e.g. H4K3utyF). exit_time is an ISO string. Range queries on these fields are fragile."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/tests/test_iter42_codereview_fixes.py", "/app/test_reports/pytest/pytest_iter42.xml"],
+  "action_items": [
+    "Add latency stamps on the hunt/smart-wallet entry path",
+    "Normalise the entry_time/exit_time types",
+    "Update the wallet_import docstring",
+    "Next tester: verify the Control tab Execution safety panel UI, wallet-key-source-note, entry-latency-stats and active-net titles"
+  ],
+  "critical_code_review_comments": [
+    "costs/landing date-type mismatch (fixed)",
+    "paper latency: t_sent == t_landed, so sent_to_landed_ms is always 0 for paper; the medians only report decision_to_landed for paper (OK)",
+    "The exit_fee_budget clamp runs after the exit_fee_max clamp: correct order"
+  ],
+  "updated_files": ["/app/backend/server.py (costs_landing lat_rows query)", "/app/tests/test_iter42_codereview_fixes.py"],
+  "success_rate": {"backend": "87.5% (7/8; the failing case is hunt latency missing)", "frontend": "not verified"},
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Results: export-private-key 404. import with confirm=nope gives 400. New wallet pubkey 2eXBKBKp... (not 8h7RH...). Budget clamp 50->25 and 0.5->2.0 both work; restored to 5.0. live_trading true gives 409 mentioning SOLANA_PRIVATE_KEY. There were 0 active trades during the test. All paper history rows since 21:30 have exit_fee_sol>0 (2.2e-05..6.5e-04). Non-hunt rows since 21:46 have latency with decision_to_landed ~550-660ms. The bot had been paused by its own PnL stop at 21:56:22 (before testing); T1 re-started it via POST /api/bot/start, and it is enabled=true in paper mode. To reach the Control tab, click the nav text 'CONTROL'."
+}
