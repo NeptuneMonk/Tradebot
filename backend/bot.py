@@ -2856,6 +2856,21 @@ class BotState:
             return "rpc: simulation failed — " + err[:120]
         return "buy failed: " + err[:140]
 
+    def trend_clusters(self) -> dict:
+        """Same-name clusters over the tracked buckets (1 s cache — the scanner snapshot and every entry share it)."""
+        import trending_names as _tn
+        now = time.time()
+        cache = getattr(self, "_trend_cache", None)
+        if cache and now - cache[0] < 1.0:
+            return cache[1]
+        try:
+            clusters = _tn.build_clusters(self.tracking, self.config, now, set(self.active_trades.keys()))
+        except Exception as e:
+            logger.debug(f"trend clusters failed: {e}")
+            clusters = {}
+        self._trend_cache = (now, clusters)
+        return clusters
+
     async def _refuse(self, mint: str, band: str, reason: str, detail: str):
         """Entry-path refusal AFTER the gates (size dust, zero quote, pod lock, send failure) and the pre-gate holds
         (inventory halt, doctor pause, caps, cooldowns): visible in the skip feed, the skip tally, the candidate row's
@@ -3467,6 +3482,15 @@ class BotState:
                 return
             if v["level"] == "block":
                 logger.warning(f"MANUAL FORCE: creator BLOCK overridden by operator for {launch.mint[:8]} — {' · '.join(v['reasons'])}")
+        # === Trending-name gate — a cloned ticker: only the copy smart wallets are piling into may be bought ===
+        if getattr(self.config, "trend_name_gate_enabled", True) and not (is_manual and launch.mint in getattr(self, "_manual_force", set())):
+            import trending_names as _tn
+            _ok, _why, _cl = _tn.gate(self.trend_clusters(), launch.mint, self.tracking.get(launch.mint), self.config)
+            if not _ok:
+                await self._refuse(launch.mint, self._band_of(launch.mint), "trending-name", _why)
+                return
+            if _cl:
+                logger.info(f"trending name ×{_cl['copies']}: {launch.mint[:8]}… IS the leader ({_tn.leader_label(_cl)}) — entry allowed")
         # Reservation gate — serialized so concurrent scanner attempts can't
         # all race past max_concurrent_positions. Holds the lock only for the
         # gate check + reservation (microseconds), not the tx.

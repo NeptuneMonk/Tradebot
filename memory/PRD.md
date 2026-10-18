@@ -2746,3 +2746,14 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
 - 2026-10-18 **Dead-tape chip actions**: the `DEAD TAPE?` chip now lives on the cockpit row (`cockpit/ActiveTradesCockpit.jsx` — the legacy `ActiveTradesTable.jsx` is unused) with
   `sell` (= existing market exit) and `dismiss` buttons (`dead-tape-sell-<mint>` / `dead-tape-dismiss-<mint>`). `POST /api/trades/{id}/dead-tape/dismiss` clears the flag and stamps
   `dead_tape_dismissed_ts`; `dead_tape_label_step` stays quiet for that dead spell and only re-flags after the tape revives (new buyer / inflow) and dies again. Verified live on a flagged position.
+
+## 2026-10-18 — Trending-name gate (user: "on a night like Fly, go where the smart wallets are — don't buy every copy")
+- `trending_names.py`: normalize ticker (`$`/punct stripped, fallback to name); copies of one name launched inside the band window (max of New/Seasoned max-age) ≥ `trend_name_min_copies`(3) form a cluster.
+  Leader = smart-wallet weight (manual ×2) → fresh smart hits → MC → unique buyers/holders → 2-min inflow. `gate()` refuses on every automatic path (and manual without force):
+  not the leader · leader has < `trend_name_leader_min_smart`(1) smart buys ("buy none of them") · ≥ `trend_name_max_positions`(2) copies already held (ours + leader; the older one leaves on normal exits).
+  Wired in `BotState._enter` after the Creator Verdict (`_refuse(..., "trending-name", …)`); `BotState.trend_clusters()` 1-s cache shared with the scanner snapshot (`annotate` → `trend_copies/trend_leader/trend_is_leader/trend_leader_label`).
+- API `GET /api/trending-names` (strip + knobs). UI: orange **Trending names** strip above the candidates (`trending-names-strip`, per-name row with crown leader + smart/MC/buyers + "holding n"),
+  candidate chips `leader · trending ×N` / `gated · trending ×N` (`scanner-row-trend-leader-<mint>` / `scanner-row-trend-gated-<mint>`), knobs in Execution safety › Trending names.
+- Verified live within a minute: "Attention" ×5 — copies refused ("not the leader — leader is Attention 6jFN… · 1 smart · $8k MC · 114 buyers"), smart-less leader refused ("no smart wallet has bought any copy yet").
+- **Dead-tape SELL = creator loss** (user): `POST /trades/{id}/exit?reason=dead_tape` stamps `dead_tape_sold` (exit reason "manual exit · dead tape"); `creator_verdict` counts those rows as losses even if green. Chip's sell button sends it.
+- Tests `test_trending_names.py` (5) + creator verdict dead-tape-sold case.

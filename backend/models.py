@@ -565,6 +565,11 @@ class BotConfig(BaseModel):
     creator_caution_smart_override_n: int = 3         # … unless ≥ this many smart wallets (learned or manual) bought the launch
     creator_block_manual_smart_override: bool = True  # a smart wallet YOU added may turn a BLOCK into CAUTION (learned ones never)
     creator_dev_out_pct: float = 70.0                 # dev sold ≥ this % of their stake inside the launch window → FAVOR (already out, no later dump); any early selling is a plus, never a penalty
+    # Trending-name gate — a ticker being cloned (≥ N copies inside the band window): buy ONLY the copy smart wallets pile into
+    trend_name_gate_enabled: bool = True
+    trend_name_min_copies: int = 3                    # copies of one name inside the band window before it counts as trending
+    trend_name_leader_min_smart: int = 1              # the leader needs ≥ this many smart-wallet buys before ANY copy is bought
+    trend_name_max_positions: int = 2                 # positions per trending name (ours + the leader); the older one leaves on its normal exits
     creator_greylist_mode: str = "telemetry"   # "telemetry" | "live"
     # Buffer (% below median observed rug) used when the classifier emits a
     # `suggested_exit_pct` for slow_rug / predictable_dump creators. Smaller

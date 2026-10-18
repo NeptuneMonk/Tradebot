@@ -47,6 +47,12 @@ const GROUPS = [
     { key: "rh_protocol_fee_pct", label: "RH curve fee %", type: "float", step: 0.1, hint: "Subtracted from the quote before the min-out tolerance." },
     { key: "rh_sell_fallback_slippage_pct", label: "RH sell fallback slip %", type: "float", step: 1, hint: "ONE retry at this capped slippage when the sell simulation reverts — never min-out 0." },
   ]},
+  { title: "Trending names", fields: [
+    { key: "trend_name_gate_enabled", label: "Trending-name gate", type: "bool", hint: "A ticker cloned ≥ N times inside the band window: buy ONLY the copy smart wallets pile into (leader = smart wallets → MC → buyers)." },
+    { key: "trend_name_min_copies", label: "Copies = trending", type: "int", step: 1, hint: "Same-name launches inside the band window before the name counts as trending." },
+    { key: "trend_name_leader_min_smart", label: "Leader min smart buys", type: "int", step: 1, hint: "The leader needs this many smart-wallet buys before ANY copy is bought. 0 = MC/buyers leader is enough." },
+    { key: "trend_name_max_positions", label: "Max positions per name", type: "int", step: 1, hint: "Ours + the leader; the older copy leaves on its normal exits." },
+  ]},
 ];
 
 function Control({ f, value, onChange }) {

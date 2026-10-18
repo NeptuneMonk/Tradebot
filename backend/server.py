@@ -650,6 +650,9 @@ async def update_config(body: dict = Body(...)):
     cfg.exit_fee_budget_pct_of_position = max(float(cfg.exit_fee_max_pct_of_position), min(float(cfg.exit_fee_budget_pct_of_position), 25.0))
     cfg.creator_min_trades_for_rate = max(1, min(int(cfg.creator_min_trades_for_rate), 50))
     cfg.creator_min_win_rate_pct = max(0.0, min(float(cfg.creator_min_win_rate_pct), 100.0))
+    cfg.trend_name_min_copies = max(2, min(int(cfg.trend_name_min_copies), 50))
+    cfg.trend_name_leader_min_smart = max(0, min(int(cfg.trend_name_leader_min_smart), 20))
+    cfg.trend_name_max_positions = max(1, min(int(cfg.trend_name_max_positions), 10))
     cfg.creator_caution_size_mult = max(0.1, min(float(cfg.creator_caution_size_mult), 1.0))
     cfg.creator_caution_smart_override_n = max(1, min(int(cfg.creator_caution_smart_override_n), 20))
     cfg.creator_dev_out_pct = max(5.0, min(float(cfg.creator_dev_out_pct), 100.0))
@@ -2442,6 +2445,15 @@ async def trades_export_csv(book: str | None = None, mode: str | None = None, da
                               headers={"Content-Disposition": f'attachment; filename="{name}"', "X-Row-Count": str(len(rows))})
 
 
+@api.get("/trending-names")
+async def trending_names_view():
+    """Same-name clusters inside the band window: copies, leader (smart wallets → MC → buyers), what we hold."""
+    import trending_names as _tn
+    cfg = bot_state.config
+    return {"clusters": _tn.strip(bot_state.trend_clusters()),
+            "config": {k: getattr(cfg, k) for k in ("trend_name_gate_enabled", "trend_name_min_copies", "trend_name_leader_min_smart", "trend_name_max_positions")}}
+
+
 @api.post("/trades/{trade_id}/dead-tape/dismiss")
 async def trades_dead_tape_dismiss(trade_id: str):
     """Operator looked at a DEAD TAPE? flag and decided to keep holding: clear it; it only re-flags after the tape revives and dies again."""
@@ -2512,14 +2524,27 @@ async def trades_add_to_position(trade_id: str, body: AddBody):
 
 
 @api.post("/trades/{trade_id}/exit")
-async def trades_manual_exit(trade_id: str):
+async def trades_manual_exit(trade_id: str, reason: str | None = None):
     trade = await db.trades.find_one({"_id": trade_id}, {"_id": 0})
     if not trade:
         raise HTTPException(404, "Trade not found")
     if trade["status"] != "active":
         raise HTTPException(400, "Trade not active")
+    why = "manual exit"
+    if reason == "dead_tape":
+        # operator sold a DEAD TAPE? flag instead of dismissing it → counts as a LOSS on the creator's win rate whatever the P&L
+        why = "manual exit · dead tape"
+        await db.trades.update_one({"_id": trade_id}, {"$set": {"dead_tape_sold": True}})
+        live = bot_state.rh_paper.positions.get(trade["mint"]) if trade.get("chain") == "rh" else bot_state.active_trades.get(trade["mint"])
+        if live and (live.get("trade") or {}).get("id", trade_id) == trade_id:
+            live["trade"]["dead_tape_sold"] = True
+        try:
+            import creator_verdict as _cv
+            _cv.clear_cache(trade.get("creator"))
+        except Exception:
+            pass
     if trade.get("chain") == "rh":
-        await bot_state.rh_paper.exit(trade["mint"], reason="manual exit")
+        await bot_state.rh_paper.exit(trade["mint"], reason=why)
         return {"ok": True}
     mint = trade["mint"]
     slot = bot_state.active_trades.get(mint)
@@ -2535,7 +2560,7 @@ async def trades_manual_exit(trade_id: str):
         # really sells / books the paper fill instead of returning 200 and doing nothing
         logger.warning(f"manual exit for untracked active row {trade.get('symbol')} {mint[:8]}… — rebuilding slot from the doc")
         bot_state.active_trades[mint] = bot_state._slot_from_doc({**trade, "id": trade_id})
-    await bot_state._exit(mint, reason="manual exit")
+    await bot_state._exit(mint, reason=why)
     still = await db.trades.find_one({"_id": trade_id}, {"status": 1})
     if still and still.get("status") == "active":
         if slot is None:

@@ -94,6 +94,10 @@ def test_own_book_win_rate_blocks_after_min_trades_only():
     assert _run(_DB(creator_doc={}, trades=[L, L, L]), BotConfig(creator_min_trades_for_rate=3))["level"] == "block"
     # break-even trades (pnl 0) are neither a win nor a loss
     assert _run(_DB(creator_doc={}, trades=[{"pnl_usd": 0}] * 6), cfg)["level"] == "neutral"
+    # a DEAD TAPE? flag the operator SOLD counts as a loss even when it closed green
+    sold = [{"pnl_usd": 1.0, "dead_tape_sold": True}] * 4 + [W, W]
+    v = _run(_DB(creator_doc={}, trades=sold), cfg)
+    assert v["level"] == "block" and v["own_wins"] == 2 and v["own_losses"] == 4
 
 
 def test_caution_lifted_by_three_smart_wallets_any_kind():

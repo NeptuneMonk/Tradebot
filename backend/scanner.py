@@ -273,6 +273,8 @@ class MomentumScanner:
         cfg = st.config
         now = time.time()
         out: list[dict] = []
+        import trending_names as _tn
+        _clusters = st.trend_clusters() if hasattr(st, "trend_clusters") else {}
         for mint, b in st.tracking.items():
             if mint in st.entered_mints or mint in st.active_trades:
                 continue
@@ -300,6 +302,8 @@ class MomentumScanner:
             _cv = b.get("creator_verdict") or {}
             m["creator_verdict"] = _cv.get("level")
             m["creator_verdict_reasons"] = _cv.get("reasons")
+            if _clusters:
+                _tn.annotate(_clusters, m, b)
             m["protocol"] = b.get("protocol") or "pumpfun"
             m["graduated_at"] = b.get("graduated_at")
             m["usd_market_cap"] = float(b.get("usd_market_cap") or 0.0)

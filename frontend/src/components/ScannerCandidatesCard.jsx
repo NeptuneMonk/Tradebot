@@ -7,6 +7,7 @@ import { TokenDetailDialog } from "./TokenDetailDialog";
 import { VirtualUl } from "./VirtualRows";
 import { api, explainApiError } from "@/lib/api";
 import { VerdictChip } from "./CreatorVerdictPanel";
+import TrendingNamesStrip from "./TrendingNamesStrip";
 import { fillTone, projectedFillTitle } from "@/lib/fillCost";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
@@ -88,6 +89,7 @@ function ScannerCandidatesCard({ candidates, config }) {
         </span>
       </div>
 
+      <TrendingNamesStrip onOpen={(t) => setDetail(t)} />
       <SmartParkedStrip items={candidates.filter((c) => c.smart_parked)} onOpen={(t) => setDetail(t)} />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
@@ -282,6 +284,19 @@ function CandidateRow({ c, passing, onOpen }) {
               </span>
             )}
             {c.creator_verdict && c.creator_verdict !== "neutral" && <VerdictChip level={c.creator_verdict} reasons={c.creator_verdict_reasons} mint={c.mint} />}
+            {c.trend_copies > 0 && (c.trend_is_leader ? (
+              <span className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-emerald-600 text-emerald-300 bg-emerald-950/40"
+                data-testid={`scanner-row-trend-leader-${c.mint}`}
+                title={`Trending name ×${c.trend_copies} — this copy is the LEADER (${c.trend_leader_label}). ${c.trend_leader_smart > 0 ? "The only copy the bot may buy." : "No smart wallet has bought any copy yet — nothing is bought until one does."}`}>
+                leader · trending ×{c.trend_copies}
+              </span>
+            ) : (
+              <span className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-orange-700 text-orange-300 bg-orange-950/40"
+                data-testid={`scanner-row-trend-gated-${c.mint}`}
+                title={`Gated: trending name ×${c.trend_copies} — not the leader. Leader: ${c.trend_leader_label}. Only the leader may be bought (manual buy still works).`}>
+                gated · trending ×{c.trend_copies}
+              </span>
+            ))}
             {c.smart_hits > 0 && (
               <span
                 className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-amber-700 text-amber-300 bg-amber-950/40"

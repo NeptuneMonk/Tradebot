@@ -146,9 +146,10 @@ async def _base_verdict(db, cfg, creator: str) -> dict:
             pass
     # our own book on this creator
     rows = await db.trades.find({"creator": creator, "status": {"$in": ["closed", "exit_failed_terminal"]}},
-                                {"_id": 0, "pnl_usd": 1}).sort("exit_time", -1).limit(50).to_list(50)
-    wins = sum(1 for r in rows if float(r.get("pnl_usd") or 0) > 0)
-    losses = sum(1 for r in rows if float(r.get("pnl_usd") or 0) < 0)
+                                {"_id": 0, "pnl_usd": 1, "dead_tape_sold": 1}).sort("exit_time", -1).limit(50).to_list(50)
+    # a DEAD TAPE? flag the operator chose to SELL (not dismiss) is a loss on this creator whatever the P&L
+    wins = sum(1 for r in rows if float(r.get("pnl_usd") or 0) > 0 and not r.get("dead_tape_sold"))
+    losses = sum(1 for r in rows if float(r.get("pnl_usd") or 0) < 0 or r.get("dead_tape_sold"))
     n = wins + losses
     min_n = int(_cfg(cfg, "creator_min_trades_for_rate", 6))
     min_rate = float(_cfg(cfg, "creator_min_win_rate_pct", 40.0))

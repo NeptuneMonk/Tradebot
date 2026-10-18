@@ -459,9 +459,9 @@ export default function Dashboard() {
       toast.error(`Add refused — ${explainApiError(e, "add failed")}`, { duration: 9000 });
     }
   }, []);
-  const onExitTrade = useCallback(async (id) => {
+  const onExitTrade = useCallback(async (id, reason) => {
     try {
-      await api.exitTrade(id);
+      await api.exitTrade(id, reason);
       toast.success("Manual exit submitted");
     } catch (e) {
       const detail = e?.response?.data?.detail || e?.message || "exit failed";

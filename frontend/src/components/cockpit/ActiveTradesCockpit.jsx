@@ -117,8 +117,8 @@ function DeadTapeChip({ t, onExit, onDismiss }) {
       title={`Held for your decision — ${d.reason || "no new buyer / inflow"}${age != null ? ` · flagged ${age} min ago` : ""}.\nThe bot will NOT close this on dead tape; price exits (SL / TP / trail) still apply.\nSELL = market exit now · DISMISS = keep holding, re-flags only if the tape revives and dies again.`}
       className="ml-1 inline-flex items-center gap-1 px-1 py-0.5 border border-orange-600 text-orange-300 bg-orange-950/40 text-[9px] font-mono align-middle">
       <AlertTriangle className="w-2.5 h-2.5 animate-pulse" /> DEAD TAPE?
-      <button onClick={() => onExit(t.id)} data-testid={`dead-tape-sell-${t.mint}`}
-        className="px-1 border border-red-700 text-red-300 hover:bg-red-950 uppercase tracking-[0.1em] transition-colors duration-100" title="Sell now (market exit)">sell</button>
+      <button onClick={() => onExit(t.id, "dead_tape")} data-testid={`dead-tape-sell-${t.mint}`}
+        className="px-1 border border-red-700 text-red-300 hover:bg-red-950 uppercase tracking-[0.1em] transition-colors duration-100" title="Sell now (market exit) — counts as a LOSS on this creator's win rate">sell</button>
       <button onClick={() => onDismiss(t.id)} data-testid={`dead-tape-dismiss-${t.mint}`}
         className="px-1 border border-neutral-600 text-neutral-300 hover:bg-neutral-800 uppercase tracking-[0.1em] transition-colors duration-100" title="Keep holding — clear the flag">dismiss</button>
     </span>
