@@ -77,6 +77,9 @@ async def sweep(state, now: float | None = None) -> dict:
         tally["matched"] += 1
         hits = b.setdefault("smart_hits", {})
         fresh = [(w, k) for w, k in matches if w not in hits]
+        for w, k in matches:
+            if w in hits and hits[w].get("source") == "holder":
+                hits[w]["ts"] = now                   # still holding → stays a fresh hit
         for w, k in fresh:
             hits[w] = {"ts": now, "kind": k, "sol": None, "source": "holder"}
             tally["new_hits"] += 1

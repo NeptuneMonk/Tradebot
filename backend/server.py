@@ -653,6 +653,9 @@ async def update_config(body: dict = Body(...)):
     cfg.trend_name_min_copies = max(2, min(int(cfg.trend_name_min_copies), 50))
     cfg.trend_name_leader_min_smart = max(0, min(int(cfg.trend_name_leader_min_smart), 20))
     cfg.trend_name_max_positions = max(1, min(int(cfg.trend_name_max_positions), 10))
+    cfg.trend_name_search_window_h = max(0.5, min(float(cfg.trend_name_search_window_h), 48.0))
+    cfg.trend_name_hunt_every_s = max(10, min(int(cfg.trend_name_hunt_every_s), 600))
+    cfg.trend_name_holder_reads = max(0, min(int(cfg.trend_name_holder_reads), 30))
     cfg.creator_smart_min_launches = max(1, min(int(cfg.creator_smart_min_launches), 50))
     cfg.creator_smart_min_rate_pct = max(0.0, min(float(cfg.creator_smart_min_rate_pct), 100.0))
     cfg.smart_holder_check_every_s = max(10, min(int(cfg.smart_holder_check_every_s), 600))
@@ -2467,7 +2470,8 @@ async def trending_names_view():
     import trending_names as _tn
     cfg = bot_state.config
     return {"clusters": _tn.strip(bot_state.trend_clusters()),
-            "config": {k: getattr(cfg, k) for k in ("trend_name_gate_enabled", "trend_name_min_copies", "trend_name_leader_min_smart", "trend_name_max_positions")}}
+            "config": {k: getattr(cfg, k) for k in ("trend_name_gate_enabled", "trend_name_min_copies", "trend_name_leader_min_smart", "trend_name_max_positions",
+                                                     "trend_name_hunt_enabled", "trend_name_search_window_h")}}
 
 
 @api.post("/trades/{trade_id}/dead-tape/dismiss")

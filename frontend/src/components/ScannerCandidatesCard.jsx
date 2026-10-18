@@ -284,6 +284,13 @@ function CandidateRow({ c, passing, onOpen }) {
               </span>
             )}
             {c.creator_verdict && c.creator_verdict !== "neutral" && <VerdictChip level={c.creator_verdict} reasons={c.creator_verdict_reasons} mint={c.mint} />}
+            {c.smart_holders > 0 && (
+              <span className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-amber-700 text-amber-200 bg-amber-950/40"
+                data-testid={`scanner-row-smart-holders-${c.mint}`}
+                title={`${c.smart_holders} smart wallet${c.smart_holders !== 1 ? "s" : ""} found among the token's HOLDERS (DAS holder read ∩ your smart-wallet list) — counts like a tape hit`}>
+                smart holders ×{c.smart_holders}
+              </span>
+            )}
             {c.creator_smart && (
               <span className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-violet-700 text-violet-300 bg-violet-950/40"
                 data-testid={`scanner-row-smart-magnet-${c.mint}`}

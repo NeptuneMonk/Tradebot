@@ -111,6 +111,7 @@ def strip(clusters: dict[str, dict]) -> list[dict]:
     for c in clusters.values():
         L = c["leader_row"]
         out.append({"key": c["key"], "copies": c["copies"], "smart_total": c["smart_total"], "held": c["held"],
+                    "wide": bool(c.get("wide")), "window_h": c.get("window_h"), "verdict": c.get("verdict"),
                     "leader": {k: L[k] for k in ("mint", "symbol", "name", "smart_total", "smart_manual", "mc_usd", "buyers", "age_s")},
                     "members": [{k: r[k] for k in ("mint", "symbol", "smart_total", "mc_usd", "buyers", "held")} for r in c["members"][:8]]})
     out.sort(key=lambda x: (x["smart_total"], x["copies"]), reverse=True)

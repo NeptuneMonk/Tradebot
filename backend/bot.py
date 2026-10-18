@@ -186,6 +186,9 @@ class BotState:
         # of greylist launches can't blow through the wallet. Cleared by
         # `_gc_greylist_snipe_counter` every minute.
         self._greylist_snipe_fires: list[float] = []
+        self._trend_wide: dict[str, dict] = {}          # trending-name 4 h wide search results per name key
+        self._trend_hunt_last: dict[str, float] = {}
+        self._trend_entered: dict[str, float] = {}
         self.scanner = MomentumScanner(self)
         self.discovery = PumpfunDiscovery(self)
         self.rh_discovery = RHDiscovery(self)
@@ -1668,6 +1671,8 @@ class BotState:
         pinned mints are always in scope. Discovery calls this before seeding so out-of-scope tokens never enter."""
         if b.get("pinned") or mint in self.active_trades or mint in self._pending_entry_mints or self.smart_wallets.parked(b, now):
             return None
+        if now - float(b.get("trend_leader_ts") or 0) < 600:
+            return None                      # trending top dog seeded from the 4 h wide search: stays while the hunt is live
         cfg = self.config
         if b.get("rep_blocked"):
             return b["rep_blocked"]
@@ -2869,6 +2874,9 @@ class BotState:
             return cache[1]
         try:
             clusters = _tn.build_clusters(self.tracking, self.config, now, set(self.active_trades.keys()))
+            if getattr(self, "_trend_wide", None):
+                import trending_hunt
+                clusters = trending_hunt.overlay(clusters, self._trend_wide, now)
         except Exception as e:
             logger.debug(f"trend clusters failed: {e}")
             clusters = {}
@@ -3355,6 +3363,47 @@ class BotState:
             logger.exception(f"greylist_snipe failed for {launch.mint}: {e}")
 
     # ---------- Entry / exit (live + paper) ----------
+    async def seed_untracked(self, mint: str, why_seed: str = "manual buy"):
+        """Seed a temp tracker bucket for a mint the scanner does not track (curve state or PumpSwap pool from chain).
+        Returns the bucket, or an error string. Used by manual buys and the trending-name hunt (4 h wide search)."""
+        try:
+            Pubkey.from_string(mint)
+        except Exception:
+            return "not a valid Solana mint address"
+        # 1) still on the Pump.fun curve (scanner evicted it or the pod restarted) → seed a curve bucket from chain
+        try:
+            curve = await asyncio.wait_for(pumpfun.fetch_bonding_curve_state(mint), timeout=8.0)
+        except Exception:
+            curve = None
+        pool = None
+        if not curve or curve.get("complete"):
+            # 2) graduated → PumpSwap pool
+            try:
+                pool = await asyncio.wait_for(pumpswap.find_pool_for_mint(mint), timeout=8.0)
+            except Exception:
+                pool = None
+            if not pool:
+                why = ("bonding curve is complete (graduated) but no PumpSwap pool found yet — migration in progress, retry in a minute"
+                       if curve else "no Pump.fun bonding curve and no PumpSwap pool found for this mint — not a Pump token or RPC lookup failed")
+                return f"mint not tracked (scanner no longer sees it): {why}"
+        doc = await self.db.launches.find_one({"mint": mint}, {"_id": 0, "creator": 1, "name": 1, "symbol": 1, "id": 1, "bonding_curve": 1}) or {}
+        on_curve = pool is None
+        real_sol = (curve or {}).get("real_sol_reserves", 0) / LAMPORTS_PER_SOL if on_curve else 0.0
+        b = self.tracking[mint] = {
+            "launch_id": doc.get("id"), "creator": doc.get("creator") or "", "start": time.time(),
+            "protocol": "pumpfun" if on_curve else "pumpswap", "pumpswap_pool": pool,
+            "quote_mint": None if is_sol_quote((curve or {}).get("quote_mint")) else (curve or {}).get("quote_mint"),
+            "graduated_at": None if on_curve else time.time(), "buyers": set(), "buy_events": deque(maxlen=EVENT_KEEP),
+            "sol_inflow_lamports": int(real_sol * LAMPORTS_PER_SOL) if on_curve else 0,
+            "buy_count": None, "curve_fill_pct": min(100.0, real_sol / 85.0 * 100.0) if on_curve else 100.0,
+            "social_score": 0, "project_score": 0, "project_flags": {},
+            "last_persist": 0.0, "name": doc.get("name"), "symbol": doc.get("symbol"), "creator_rugs": 0, "first_seen_price_sol": 0.0,
+            "last_price_sol": 0.0, "price_samples": deque(maxlen=120), "last_price_sample_ts": 0.0,
+            "scanner_eligible": False, "scanner_last_attempt": 0.0, "manual_seed": True, "seed_reason": why_seed,
+        }
+        logger.info(f"{why_seed} {mint[:8]}…: re-seeded untracked mint from chain ({'curve' if on_curve else 'pumpswap pool'})")
+        return b
+
     async def manual_enter(self, mint: str, as_runner: bool = False, force: bool = False) -> dict:
         self._manual_force = getattr(self, "_manual_force", set())
         if force:
@@ -3368,42 +3417,9 @@ class BotState:
         `as_runner` (operator flag, default off) converts the fill straight into the runner book."""
         b = self.tracking.get(mint)
         if not b:
-            try:
-                Pubkey.from_string(mint)
-            except Exception:
-                return {"ok": False, "reason": "not a valid Solana mint address"}
-            # 1) still on the Pump.fun curve (scanner evicted it or the pod restarted) → seed a curve bucket from chain
-            try:
-                curve = await asyncio.wait_for(pumpfun.fetch_bonding_curve_state(mint), timeout=8.0)
-            except Exception:
-                curve = None
-            pool = None
-            if not curve or curve.get("complete"):
-                # 2) graduated → PumpSwap pool
-                try:
-                    pool = await asyncio.wait_for(pumpswap.find_pool_for_mint(mint), timeout=8.0)
-                except Exception:
-                    pool = None
-                if not pool:
-                    why = ("bonding curve is complete (graduated) but no PumpSwap pool found yet — migration in progress, retry in a minute"
-                           if curve else "no Pump.fun bonding curve and no PumpSwap pool found for this mint — not a Pump token or RPC lookup failed")
-                    return {"ok": False, "reason": f"mint not tracked (scanner no longer sees it): {why}"}
-            doc = await self.db.launches.find_one({"mint": mint}, {"_id": 0, "creator": 1, "name": 1, "symbol": 1, "id": 1, "bonding_curve": 1}) or {}
-            on_curve = pool is None
-            real_sol = (curve or {}).get("real_sol_reserves", 0) / LAMPORTS_PER_SOL if on_curve else 0.0
-            b = self.tracking[mint] = {
-                "launch_id": doc.get("id"), "creator": doc.get("creator") or "", "start": time.time(),
-                "protocol": "pumpfun" if on_curve else "pumpswap", "pumpswap_pool": pool,
-                "quote_mint": None if is_sol_quote((curve or {}).get("quote_mint")) else (curve or {}).get("quote_mint"),
-                "graduated_at": None if on_curve else time.time(), "buyers": set(), "buy_events": deque(maxlen=EVENT_KEEP),
-                "sol_inflow_lamports": int(real_sol * LAMPORTS_PER_SOL) if on_curve else 0,
-                "buy_count": None, "curve_fill_pct": min(100.0, real_sol / 85.0 * 100.0) if on_curve else 100.0,
-                "social_score": 0, "project_score": 0, "project_flags": {},
-                "last_persist": 0.0, "name": doc.get("name"), "symbol": doc.get("symbol"), "creator_rugs": 0, "first_seen_price_sol": 0.0,
-                "last_price_sol": 0.0, "price_samples": deque(maxlen=120), "last_price_sample_ts": 0.0,
-                "scanner_eligible": False, "scanner_last_attempt": 0.0, "manual_seed": True,
-            }
-            logger.info(f"manual buy {mint[:8]}…: re-seeded untracked mint from chain ({'curve' if on_curve else 'pumpswap pool'})")
+            b = await self.seed_untracked(mint, "manual buy")
+            if isinstance(b, str):
+                return {"ok": False, "reason": b}
         if mint in self.active_trades:
             return {"ok": False, "reason": "already in an active position"}
         if self.kill_switch_tripped:
@@ -4343,7 +4359,7 @@ class BotState:
             dev_watch=action == "dev_watch",
             rent_locked_sol=0.00204 * (2 if protocol == "pumpswap" else 1),
             all_sigs=self._take_sigs(launch.mint),
-            smart_wallet=bucket.get("smart_trigger_wallet") if action in ("smart_wallet", "manual") else None,
+            smart_wallet=bucket.get("smart_trigger_wallet") if action in ("smart_wallet", "manual", "trending_leader") else None,
             smart_wallet_kind=((bucket.get("smart_hits") or {}).get(bucket.get("smart_trigger_wallet") or "") or {}).get("kind") if action in ("smart_wallet", "manual") else None,
             **fill_cost,
             **plan["trade_fields"],

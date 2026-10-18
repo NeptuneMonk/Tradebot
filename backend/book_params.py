@@ -15,7 +15,7 @@ RUNNER_MULT_CAP = 2.0                          # the runner (HARVEST) is the onl
 ALL_BOOKS = BOOKS + ("runner",)                # + runner: promotion-only, never opened cold, never Doctor-tuned
 SIZE_KEYS = {"scalp": "book_scalp_size_mult", "hunt": "book_hunt_size_mult", "rh_pons": "book_rh_size_mult",
              "runner": "book_runner_size_mult"}
-HUNT_ACTIONS = {"greylist_snipe", "reentry", "smart_wallet"}
+HUNT_ACTIONS = {"greylist_snipe", "reentry", "smart_wallet", "trending_leader"}
 EXIT_PARAMS = ("stop_loss_pct", "target_r", "trailing_stop_pct", "trailing_arm_pct", "hold_max_seconds",
                "ladder_1r_sell_pct", "ladder_2r_sell_pct", "take_profit_pct")
 RUNNER_PARAMS = ("add_on_r", "giveback_pct", "dead_s", "grad_grace_s")

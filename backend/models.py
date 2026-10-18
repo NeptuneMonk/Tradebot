@@ -574,6 +574,10 @@ class BotConfig(BaseModel):
     trend_name_min_copies: int = 3                    # copies of one name inside the band window before it counts as trending
     trend_name_leader_min_smart: int = 1              # the leader needs ≥ this many smart-wallet buys before ANY copy is bought
     trend_name_max_positions: int = 2                 # positions per trending name (ours + the leader); the older one leaves on its normal exits
+    trend_name_hunt_enabled: bool = True              # wide-search a trending ticker OUTSIDE the band time gates and enter its top dog
+    trend_name_search_window_h: float = 4.0           # how far back the wide search looks for copies of the name
+    trend_name_hunt_every_s: int = 20                 # per-name wide-search cadence
+    trend_name_holder_reads: int = 8                  # top copies by MC that get a smart-wallet holder read (DAS) per search
     creator_greylist_mode: str = "telemetry"   # "telemetry" | "live"
     # Buffer (% below median observed rug) used when the classifier emits a
     # `suggested_exit_pct` for slow_rug / predictable_dump creators. Smaller

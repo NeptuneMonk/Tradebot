@@ -299,6 +299,7 @@ class MomentumScanner:
             m["discovered"] = bool(b.get("discovered"))
             m["graduated_feed"] = bool(b.get("graduated_feed"))
             m["smart_hits"] = st.smart_wallets.fresh_hits(b, now) if b.get("smart_hits") else 0
+            m["smart_holders"] = sum(1 for h in (b.get("smart_hits") or {}).values() if h.get("source") == "holder")
             _cv = b.get("creator_verdict") or {}
             m["creator_verdict"] = _cv.get("level")
             m["creator_verdict_reasons"] = _cv.get("reasons")
@@ -442,6 +443,10 @@ class MomentumScanner:
                 if _hs is None or _hs.done():
                     import smart_holders
                     self._holder_sweep = asyncio.create_task(smart_holders.sweep(st, now))
+                _th = getattr(self, "_trend_hunt", None)
+                if _th is None or _th.done():
+                    import trending_hunt
+                    self._trend_hunt = asyncio.create_task(trending_hunt.run(st, now))
                 self.heartbeat["stage"] = "prerank"
                 # Cooldown is only applied AFTER an entry tx is actually
                 # attempted (see below). Pre-_enter gate failures shouldn't

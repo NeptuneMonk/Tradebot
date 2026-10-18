@@ -58,6 +58,10 @@ const GROUPS = [
     { key: "trend_name_min_copies", label: "Copies = trending", type: "int", step: 1, hint: "Same-name launches inside the band window before the name counts as trending." },
     { key: "trend_name_leader_min_smart", label: "Leader min smart buys", type: "int", step: 1, hint: "The leader needs this many smart-wallet buys before ANY copy is bought. 0 = MC/buyers leader is enough." },
     { key: "trend_name_max_positions", label: "Max positions per name", type: "int", step: 1, hint: "Ours + the leader; the older copy leaves on its normal exits." },
+    { key: "trend_name_hunt_enabled", label: "Hunt the top dog", type: "bool", hint: "When a name trends, wide-search every copy of the ticker from the last N hours (outside the band time gates), rank them (smart wallets → MC → 1h buys → holders) and enter ONLY the top dog." },
+    { key: "trend_name_search_window_h", label: "Wide-search window (h)", type: "float", step: 0.5 },
+    { key: "trend_name_hunt_every_s", label: "Re-search every (s)", type: "int", step: 10 },
+    { key: "trend_name_holder_reads", label: "Holder reads per search", type: "int", step: 1, hint: "Top copies by MC that get a smart-wallet holder read (DAS) each search." },
   ]},
 ];
 

@@ -2779,3 +2779,14 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   seasoned band 6–60 min — NOT the 2-hour-old original; 107 LUNA clones launched in 3 h).
 - Bug fixed: dead-tape label persistence used `asyncio.create_task(motor_future)` → TypeError that aborted `_run_ladder` on the tick the flag was set (bot.py + rh_paper.py) → `ensure_future`.
 - Tests `test_smart_holders.py` (3).
+
+## 2026-10-18 — Trending top dog (4 h wide search) + smart-holder count chip
+- User: "only enter the top dog — search the ticker outside the time gate, 4 h window". `trending_hunt.py`: when a name trends (in-band cluster), every `trend_name_hunt_every_s`(20) the name is
+  wide-searched: Mongo `launches` (symbol/name regex, last `trend_name_search_window_h`=4 h) ∪ tracked buckets → DexScreener batch (MC, 1 h buys/vol/change, liq) → DAS smart-holder reads for the
+  top `trend_name_holder_reads`(8) by MC → rank smart (manual ×2) → MC → 1 h buys → holders. Wide view stored on `BotState._trend_wide` and **overlaid** on `trend_clusters()` so the gate,
+  strip and chips all point at the top dog. Top dog with ≥ min smart holders, not held, cap not used → seeded if untracked (`BotState.seed_untracked`, refactored out of `manual_enter`;
+  `scope_reason` keeps `trend_leader_ts` buckets 10 min) → `_enter(..., "trending_leader")` (HUNT book; Creator Verdict / cost gate / audits still apply).
+  Verified live: "trending top dog [spesh ×21 in 4h]: Spesh Gr1viw1F… 1 smart · $7,676 MC · 679 buys/1h · 7 min old — entering" → refused by creator BLOCK (blacklisted) — correct.
+- Strip rows show `top dog · 4h` tag, copies "in 4h", and the hunt verdict (ENTERED / waiting for smart holders / refused: …). Knobs in Execution safety › Trending names.
+- Candidate chip `smart holders ×N` (`scanner-row-smart-holders-<mint>`): count of smart wallets among the token's holders (holder-sourced hits; ts refreshed while they still hold).
+- Tests `test_trending_hunt.py` (3). NOTE: backend hot-reload on test-file edits resets in-memory wide views.
