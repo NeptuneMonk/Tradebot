@@ -996,14 +996,19 @@ class BotState:
         cache = getattr(self, "_pool_map", None)
         if cache is None or now - cache[0] > 2.0:
             m: dict[str, tuple[str, str | None]] = {}
+
+            def _q(p: str, *cands):
+                # the pool's own static quote_mint (read once from chain) wins — a missing quote must never be mistaken for SOL
+                st = pumpswap.pool_static(p) or {}
+                return st.get("quote_mint") or next((c for c in cands if c), None)
             for mint, b in self.tracking.items():
                 if b.get("pumpswap_pool"):
-                    m[b["pumpswap_pool"]] = (mint, b.get("quote_mint"))
+                    m[b["pumpswap_pool"]] = (mint, _q(b["pumpswap_pool"], b.get("quote_mint")))
             for mint, slot in self.active_trades.items():
                 t = slot.get("trade") or {}
                 p = slot.get("pumpswap_pool") or t.get("pumpswap_pool")
                 if p:
-                    m[p] = (mint, t.get("quote_mint") or (self.tracking.get(mint) or {}).get("quote_mint"))
+                    m[p] = (mint, _q(p, t.get("quote_mint"), (self.tracking.get(mint) or {}).get("quote_mint")))
             cache = self._pool_map = (now, m)
         return cache[1].get(pool)
 

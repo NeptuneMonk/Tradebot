@@ -141,3 +141,22 @@ def test_bot_pool_resolver_maps_tracked_and_held_pools():
     assert st._resolve_pumpswap_pool(POOL) == (MINT, None)
     assert st._resolve_pumpswap_pool(held_pool) == (held_mint, "So11111111111111111111111111111111111111112")
     assert st._resolve_pumpswap_pool("nope") is None
+
+
+def test_non_sol_quoted_pool_prints_never_price_as_sol():
+    """Graduated coins paired with USDC / PUMP: raw quote reserves must not be read as lamports (fake +12000 % TP)."""
+    from pumpswap_feed import to_trade_data
+    from quote_mints import quote_book, WSOL
+    ev = {"pool": "P", "user": "U", "is_buy": True, "base_amount": 1_000_000, "quote_amount": 5_000_000,
+          "pool_base_reserves": 800_000_000_000, "pool_quote_reserves": 40_000_000_000, "timestamp": 1}
+    sol = to_trade_data(ev, "M", WSOL)
+    assert sol["virtual_sol_reserves"] == 40_000_000_000 and sol["sol_amount"] == 5_000_000 and "quote_amount" not in sol
+    usdc = to_trade_data(ev, "M", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+    assert usdc["virtual_sol_reserves"] == 0 and usdc["sol_amount"] == 0            # unpriced → no price, no fast-exit tick
+    assert usdc["virtual_quote_reserves"] == 40_000_000_000 and usdc["quote_amount"] == 5_000_000
+    quote_book.rates["EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"] = {"lamports_per_raw": 5.0, "symbol": "USDC"}
+    try:
+        norm = quote_book.normalize(dict(usdc))
+        assert norm["virtual_sol_reserves"] == 200_000_000_000 and norm["sol_amount"] == 25_000_000 and norm["quote_priced"] is True
+    finally:
+        quote_book.rates.pop("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", None)

@@ -2812,3 +2812,8 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   CHAIN price clears the take-profit level; rejected tick → stat `tp_ticks_rejected`, warning log, `_last_sane_price_sol` / `_last_price_sol` / peak reset to chain. Unreadable chain →
   trust the tick only when ≤ 2× the TP distance. 1 read / s / position. Knob `tp_chain_confirm_enabled` (Execution safety). Tests `test_tp_chain_confirm.py` (3).
 - Root source of the corrupt ticks is not identifiable from Preview logs (trades were in Published); the guard makes the symptom impossible regardless of source.
+- 2026-10-18 **Root cause found (user: "they may be graduated tokens")**: `pumpswap_feed.to_trade_data` put a non-SOL-quoted pool's RAW quote reserves (USDC / PUMP / … pairs on graduated
+  coins) into `virtual_sol_reserves`, and `QuoteBook.normalize` could not convert because the `quote_*` keys were absent → tape price ≈ SOL/USD× too high (Perro ×125) → fake TP.
+  Fix: non-SOL quote → `sol_amount`/`virtual_sol_reserves` = 0 and the raw values go to `quote_amount`/`virtual_quote_reserves`/`real_quote_reserves` for `normalize` (unpriced → no price, no tick).
+  `_resolve_pumpswap_pool` now prefers the pool's on-chain static `quote_mint` (`pumpswap.pool_static`) so a missing quote is never mistaken for SOL. Test in `test_pumpswap_dead_tape.py`.
+  The on-chain TP confirm stays as the backstop.

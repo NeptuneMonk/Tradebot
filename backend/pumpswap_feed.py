@@ -18,6 +18,7 @@ import time
 import base58
 
 from pumpswap import PUMPSWAP_PROGRAM_ID
+from quote_mints import is_sol_quote
 
 logger = logging.getLogger("pumpswap_feed")
 
@@ -54,11 +55,18 @@ def parse_amm_event(raw: bytes) -> dict | None:
 
 
 def to_trade_data(ev: dict, mint: str, quote_mint: str | None = None) -> dict:
-    """Shape an AMM event like a curve TradeEvent so bot.on_trade / smart_wallets / stream_floor need no venue branches."""
-    return {"mint": mint, "sol_amount": ev["quote_amount"], "token_amount": ev["base_amount"], "is_buy": ev["is_buy"],
-            "user": ev["user"], "timestamp": ev["timestamp"], "virtual_sol_reserves": ev["pool_quote_reserves"],
-            "virtual_token_reserves": ev["pool_base_reserves"], "venue": "pumpswap", "pool": ev["pool"],
-            **({"quote_mint": quote_mint} if quote_mint else {})}
+    """Shape an AMM event like a curve TradeEvent so bot.on_trade / smart_wallets / stream_floor need no venue branches.
+    Non-SOL-quoted pools (USDC / PUMP / … pairs on graduated coins): the reserves are RAW quote units, so they go into the
+    quote_* fields (sol_* = 0) for QuoteBook.normalize() to convert — never into virtual_sol_reserves, which priced a
+    USDC-quoted pool ~SOL/USD× too high and fired +300 %…+12000 % fake take-profits."""
+    sol_quote = quote_mint is None or is_sol_quote(quote_mint)
+    td = {"mint": mint, "sol_amount": ev["quote_amount"] if sol_quote else 0, "token_amount": ev["base_amount"], "is_buy": ev["is_buy"],
+          "user": ev["user"], "timestamp": ev["timestamp"], "virtual_sol_reserves": ev["pool_quote_reserves"] if sol_quote else 0,
+          "virtual_token_reserves": ev["pool_base_reserves"], "venue": "pumpswap", "pool": ev["pool"]}
+    if not sol_quote:
+        td.update({"quote_mint": quote_mint, "quote_amount": ev["quote_amount"], "virtual_quote_reserves": ev["pool_quote_reserves"],
+                   "real_quote_reserves": ev["pool_quote_reserves"]})
+    return td
 
 
 class PumpSwapFeed:
