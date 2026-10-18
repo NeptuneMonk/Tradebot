@@ -2319,6 +2319,11 @@ class BotState:
         if d.kind is None:
             return False
         kind = "sl" if ("stop-loss" in d.reason or "ladder stop" in d.reason) else "tp" if "target" in d.reason else "trail" if "trail" in d.reason else None
+        if kind == "tp" and tag.strip() == "[fast]" and bool(getattr(cfg, "tp_chain_confirm_enabled", True)):
+            # a tape tick said "take-profit" — confirm on chain before selling: corrupt / foreign-pool prints have fired
+            # +300 %…+12000 % "take-profits" that filled at −3 %…−9 % (2026-10-18 trade history)
+            if not await self._confirm_tp_on_chain(mint, slot, cur_price_sol, pct):
+                return False
         if kind and self._buy_momentum_holds(mint, slot, kind, pct):
             return False
         if kind and d.kind == "exit" and self._flush_holds_sol(mint, slot, kind, pct, cur_price_sol):
@@ -2912,6 +2917,48 @@ class BotState:
 
     def _band_of(self, mint: str) -> str:
         return "seasoned" if (self.tracking.get(mint) or {}).get("protocol") == "pumpswap" else "new"
+
+    async def _confirm_tp_on_chain(self, mint: str, slot: dict, tick_px: float, tick_pct: float) -> bool:
+        """Fast-path take-profit guard: re-read the curve / pool and only sell when the CHAIN price also clears the
+        take-profit level. A rejected tick resets the sanity baseline and the peak to the chain price."""
+        now = time.time()
+        if now - float(slot.get("_tp_confirm_ts") or 0) < 1.0:
+            return False                                   # one read per second per position; the next tick re-asks
+        slot["_tp_confirm_ts"] = now
+        t = slot.get("trade") or {}
+        entry = float(t.get("entry_price_sol") or 0)
+        if entry <= 0:
+            return True
+        lv = exits.levels(self.config, slot)
+        tp_pct = float(lv.get("take_profit_pct") or 0)
+        px = None
+        try:
+            protocol = slot.get("protocol") or t.get("protocol") or "pumpfun"
+            if protocol == "pumpswap":
+                pool = slot.get("pumpswap_pool") or t.get("pumpswap_pool") or (self.tracking.get(mint) or {}).get("pumpswap_pool") or ""
+                st = await pumpswap.fetch_pool_state(pool) if pool else None
+                px = pumpswap.price_sol_per_raw_token(st) if st else None
+            else:
+                st = await pumpfun.fetch_bonding_curve_state(mint)
+                if st and not st.get("complete") and st["virtual_token_reserves"] > 0:
+                    px = st["virtual_sol_reserves"] / st["virtual_token_reserves"] / LAMPORTS_PER_SOL
+        except Exception as e:
+            logger.debug(f"tp chain confirm read failed {mint[:8]}: {e}")
+        if not px or px <= 0:
+            # unreadable: trust the tick only when it is not absurd (≤ 2× the take-profit distance)
+            return tp_pct <= 0 or tick_pct <= 2.0 * tp_pct
+        chain_pct = (px - entry) / entry * 100.0
+        if tp_pct > 0 and chain_pct < tp_pct:
+            self.stats["tp_ticks_rejected"] = self.stats.get("tp_ticks_rejected", 0) + 1
+            logger.warning(f"TP tick REJECTED {t.get('symbol')} {mint[:8]}…: tape {tick_px:.3e} (+{tick_pct:.1f} %) but chain {px:.3e} "
+                           f"({chain_pct:+.1f} %) is under the +{tp_pct:g} % target — no sell; baseline/peak reset to chain")
+            slot["_last_sane_price_sol"] = px
+            slot["_last_price_sol"] = px
+            slot["_pending_outlier_sol"] = None
+            if float(slot.get("peak_price_sol") or 0) > px * 1.5:
+                slot["peak_price_sol"] = max(entry, px)
+            return False
+        return True
 
     def _price_sane(self, mint: str, slot: dict, price: float) -> bool:
         """Price-sanity guard for exits: a tick > ratio× / < 1/ratio from the last accepted price is HELD until the next

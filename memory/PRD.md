@@ -2804,3 +2804,11 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
 - 2026-10-18 **Telegram hold updates while OFF** (user): `Alerts._poll_holds()` (30 s loop) — when `enabled=False`, every manual / LTH hold gets one baseline message
   (unrealized %, net-if-sold USD/%, stake, peak, link), then a new one each time its unrealized % moved ≥ `alert_hold_update_pct`(5) points since the LAST message. Baselines clear on Start and
   when a hold closes. Knobs `alert_hold_updates_enabled` / `alert_hold_update_pct` (SimpleControls alerts row: `alerts-holds`, `alerts-hold-pct`). Listed in `/api/alerts` events. Tests `test_alert_hold_updates.py` (2).
+
+## 2026-10-18 — "TP said +300 % but closed at −3 %" (user trade history from Published)
+- 18 rows: fast-path `take-profit +30% hit (+346 % / +2220 % / +12435 %) [fast]` filled at −3…−9 % (paper, pumpfun AND pumpswap, 4–25 s after entry). The tape tick was corrupt
+  (passed `_price_sane` ratio 4 via two same-side outliers or <4×); TP had no persistence and no chain check. (A second class — live sells reverting/landing −85 % — is execution, not this.)
+- Fix: `BotState._confirm_tp_on_chain()` — on a fast-path TP decision re-read the curve (`pumpfun.fetch_bonding_curve_state`) or pool (`pumpswap.fetch_pool_state`) and sell only if the
+  CHAIN price clears the take-profit level; rejected tick → stat `tp_ticks_rejected`, warning log, `_last_sane_price_sol` / `_last_price_sol` / peak reset to chain. Unreadable chain →
+  trust the tick only when ≤ 2× the TP distance. 1 read / s / position. Knob `tp_chain_confirm_enabled` (Execution safety). Tests `test_tp_chain_confirm.py` (3).
+- Root source of the corrupt ticks is not identifiable from Preview logs (trades were in Published); the guard makes the symptom impossible regardless of source.

@@ -261,6 +261,7 @@ class BotConfig(BaseModel):
     sl_persistence_min_samples: int = 2   # 2026-06-06: 3→2
     ts_persistence_min_samples: int = 2   # 2026-06-06: 3→2
     tp_persistence_min_samples: int = 2
+    tp_chain_confirm_enabled: bool = True   # fast-path take-profit: re-read the curve / pool and sell only if the CHAIN price clears the target
     # Auto-slip formula (when intelligent_exit_v2 is on, replaces panic_exit_slippage_bps
     # for exit-side sells; entry-side already has its own depth-aware ladder)
     auto_exit_slip_base_bps: int = 300            # 3% baseline

@@ -10,6 +10,7 @@ const GROUPS = [
     { key: "exit_requote_every_attempt", label: "Re-quote every attempt", type: "bool", hint: "Fresh curve/pool read before every exit attempt." },
     { key: "hard_stop_extra_pct", label: "Hard stop extra %", type: "float", step: 1, hint: "pnl ≤ −(book stop + this) exits NOW, bypassing every delay layer." },
     { key: "max_hold_any_book_s", label: "Max hold any book (s)", type: "int", step: 60, hint: "Absolute clock for every non-manual position, from the PERSISTED entry time (survives restarts). 0 = off." },
+    { key: "tp_chain_confirm_enabled", label: "Confirm TP on chain", type: "bool", hint: "A tape tick that says take-profit is re-checked against the curve / pool price before selling. Stops corrupt +300 %…+12000 % ticks from dumping a position at −3 %. One RPC read per TP trigger." },
     { key: "dead_tape_mode", label: "Dead tape", type: "enum", options: ["label", "exit"], hint: "label = flag the row \"DEAD TAPE?\" and HOLD — you decide · exit = close the position automatically." },
     { key: "dead_tape_exit_on_red", label: "Dead tape exits red (exit mode)", type: "bool", hint: "Exit mode only: search_dead_tape may close red positions too." },
   ]},
