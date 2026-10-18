@@ -1047,7 +1047,7 @@ class RHPaperTrader:
             step = dead_tape_label_step(t, b, dead, now)
             if step:
                 logger.info(f"rh_paper DEAD TAPE? {t.get('symbol') or t.get('mint', '')[:8]} {step} — holding for the operator")
-                asyncio.create_task(self.state.db.trades.update_one({"_id": t["id"]}, {"$set": {"dead_tape": t.get("dead_tape")}}))
+                asyncio.ensure_future(self.state.db.trades.update_one({"_id": t["id"]}, {"$set": {"dead_tape": t.get("dead_tape")}}))
                 asyncio.create_task(hub.broadcast("trade_update", {"id": t["id"], "mint": t.get("mint"), "dead_tape": t.get("dead_tape")}))
             dead = None
         if dead is not None:

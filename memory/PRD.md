@@ -2768,3 +2768,14 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   `on_launch` spawns `_attempt_greylist_snipe` when ON; the sniper now fires on score ≥ min **OR** a smart magnet (`greylist_snipe_smart_magnet_ok`, default on — magnets skip the
   classified-pattern gate too; blacklist / out-of-band still refuse, research mode unchanged). Goes through `_enter` → Creator Verdict + trending-name gate like every path. Toggle set ON in Preview.
 - Tests: `test_creator_smart.py` (4), `test_greylist_sniper.py` +4 (magnet fires / thresholds+switch / blacklist / flag operator-controlled) — 51 pass across sniper suites.
+
+## 2026-10-18 — Holder ↔ smart-wallet cross-check (user: LUNA had 3 of my manual wallets among holders, bot didn't buy)
+- Root cause: smart hits came only from the live tape (`on_buy`); buys made before we tracked the mint / via routers / under min-buy / on the AMM were invisible → 0 smart hits → trending-name
+  leader "0 smart", creator-block never lifted. `smart_holders.py`: every scan (background task, never delays the scan) reads holders (DAS `getTokenAccounts`, ≤3 pages, 0.2 s) of up to
+  `smart_holder_check_max_per_scan`(5) in-band candidates with ≥ `smart_holder_check_min_buyers`(15) buyers (creator-block / trending-name refusals first), re-check every
+  `smart_holder_check_every_s`(30). Owners ∩ smart-wallet list (manual + promoted learned; creator excluded) → registered as `smart_hits[w] = {kind, source:"holder"}` → creator_smart credit,
+  trending leader, verdict override, and the hard trigger (`_maybe_fire`, manual wallet preferred). Knobs: Execution safety › Smart-wallet holder check.
+- Verified live: "smart HOLDER LUNA: 4 smart wallets among 405 holders — 3WyZ… [manual], 9tY7… [manual], ApRn… [manual], …" → smart_wallet entry opened on CVSU… (graduated LUNA clone, 20 min old,
+  seasoned band 6–60 min — NOT the 2-hour-old original; 107 LUNA clones launched in 3 h).
+- Bug fixed: dead-tape label persistence used `asyncio.create_task(motor_future)` → TypeError that aborted `_run_ladder` on the tick the flag was set (bot.py + rh_paper.py) → `ensure_future`.
+- Tests `test_smart_holders.py` (3).

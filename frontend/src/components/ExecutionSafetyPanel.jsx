@@ -47,6 +47,12 @@ const GROUPS = [
     { key: "rh_protocol_fee_pct", label: "RH curve fee %", type: "float", step: 0.1, hint: "Subtracted from the quote before the min-out tolerance." },
     { key: "rh_sell_fallback_slippage_pct", label: "RH sell fallback slip %", type: "float", step: 1, hint: "ONE retry at this capped slippage when the sell simulation reverts — never min-out 0." },
   ]},
+  { title: "Smart-wallet holder check", fields: [
+    { key: "smart_holder_check_enabled", label: "Holder cross-check", type: "bool", hint: "Every scan, read the holders of the busiest in-band candidates and match them against your smart-wallet list (manual first, promoted learned too). A match counts exactly like a tape hit — lifts creator BLOCK (manual), picks the trending-name leader, fires the hard trigger." },
+    { key: "smart_holder_check_every_s", label: "Re-check every (s)", type: "int", step: 10 },
+    { key: "smart_holder_check_max_per_scan", label: "Tokens per scan", type: "int", step: 1, hint: "DAS getTokenAccounts reads per scan (≤ 3 pages each). Blocked-by-creator / trending copies go first." },
+    { key: "smart_holder_check_min_buyers", label: "Min buyers / holders", type: "int", step: 5 },
+  ]},
   { title: "Trending names", fields: [
     { key: "trend_name_gate_enabled", label: "Trending-name gate", type: "bool", hint: "A ticker cloned ≥ N times inside the band window: buy ONLY the copy smart wallets pile into (leader = smart wallets → MC → buyers)." },
     { key: "trend_name_min_copies", label: "Copies = trending", type: "int", step: 1, hint: "Same-name launches inside the band window before the name counts as trending." },

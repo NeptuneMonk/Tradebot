@@ -630,6 +630,11 @@ class BotConfig(BaseModel):
     smart_wallet_soft_boost: float = 25.0        # rank points per fresh smart buy
     smart_wallet_gate_relax_pct: float = 50.0    # growth / inflow / new-buyer gates × (1 − this %) while a hit is fresh
     smart_wallet_learn_enabled: bool = True
+    # Holder ↔ smart-wallet cross-check (the tape can miss a smart buy): read holders of the busiest in-band candidates every scan
+    smart_holder_check_enabled: bool = True
+    smart_holder_check_every_s: int = 30         # per-mint re-check cadence
+    smart_holder_check_max_per_scan: int = 5     # DAS getTokenAccounts reads per scan (≤ 3 pages each)
+    smart_holder_check_min_buyers: int = 15      # only tokens with at least this many buyers / holders are read
     smart_wallet_learn_early_s: int = 120        # buys inside the first N s of a launch are graded
     smart_wallet_learn_horizon_s: int = 300      # grade a launch's early buyers after this long
     smart_wallet_learn_min_gain_pct: float = 50.0   # post-buy peak ≥ +this % = WIN (graduation always wins)

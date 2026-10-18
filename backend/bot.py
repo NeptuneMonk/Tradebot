@@ -2270,7 +2270,7 @@ class BotState:
             step = exits.dead_tape_label_step(trade_doc, self.tracking.get(mint), dead, time.time())
             if step:
                 logger.info(f"DEAD TAPE? {mint[:8]}… {step} — holding for the operator" + (f": {dead.reason}" if dead else " (tape revived)"))
-                asyncio.create_task(self.db.trades.update_one({"id": trade_doc.get("id")}, {"$set": {"dead_tape": trade_doc.get("dead_tape")}}))
+                asyncio.ensure_future(self.db.trades.update_one({"id": trade_doc.get("id")}, {"$set": {"dead_tape": trade_doc.get("dead_tape")}}))
                 asyncio.create_task(hub.broadcast("trade_update", {"id": trade_doc.get("id"), "mint": mint, "dead_tape": trade_doc.get("dead_tape")}))
             dead = None
         manual = self._is_manual_hold(slot)

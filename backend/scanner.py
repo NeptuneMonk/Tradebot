@@ -437,6 +437,11 @@ class MomentumScanner:
                     continue
 
                 now = time.time()
+                # holder ↔ smart-wallet cross-check runs beside the scan (never delays it); one sweep in flight at a time
+                _hs = getattr(self, "_holder_sweep", None)
+                if _hs is None or _hs.done():
+                    import smart_holders
+                    self._holder_sweep = asyncio.create_task(smart_holders.sweep(st, now))
                 self.heartbeat["stage"] = "prerank"
                 # Cooldown is only applied AFTER an entry tx is actually
                 # attempted (see below). Pre-_enter gate failures shouldn't
