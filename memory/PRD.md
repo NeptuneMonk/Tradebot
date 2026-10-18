@@ -2801,3 +2801,6 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   UI: stopping indicator "waiting on N positions · K holds kept", abort confirm mentions kept holds, nav tooltip. Tests `test_stop_keeps_holds.py` (4).
 - Deploy fix: container probe hits root `GET /health` (was 404) → `@app.get/head("/health")` returns 200 on leader and follower pods. 421s in prod logs are the intentional leader bounce.
 - Code-review pass: stable React keys (Wiki / TokenDetailDialog / CreatorGreylistPanel), ws parse-catch logging, 4 unused test vars, `/trending-names` allowed in the no-trending-feed test guard.
+- 2026-10-18 **Telegram hold updates while OFF** (user): `Alerts._poll_holds()` (30 s loop) — when `enabled=False`, every manual / LTH hold gets one baseline message
+  (unrealized %, net-if-sold USD/%, stake, peak, link), then a new one each time its unrealized % moved ≥ `alert_hold_update_pct`(5) points since the LAST message. Baselines clear on Start and
+  when a hold closes. Knobs `alert_hold_updates_enabled` / `alert_hold_update_pct` (SimpleControls alerts row: `alerts-holds`, `alerts-hold-pct`). Listed in `/api/alerts` events. Tests `test_alert_hold_updates.py` (2).

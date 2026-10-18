@@ -150,6 +150,8 @@ function Alerts({ config, patch }) {
   const connected = !!snap?.connected;
   const targetsOnly = config.alert_targets_only !== false;
   const systemOn = !!config.alert_system_events;
+  const holdOn = config.alert_hold_updates_enabled !== false;
+  const holdPct = Number(config.alert_hold_update_pct ?? 5);
   return (
     <div className="flex flex-col gap-1" data-testid="alerts">
       <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500"
@@ -179,6 +181,18 @@ function Alerts({ config, patch }) {
           className={`px-2 py-1.5 text-[11px] uppercase tracking-[0.18em] border transition-colors ${systemOn ? "border-sky-800 bg-sky-950/40 text-sky-200" : "border-neutral-800 text-neutral-500 hover:text-neutral-200"}`}>
           sys
         </button>
+        <button type="button" onClick={() => patch({ alert_hold_updates_enabled: !holdOn }, !holdOn ? "Hold updates ON (bot off)" : "Hold updates OFF")} data-testid="alerts-holds"
+          title={`Bot OFF: Telegram the unrealized P/L of every manual / LTH hold — a baseline when the bot stops, then again on every ±${holdPct}% move since the last message. Cleared on Start.`}
+          className={`px-2 py-1.5 text-[11px] uppercase tracking-[0.18em] border transition-colors ${holdOn ? "border-violet-800 bg-violet-950/40 text-violet-200" : "border-neutral-800 text-neutral-500 hover:text-neutral-200"}`}>
+          holds
+        </button>
+        {holdOn && (<>
+          <input type="number" min="0.5" step="1" value={holdPct} data-testid="alerts-hold-pct"
+            onChange={(e) => patch({ alert_hold_update_pct: Math.max(0.5, parseFloat(e.target.value) || 5) }, `Hold updates every ±${e.target.value} %`)}
+            title="Send a hold update when its unrealized P/L moved this many points since the last message"
+            className="w-14 bg-neutral-950 border border-neutral-800 px-2 py-1 text-[11px] font-mono text-neutral-200" />
+          <span className="text-[10px] text-neutral-600">±% hold</span>
+        </>)}
         {!targetsOnly && (<>
           <input type="number" min="1" step="5" value={config.alert_trade_pnl_pct ?? 20} data-testid="alerts-pnl-pct"
             onChange={(e) => patch({ alert_trade_pnl_pct: Math.max(1, parseFloat(e.target.value) || 20) }, `Trade alerts beyond ±${e.target.value} %`)}

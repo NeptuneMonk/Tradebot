@@ -69,7 +69,7 @@ TG_API = "https://api.telegram.org/bot{token}/{method}"
 HTTP_TIMEOUT = 10.0
 POLL_S = 30.0
 FEED_DOWN_S = 120.0
-DEDUPE_S = {"trade": 0.0, "kill": 60.0, "sweep": 0.0, "breaker": 300.0, "feed": 600.0, "test": 0.0}
+DEDUPE_S = {"trade": 0.0, "kill": 60.0, "sweep": 0.0, "breaker": 300.0, "feed": 600.0, "test": 0.0, "hold": 0.0}
 
 
 class Alerts:
@@ -83,6 +83,7 @@ class Alerts:
         self._feed_down_since: dict[str, float] = {}
         self._feed_alerted: set[str] = set()
         self._paused_books: set[str] = set()
+        self._hold_last_sent: dict[str, float] = {}   # mint → unrealized % at the last Telegram update (bot OFF, LTH holds)
         self._task: asyncio.Task | None = None
 
     # ---------- wiring ----------
@@ -113,6 +114,8 @@ class Alerts:
             events = [f"trade closed ≥ ±{floor:g} %"]
         if self._system_ok():
             events += ["kill switch / PnL stop", "profit sweep", "Doctor book breaker", "feed down > 2 min"]
+        if self._hold_updates_on():
+            events += [f"bot OFF: unrealized P/L of every manual / LTH hold, on every ±{float(getattr(self.state.config, 'alert_hold_update_pct', 5.0) or 5.0):g} % move"]
         return {"configured": self.configured(), "connected": self.chat_id is not None, "chat_id": self.chat_id, "chat_title": self.chat_title,
                 "enabled": self.enabled(), "min_trade_pnl_pct": floor, "targets_only": self._targets_only(), "system_events": self._system_ok(),
                 "events": events, **self.stats}
@@ -232,12 +235,66 @@ class Alerts:
                                      f"{html.escape(str(data.get('book') or ''))} · {html.escape(str(data.get('mode') or ''))} · "
                                      f"{html.escape(str(data.get('exit_reason') or '')[:120])}\n{token_link(str(data.get('mint') or ''), data.get('chain'))}")
 
+    def _hold_updates_on(self) -> bool:
+        return bool(getattr(self.state.config, "alert_hold_updates_enabled", True))
+
+    async def _poll_holds(self) -> None:
+        """Bot OFF → the operator is away but still holding LTH positions: send each hold's unrealized P/L once as a
+        baseline, then again every time it moves ≥ alert_hold_update_pct from the last message. Reset on Start."""
+        st = self.state
+        if not self._hold_updates_on():
+            return
+        if st.config.enabled:
+            if self._hold_last_sent:
+                self._hold_last_sent.clear()
+            return
+        step = float(getattr(st.config, "alert_hold_update_pct", 5.0) or 5.0)
+        sol_usd = 0.0
+        try:
+            import solana_client
+            sol_usd = float(solana_client._sol_price_cache.get("price") or 0.0)
+        except Exception:
+            pass
+        live = set()
+        for mint, slot in list(st.active_trades.items()):
+            if not st._is_manual_hold(slot):
+                continue
+            live.add(mint)
+            t = slot.get("trade") or {}
+            cur = float(slot.get("_last_price_sol") or 0.0)
+            entry = float(t.get("entry_price_sol") or 0.0)
+            if cur <= 0 or entry <= 0:
+                continue
+            pct = (cur - entry) / entry * 100.0
+            last = self._hold_last_sent.get(mint)
+            if last is not None and abs(pct - last) < step:
+                continue
+            net = None
+            try:
+                net = st.net_if_sold(t, slot, sol_usd)        # None until the SOL price is known
+            except Exception:
+                net = None
+            sym = html.escape(str(t.get("symbol") or mint[:6]))
+            arrow = "📈" if pct >= 0 else "📉"
+            move = "" if last is None else f" ({pct - last:+.1f} pts since last update)"
+            net_line = (f"\nnet if sold now: <b>{net['net_pnl_usd']:+.2f} USD</b> ({net['net_pnl_pct']:+.1f} %)"
+                        if net and net.get("net_pnl_usd") is not None else "")
+            text = (f"{arrow} <b>HOLD {sym}</b> · bot OFF\nunrealized <b>{pct:+.1f} %</b>{move}{net_line}\n"
+                    f"stake {float(t.get('entry_usd') or 0):.2f} USD · peak {((float(slot.get('peak_price_sol') or cur) - entry) / entry * 100.0):+.0f} %\n"
+                    f"{token_link(mint, t.get('chain'))}")
+            if await self.send("hold", text):
+                self._hold_last_sent[mint] = pct
+        for mint in list(self._hold_last_sent):
+            if mint not in live:
+                self._hold_last_sent.pop(mint, None)
+
     async def _loop(self) -> None:
         await asyncio.sleep(POLL_S)
         while True:
             try:
                 await self._poll_breakers()
                 await self._poll_feeds()
+                await self._poll_holds()
             except asyncio.CancelledError:
                 raise
             except Exception as e:

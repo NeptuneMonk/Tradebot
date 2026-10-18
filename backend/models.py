@@ -502,6 +502,8 @@ class BotConfig(BaseModel):
     # sweeps, Doctor breakers, feed down) are a separate switch, OFF by default.
     alert_targets_only: bool = True
     alert_system_events: bool = False
+    alert_hold_updates_enabled: bool = True   # bot OFF: Telegram the unrealized P/L of every manual / LTH hold …
+    alert_hold_update_pct: float = 5.0        # … first as a baseline, then on every move ≥ this many points since the last message
     pnl_stop_armed_ts: float = 0.0
     pnl_stop_flatten: bool = True
     inventory_halt_n: int = 5

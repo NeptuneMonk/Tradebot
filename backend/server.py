@@ -658,6 +658,7 @@ async def update_config(body: dict = Body(...)):
     cfg.trend_name_holder_reads = max(0, min(int(cfg.trend_name_holder_reads), 30))
     cfg.creator_smart_min_launches = max(1, min(int(cfg.creator_smart_min_launches), 50))
     cfg.creator_smart_min_rate_pct = max(0.0, min(float(cfg.creator_smart_min_rate_pct), 100.0))
+    cfg.alert_hold_update_pct = max(0.5, min(float(cfg.alert_hold_update_pct), 100.0))
     cfg.smart_holder_check_every_s = max(10, min(int(cfg.smart_holder_check_every_s), 600))
     cfg.smart_holder_check_max_per_scan = max(0, min(int(cfg.smart_holder_check_max_per_scan), 20))
     cfg.smart_holder_check_min_buyers = max(0, min(int(cfg.smart_holder_check_min_buyers), 1000))
