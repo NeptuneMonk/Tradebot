@@ -65,6 +65,7 @@ export const api = {
   rhStatus: () => client.get("/rh/status").then(r => r.data),
   activeTrades: () => client.get("/trades/active").then(r => r.data),
   tradeHistory: (limit = 100, book) => client.get(`/trades/history?limit=${limit}${book ? `&book=${book}` : ""}`).then(r => r.data),
+  tradeExportCsv: (book, mode, days = 0) => client.get(`/trades/export.csv?days=${days}${book && book !== "all" ? `&book=${book}` : ""}${mode ? `&mode=${mode}` : ""}`, { responseType: "blob" }),
   exitTrade: (id) => client.post(`/trades/${id}/exit`).then(r => r.data),
   setLongTermHold: (id, on) => client.post(`/trades/${id}/lth`, { on }).then(r => r.data),
   addToPosition: (id, usd) => longClient.post(`/trades/${id}/add`, { usd }).then(r => r.data),

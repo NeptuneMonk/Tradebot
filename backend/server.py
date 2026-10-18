@@ -2,6 +2,7 @@
 FastAPI server for the Pump.fun Micro-Stake Trading Bot (preview-only).
 """
 import os
+import json
 import time
 import logging
 import asyncio
@@ -2321,6 +2322,73 @@ async def trades_history(limit: int = 100, book: str | None = None):
 
 class LTHBody(BaseModel):
     on: bool = True
+
+
+CSV_COLUMNS = [
+    "id", "entry_time", "exit_time", "hold_s", "chain", "mode", "book", "protocol", "symbol", "name", "mint", "status", "exit_reason",
+    "entry_usd", "entry_sol", "entry_tokens", "entry_price_sol", "exit_sol", "exit_price_sol", "pnl_usd", "pnl_pct", "pnl_sol", "pnl_r", "r_usd",
+    "entry_fee_sol", "exit_fee_sol", "exit_fee_sol_failed_attempts", "partial_realized_usd", "paper_failed_txs",
+    "real_pnl_usd", "real_pnl_sol", "real_pnl_pct", "real_entry_price_sol", "wallet_delta_lamports", "rent_locked_lamports", "fees_failed_lamports",
+    "pnl_reconciled", "reconcile_incomplete", "pnl_provisional",
+    "entry_land_s", "entry_land_prio", "exit_land_s", "exit_land_prio", "exit_landed_slip_bps",
+    "lat_signal_to_decision_ms", "lat_decision_to_sent_ms", "lat_sent_to_landed_ms", "lat_decision_to_landed_ms",
+    "scorecard_cell", "classifier_action", "smart_wallet", "smart_wallet_kind", "reentry_trigger", "speed_mode_at_entry",
+    "entry_sig", "exit_sig",
+]
+
+
+def _as_dt(v):
+    if isinstance(v, datetime):
+        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+    return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+
+
+def _csv_row(t: dict) -> list:
+    lat = t.get("latency") or {}
+    try:
+        hold = round((_as_dt(t["exit_time"]) - _as_dt(t["entry_time"])).total_seconds())
+    except Exception:
+        hold = ""
+    out = []
+    for c in CSV_COLUMNS:
+        if c == "hold_s":
+            v = hold
+        elif c.startswith("lat_"):
+            v = lat.get(c[4:])
+        else:
+            v = t.get(c)
+        if isinstance(v, datetime):
+            v = v.isoformat()
+        if isinstance(v, float):
+            v = f"{v:.10g}"
+        elif isinstance(v, (dict, list)):
+            v = json.dumps(v, separators=(",", ":"))
+        out.append("" if v is None else v)
+    return out
+
+
+@api.get("/trades/export.csv")
+async def trades_export_csv(book: str | None = None, mode: str | None = None, days: int = 0, include_active: bool = False):
+    """Full trade history as CSV (closed + parked, newest first). Filters: book, mode (paper|live), days (0 = all)."""
+    import csv
+    import io
+    q: dict = {} if include_active else {"status": {"$ne": "active"}}
+    if book:
+        q["book"] = book
+    if mode:
+        q["mode"] = mode
+    if days and days > 0:
+        q["entry_time"] = {"$gte": (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()}
+    rows = await db.trades.find(q, {"_id": 0}).sort([("exit_time", -1), ("entry_time", -1)]).to_list(20000)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(CSV_COLUMNS)
+    for t in rows:
+        w.writerow(_csv_row(t))
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+    name = f"trades-{stamp}{'-' + book if book else ''}{'-' + mode if mode else ''}.csv"
+    return _StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
+                              headers={"Content-Disposition": f'attachment; filename="{name}"', "X-Row-Count": str(len(rows))})
 
 
 @api.post("/trades/{trade_id}/lth")

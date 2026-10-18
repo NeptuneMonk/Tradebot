@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react";
-import { History, CircleDot, Search } from "lucide-react";
+import { History, CircleDot, Search, Download } from "lucide-react";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { ChainBadge } from "./ChainBadge";
 import { TradeTicket } from "./TradeTicket";
@@ -78,6 +78,22 @@ function TradeHistoryTable({ history: liveHistory }) {
   const vt = useVirtualTable(scrollRef, history.length, 34);
   const partialCount = history.filter((t) => t.partial_done).length;
   const partialBanked = history.reduce((sum, t) => sum + (t.partial_realized_usd || 0), 0);
+  const [exporting, setExporting] = useState(false);
+  const exportCsv = async () => {
+    setExporting(true);
+    try {
+      const res = await api.tradeExportCsv(book);
+      const name = /filename="([^"]+)"/.exec(res.headers?.["content-disposition"] || "")?.[1] || "trades.csv";
+      const url = URL.createObjectURL(new Blob([res.data], { type: "text/csv" }));
+      const a = Object.assign(document.createElement("a"), { href: url, download: name });
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (e) {
+      console.error("csv export failed", e);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <div className="control-card" data-testid="trade-history-card">
@@ -93,6 +109,12 @@ function TradeHistoryTable({ history: liveHistory }) {
             ))}
           </div>
         </div>
+        <div className="flex items-center gap-2">
+        <button type="button" onClick={exportCsv} disabled={exporting} data-testid="history-export-csv"
+                title={`Download every closed/parked trade${book !== "all" ? ` in the ${book} book` : ""} as CSV — fees, net P/L, reconciler and latency columns included`}
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] uppercase tracking-[0.15em] border border-neutral-800 text-neutral-500 hover:text-neutral-200 hover:border-neutral-600 disabled:opacity-50 transition-colors">
+          <Download className="w-3 h-3" /> {exporting ? "…" : "csv"}
+        </button>
         {partialCount > 0 && (
           <div
             data-testid="partial-tp-summary"
@@ -102,6 +124,7 @@ function TradeHistoryTable({ history: liveHistory }) {
             <CircleDot className="w-3 h-3" /> ½TP × {partialCount} · ${partialBanked.toFixed(2)}
           </div>
         )}
+        </div>
       </div>
       <div ref={scrollRef} className="overflow-x-auto max-h-[300px] md:max-h-[420px] overflow-y-auto [contain:layout] [overscroll-behavior:contain]">
         <table className="w-full text-xs" data-testid="trade-history-table">
