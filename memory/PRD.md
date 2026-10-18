@@ -2757,3 +2757,14 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
 - Verified live within a minute: "Attention" ×5 — copies refused ("not the leader — leader is Attention 6jFN… · 1 smart · $8k MC · 114 buyers"), smart-less leader refused ("no smart wallet has bought any copy yet").
 - **Dead-tape SELL = creator loss** (user): `POST /trades/{id}/exit?reason=dead_tape` stamps `dead_tape_sold` (exit reason "manual exit · dead tape"); `creator_verdict` counts those rows as losses even if green. Chip's sell button sends it.
 - Tests `test_trending_names.py` (5) + creator verdict dead-tape-sold case.
+
+## 2026-10-18 — Creator ↔ smart-wallet affinity ("smart magnets") + greylist sniper RESTORED (smart-wallet aware)
+- `creator_smart.py`: every first smart-wallet buy on a launch is credited to its creator (`creators.smart_mints / smart_hits_total / smart_manual_total / smart_wallets{wallet:n} / last_smart_at`,
+  hook in `SmartWallets` hit recording; Motor-safe `ensure_future`). `summary()` → launches / smart_launches / rate % / recurring wallets; `is_magnet()` = ≥ `creator_smart_min_launches`(2) smart launches
+  AND rate ≥ `creator_smart_min_rate_pct`(50). Launch bucket gets `creator_smart` at t=0; Creator Verdict → FAVOR "smart magnet: …" (never rescues a block); candidate chip `magnet n/m`
+  (`scanner-row-smart-magnet-<mint>`); `GET /api/creators/smart-magnets`; `SmartMagnetsPanel` (Doctor › CREATORS, under the verdict list) with knobs + ranked table.
+- **Greylist sniper**: user reported the "Snipe path" toggle snapping back to off. Root cause: Cut-the-fat (2026-10-04) hard-forced `greylist_snipe_enabled=False` in the `BotConfig` validator and
+  unplugged `_attempt_greylist_snipe` from `on_launch`. User chose (b) restore, smart-wallet aware: validator no longer touches the flag (audit / wallet-graph / serial-creator stay forced off);
+  `on_launch` spawns `_attempt_greylist_snipe` when ON; the sniper now fires on score ≥ min **OR** a smart magnet (`greylist_snipe_smart_magnet_ok`, default on — magnets skip the
+  classified-pattern gate too; blacklist / out-of-band still refuse, research mode unchanged). Goes through `_enter` → Creator Verdict + trending-name gate like every path. Toggle set ON in Preview.
+- Tests: `test_creator_smart.py` (4), `test_greylist_sniper.py` +4 (magnet fires / thresholds+switch / blacklist / flag operator-controlled) — 51 pass across sniper suites.

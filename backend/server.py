@@ -653,6 +653,8 @@ async def update_config(body: dict = Body(...)):
     cfg.trend_name_min_copies = max(2, min(int(cfg.trend_name_min_copies), 50))
     cfg.trend_name_leader_min_smart = max(0, min(int(cfg.trend_name_leader_min_smart), 20))
     cfg.trend_name_max_positions = max(1, min(int(cfg.trend_name_max_positions), 10))
+    cfg.creator_smart_min_launches = max(1, min(int(cfg.creator_smart_min_launches), 50))
+    cfg.creator_smart_min_rate_pct = max(0.0, min(float(cfg.creator_smart_min_rate_pct), 100.0))
     cfg.creator_caution_size_mult = max(0.1, min(float(cfg.creator_caution_size_mult), 1.0))
     cfg.creator_caution_smart_override_n = max(1, min(int(cfg.creator_caution_smart_override_n), 20))
     cfg.creator_dev_out_pct = max(5.0, min(float(cfg.creator_dev_out_pct), 100.0))
@@ -2406,6 +2408,17 @@ async def creator_verdict_recent(limit: int = 50):
     return {"items": out, "blocked": [x for x in out if x["level"] == "block"],
             "config": {k: getattr(bot_state.config, k) for k in ("creator_verdict_enabled", "creator_min_trades_for_rate", "creator_min_win_rate_pct", "creator_caution_size_mult",
                                                                   "creator_caution_smart_override_n", "creator_block_manual_smart_override", "creator_dev_out_pct")}}
+
+
+@api.get("/creators/smart-magnets")
+async def creators_smart_magnets(limit: int = 30):
+    """Creators ranked by smart-wallet affinity: how many of their launches drew smart buys, recurring wallets, outcomes."""
+    from creator_smart import top, is_magnet
+    cfg = bot_state.config
+    rows = await top(db, limit=max(1, min(int(limit), 200)))
+    for r in rows:
+        r["magnet"] = is_magnet(r if r.get("smart_launches") else None, cfg)
+    return {"items": rows, "config": {k: getattr(cfg, k) for k in ("creator_smart_magnet_enabled", "creator_smart_min_launches", "creator_smart_min_rate_pct")}}
 
 
 @api.get("/creator-verdict/{mint}")

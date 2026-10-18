@@ -304,6 +304,8 @@ class MomentumScanner:
             m["creator_verdict_reasons"] = _cv.get("reasons")
             if _clusters:
                 _tn.annotate(_clusters, m, b)
+            if b.get("creator_smart"):
+                m["creator_smart"] = b["creator_smart"]
             m["protocol"] = b.get("protocol") or "pumpfun"
             m["graduated_at"] = b.get("graduated_at")
             m["usd_market_cap"] = float(b.get("usd_market_cap") or 0.0)

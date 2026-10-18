@@ -284,6 +284,13 @@ function CandidateRow({ c, passing, onOpen }) {
               </span>
             )}
             {c.creator_verdict && c.creator_verdict !== "neutral" && <VerdictChip level={c.creator_verdict} reasons={c.creator_verdict_reasons} mint={c.mint} />}
+            {c.creator_smart && (
+              <span className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-violet-700 text-violet-300 bg-violet-950/40"
+                data-testid={`scanner-row-smart-magnet-${c.mint}`}
+                title={`Creator ↔ smart-wallet affinity: smart wallets bought ${c.creator_smart.smart_launches} of this creator's ${c.creator_smart.launches} launches (${c.creator_smart.rate_pct}%, ${c.creator_smart.hits} buys${c.creator_smart.recurring_wallets?.length ? `, ${c.creator_smart.recurring_wallets.length} wallet(s) came back` : ""}) — known at t=0, before anyone smart has bought this one`}>
+                magnet {c.creator_smart.smart_launches}/{c.creator_smart.launches}
+              </span>
+            )}
             {c.trend_copies > 0 && (c.trend_is_leader ? (
               <span className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-emerald-600 text-emerald-300 bg-emerald-950/40"
                 data-testid={`scanner-row-trend-leader-${c.mint}`}

@@ -565,6 +565,10 @@ class BotConfig(BaseModel):
     creator_caution_smart_override_n: int = 3         # … unless ≥ this many smart wallets (learned or manual) bought the launch
     creator_block_manual_smart_override: bool = True  # a smart wallet YOU added may turn a BLOCK into CAUTION (learned ones never)
     creator_dev_out_pct: float = 70.0                 # dev sold ≥ this % of their stake inside the launch window → FAVOR (already out, no later dump); any early selling is a plus, never a penalty
+    # Creator ↔ smart-wallet affinity: learn which creators smart wallets keep buying from → FAVOR their next launch at t=0
+    creator_smart_magnet_enabled: bool = True
+    creator_smart_min_launches: int = 2               # launches by the creator that drew ≥1 smart buy …
+    creator_smart_min_rate_pct: float = 50.0          # … and that share of all their launches
     # Trending-name gate — a ticker being cloned (≥ N copies inside the band window): buy ONLY the copy smart wallets pile into
     trend_name_gate_enabled: bool = True
     trend_name_min_copies: int = 3                    # copies of one name inside the band window before it counts as trending
@@ -598,6 +602,7 @@ class BotConfig(BaseModel):
     # momentum. Still honors safety gates (kill switch, max_concurrent_positions,
     # recent_exit cooldown, doctor pause).
     greylist_snipe_enabled: bool = True
+    greylist_snipe_smart_magnet_ok: bool = True   # a creator smart wallets keep buying from ("magnet") may be sniped even without a greylist score / pattern
     greylist_snipe_min_score: float = 45.0   # hybrid threshold by default
     greylist_snipe_max_per_hour: int = 12    # rate cap (safety)
     greylist_snipe_settle_seconds: int = 5   # wait after launch for tracking bucket
@@ -672,8 +677,9 @@ class BotConfig(BaseModel):
 
     @model_validator(mode="after")
     def _retired_gates_off(self):
-        # cut-the-fat (2026-10-04): these code paths are gone; a persisted True must never read as "on" anywhere
-        self.creator_audit_enabled = self.wallet_graph_enabled = self.serial_creator_gate_enabled = self.greylist_snipe_enabled = False
+        # cut-the-fat (2026-10-04): these code paths are gone; a persisted True must never read as "on" anywhere.
+        # greylist_snipe_enabled was RESTORED 2026-10-18 (smart-wallet aware sniper) and is operator-controlled again.
+        self.creator_audit_enabled = self.wallet_graph_enabled = self.serial_creator_gate_enabled = False
         return self
     # Live PnL reset cutoff: when set, daily_pnl_usd(mode='live') only sums
     # trades closed at-or-after this ISO timestamp instead of today's 00:00 UTC.

@@ -1008,7 +1008,8 @@ function CreatorGreylistPanel({ config, onConfigUpdate }) {
 }
 
 const KNOBS = [
-  ["greylist_snipe_enabled", "Snipe path", "bool", "Open the greylist snipe entry path on every NEW launch by a scored creator (bypasses momentum gates; safety gates still apply)."],
+  ["greylist_snipe_enabled", "Snipe path", "bool", "Open the greylist snipe entry path on every NEW launch by a scored creator OR a smart-magnet creator (hunt book; Creator Verdict, trending-name gate and all safety gates still apply)."],
+  ["greylist_snipe_smart_magnet_ok", "Snipe smart magnets", "bool", "Also snipe creators smart wallets keep buying from (Creator ↔ smart wallets panel), even with no greylist score / pattern — be there before the smart wallets buy."],
   ["greylist_snipe_min_score", "Min score", 1, "Creator greylist score needed to snipe / to count as a hunt creator. 45 = hybrid, 70 = aggressive."],
   ["greylist_snipe_max_per_hour", "Snipes / hour", 1, "Rate cap on greylist snipes."],
   ["greylist_snipe_settle_seconds", "Settle (s)", 1, "Wait after launch before the snipe fires (lets the tracking bucket fill)."],

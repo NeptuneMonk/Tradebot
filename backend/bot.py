@@ -44,6 +44,7 @@ from helius_sender import TIP_LAMPORTS_DUAL, TIP_LAMPORTS_SWQOS
 from slippage import pool_depth_sol, auto_exit_slip_bps, recent_vol_pct, entry_slip_bps, capped as slip_capped, exit_capped
 import cost_gate
 import creator_solvency
+import creator_smart
 import r_sizer
 import exits
 import flush
@@ -1605,6 +1606,7 @@ class BotState:
             "creation_slot": launch_data.get("creation_slot"),
             "launch_id": launch.id,
             "creator": launch.creator,
+            "creator_smart": creator_smart.summary(creator_doc),   # smart-wallet affinity known at t=0
             "start": time.time(),
             # Custom quote pair (create_v2): None/SOL for classic launches; e.g. USDC / PUMP / SPCX-paired coins. Tape
             # amounts for these are converted to SOL-equivalents by quote_mints.QuoteBook before they reach the bucket.
@@ -1652,9 +1654,11 @@ class BotState:
         self._enforce_tracking_cap()
 
         # Metadata / socials are fetched lazily — only when the scanner passes the mint or we buy it (`_ensure_metadata`).
-        # Cut-the-fat (2026-10-03): no greylist sniper on the launch path.
         asyncio.create_task(self._assess_and_enter(launch, creator_rugs))
         asyncio.create_task(self._tracker_cleanup(launch.mint))
+        if self.config.greylist_snipe_enabled:
+            # restored 2026-10-18 (smart-wallet aware): scored creator OR smart magnet → hunt-book snipe after the settle wait
+            asyncio.create_task(self._attempt_greylist_snipe(launch, creator_doc))
         if self._reputation_on():
             asyncio.create_task(self._crazy_dev_watch(launch))
 
@@ -3269,10 +3273,15 @@ class BotState:
                 {"_id": launch.creator},
                 {"_id": 0, "greylist_score": 1, "greylist_score_updated_at": 1,
                  "greylist_blacklisted": 1, "greylist_out_of_band": 1,
-                 "greylist_pattern": 1},
+                 "greylist_pattern": 1, "tokens_created": 1, "smart_mints": 1, "smart_hits_total": 1,
+                 "smart_manual_total": 1, "smart_wallets": 1, "last_smart_at": 1},
             )
             if not gc:
                 return
+            # Smart-wallet aware (2026-10-18): a creator smart wallets keep buying from ("magnet") qualifies even without a
+            # greylist score — the whole point of tracking creators by smart wallets is to be there BEFORE they buy.
+            smart_sum = creator_smart.summary(gc)
+            magnet = bool(getattr(self.config, "greylist_snipe_smart_magnet_ok", True)) and creator_smart.is_magnet(smart_sum, self.config)
             is_research = False
             min_score = float(self.config.greylist_snipe_min_score or 0)
             if gc.get("greylist_blacklisted") or gc.get("greylist_out_of_band"):
@@ -3291,15 +3300,15 @@ class BotState:
             from creator_greylist import apply_decay
             eff = apply_decay(gc.get("greylist_score"),
                               gc.get("greylist_score_updated_at"))
-            if eff < min_score:
+            if eff < min_score and not magnet:
                 return
             # Pattern gate — paper data showed 45/45 snipes fired on
             # `unknown` or null patterns with 4/45 wins. The "predictable
             # curve" thesis only holds when the creator HAS a classified
             # pattern. Research-mode bypasses this (it deliberately targets
-            # the noisy bucket).
+            # the noisy bucket); a smart magnet qualifies on smart-wallet evidence, not the curve pattern.
             pat = gc.get("greylist_pattern")
-            if (not is_research
+            if (not is_research and not magnet
                     and self.config.greylist_snipe_require_classified_pattern
                     and pat in (None, "unknown", "")):
                 logger.info(
@@ -3322,16 +3331,17 @@ class BotState:
             # at most a few during contention which is acceptable).
             self._greylist_snipe_fires.append(time.time())
             logger.info(
-                f"greylist_snipe: firing{' [RESEARCH]' if is_research else ''} on "
+                f"greylist_snipe: firing{' [RESEARCH]' if is_research else ''}{' [SMART MAGNET]' if magnet else ''} on "
                 f"{launch.symbol or launch.mint[:8]}… "
                 f"creator={launch.creator[:8]}… score={eff:.0f} "
                 f"pattern={gc.get('greylist_pattern')}"
+                + (f" smart={smart_sum['smart_launches']}/{smart_sum['launches']}" if smart_sum else "")
             )
             await hub.broadcast("greylist_snipe_fire", {
                 "mint": launch.mint, "symbol": launch.symbol,
                 "creator": launch.creator, "score": round(eff, 1),
                 "pattern": gc.get("greylist_pattern"),
-                "is_research": is_research,
+                "is_research": is_research, "smart_magnet": magnet,
             })
             # Stash research flag for `_enter_impl` to pick up via the
             # creator_doc passed in (cheaper than a kwarg cascade).

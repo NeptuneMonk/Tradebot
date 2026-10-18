@@ -98,6 +98,7 @@ async def compute(db, cfg, mint: str, creator: str | None, bucket: dict | None, 
         size_mult = float(base["greylist_size_mult"])
     return {"level": level, "size_mult": round(size_mult, 3), "reasons": reasons, "creator": creator, "pattern": base.get("pattern"),
             "score": base.get("score"), "own_wins": base.get("own_wins"), "own_losses": base.get("own_losses"), "own_win_rate_pct": base.get("own_win_rate_pct"),
+            "smart_affinity": base.get("smart_affinity"),
             "smart_total": smart_total, "smart_manual": smart_manual, "ts": time.time()}
 
 
@@ -119,7 +120,8 @@ async def _base_verdict(db, cfg, creator: str) -> dict:
     level = "neutral"
     gc = await db.creators.find_one({"_id": creator}, {"_id": 0, "greylist_blacklisted": 1, "greylist_out_of_band": 1, "greylist_pattern": 1,
                                                        "greylist_score": 1, "greylist_score_updated_at": 1, "greylist_n_failed": 1,
-                                                       "tokens_created": 1, "tokens_failed": 1}) or {}
+                                                       "tokens_created": 1, "tokens_failed": 1,
+                                                       "smart_mints": 1, "smart_hits_total": 1, "smart_manual_total": 1, "smart_wallets": 1, "last_smart_at": 1}) or {}
     pattern = gc.get("greylist_pattern")
     score = None
     greylist_size_mult = None
@@ -144,6 +146,16 @@ async def _base_verdict(db, cfg, creator: str) -> dict:
                 reasons.append(f"greylist: {strat} creator (score {score:.0f})")
         except Exception:
             pass
+    # smart-wallet affinity: creators whose launches smart wallets keep buying are favoured at t=0 (before anyone smart has bought)
+    smart_sum = None
+    try:
+        from creator_smart import summary as _smart_summary, is_magnet, magnet_reason
+        smart_sum = _smart_summary(gc)
+        if is_magnet(smart_sum, cfg) and level == "neutral":
+            level = "favor"
+            reasons.append(magnet_reason(smart_sum))
+    except Exception:
+        pass
     # our own book on this creator
     rows = await db.trades.find({"creator": creator, "status": {"$in": ["closed", "exit_failed_terminal"]}},
                                 {"_id": 0, "pnl_usd": 1, "dead_tape_sold": 1}).sort("exit_time", -1).limit(50).to_list(50)
@@ -163,7 +175,7 @@ async def _base_verdict(db, cfg, creator: str) -> dict:
         reasons.append(f"our book: {wins}/{n} wins so far ({min_n - n} more to judge)")
     return {"level": level, "reasons": reasons, "pattern": pattern, "score": round(score, 1) if score is not None else None,
             "own_wins": wins, "own_losses": losses, "own_win_rate_pct": round(win_rate, 1) if win_rate is not None else None,
-            "greylist_size_mult": greylist_size_mult}
+            "smart_affinity": smart_sum, "greylist_size_mult": greylist_size_mult}
 
 
 def clear_cache(creator: str | None = None) -> None:

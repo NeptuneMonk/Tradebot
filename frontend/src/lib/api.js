@@ -68,6 +68,7 @@ export const api = {
   tradeExportCsv: (book, mode, days = 0) => client.get(`/trades/export.csv?days=${days}${book && book !== "all" ? `&book=${book}` : ""}${mode ? `&mode=${mode}` : ""}`, { responseType: "blob" }),
   exitTrade: (id, reason) => client.post(`/trades/${id}/exit`, null, reason ? { params: { reason } } : undefined).then(r => r.data),
   trendingNames: () => client.get("/trending-names").then(r => r.data),
+  smartMagnets: () => client.get("/creators/smart-magnets").then(r => r.data),
   setLongTermHold: (id, on) => client.post(`/trades/${id}/lth`, { on }).then(r => r.data),
   dismissDeadTape: (id) => client.post(`/trades/${id}/dead-tape/dismiss`).then(r => r.data),
   addToPosition: (id, usd) => longClient.post(`/trades/${id}/add`, { usd }).then(r => r.data),

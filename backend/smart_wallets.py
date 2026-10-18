@@ -147,6 +147,9 @@ class SmartWallets:
         if kind is None or lamports < float(self._cfg("smart_wallet_min_buy_sol", 0.2) or 0.0) * LAMPORTS_PER_SOL:
             return
         hits = b.setdefault("smart_hits", {})
+        if wallet not in hits:
+            from creator_smart import record_hit
+            record_hit(getattr(self.state, "db", None), b.get("creator"), mint, wallet, kind, now)
         hits[wallet] = {"ts": now, "kind": kind, "sol": lamports / LAMPORTS_PER_SOL}
         b["smart_hit_ts"] = now
         self.stats["hits"] += 1

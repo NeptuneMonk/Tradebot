@@ -469,3 +469,56 @@ def test_trade_doc_is_research_snipe_defaults_false():
         entry_price_sol=1.0, entry_tokens=1.0, entry_sol=0.1,
     )
     assert t.is_research_snipe is False
+
+
+# --- restored 2026-10-18: smart-wallet aware --------------------------------------------------------------------------
+def _magnet_doc(launches=4, smart=3, score=0.0, pattern=None):
+    return {**_make_creator_doc(score=score, pattern=pattern), "tokens_created": launches,
+            "smart_mints": [f"m{i}" for i in range(smart)], "smart_hits_total": smart * 2, "smart_wallets": {"W1": 2}}
+
+
+def _smart_cfg(stub, ok=True, min_launches=2, min_rate=50.0):
+    stub.config.greylist_snipe_smart_magnet_ok = ok
+    stub.config.creator_smart_magnet_enabled = True
+    stub.config.creator_smart_min_launches = min_launches
+    stub.config.creator_smart_min_rate_pct = min_rate
+    stub.config.greylist_snipe_require_classified_pattern = True
+
+
+@pytest.mark.asyncio
+async def test_sniper_fires_on_smart_magnet_without_score_or_pattern():
+    stub = _StubBotState()
+    _smart_cfg(stub)
+    stub.db.creator_doc = _magnet_doc()                         # score 0, no pattern, but 3 of 4 launches drew smart buys
+    await _bind_sniper(stub)(_StubLaunch(), {})
+    assert len(stub.enter_calls) == 1 and stub.enter_calls[0][2] == "greylist_snipe"
+
+
+@pytest.mark.asyncio
+async def test_sniper_magnet_needs_the_thresholds_and_the_switch():
+    stub = _StubBotState()
+    _smart_cfg(stub)
+    stub.db.creator_doc = _magnet_doc(launches=10, smart=2)     # 20 % < 50 %
+    await _bind_sniper(stub)(_StubLaunch(), {})
+    assert stub.enter_calls == []
+    stub = _StubBotState()
+    _smart_cfg(stub, ok=False)
+    stub.db.creator_doc = _magnet_doc()
+    await _bind_sniper(stub)(_StubLaunch(), {})
+    assert stub.enter_calls == []                               # switch off → score rules alone (0 < 45)
+
+
+@pytest.mark.asyncio
+async def test_sniper_magnet_never_overrides_blacklist():
+    stub = _StubBotState()
+    _smart_cfg(stub)
+    stub.db.creator_doc = {**_magnet_doc(), "greylist_blacklisted": True}
+    await _bind_sniper(stub)(_StubLaunch(), {})
+    assert stub.enter_calls == []
+
+
+def test_greylist_snipe_enabled_is_operator_controlled_again():
+    from models import BotConfig
+    assert BotConfig(greylist_snipe_enabled=True).greylist_snipe_enabled is True
+    assert BotConfig(greylist_snipe_enabled=False).greylist_snipe_enabled is False
+    assert BotConfig(creator_audit_enabled=True).creator_audit_enabled is False     # the other retired flags stay forced off

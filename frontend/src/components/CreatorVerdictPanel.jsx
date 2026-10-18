@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ShieldAlert, ShieldCheck, ShieldQuestion, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
+import SmartMagnetsPanel from "./SmartMagnetsPanel";
 
 const TONE = {
   block: "border-red-800 text-red-300 bg-red-950/40",
@@ -87,6 +88,7 @@ export default function CreatorVerdictPanel({ config, onConfigUpdate }) {
           </div>
         ))}
       </div>
+      <SmartMagnetsPanel config={config} onConfigUpdate={onConfigUpdate} />
     </div>
   );
 }
