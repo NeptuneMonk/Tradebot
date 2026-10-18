@@ -838,14 +838,22 @@ class BotState:
             return
         self.stopping_gracefully = True
         await hub.broadcast("bot_stopping_graceful", {
-            "active_positions": len(self.active_trades),
+            "active_positions": self.riding_position_count(), "held_positions": self.manual_hold_count(),
         })
         # Spin up the finaliser (or reuse the existing one)
         if self._graceful_stop_task is None or self._graceful_stop_task.done():
             self._graceful_stop_task = asyncio.create_task(self._graceful_stop_finaliser())
-        # If there are no active positions, finalise immediately
-        if not self.active_trades:
+        # Nothing riding (only manual / LTH holds, or nothing at all) → finalise immediately
+        if self.riding_position_count() == 0:
             await self._finalise_graceful_stop()
+
+    def manual_hold_count(self) -> int:
+        return sum(1 for s in self.active_trades.values() if self._is_manual_hold(s))
+
+    def riding_position_count(self) -> int:
+        """Bot-managed positions that still have to reach their own exits before a graceful stop completes.
+        Manual / long-term holds are NOT counted: the bot can be OFF while they stay attached and held."""
+        return len(self.active_trades) - self.manual_hold_count()
 
     async def cancel_graceful_stop(self):
         """User pressed Start while we were in graceful-stop mode — abort the
@@ -859,7 +867,7 @@ class BotState:
         """Polls until active_trades drains, then flips enabled=False."""
         try:
             while self.stopping_gracefully:
-                if not self.active_trades:
+                if self.riding_position_count() == 0:
                     await self._finalise_graceful_stop()
                     return
                 await asyncio.sleep(2.0)
@@ -874,17 +882,22 @@ class BotState:
         self.config.enabled = False
         self.stopping_gracefully = False
         await self.save_enabled()
-        await hub.broadcast("bot_stopped", {"reason": "graceful_complete"})
+        held = self.manual_hold_count()
+        if held:
+            logger.info(f"bot OFF — {held} manual / LTH position{'s' if held != 1 else ''} stay attached and held (they re-attach on every restart and on Start)")
+        await hub.broadcast("bot_stopped", {"reason": "graceful_complete", "held_positions": held})
 
-    async def hard_stop(self):
-        """Immediate hard stop — disable trading AND force-exit every open
-        position right now. Used for emergencies or when the user can't wait
-        for natural exits."""
+    async def hard_stop(self, include_holds: bool = False):
+        """Immediate hard stop — disable trading AND force-exit every bot-managed position right now. Manual / LTH
+        holds are KEPT (still attached, still held while the bot is off) unless `include_holds=True`."""
         self.stopping_gracefully = False
         self.config.enabled = False
         await self.save_enabled()
-        mints = list(self.active_trades.keys())
-        await hub.broadcast("bot_hard_stop", {"closing": len(mints)})
+        mints = [m for m, s in self.active_trades.items() if include_holds or not self._is_manual_hold(s)]
+        kept = len(self.active_trades) - len(mints)
+        if kept:
+            logger.info(f"hard stop keeps {kept} manual / LTH position{'s' if kept != 1 else ''} attached and held")
+        await hub.broadcast("bot_hard_stop", {"closing": len(mints), "held_positions": kept})
         for mint in mints:
             try:
                 await self._exit(mint, reason="hard-stop (user requested)")

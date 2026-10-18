@@ -2793,3 +2793,11 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
 - 2026-10-18 **Manual buy on a non-leader copy → buys the leader** (user): `BotState.manual_enter` consults `trend_clusters()` (incl. 4 h wide overlay); if the clicked mint is a non-leader copy and
   the leader is not held, it seeds (if needed) and enters the LEADER as the manual hold, returning `redirected_from {mint, symbol}`; `force=true` keeps the exact copy. Toasts in
   ScannerCandidatesCard / CompactCandidates / TokenDetailDialog explain the redirect. Test in `test_trending_hunt.py`.
+
+## 2026-10-18 — Bot OFF while manual / LTH holds stay attached (user) + root `/health` probe
+- Graceful stop now finalises (`enabled=False`) once no BOT-managed position is riding — manual / LTH holds are not waited for (`riding_position_count()` vs `manual_hold_count()`);
+  with only holds open the stop is immediate. Hard stop / abort force-exit bot positions only; holds are KEPT unless `?include_holds=true`. Holds stay attached while OFF (monitors run,
+  R-only exits), and `load()` + the 15 s reconciler re-attach every `status=active` row regardless of `enabled`, so they survive restarts/deploys and are already attached on Start.
+  UI: stopping indicator "waiting on N positions · K holds kept", abort confirm mentions kept holds, nav tooltip. Tests `test_stop_keeps_holds.py` (4).
+- Deploy fix: container probe hits root `GET /health` (was 404) → `@app.get/head("/health")` returns 200 on leader and follower pods. 421s in prod logs are the intentional leader bounce.
+- Code-review pass: stable React keys (Wiki / TokenDetailDialog / CreatorGreylistPanel), ws parse-catch logging, 4 unused test vars, `/trending-names` allowed in the no-trending-feed test guard.

@@ -843,31 +843,33 @@ async def bot_start():
 
 
 @api.post("/bot/stop")
-async def bot_stop(mode: str = "graceful"):
+async def bot_stop(mode: str = "graceful", include_holds: bool = False):
     """Smart stop:
-      mode='graceful' (default) — refuse new entries; let active positions
-        ride to their natural TP/SL/trailing exits, then flip enabled=False.
-      mode='hard' — disable immediately AND force-exit every open position.
+      mode='graceful' (default) — refuse new entries; bot-managed positions ride to their natural TP/SL/trailing
+        exits, then enabled=False. Manual / LTH holds are NOT waited for: they stay attached and held while OFF.
+      mode='hard' — disable immediately AND force-exit every bot-managed position; holds are kept unless
+        include_holds=true.
     """
     if mode == "hard":
-        await bot_state.hard_stop()
-        return {"ok": True, "enabled": False, "mode": "hard"}
+        await bot_state.hard_stop(include_holds=include_holds)
+        return {"ok": True, "enabled": False, "mode": "hard", "held_positions": bot_state.manual_hold_count()}
     # Graceful path
     await bot_state.begin_graceful_stop()
     return {
         "ok": True,
         "enabled": bot_state.config.enabled,
         "stopping_gracefully": bot_state.stopping_gracefully,
-        "active_positions": len(bot_state.active_trades),
+        "active_positions": bot_state.riding_position_count(),
+        "held_positions": bot_state.manual_hold_count(),
         "mode": "graceful",
     }
 
 
 @api.post("/bot/abort")
-async def bot_abort():
+async def bot_abort(include_holds: bool = False):
     """Convenience endpoint — force hard-stop from the UI while in graceful
-    wind-down. Equivalent to POST /bot/stop?mode=hard."""
-    await bot_state.hard_stop()
+    wind-down. Equivalent to POST /bot/stop?mode=hard (holds kept unless include_holds=true)."""
+    await bot_state.hard_stop(include_holds=include_holds)
     return {"ok": True, "enabled": False, "mode": "hard"}
 
 

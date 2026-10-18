@@ -30,7 +30,7 @@ export default function NavBar({ value, onChange, badges = {}, status, onStart, 
             <button type="button" data-testid="nav-run-toggle" onClick={running ? onStop : onStart} disabled={stopping}
               className={`inline-flex items-center gap-2 px-4 py-1.5 border font-mono text-[11px] tracking-[0.2em] transition-colors duration-100 disabled:opacity-60 ${
                 running ? "border-red-800 text-red-300 hover:bg-red-950/50" : "border-emerald-800 text-emerald-300 hover:bg-emerald-950/50"}`}
-              title={stopping ? "graceful stop in progress — waiting for open positions" : running ? "graceful stop: no new entries, open positions ride to their exits" : "start the bot"}>
+              title={stopping ? "graceful stop in progress — waiting for bot-managed positions (manual / LTH holds are kept)" : running ? "graceful stop: no new entries, bot positions ride to their exits; manual / LTH holds stay attached and held while OFF" : "start the bot (held positions are already attached)"}>
               {running ? <Square className="w-3 h-3" /> : <Play className="w-3 h-3" />}
               {stopping ? "STOPPING" : running ? "STOP" : "START"}
             </button>

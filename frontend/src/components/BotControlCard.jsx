@@ -126,7 +126,8 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
 
       {(() => {
         const stopping = status?.stopping_gracefully;
-        const activeN = status?.active_trade_count || 0;
+        const heldN = status?.manual_hold_count || 0;
+        const activeN = Math.max(0, (status?.active_trade_count || 0) - heldN);
         if (stopping) {
           return (
             <div className="space-y-1">
@@ -136,7 +137,7 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
                 className="w-full flex items-center justify-center gap-2 px-3 py-2.5 border border-amber-700 text-amber-300 bg-amber-950/50 font-mono text-xs uppercase tracking-[0.2em] cursor-not-allowed"
               >
                 <Power className="w-3 h-3 animate-pulse" />
-                Stopping · waiting on {activeN} position{activeN === 1 ? "" : "s"}
+                Stopping · waiting on {activeN} position{activeN === 1 ? "" : "s"}{heldN > 0 ? ` · ${heldN} hold${heldN === 1 ? "" : "s"} kept` : ""}
               </button>
               <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-[0.15em] px-1">
                 <button
@@ -148,11 +149,11 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
                 </button>
                 <button
                   onClick={async () => {
-                    if (!window.confirm(`Force-close ${activeN} active position${activeN === 1 ? "" : "s"} right now? This skips TP/SL triggers.`)) return;
+                    if (!window.confirm(`Force-close ${activeN} bot-managed position${activeN === 1 ? "" : "s"} right now? This skips TP/SL triggers.${heldN > 0 ? ` Your ${heldN} manual / LTH hold${heldN === 1 ? "" : "s"} stay${heldN === 1 ? "s" : ""} attached and held.` : ""}`)) return;
                     try {
                       const m = await import("@/lib/api");
                       await m.api.abortBot();
-                      toast.success("Hard stop — all positions force-closed");
+                      toast.success(heldN > 0 ? `Hard stop — bot positions force-closed, ${heldN} hold${heldN === 1 ? "" : "s"} kept` : "Hard stop — all positions force-closed");
                     } catch {
                       toast.error("Abort failed");
                     }
