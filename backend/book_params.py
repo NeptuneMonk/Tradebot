@@ -86,6 +86,20 @@ def exit_param(cfg, book: str, param: str, regime: str | None = None) -> float:
     return float(v)
 
 
+def first_target_r(cfg, book: str, sl_pct_with_slip: float, regime: str | None = None) -> float | None:
+    """R distance of the FIRST cash-out, for the cost gate. Hunt with a +1R leg → 1R; `target_r` > 0 → that target;
+    otherwise TP % → TP ÷ (SL + slip); nothing at all (trail / clock only) → None = the gate checks the cost ceiling only."""
+    if book == "hunt" and exit_param(cfg, book, "ladder_1r_sell_pct", regime) > 0:
+        return 1.0
+    tr = exit_param(cfg, book, "target_r", regime)
+    if tr > 0:
+        return float(tr)
+    tp = exit_param(cfg, book, "take_profit_pct", regime)
+    if tp > 0 and float(sl_pct_with_slip) > 0:
+        return float(tp) / float(sl_pct_with_slip)
+    return None
+
+
 def book_exit_view(cfg, book: str, regime: str | None = None) -> dict:
     return {p: exit_param(cfg, book, p, regime) for p in EXIT_PARAMS + (RUNNER_PARAMS if book == "runner" else ())}
 

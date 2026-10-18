@@ -577,7 +577,8 @@ class RHPaperTrader:
                 logger.info(f"rh_paper skip {b['symbol']}: r-size — {sz['reason']}")
                 self._block_entry(token, b, "r-size", now, detail=str(sz["reason"]))
                 return
-            first_r = float(bx0["target_r"]) if bx0["target_r"] else float(bx0["take_profit_pct"]) / sz["sl_pct_with_slip"]   # RH: TP% is the first cash-out
+            from book_params import first_target_r as _ftr
+            first_r = _ftr(cfg, "rh_pons", sz["sl_pct_with_slip"])   # RH: target R, else TP% is the first cash-out, else ceiling only
             q = _cg.quote(size_usd=sz["size_usd"], r_usd=sz["r_usd"], first_target_r=first_r, protocol="rh", entry_slip_bps=tol_bps,
                           exit_slip_bps=tol_bps, fee_usd_round_trip=2 * self._paper_gas_usd(), ladder=False, depth_usd=depth_usd,
                           measured_round_trip_pct=measured_rt)
@@ -1040,8 +1041,15 @@ class RHPaperTrader:
         if price > pos["peak_price"]:
             pos["peak_price"] = price
             pos["peak_ts"] = now
-        from exits import search_dead_tape
+        from exits import search_dead_tape, dead_tape_label_step
         dead = search_dead_tape(cfg, "rh_pons", b, now, entry_ts=pos.get("opened"), trade=t)
+        if getattr(cfg, "dead_tape_mode", "label") == "label":
+            step = dead_tape_label_step(t, b, dead, now)
+            if step:
+                logger.info(f"rh_paper DEAD TAPE? {t.get('symbol') or t.get('mint', '')[:8]} {step} — holding for the operator")
+                asyncio.create_task(self.state.db.trades.update_one({"_id": t["id"]}, {"$set": {"dead_tape": t.get("dead_tape")}}))
+                asyncio.create_task(hub.broadcast("trade_update", {"id": t["id"], "mint": t.get("mint"), "dead_tape": t.get("dead_tape")}))
+            dead = None
         if dead is not None:
             return dead.reason
         if price < pos.get("trough_price", entry):
@@ -1580,6 +1588,7 @@ class RHPaperTrader:
         b = self.state.rh_discovery.tracking.get(d.get("mint")) or {}
         d["live_curve_fill_pct"] = b.get("curve_fill_pct") or 0
         d["live_usd_market_cap"] = b.get("usd_market_cap") or 0
+        d["dead_tape"] = pos["trade"].get("dead_tape")
         w = pos.get("_recovery_watch")
         if w and entry > 0:
             d["recovery_watch"] = {"stop_pct": round((w["stop"] / entry - 1.0) * 100.0, 1), "target_pct": round((w["target"] / entry - 1.0) * 100.0, 1),

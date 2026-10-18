@@ -225,6 +225,21 @@ def search_dead_tape(cfg, book: str, bucket: dict | None, now: float, *, entry_t
     return None
 
 
+def dead_tape_label_step(trade: dict, bucket: dict | None, dead, now: float) -> str | None:
+    """Label mode (default): a dead tape never closes the position — it is flagged on the row and the operator decides.
+    Mutates `trade['dead_tape']`; returns "set" when the flag goes up, "cleared" when fresh buyers / inflow revive the tape."""
+    flag = trade.get("dead_tape")
+    if dead is not None and not flag:
+        trade["dead_tape"] = {"ts": now, "reason": dead.reason}
+        return "set"
+    if dead is None and flag and bucket:
+        fresh = max(float(bucket.get("last_new_buyer_ts") or 0), float(bucket.get("last_inflow_ts") or 0))
+        if fresh > float(flag.get("ts") or 0):
+            trade["dead_tape"] = None
+            return "cleared"
+    return None
+
+
 # ---------------------------------------------------------------- recovery watch (no-momentum on a recovering red tape)
 def price_ago(samples, now: float, ago_s: float) -> float | None:
     """Price sample closest to `now - ago_s` (samples: iterable of (ts, price)); None without history that old."""

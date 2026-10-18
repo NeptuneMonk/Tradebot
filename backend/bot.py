@@ -39,7 +39,7 @@ from scanner import MomentumScanner, velocity_pct_strict
 from discovery import PumpfunDiscovery
 from rh_discovery import RHDiscovery
 from rh_paper import RHPaperTrader
-from book_params import book_for_action, book_size_mult, exit_param, FIRST_TARGET_R
+from book_params import book_for_action, book_size_mult, exit_param, first_target_r
 from helius_sender import TIP_LAMPORTS_DUAL, TIP_LAMPORTS_SWQOS
 from slippage import pool_depth_sol, auto_exit_slip_bps, recent_vol_pct, entry_slip_bps, capped as slip_capped, exit_capped
 import cost_gate
@@ -2257,10 +2257,18 @@ class BotState:
         from account_event_bus import account_event_bus as _bus
         _psf = getattr(self, "pumpswap_feed", None)
         _feed_age = (time.time() - _bus.last_notification_ts) if _bus.last_notification_ts else None
+        _label = getattr(cfg, "dead_tape_mode", "label") == "label"
         dead = exits.search_dead_tape(cfg, book, self.tracking.get(mint), time.time(), entry_ts=slot.get("_entry_ts_mono"), trade=trade_doc,
-                                      pct=None if getattr(cfg, "dead_tape_exit_on_red", False) else pct,
+                                      pct=None if (_label or getattr(cfg, "dead_tape_exit_on_red", False)) else pct,
                                       venue=_venue, venue_feed_live=((_psf.live if _psf else False) if _venue == "pumpswap" else _bus.connected),
                                       feed_age_s=_feed_age)
+        if _label:
+            step = exits.dead_tape_label_step(trade_doc, self.tracking.get(mint), dead, time.time())
+            if step:
+                logger.info(f"DEAD TAPE? {mint[:8]}… {step} — holding for the operator" + (f": {dead.reason}" if dead else " (tape revived)"))
+                asyncio.create_task(self.db.trades.update_one({"id": trade_doc.get("id")}, {"$set": {"dead_tape": trade_doc.get("dead_tape")}}))
+                asyncio.create_task(hub.broadcast("trade_update", {"id": trade_doc.get("id"), "mint": mint, "dead_tape": trade_doc.get("dead_tape")}))
+            dead = None
         manual = self._is_manual_hold(slot)
         if manual:
             d = exits.decide_manual(cfg, slot, pct)            # operator hold: R only — no SL / trail / TP / clock
@@ -2335,7 +2343,7 @@ class BotState:
                 await skip("live-doctor skip", doctor)
                 return None
         sl_pct = exit_param(cfg, book, "stop_loss_pct")
-        target_r = exit_param(cfg, book, "target_r") or 1.0
+        target_r = exit_param(cfg, book, "target_r")          # 0 = no R target (TP % / trail / clock exits only)
         exit_slip = auto_exit_slip_bps(cfg, panic=False, pool_depth_sol=depth_sol, recent_vol_pct=None)
         depth_usd = depth_sol * sol_price
         exit_slip_pct = cost_gate.expected_slip_pct(cfg.max_trade_usd, depth_usd, exit_slip)
@@ -2362,8 +2370,9 @@ class BotState:
         fee_usd = fee_sol * sol_price
         # second pass: exit slip on the PLANNED size, not cfg.max_trade_usd
         exit_slip_pct = cost_gate.expected_slip_pct(sz["size_usd"], depth_usd, exit_slip)
-        q = cost_gate.quote(size_usd=sz["size_usd"], r_usd=sz["r_usd"], first_target_r=FIRST_TARGET_R[book], protocol=protocol,
-                            entry_slip_bps=entry_slip, exit_slip_bps=exit_slip, fee_usd_round_trip=fee_usd, ladder=(book == "hunt"), depth_usd=depth_usd,
+        _ladder = book == "hunt" and exit_param(cfg, "hunt", "ladder_1r_sell_pct") > 0
+        q = cost_gate.quote(size_usd=sz["size_usd"], r_usd=sz["r_usd"], first_target_r=first_target_r(cfg, book, sz["sl_pct_with_slip"]), protocol=protocol,
+                            entry_slip_bps=entry_slip, exit_slip_bps=exit_slip, fee_usd_round_trip=fee_usd, ladder=_ladder, depth_usd=depth_usd,
                             first_leg_frac=max(0.05, exit_param(cfg, "hunt", "ladder_1r_sell_pct") / 100.0), cfg=cfg)
         if not q["cost_gate_pass"]:
             await skip("cost-gate", {"reason": q["cost_gate_reason"], **q["cost_breakdown"], "fee_sol": round(fee_sol, 8), "exit_slip_pct": round(exit_slip_pct, 3)})

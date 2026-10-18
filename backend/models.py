@@ -118,7 +118,8 @@ class BotConfig(BaseModel):
     # EMERGENT_CHANGES #2 — absolute hard stop + universal max hold that no hold layer can defer (manual holds / LTH exempt)
     hard_stop_extra_pct: float = 5.0         # pnl ≤ −(book stop_loss_pct + this) → exit NOW
     max_hold_any_book_s: int = 900           # absolute clock for every non-manual position (0 = off)
-    dead_tape_exit_on_red: bool = True       # search_dead_tape may also close red positions
+    dead_tape_exit_on_red: bool = True       # (exit mode only) search_dead_tape may also close red positions
+    dead_tape_mode: Literal["label", "exit"] = "label"   # label = flag "DEAD TAPE?" on the row and HOLD — the operator decides · exit = close it
     # EMERGENT_CHANGES #3 — CU limits ≈ 1.2× measured use, fee caps scaled to position size, cheaper tips on normal exits
     cu_limit_pumpfun_buy: int = 135_000
     cu_limit_pumpswap_buy: int = 150_000

@@ -10,7 +10,8 @@ const GROUPS = [
     { key: "exit_requote_every_attempt", label: "Re-quote every attempt", type: "bool", hint: "Fresh curve/pool read before every exit attempt." },
     { key: "hard_stop_extra_pct", label: "Hard stop extra %", type: "float", step: 1, hint: "pnl ≤ −(book stop + this) exits NOW, bypassing every delay layer." },
     { key: "max_hold_any_book_s", label: "Max hold any book (s)", type: "int", step: 60, hint: "Absolute clock for every non-manual position, from the PERSISTED entry time (survives restarts). 0 = off." },
-    { key: "dead_tape_exit_on_red", label: "Dead tape exits red", type: "bool", hint: "search_dead_tape may close red positions too." },
+    { key: "dead_tape_mode", label: "Dead tape", type: "enum", options: ["label", "exit"], hint: "label = flag the row \"DEAD TAPE?\" and HOLD — you decide · exit = close the position automatically." },
+    { key: "dead_tape_exit_on_red", label: "Dead tape exits red (exit mode)", type: "bool", hint: "Exit mode only: search_dead_tape may close red positions too." },
   ]},
   { title: "Compute & fees", fields: [
     { key: "cu_limit_pumpfun_buy", label: "CU pump.fun buy", type: "int", step: 5000 },

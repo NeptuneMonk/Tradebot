@@ -6,6 +6,7 @@ import { useWebSocket } from "@/lib/useWebSocket";
 import StatusBanner from "@/components/StatusBanner";
 import HaltBanner from "@/components/HaltBanner";
 import ReadinessBanner from "@/components/ReadinessBanner";
+import ConfigWarningsBanner from "@/components/ConfigWarningsBanner";
 import PodPill from "@/components/PodPill";
 import ScorecardPanel from "@/components/ScorecardPanel";
 import WalletCard from "@/components/WalletCard";
@@ -567,6 +568,7 @@ export default function Dashboard() {
       <StatusBanner status={status} onResetKill={onResetKill} />
       <HaltBanner />
       <ReadinessBanner onChanged={refreshAll} />
+      <ConfigWarningsBanner config={config} />
       <NavBar value={view} onChange={pickView} status={status} onStart={onStart} onStop={onStop} badges={navBadges} />
 
       <main className="max-w-[1600px] mx-auto p-4 space-y-4 pb-16">

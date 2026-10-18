@@ -2731,3 +2731,15 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   so 0 silently became 0.1 and with SL 95 % the stake collapsed to ≈$2.5. Now 0 is honoured: `r_sizer.size_trade` returns a FIXED stake = max_trade_usd × book×doctor×governor
   (`r_usd` still = real cash at risk, `r_usd_nominal`=0, reason "fixed stake (R sizing off)"); `BankrollEngine.derive/derive_rh` leave max_trade alone when risk=0 (kill switch still derived).
   Tests `test_r_sizing_off.py` (4) + `test_creator_verdict.py` updated (8). `test_dev_watch` 2 failures are the known feed-OFF environment ones.
+
+## 2026-10-18 — Dead tape → LABEL not exit · target_r=0 no longer R-gates entries · config dead-state warnings
+- **Dead tape (user: "hold it and I decide")**: `dead_tape_mode: label|exit` (default **label**). `exits.dead_tape_label_step()` flags `trade.dead_tape={ts,reason}` (persisted, `trade_update` broadcast)
+  and the position is HELD; price exits (SL/TP/trail/clock) still apply. Flag auto-clears when a new buyer / inflow arrives after the flag. Both Solana (`bot.py`) and RH (`rh_paper._decide_exit`).
+  UI: pulsing orange `DEAD TAPE?` chip on the active row (`dead-tape-badge-<mint>`, tooltip = reason + age); Execution-safety panel has the mode select. Verified live: 3 of 11 open positions flagged, none closed.
+- **target_r = 0 was still gating on R**: root cause `bot._plan_entry` passed the hard-coded `FIRST_TARGET_R[book]` (1.5/1.0) to the cost gate ("first target X% < 2× cost"). New `book_params.first_target_r(cfg, book, sl_with_slip)`:
+  hunt with a +1R leg → 1R; `target_r>0` → that; else TP% → TP÷(SL+slip); nothing → **None → cost gate checks the round-trip ceiling only** (`cost_gate.quote` accepts None, `expected_target_pct=None`,
+  reason "pass (no R target / TP — ceiling only)"). `ladder=` is only true when a hunt leg > 0. RH entry uses the same helper. Trade stamps `target_r` as 0 (was `or 1.0`).
+- **Config dead-state warnings**: `config_health.config_warnings()` + `GET /api/config/warnings` + amber `ConfigWarningsBanner` under the readiness strip (polls 30 s, re-checks on config change).
+  Rules: smart wallets ON + hard mode + hourly cap 0 (dead) · no wallet to follow · min-buy SOL > 2 (warn) · per book: r-size/fixed stake < min trade (dead), book mult 0, no profit exit at all (warn).
+  (The handoff's `smart_wallet_min_buy_usd` knob does not exist — the min-buy is in SOL and unrelated to max trade; the real dead-states above are covered instead.)
+- Tests `test_no_r_gate_dead_tape_label.py` (4). Full suite: 948 passed; 2 known env-value failures (graduated feed off, regime_gate_mult) + test_dev_watch feed-OFF ones.

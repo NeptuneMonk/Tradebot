@@ -1245,6 +1245,22 @@ async def scorecard_toggle(req: _CellToggle):
     return {"ok": True, "cell": req.cell, "disabled": req.disabled}
 
 
+@api.get("/config/warnings")
+async def config_warnings_view():
+    """Dead-state detector: valid-looking settings that together mean an entry path can never fire."""
+    from config_health import config_warnings
+    cfg = bot_state.config
+    bank = 0.0
+    try:
+        bank, _ = await bot_state.bankroll.bankroll_usd("sol")
+    except Exception:
+        bank = float(cfg.paper_bankroll_usd)
+    sw = bot_state.smart_wallets
+    learned = sum(1 for s in sw.learned.values() if sw._promoted(s))
+    return {"warnings": config_warnings(cfg, bankroll_usd=bank, manual_smart_wallets=len(sw.manual), learned_smart_wallets=learned),
+            "bankroll_usd": round(bank, 2)}
+
+
 @api.post("/book_exits/restore_defaults")
 async def book_exits_restore_defaults():
     bx = await bot_state.reset_book_exits("operator")
@@ -2271,6 +2287,7 @@ async def trades_active():
         if not slot:
             continue
         d["risk_score"] = slot["trade"].get("risk_score", d.get("risk_score", 50))
+        d["dead_tape"] = slot["trade"].get("dead_tape")
         # Pull the freshest price the monitor has cached. `peak_price_sol`
         # only tracks the high-water mark, but `_last_price_sol` is updated
         # every monitor tick (added below). Fallback chain handles both old

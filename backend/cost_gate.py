@@ -29,12 +29,13 @@ def _cfgv(cfg, key: str, default: float) -> float:
     return v
 
 
-def quote(*, size_usd: float, r_usd: float, first_target_r: float, protocol: str,
+def quote(*, size_usd: float, r_usd: float, first_target_r: float | None, protocol: str,
           entry_slip_bps: int, exit_slip_bps: int, fee_usd_round_trip: float, ladder: bool, depth_usd: float = 0.0,
           first_leg_frac: float = 0.35, measured_round_trip_pct: float | None = None, cfg=None) -> dict:
     """Friction that the FIRST cash-out must clear. Hunt: entry on the full bag + exit of the first ladder leg
     only (entry slip/fee on size, exit slip/fee/shave on size × first_leg_frac). Scalp / RH: full round trip.
-    `measured_round_trip_pct` (e.g. the V4Quoter buy→sell at our size) replaces the modelled slip + protocol take."""
+    `measured_round_trip_pct` (e.g. the V4Quoter buy→sell at our size) replaces the modelled slip + protocol take.
+    `first_target_r=None` (no R target, no TP — trail / clock only) → no payoff check, the cost ceiling alone decides."""
     size_usd = max(float(size_usd), 1e-9)
     leg = size_usd * (first_leg_frac if ladder else 1.0)
     # EMERGENT_CHANGES #4 — operator-tunable figures; module constants are the fallbacks
@@ -55,17 +56,19 @@ def quote(*, size_usd: float, r_usd: float, first_target_r: float, protocol: str
     failed_usd = size_usd * failed_pct / 100.0
     cost_usd = slip_usd + proto_usd + shave_usd + fee_usd_round_trip + failed_usd
     cost_pct = cost_usd / size_usd * 100.0
-    target_pct = first_target_r * r_usd / size_usd * 100.0
+    target_pct = (float(first_target_r) * r_usd / size_usd * 100.0) if first_target_r is not None and first_target_r > 0 else None
     ceiling = MAX_ROUND_TRIP_PCT_MEASURED if measured_round_trip_pct is not None else (MAX_ROUND_TRIP_PCT_RH if protocol == "rh" else max_rt)
-    ok = cost_pct <= ceiling and target_pct >= cost_mult * cost_pct
+    ok = cost_pct <= ceiling and (target_pct is None or target_pct >= cost_mult * cost_pct)
     if cost_pct > ceiling:
         reason = f"round-trip cost {cost_pct:.1f}% > {ceiling:g}% ceiling"
     elif not ok:
         reason = f"first target {target_pct:.1f}% < {cost_mult:g}× cost {cost_pct:.1f}%"
+    elif target_pct is None:
+        reason = "pass (no R target / TP — ceiling only)"
     else:
         reason = "pass"
     return {"expected_cost_pct": round(cost_pct, 3), "expected_cost_usd": round(cost_usd, 4),
-            "expected_target_pct": round(target_pct, 3), "cost_gate_pass": ok, "cost_gate_reason": reason,
+            "expected_target_pct": round(target_pct, 3) if target_pct is not None else None, "cost_gate_pass": ok, "cost_gate_reason": reason,
             "cost_breakdown": {"slip_pct": round(slip_usd / size_usd * 100, 3), "fee_pct": round(fee_usd_round_trip / size_usd * 100, 3),
                                "protocol_pct": round(proto_usd / size_usd * 100, 3), "shave_pct": round(shave_usd / size_usd * 100, 3),
                                "failed_pct": round(failed_usd / size_usd * 100, 3), "measured": measured_round_trip_pct is not None}}
