@@ -4120,6 +4120,14 @@ async def pod_relay_middleware(request: Request, call_next):
 
 app.include_router(api)
 
+
+@app.get("/health", include_in_schema=False)
+@app.head("/health", include_in_schema=False)
+async def health_probe():
+    """Container liveness/readiness probe (hits the root path, not /api). Always 200 while the process serves —
+    on a follower pod too, since a follower is a healthy replica that relays to the leader."""
+    return {"ok": True, "role": ("leader" if singleton.is_leader else "follower") if singleton is not None else "single"}
+
 POD_HEADERS = ["X-Pod-Role", "X-Pod-Id", "X-Pod-Retry", "X-Pod-Relayed", "X-Pod-Leader"]
 _cors_env = os.environ.get("CORS_ORIGINS", "*").strip()
 if _cors_env == "*" or not _cors_env:
