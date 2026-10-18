@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Activity, AlertTriangle, X } from "lucide-react";
+import { Activity, X } from "lucide-react";
 import { ChainBadge } from "./ChainBadge";
 import { TradeTicket } from "./TradeTicket";
 import { fillTone, paidFillTitle } from "@/lib/fillCost";
@@ -45,13 +45,6 @@ function ActiveTradesTable({ trades, onExit }) {
                     >pons → v4</span>
                   )}
                   {t.book === "runner" && <RunnerBadge t={t} />}
-                  {t.dead_tape && (
-                    <span data-testid={`dead-tape-badge-${t.mint}`}
-                      title={`Held for your decision — ${t.dead_tape.reason || "no new buyer / inflow"}${t.dead_tape.ts ? ` · flagged ${Math.max(0, Math.round((Date.now() / 1000 - t.dead_tape.ts) / 60))} min ago` : ""}. The bot will NOT close this on dead tape; price exits (SL / TP / trail) still apply. Use Exit to sell.`}
-                      className="mr-1.5 inline-flex items-center gap-1 px-1 py-0 border border-orange-600 text-orange-300 bg-orange-950/40 text-[9px] font-mono align-middle animate-pulse">
-                      <AlertTriangle className="w-2.5 h-2.5" /> DEAD TAPE?
-                    </span>
-                  )}
                   {t.venue_stage && t.venue_stage !== "pumpswap" && (
                     <span data-testid={`venue-stage-${t.mint}`} title="Curve finished — tokens held, waiting for the PumpSwap pool. No PnL is booked until a real AMM fill."
                       className="mr-1.5 px-1 py-0 border border-amber-700 text-amber-300 bg-amber-950/40 text-[9px] font-mono align-middle">

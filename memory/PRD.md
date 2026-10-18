@@ -2743,3 +2743,6 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   Rules: smart wallets ON + hard mode + hourly cap 0 (dead) · no wallet to follow · min-buy SOL > 2 (warn) · per book: r-size/fixed stake < min trade (dead), book mult 0, no profit exit at all (warn).
   (The handoff's `smart_wallet_min_buy_usd` knob does not exist — the min-buy is in SOL and unrelated to max trade; the real dead-states above are covered instead.)
 - Tests `test_no_r_gate_dead_tape_label.py` (4). Full suite: 948 passed; 2 known env-value failures (graduated feed off, regime_gate_mult) + test_dev_watch feed-OFF ones.
+- 2026-10-18 **Dead-tape chip actions**: the `DEAD TAPE?` chip now lives on the cockpit row (`cockpit/ActiveTradesCockpit.jsx` — the legacy `ActiveTradesTable.jsx` is unused) with
+  `sell` (= existing market exit) and `dismiss` buttons (`dead-tape-sell-<mint>` / `dead-tape-dismiss-<mint>`). `POST /api/trades/{id}/dead-tape/dismiss` clears the flag and stamps
+  `dead_tape_dismissed_ts`; `dead_tape_label_step` stays quiet for that dead spell and only re-flags after the tape revives (new buyer / inflow) and dies again. Verified live on a flagged position.

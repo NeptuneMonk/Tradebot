@@ -435,6 +435,15 @@ export default function Dashboard() {
       toast.error(e?.response?.data?.detail || "LTH toggle failed");
     }
   }, []);
+  const onDismissDeadTape = useCallback(async (id) => {
+    try {
+      await api.dismissDeadTape(id);
+      setActiveTrades((prev) => prev.map((t) => (t.id === id ? { ...t, dead_tape: null } : t)));
+      toast.success("Dead-tape flag dismissed — still holding");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Dismiss failed");
+    }
+  }, []);
   const onAddToTrade = useCallback(async (t) => {
     const last = localStorage.getItem("lth_add_usd") || "1";
     const raw = window.prompt(`Add to ${t.symbol || t.mint?.slice(0, 8)} — USD amount to buy at market (${t.mode === "live" ? "LIVE, real SOL" : "paper"}):`, last);
@@ -583,7 +592,7 @@ export default function Dashboard() {
           <div key="live" className="space-y-4" data-testid="view-live">
             <div className="tile-in"><KpiStrip wallet={wallet} status={status} config={config} auto={auto} pl={pl} /></div>
             <div className="grid grid-cols-1 lg:grid-cols-[1.15fr_1fr] gap-4 items-stretch" data-testid="cockpit-grid">
-              <div className="tile-in" style={{ animationDelay: "60ms" }}><ActiveTradesCockpit trades={activeTrades} onExit={onExitTrade} onLth={onLthTrade} onAdd={onAddToTrade} /></div>
+              <div className="tile-in" style={{ animationDelay: "60ms" }}><ActiveTradesCockpit trades={activeTrades} onExit={onExitTrade} onLth={onLthTrade} onAdd={onAddToTrade} onDismissDeadTape={onDismissDeadTape} /></div>
               <div className="tile-in" style={{ animationDelay: "120ms" }}><EquityPanel refreshKey={pl?.cumulative_usd} /></div>
               <div className="tile-in" style={{ animationDelay: "180ms" }}><CompactCandidates candidates={scanner} scannerEnabled={scannerEnabled} onEnableScanner={onEnableScanner} /></div>
               <div className="tile-in" style={{ animationDelay: "240ms" }}>

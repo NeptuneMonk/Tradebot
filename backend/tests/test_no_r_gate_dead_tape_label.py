@@ -55,6 +55,14 @@ def test_dead_tape_label_step_sets_and_clears_without_exit():
     assert BotConfig().dead_tape_mode == "label"
 
 
+def test_dead_tape_dismiss_suppresses_reflag_until_tape_revives():
+    dead = exits.ExitDecision("exit", "search-dead-tape: no new buyer / inflow for 31s (≥30s)")
+    t = {"id": "x", "dead_tape": None, "dead_tape_dismissed_ts": 200.0}      # operator dismissed at t=200
+    assert exits.dead_tape_label_step(t, {"last_new_buyer_ts": 100.0}, dead, 231.0) is None   # same dead spell → stays quiet
+    assert exits.dead_tape_label_step(t, {"last_new_buyer_ts": 250.0}, None, 251.0) is None   # tape revived (nothing to clear)
+    assert exits.dead_tape_label_step(t, {"last_new_buyer_ts": 250.0}, dead, 281.0) == "set"  # died again → re-flagged
+
+
 def test_config_warnings_flag_dead_states():
     base = BotConfig(max_trade_usd=15.0, min_trade_usd=2.5, risk_per_trade_pct=0.0, smart_wallet_enabled=True, smart_wallet_mode="both")
     ok = config_warnings(base, bankroll_usd=100.0, manual_smart_wallets=1)

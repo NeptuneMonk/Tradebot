@@ -68,6 +68,7 @@ export const api = {
   tradeExportCsv: (book, mode, days = 0) => client.get(`/trades/export.csv?days=${days}${book && book !== "all" ? `&book=${book}` : ""}${mode ? `&mode=${mode}` : ""}`, { responseType: "blob" }),
   exitTrade: (id) => client.post(`/trades/${id}/exit`).then(r => r.data),
   setLongTermHold: (id, on) => client.post(`/trades/${id}/lth`, { on }).then(r => r.data),
+  dismissDeadTape: (id) => client.post(`/trades/${id}/dead-tape/dismiss`).then(r => r.data),
   addToPosition: (id, usd) => longClient.post(`/trades/${id}/add`, { usd }).then(r => r.data),
   // live buys wait for send + confirm → long timeout; the refusal text comes back as the 409 detail
   scannerManualBuy: (mint, force = false) => longClient.post(`/scanner/manual-buy/${mint}${force ? "?force=true" : ""}`).then(r => r.data),

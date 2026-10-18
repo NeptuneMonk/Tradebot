@@ -2442,6 +2442,26 @@ async def trades_export_csv(book: str | None = None, mode: str | None = None, da
                               headers={"Content-Disposition": f'attachment; filename="{name}"', "X-Row-Count": str(len(rows))})
 
 
+@api.post("/trades/{trade_id}/dead-tape/dismiss")
+async def trades_dead_tape_dismiss(trade_id: str):
+    """Operator looked at a DEAD TAPE? flag and decided to keep holding: clear it; it only re-flags after the tape revives and dies again."""
+    trade = await db.trades.find_one({"_id": trade_id}, {"mint": 1, "chain": 1, "status": 1, "symbol": 1})
+    if not trade:
+        raise HTTPException(404, "Trade not found")
+    if trade.get("status") != "active":
+        raise HTTPException(400, "Trade not active")
+    now = time.time()
+    await db.trades.update_one({"_id": trade_id}, {"$set": {"dead_tape": None, "dead_tape_dismissed_ts": now}})
+    mint = trade["mint"]
+    live = bot_state.rh_paper.positions.get(mint) if trade.get("chain") == "rh" else bot_state.active_trades.get(mint)
+    t = (live or {}).get("trade") or {}
+    if t.get("id", trade_id) == trade_id:
+        t["dead_tape"], t["dead_tape_dismissed_ts"] = None, now
+    logger.info(f"DEAD TAPE? dismissed by operator for {trade.get('symbol')} {mint[:8]}…")
+    await hub.broadcast("trade_update", {"id": trade_id, "mint": mint, "dead_tape": None})
+    return {"ok": True}
+
+
 @api.post("/trades/{trade_id}/lth")
 async def trades_long_term_hold(trade_id: str, body: LTHBody):
     """Toggle LONG-TERM HOLD on any open position: every automatic exit (SL / trail / TP / clock / momentum / rip-cord /

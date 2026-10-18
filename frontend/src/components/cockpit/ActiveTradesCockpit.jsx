@@ -1,6 +1,6 @@
 import { memo, useState } from "react";
 import { RepBadge } from "../RepBadge";
-import { X } from "lucide-react";
+import { AlertTriangle, X } from "lucide-react";
 import { TokenDetailDialog } from "../TokenDetailDialog";
 import { fillTone, paidFillTitle } from "@/lib/fillCost";
 
@@ -108,7 +108,24 @@ function NetCell({ t }) {
   );
 }
 
-function Row({ t, onExit, onOpen, onLth, onAdd }) {
+function DeadTapeChip({ t, onExit, onDismiss }) {
+  const d = t.dead_tape;
+  if (!d) return null;
+  const age = d.ts ? Math.max(0, Math.round((Date.now() / 1000 - d.ts) / 60)) : null;
+  return (
+    <span data-testid={`dead-tape-badge-${t.mint}`}
+      title={`Held for your decision — ${d.reason || "no new buyer / inflow"}${age != null ? ` · flagged ${age} min ago` : ""}.\nThe bot will NOT close this on dead tape; price exits (SL / TP / trail) still apply.\nSELL = market exit now · DISMISS = keep holding, re-flags only if the tape revives and dies again.`}
+      className="ml-1 inline-flex items-center gap-1 px-1 py-0.5 border border-orange-600 text-orange-300 bg-orange-950/40 text-[9px] font-mono align-middle">
+      <AlertTriangle className="w-2.5 h-2.5 animate-pulse" /> DEAD TAPE?
+      <button onClick={() => onExit(t.id)} data-testid={`dead-tape-sell-${t.mint}`}
+        className="px-1 border border-red-700 text-red-300 hover:bg-red-950 uppercase tracking-[0.1em] transition-colors duration-100" title="Sell now (market exit)">sell</button>
+      <button onClick={() => onDismiss(t.id)} data-testid={`dead-tape-dismiss-${t.mint}`}
+        className="px-1 border border-neutral-600 text-neutral-300 hover:bg-neutral-800 uppercase tracking-[0.1em] transition-colors duration-100" title="Keep holding — clear the flag">dismiss</button>
+    </span>
+  );
+}
+
+function Row({ t, onExit, onOpen, onLth, onAdd, onDismissDeadTape }) {
   const pnl = t.unrealized_pnl_pct;
   const inv = investedParts(t);
   const book = t.book || (t.chain === "rh" ? "rh_pons" : "scalp");
@@ -124,7 +141,8 @@ function Row({ t, onExit, onOpen, onLth, onAdd }) {
                  title={t.dev_watch || t.classifier_action === "dev_watch" ? "CRAZY-dev watch: auto-bought at min stake with no gates — long-term hold, you exit with ✕" : undefined}>
                  {t.dev_watch || t.classifier_action === "dev_watch" ? "DEV WATCH" : "LTH"}</span>
              : manual && <span className="ml-1 px-1 py-0.5 border border-fuchsia-700 text-fuchsia-300 text-[9px] font-mono" data-testid={`active-manual-badge-${t.mint}`}>HOLD</span>}
-        {t.mode === "live" && <span className="ml-1 px-1 py-0.5 border border-red-800 text-red-300 text-[9px] font-mono">LIVE</span>}</td>
+        {t.mode === "live" && <span className="ml-1 px-1 py-0.5 border border-red-800 text-red-300 text-[9px] font-mono">LIVE</span>}
+        <DeadTapeChip t={t} onExit={onExit} onDismiss={onDismissDeadTape} /></td>
       <td className="font-mono text-xs"><span className="text-neutral-100">{t.symbol || "—"}</span> <span className="text-neutral-600 text-[10px]">{t.chain === "rh" ? "rh" : "sol"}</span> {t.chain !== "rh" && <RepBadge mint={t.mint} creator={t.creator} compact />}
         {t.fill_cost_pct != null && (
           <span data-testid={`active-fill-${t.mint}`} title={paidFillTitle(t)}
@@ -165,7 +183,7 @@ function Row({ t, onExit, onOpen, onLth, onAdd }) {
   );
 }
 
-function ActiveTradesCockpit({ trades, onExit, onLth, onAdd }) {
+function ActiveTradesCockpit({ trades, onExit, onLth, onAdd, onDismissDeadTape }) {
   const [detail, setDetail] = useState(null);
   const auto = trades.filter((t) => !isManualHold(t));
   const manual = trades.filter(isManualHold);
@@ -186,13 +204,13 @@ function ActiveTradesCockpit({ trades, onExit, onLth, onAdd }) {
           </thead>
           <tbody>
             {trades.length === 0 && <tr><td colSpan="8" className="text-center py-8 text-[10px] uppercase tracking-[0.2em] text-neutral-600">no active positions</td></tr>}
-            {auto.map((t) => <Row key={t.id} t={t} onExit={onExit} onLth={onLth} onAdd={onAdd} onOpen={setDetail} />)}
+            {auto.map((t) => <Row key={t.id} t={t} onExit={onExit} onLth={onLth} onAdd={onAdd} onOpen={setDetail} onDismissDeadTape={onDismissDeadTape} />)}
             {manual.length > 0 && (
               <tr data-testid="manual-holds-divider"><td colSpan="8" className="py-1 pl-3 text-[9px] uppercase tracking-[0.2em] text-fuchsia-400/80 bg-fuchsia-950/20 border-y border-fuchsia-900/40"
                 title="Operator buys (Buy Now / Graduate Ladder) and LTH positions. R-only exits (manual) or ✕-only (LTH) — no clock, no momentum kill, not counted toward max positions.">
                 manual holds · {manual.length} · outside max positions{manual.some(isLTH) ? <span className="text-sky-400"> · {manual.filter(isLTH).length} LTH</span> : null}</td></tr>
             )}
-            {manual.map((t) => <Row key={t.id} t={t} onExit={onExit} onLth={onLth} onAdd={onAdd} onOpen={setDetail} />)}
+            {manual.map((t) => <Row key={t.id} t={t} onExit={onExit} onLth={onLth} onAdd={onAdd} onOpen={setDetail} onDismissDeadTape={onDismissDeadTape} />)}
           </tbody>
         </table>
       </div>
