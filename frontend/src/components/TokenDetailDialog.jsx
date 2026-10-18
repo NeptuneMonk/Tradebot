@@ -129,7 +129,7 @@ export function TokenDetailDialog({ token, onClose }) {
                   ) : <span className="text-neutral-600">unavailable</span>}
                 </div>
                 {(data.rugcheck?.risks || []).slice(0, 6).map((r, i) => (
-                  <div key={i} className="text-[10px] font-mono text-neutral-400 flex gap-2">
+                  <div key={`${r.name || "risk"}-${r.level || ""}-${i}`} className="text-[10px] font-mono text-neutral-400 flex gap-2">
                     <span className={r.level === "danger" ? "text-red-400" : r.level === "warn" ? "text-amber-300" : "text-neutral-500"}>{r.level}</span>
                     <span className="text-neutral-300">{r.name}</span>
                   </div>

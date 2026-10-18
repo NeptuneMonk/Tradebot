@@ -86,7 +86,7 @@ def test_sell_approves_curve_before_selling_when_allowance_missing(monkeypatch):
     """Verified on-chain 2026-09-07: every direct PONS seller approve()s the curve first;
     our 3 live sells reverted with allowance=0. sell(token=...) must approve, then sell."""
     calls = []
-    me = rh_wallet.address()
+    rh_wallet.address()
     curve, token = "0x59bfc19200000000000000000000000000000001", "0x71880db900000000000000000000000000000002"
 
     async def fake_allowance(tok, spender, owner=None):

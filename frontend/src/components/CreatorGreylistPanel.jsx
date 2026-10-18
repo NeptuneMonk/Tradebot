@@ -191,7 +191,7 @@ function CreatorDetail({ creator }) {
             {(profile.pattern_evidence || []).length > 0 && (
               <ul className="text-[10px] text-neutral-400 space-y-0.5 list-disc list-inside">
                 {(profile.pattern_evidence || []).map((e, i) => (
-                  <li key={i}>{e}</li>
+                  <li key={`${i}-${String(e).slice(0, 32)}`}>{e}</li>
                 ))}
               </ul>
             )}
@@ -300,7 +300,7 @@ function CreatorDetail({ creator }) {
         ) : (
           <ul className="space-y-1 max-h-32 overflow-y-auto mb-3">
             {recentTrades.slice(0, 8).map((t, i) => (
-              <li key={i} className="flex items-center justify-between border border-neutral-800 px-2 py-1">
+              <li key={t.id || `${t.mint}-${t.exit_time || t.entry_time || i}`} className="flex items-center justify-between border border-neutral-800 px-2 py-1">
                 <span className="text-neutral-300">{t.symbol || short(t.mint)}</span>
                 <span
                   className={

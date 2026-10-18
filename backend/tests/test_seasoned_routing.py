@@ -89,9 +89,9 @@ def test_classifier_unused_on_pumpswap_and_no_trending_clients():
     src = Path(__file__).resolve().parents[1]
     bot_src = (src / "bot.py").read_text()
     assert 'if is_new_band and protocol == "pumpfun" and not bypass_gates:' in bot_src
-    text = "".join(p.read_text() for p in src.glob("*.py"))
+    text = "".join(p.read_text() for p in src.glob("*.py")).lower().replace("/trending-names", "")   # our own route, not an external trending feed
     for needle in ("birdeye", "/trending"):
-        assert needle not in text.lower(), needle
+        assert needle not in text, needle
     # DexScreener is allowed for on-demand operator views (token drawer, manual-pin metadata) and, since the
     # alive-by-inflow window discovery (2026-10-06), for discovery's volume check — never for gating or entry decisions.
     for f in ("scanner.py", "bot.py", "rh_discovery.py", "rh_paper.py", "classifier.py"):
@@ -102,8 +102,6 @@ def test_seasoned_buyers_gate_treats_unknown_buy_count_as_unknown_not_zero():
     """Pump.fun's v3 API dropped `buy_count`; Helius doesn't cover PumpSwap swaps → seasoned buyer count is unknown.
     The gate must not reject every seasoned candidate as `0 buyers`."""
     import discovery
-    coin = {"mint": "M", "creator": "C", "symbol": "S", "name": "n", "complete": True, "pump_swap_pool": "P",
-            "virtual_sol_reserves": 0, "real_sol_reserves": 0, "usd_market_cap": 50_000, "created_timestamp": 0}
     src = Path(__file__).resolve().parents[1].joinpath("discovery.py").read_text()
     assert '"buy_count": int(coin["buy_count"]) if coin.get("buy_count") is not None else None' in src
     bsrc = Path(__file__).resolve().parents[1].joinpath("bot.py").read_text()

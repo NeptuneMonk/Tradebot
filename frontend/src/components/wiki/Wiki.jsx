@@ -16,7 +16,7 @@ const HL = "bg-emerald-950/50 ring-1 ring-emerald-600";
 function Block({ b, hl }) {
   if (b.t === "p") return <p className="text-sm text-neutral-300 leading-relaxed">{b.v}</p>;
   if (b.t === "h") return <h4 className="text-[11px] font-mono uppercase tracking-[0.2em] text-emerald-300 pt-2">{b.v}</h4>;
-  if (b.t === "ul") return <ul className="space-y-1.5 text-sm text-neutral-300 leading-relaxed list-none">{b.v.map((x, i) => <li key={i} data-wiki-hit={hit(hl, x) || undefined} className={`pl-4 relative before:content-['▸'] before:absolute before:left-0 before:text-emerald-500 ${hit(hl, x) ? HL : ""}`}>{x}</li>)}</ul>;
+  if (b.t === "ul") return <ul className="space-y-1.5 text-sm text-neutral-300 leading-relaxed list-none">{b.v.map((x, i) => <li key={`${i}-${String(x).slice(0, 24)}`} data-wiki-hit={hit(hl, x) || undefined} className={`pl-4 relative before:content-['▸'] before:absolute before:left-0 before:text-emerald-500 ${hit(hl, x) ? HL : ""}`}>{x}</li>)}</ul>;
   if (b.t === "tip") return <div className="flex gap-2 border border-emerald-900/60 bg-emerald-950/20 p-3 text-sm text-emerald-100"><Lightbulb className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />{b.v}</div>;
   if (b.t === "warn") return <div className="flex gap-2 border border-amber-900/60 bg-amber-950/20 p-3 text-sm text-amber-100"><AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />{b.v}</div>;
   if (b.t === "kv") return (
@@ -28,7 +28,7 @@ function Block({ b, hl }) {
     <div className="overflow-x-auto border border-neutral-800">
       <table className="w-full text-xs">
         <thead><tr className="text-[9px] uppercase tracking-[0.2em] text-neutral-500 border-b border-neutral-800">{b.cols.map((c) => <th key={c} className="text-left font-normal px-3 py-2">{c}</th>)}</tr></thead>
-        <tbody>{b.rows.map((r, i) => <tr key={i} data-wiki-hit={hit(hl, ...r) || undefined} className={`border-b border-neutral-900 align-top ${hit(hl, ...r) ? HL : ""}`}>{r.map((c, j) => <td key={j} className={`px-3 py-2 ${j === 0 ? "font-mono text-neutral-100 whitespace-nowrap" : "text-neutral-400"}`}>{c}</td>)}</tr>)}</tbody>
+        <tbody>{b.rows.map((r, i) => <tr key={`${i}-${String(r[0]).slice(0, 24)}`} data-wiki-hit={hit(hl, ...r) || undefined} className={`border-b border-neutral-900 align-top ${hit(hl, ...r) ? HL : ""}`}>{r.map((c, j) => <td key={j} className={`px-3 py-2 ${j === 0 ? "font-mono text-neutral-100 whitespace-nowrap" : "text-neutral-400"}`}>{c}</td>)}</tr>)}</tbody>
       </table>
     </div>
   );
@@ -88,7 +88,7 @@ export default function Wiki() {
           <section key={s.id} id={`wiki-${s.id}`} className="control-card space-y-4 scroll-mt-[120px]" data-testid={`wiki-section-${s.id}`}>
             <div className="text-[9px] uppercase tracking-[0.2em] text-neutral-500">{s.group}</div>
             <h3 className="text-base md:text-lg font-mono text-neutral-100 tracking-wide">{s.title}</h3>
-            {s.body.map((b, i) => <Block key={i} b={b} hl={s.id === active ? hl : ""} />)}
+            {s.body.map((b, i) => <Block key={`${s.id}-${b.t}-${i}`} b={b} hl={s.id === active ? hl : ""} />)}
           </section>
         ))}
         {shown.length === 0 && <div className="text-sm text-neutral-500">Nothing matches — try a gate name (e.g. “liquidity”), an exit (“trailing”), or a word from the skip ticker.</div>}

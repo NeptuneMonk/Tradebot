@@ -90,7 +90,7 @@ def test_paper_buy_fills_at_fill_block_price_with_own_impact_and_rejects_stale_d
     now = time.time()
     b = hot_bucket(st.rh_discovery, now, price=6.289e-9)
     st.rh_discovery.stats["head"] = 100
-    V, K0 = 1.68, 1.68e9
+    _V, K0 = 1.68, 1.68e9
     b.update(curve_a=(6.289e-9 * K0) ** 0.5, curve_k0=K0)
     # 1) graduated before the fill block → rejected, slot released
     asyncio.run(st.rh_paper._enter(TOKEN))

@@ -44,7 +44,7 @@ export function useWebSocket(onEvent) {
         const data = JSON.parse(msg.data);
         if (data?.type === "pod") { setRole(data.data?.role || null); return; }
         handlerRef.current && handlerRef.current(data);
-      } catch (e) { /* ignore */ }
+      } catch (e) { console.debug("ws: dropped malformed frame", e?.message || e); }
     };
   }, []);
 
@@ -95,7 +95,7 @@ export function useWebSocket(onEvent) {
     probeRef.current = probe;
     probe.onmessage = (msg) => {
       let data = null;
-      try { data = JSON.parse(msg.data); } catch { return; }
+      try { data = JSON.parse(msg.data); } catch (e) { console.debug("ws probe: malformed frame", e?.message || e); return; }
       if (data?.type !== "pod" || probeRef.current !== probe) return;
       probeRef.current = null;
       if (data.data?.role !== "leader") { try { probe.close(); } catch {} return; }

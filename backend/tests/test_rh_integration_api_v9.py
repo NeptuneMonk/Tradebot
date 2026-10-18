@@ -185,7 +185,7 @@ class TestFeedToggle:
         assert r.status_code == 200
         # Wait for feed loop to reflect
         paused = False
-        head_before = sess.get(f"{BASE_URL}/api/rh/status", timeout=30).json()["head"]
+        sess.get(f"{BASE_URL}/api/rh/status", timeout=30).json()["head"]
         for _ in range(10):
             time.sleep(1)
             st = sess.get(f"{BASE_URL}/api/rh/status", timeout=30).json()
