@@ -170,7 +170,11 @@ function ManualBuyButton({ c, isRh }) {
     setBusy(true);
     try {
       const r = await api.scannerManualBuy(c.mint);
-      toast.success(`Bought ${r.symbol || short(c.mint)} · ${(r.mode || "").toUpperCase()}${r.chain === "rh" ? " · RH" : ""} — SL/TP now managing it`);
+      if (r.redirected_from) {
+        toast.success(`${r.redirected_from.symbol || short(r.redirected_from.mint)} is not the leader of this trending name → bought the top dog ${r.symbol || short(r.mint)} ${short(r.mint)} instead · ${(r.mode || "").toUpperCase()} — manual hold`, { duration: 10000 });
+      } else {
+        toast.success(`Bought ${r.symbol || short(c.mint)} · ${(r.mode || "").toUpperCase()}${r.chain === "rh" ? " · RH" : ""} — SL/TP now managing it`);
+      }
     } catch (err) {
       const d = err?.response?.data?.detail;
       if (d && typeof d === "object" && d.creator_block) {

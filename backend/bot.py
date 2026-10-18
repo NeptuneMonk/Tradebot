@@ -3420,6 +3420,21 @@ class BotState:
             b = await self.seed_untracked(mint, "manual buy")
             if isinstance(b, str):
                 return {"ok": False, "reason": b}
+        # Trending name: clicking a non-leader copy buys the LEADER instead (operator asked for the top dog, as a manual hold).
+        redirected_from = None
+        if getattr(self.config, "trend_name_gate_enabled", True) and not force:
+            import trending_names as _tn
+            _cl = _tn.cluster_for(self.trend_clusters(), b)
+            if _cl and _cl["leader"] != mint and _cl["leader"] not in self.active_trades:
+                redirected_from = {"mint": mint, "symbol": b.get("symbol")}
+                logger.info(f"manual buy {mint[:8]}… is a non-leader copy of trending name '{_cl['key']}' ×{_cl['copies']} → buying the leader {_cl['leader'][:8]}… instead ({_tn.leader_label(_cl)})")
+                mint = _cl["leader"]
+                b = self.tracking.get(mint)
+                if not b:
+                    b = await self.seed_untracked(mint, "manual buy (trending leader)")
+                    if isinstance(b, str):
+                        return {"ok": False, "reason": f"leader {mint[:8]}… could not be seeded: {b}"}
+                b["trend_leader_ts"] = time.time()
         if mint in self.active_trades:
             return {"ok": False, "reason": "already in an active position"}
         if self.kill_switch_tripped:
@@ -3441,7 +3456,7 @@ class BotState:
                 await self.db.trades.update_one({"_id": t["id"]}, {"$set": t}, upsert=True)
                 logger.info(f"manual runner {mint[:8]}… opened (operator flag)")
             return {"ok": True, "mint": mint, "symbol": b.get("symbol"), "book": t.get("book"),
-                    "mode": (t.get("mode") if isinstance(t, dict) else getattr(t, "mode", None))}
+                    "mode": (t.get("mode") if isinstance(t, dict) else getattr(t, "mode", None)), "redirected_from": redirected_from}
         b2 = self.tracking.get(mint) or {}
         ref = b2.get("entry_refusal") or {}
         if ref and time.time() - float(ref.get("ts") or 0) < 30:

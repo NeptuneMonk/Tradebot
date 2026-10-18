@@ -41,7 +41,9 @@ export function TokenDetailDialog({ token, onClose }) {
     setBusy(true);
     try {
       const r = await api.scannerManualBuy(mint);
-      r?.ok === false ? toast.error(r.reason || "entry refused") : toast.success("Manual re-entry sent");
+      if (r?.ok === false) toast.error(r.reason || "entry refused");
+      else if (r?.redirected_from) toast.success(`Not the leader of this trending name → bought the top dog ${r.symbol || ""} ${r.mint?.slice(0, 4)}…${r.mint?.slice(-4)} instead — manual hold`, { duration: 10000 });
+      else toast.success("Manual re-entry sent");
       load();
     } catch (e) { toast.error(`Entry refused — ${explainApiError(e)}`, { duration: 9000 }); } finally { setBusy(false); }
   };

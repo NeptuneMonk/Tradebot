@@ -130,3 +130,32 @@ def test_hunt_waits_when_top_dog_has_no_smart_holders(monkeypatch):
     assert st.entered == [] and "waiting" in st._trend_wide["fly"]["verdict"]
     strip = tn.strip(th.overlay(tn.build_clusters(st.tracking, st.config, NOW, set()), st._trend_wide, NOW))
     assert strip[0]["wide"] and strip[0]["leader"]["mint"] == "A" and "waiting" in strip[0]["verdict"]
+
+
+def test_manual_buy_on_a_non_leader_copy_redirects_to_the_leader():
+    """Operator clicks a non-leader copy → BotState.manual_enter buys the leader as a manual hold (unless force)."""
+    import types
+    from bot import BotState
+    st = types.SimpleNamespace()
+    st.config = BotConfig(trend_name_min_copies=3, trend_name_leader_min_smart=1)
+    st.tracking = {m: {"symbol": "FLY", "name": "FLY", "start": NOW - 60 * i, "creator": "c", "launch_id": None,
+                       "smart_hits": ({"W": {"ts": NOW, "kind": "manual"}} if m == "L" else {})} for i, m in enumerate(["L", "N1", "N2"], 1)}
+    st.active_trades, st._pending_entry_mints, st.kill_switch_tripped = {}, set(), False
+    st.entered = []
+    st._manual_force = set()
+    st._trend_cache = None
+    st._trend_wide = {}
+
+    async def _enter(launch, score, action):
+        st.entered.append((launch.mint, action))
+        st.active_trades[launch.mint] = {"trade": {"id": "t", "book": "scalp", "mode": "paper"}}
+    st._enter = _enter
+    st.trend_clusters = types.MethodType(BotState.trend_clusters, st)
+    st._runner_open = lambda: 0
+    res = asyncio.run(BotState.manual_enter(st, "N1"))
+    assert res["ok"] and res["mint"] == "L" and res["redirected_from"] == {"mint": "N1", "symbol": "FLY"}
+    assert st.entered == [("L", "manual")] and st.tracking["L"]["trend_leader_ts"] >= NOW
+    # force = operator insists on that exact copy → no redirect
+    st.active_trades.clear(); st.entered.clear()
+    res = asyncio.run(BotState.manual_enter(st, "N1", force=True))
+    assert res["mint"] == "N1" and res["redirected_from"] is None and st.entered == [("N1", "manual")]

@@ -2790,3 +2790,6 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
 - Strip rows show `top dog · 4h` tag, copies "in 4h", and the hunt verdict (ENTERED / waiting for smart holders / refused: …). Knobs in Execution safety › Trending names.
 - Candidate chip `smart holders ×N` (`scanner-row-smart-holders-<mint>`): count of smart wallets among the token's holders (holder-sourced hits; ts refreshed while they still hold).
 - Tests `test_trending_hunt.py` (3). NOTE: backend hot-reload on test-file edits resets in-memory wide views.
+- 2026-10-18 **Manual buy on a non-leader copy → buys the leader** (user): `BotState.manual_enter` consults `trend_clusters()` (incl. 4 h wide overlay); if the clicked mint is a non-leader copy and
+  the leader is not held, it seeds (if needed) and enters the LEADER as the manual hold, returning `redirected_from {mint, symbol}`; `force=true` keeps the exact copy. Toasts in
+  ScannerCandidatesCard / CompactCandidates / TokenDetailDialog explain the redirect. Test in `test_trending_hunt.py`.

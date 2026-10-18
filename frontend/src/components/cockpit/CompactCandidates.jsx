@@ -57,7 +57,11 @@ function Row({ c, onOpen }) {
     setBuying(true);
     try {
       const r = await api.scannerManualBuy(c.mint);
-      toast.success(`Bought ${r.symbol || c.symbol || c.mint.slice(0, 6)} · ${r.book || "rh_pons"} · ${r.mode || "paper"}${r.queued ? " · fill queued" : ""} — manual hold (R-only exit)`);
+      if (r.redirected_from) {
+        toast.success(`${r.redirected_from.symbol || c.mint.slice(0, 6)} is not the leader of this trending name → bought the top dog ${r.symbol || r.mint.slice(0, 6)} (${r.mint.slice(0, 4)}…${r.mint.slice(-4)}) instead · ${r.mode || "paper"} — manual hold`, { duration: 10000 });
+      } else {
+        toast.success(`Bought ${r.symbol || c.symbol || c.mint.slice(0, 6)} · ${r.book || "rh_pons"} · ${r.mode || "paper"}${r.queued ? " · fill queued" : ""} — manual hold (R-only exit)`);
+      }
     } catch (err) {
       toast.error(`Entry refused — ${explainApiError(err)}`, { duration: 9000 });
     } finally { setBuying(false); }
