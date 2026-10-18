@@ -877,6 +877,8 @@ class BotStatus(BaseModel):
     listener_last_ok_ts: Optional[float] = None
     listener_last_attempt_ts: Optional[float] = None
     listener_via: Optional[str] = None   # fallback WSS carrying the feed (primary quota-exhausted), None when on primary
+    pumpswap_feed: Optional[dict] = None   # {subscribed, live, notifications, events, matched, last_matched_ts} — AMM tape health
+    feed_notification_age_s: Optional[float] = None   # seconds since the shared WSS delivered any frame (>5 s suspends dead-tape exits)
     market_tempo: Optional[dict] = None  # Doctor: per-chain buy-flow tempo vs baseline, gate multiplier, peak hours
     helius_tracker_enabled: bool = True # DESIRED Pump.fun WS
     rh_feed_enabled: bool = True        # DESIRED RH poll

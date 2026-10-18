@@ -2695,3 +2695,15 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
 - **GitHub push**: not possible from the agent — user uses "Save to GitHub". Pre-commit hook needs `pre-commit install` locally.
 - 2026-10-17 23:05 UTC: smart-wallet rate cap bug — `fires` counted every ATTEMPT (10 of 12 fires were refusals → cap 6/h saturated → 497 "parked: rate-cap"). Now only OPENED entries (+ in-flight attempts) count; refusals never consume the cap. test_smart_wallets updated.
 - 2026-10-18 01:08 UTC: **CSV export** — `GET /api/trades/export.csv?book=&mode=&days=&include_active=` (all closed/parked rows, 60 flattened columns: fees, net/real P&L, reconciler, landing, latency, sigs; `X-Row-Count` header) + `csv` button in the Trade History header (`history-export-csv`, honours the active book filter). Verified download in browser (1843 rows).
+
+## 2026-10-18 — FIX false "search-dead-tape" exits on PumpSwap positions
+- Root cause: only the Pump.fun curve program had a logsSubscribe; AMM trades never reached `on_trade` → `last_new_buyer_ts/last_inflow_ts` frozen → dead-tape fired at exactly `no_new_buyers_s`.
+- `pumpswap_feed.py` (NEW): second logs channel on `pAMMBay6…` via `account_event_bus.subscribe_logs`; decodes BuyEvent/SellEvent (Anchor disc, `<q13Q` + pool + user),
+  maps pool→mint through `BotState._resolve_pumpswap_pool` (tracked buckets + held positions, 2 s cached map, no RPC), emits curve-shaped trade_data
+  (`venue="pumpswap"`, `virtual_*_reserves` = pool reserves) into the SAME `on_trade`. Started in `load()`. Health in `/bot/status.pumpswap_feed`.
+  Observed live: ~350 notifications/s, ~250 decoded events/s on the Helius WSS (bandwidth note for the user).
+- `exits.search_dead_tape(..., venue, venue_feed_live, feed_age_s)`: skip when the venue has no live feed (PumpSwap without the AMM channel/socket);
+  suspend for ALL positions when the shared WSS delivered nothing for > `FEED_STALE_S`=5 s (`account_event_bus.last_notification_ts`, exposed as
+  `notification_age_s` / `/bot/status.feed_notification_age_s`); exit reason gets an audit tail `[venue=… feed=… last_buy=… last_inflow=… tape_venue=…]`.
+  `bucket["feed_venue"]` stamped in `on_trade`. Docstring fixed (dead_tape_exit_on_red closes red too).
+- Tests `test_pumpswap_dead_tape.py` (8). Preview feed switch (`helius_tracker_enabled`) was briefly flipped ON to verify the AMM subscription, then restored OFF.

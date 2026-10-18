@@ -185,11 +185,21 @@ def after_partial(slot: dict, expected_exit_cost_pct: float) -> None:
     slot["ladder_stop_pct"] = round(max(float(slot.get("ladder_stop_pct") or 0.0), expected_exit_cost_pct), 2)
 
 
+FEED_STALE_S = 5.0     # no WSS notification for this long → the tape is blind, not dead: dead-tape exits are suspended
+
+
 def search_dead_tape(cfg, book: str, bucket: dict | None, now: float, *, entry_ts: float | None = None, trade: dict | None = None,
-                     pct: float | None = None):
+                     pct: float | None = None, venue: str | None = None, venue_feed_live: bool = True,
+                     feed_age_s: float | None = None):
     """Search-book time-stop: `book_exits.<book>.no_new_buyers_s` > 0 and no NEW unique buyer AND no inflow tick for
-    that long → exit "search-dead-tape". Default 0 = off. Runner and manual holds never use this, and it only fires
-    while the position is GREEN — a red position is held as dust until a price-based exit (stop / clock) fires."""
+    that long → exit "search-dead-tape". Default 0 = off. Runner and manual holds never use this.
+    `pct` is passed as None when `dead_tape_exit_on_red` is ON (then red positions are closed too); otherwise it only
+    fires while the position is GREEN and a red position is held until a price-based exit (stop / clock) fires.
+
+    Blind-tape guards (a missing feed must never look like a dead tape):
+      • `venue_feed_live=False` — the position's venue (e.g. PumpSwap) has no live trade feed → skip (price exits / clocks still apply);
+      • `feed_age_s > FEED_STALE_S` — the shared WSS delivered nothing for > 5 s (reconnect) → suspended until frames flow again.
+    The exit reason carries an audit tail: [venue=… feed=… last_buy=… last_inflow=…]."""
     if book == "runner" or not bucket or is_manual_hold(trade):
         return None
     if pct is not None and pct <= 0:
@@ -197,12 +207,21 @@ def search_dead_tape(cfg, book: str, bucket: dict | None, now: float, *, entry_t
     win = float(((getattr(cfg, "book_exits", None) or {}).get(book) or {}).get("no_new_buyers_s") or 0)
     if win <= 0:
         return None
+    if not venue_feed_live:
+        return None
+    if feed_age_s is not None and feed_age_s > FEED_STALE_S:
+        return None
     ref = max(float(bucket.get("last_new_buyer_ts") or 0), float(bucket.get("last_inflow_ts") or 0), float(entry_ts or 0))
     if ref <= 0:
         return None
     idle = now - ref
     if idle >= win:
-        return ExitDecision("exit", f"search-dead-tape: no new buyer / inflow for {idle:.0f}s (≥{win:g}s)")
+        def _age(ts):
+            return f"{now - float(ts):.0f}s" if ts else "never"
+        feed = "none" if feed_age_s is None else f"{feed_age_s:.1f}s"
+        audit = (f"[venue={venue or bucket.get('feed_venue') or 'pumpfun'} feed={feed} last_buy={_age(bucket.get('last_new_buyer_ts'))} "
+                 f"last_inflow={_age(bucket.get('last_inflow_ts'))} tape_venue={bucket.get('feed_venue') or 'none'}]")
+        return ExitDecision("exit", f"search-dead-tape: no new buyer / inflow for {idle:.0f}s (≥{win:g}s) {audit}")
     return None
 
 

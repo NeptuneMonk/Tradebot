@@ -192,6 +192,8 @@ class BotState:
         from stream_floor import StreamFloor
         self.stream_floor = StreamFloor(self)           # live inflow floor off the Helius tape (seeds in-gate tokens in ~3 s)
         from smart_wallets import SmartWallets
+        from pumpswap_feed import PumpSwapFeed
+        self.pumpswap_feed = PumpSwapFeed(self.on_trade, self._resolve_pumpswap_pool)   # AMM tape for graduated positions
         self.smart_wallets = SmartWallets(self)         # top-trader buys as a trigger: manual list + tape-learned early winners
         from alerts import Alerts
         self.alerts = Alerts(self)                       # Telegram phone alerts (dark until TELEGRAM_BOT_TOKEN is set)
@@ -468,6 +470,7 @@ class BotState:
         # 400-800ms polling floor.
         from account_event_bus import account_event_bus
         account_event_bus.start()
+        self.pumpswap_feed.start()                      # second logs channel: pump_amm trades for graduated positions
         # Start on-chain PnL reconciler (overwrites quoted pnl with actual
         # wallet deltas read from getTransaction every 30s)
         self.pnl_reconciler.start()
@@ -966,6 +969,24 @@ class BotState:
             except Exception as e:
                 logger.exception(f"active_trades reconciler error: {e}")
             await asyncio.sleep(15.0)
+
+    def _resolve_pumpswap_pool(self, pool: str):
+        """pool → (mint, quote_mint) for pools we hold or track; None for the rest of the AMM firehose (no RPC here).
+        The AMM channel prints ~250 events/s, so the reverse map is rebuilt at most every 2 s."""
+        now = time.time()
+        cache = getattr(self, "_pool_map", None)
+        if cache is None or now - cache[0] > 2.0:
+            m: dict[str, tuple[str, str | None]] = {}
+            for mint, b in self.tracking.items():
+                if b.get("pumpswap_pool"):
+                    m[b["pumpswap_pool"]] = (mint, b.get("quote_mint"))
+            for mint, slot in self.active_trades.items():
+                t = slot.get("trade") or {}
+                p = slot.get("pumpswap_pool") or t.get("pumpswap_pool")
+                if p:
+                    m[p] = (mint, t.get("quote_mint") or (self.tracking.get(mint) or {}).get("quote_mint"))
+            cache = self._pool_map = (now, m)
+        return cache[1].get(pool)
 
     def _sync_venue_fees(self) -> None:
         """#8 — quote math (max_sol_cost / min_sol_output) uses the configured protocol fee, not a hardcoded constant."""
@@ -1958,6 +1979,7 @@ class BotState:
             return
         now = time.time()
         bucket["last_trade_ts"] = now
+        bucket["feed_venue"] = trade_data.get("venue") or "pumpfun"      # which tape last printed for this mint
         if not trade_data.get("is_buy") and trade_data.get("user") and trade_data["user"] == bucket.get("creator"):
             bucket.setdefault("_dump_window_s", float(getattr(self.config, "creator_dump_window_s", 60.0) or 60.0))
             creator_solvency.record_creator_sell(bucket, int(trade_data.get("sol_amount", 0)) / LAMPORTS_PER_SOL,
@@ -2229,8 +2251,13 @@ class BotState:
                 logger.info(f"RECOVERY WATCH {mint[:8]}… reclaimed {cur_price_sol:.3e} (from {w['from_pct']:+.1f}%) — back on the ladder, clock restarted")
             elif pct > -float(exits.levels(cfg, slot)["stop_loss_pct"]):
                 return False                       # holding: the hard SL below still applies through the normal path
+        _venue = slot.get("protocol") or trade_doc.get("protocol") or "pumpfun"
+        from account_event_bus import account_event_bus as _bus
+        _feed_age = (time.time() - _bus.last_notification_ts) if _bus.last_notification_ts else None
         dead = exits.search_dead_tape(cfg, book, self.tracking.get(mint), time.time(), entry_ts=slot.get("_entry_ts_mono"), trade=trade_doc,
-                                      pct=None if getattr(cfg, "dead_tape_exit_on_red", False) else pct)
+                                      pct=None if getattr(cfg, "dead_tape_exit_on_red", False) else pct,
+                                      venue=_venue, venue_feed_live=(self.pumpswap_feed.live if _venue == "pumpswap" else _bus.connected),
+                                      feed_age_s=_feed_age)
         manual = self._is_manual_hold(slot)
         if manual:
             d = exits.decide_manual(cfg, slot, pct)            # operator hold: R only — no SL / trail / TP / clock

@@ -73,6 +73,7 @@ class AccountEventBus:
         # operator-facing health (surfaced as the SOL FEED status)
         self.last_error: str | None = None
         self.last_ok_ts: float = 0.0            # last successful connect + (re)subscribe
+        self.last_notification_ts: float = 0.0  # last logsNotification / accountNotification frame of ANY channel
         self.last_attempt_ts: float = 0.0
         self.via: str | None = None             # fallback endpoint label when the primary is exhausted / rejecting
         # Diagnostic counters (exposed via /api/diagnostics/account-bus)
@@ -118,6 +119,8 @@ class AccountEventBus:
 
     def health(self) -> dict:
         return {"connected": self.connected, "last_error": self.last_error, "last_ok_ts": self.last_ok_ts or None,
+                "last_notification_ts": self.last_notification_ts or None,
+                "notification_age_s": round(time.time() - self.last_notification_ts, 1) if self.last_notification_ts else None,
                 "last_attempt_ts": self.last_attempt_ts or None, "task_alive": bool(self._task and not self._task.done()),
                 "via": self.via, "logs_channels": list(self._log_handlers.keys()), "accounts": len(self._events)}
 
@@ -352,6 +355,8 @@ class AccountEventBus:
                 self._log_sub_ids[mentions] = msg["result"]
             return
         method = msg.get("method")
+        if method in ("logsNotification", "accountNotification"):
+            self.last_notification_ts = time.time()
         if method == "logsNotification":
             sub_id = (msg.get("params") or {}).get("subscription")
             for mentions, sid in self._log_sub_ids.items():
