@@ -155,11 +155,11 @@ function AutopilotCard({ config, onConfigUpdate, section = "all", filter, status
       </div>
 
       <div className="mt-3 grid grid-cols-3 gap-2 text-[10px] font-mono">
-        {[["risk / trade %", "risk_per_trade_pct", 0.1], ["max exposure %", "max_exposure_pct", 1], ["daily loss %", "daily_loss_limit_pct", 1]].map(([label, key, step]) => (
-          <label key={key} className="block">
+        {[["risk / trade % (0 = fixed stake)", "risk_per_trade_pct", 0.1], ["max exposure %", "max_exposure_pct", 1], ["daily loss %", "daily_loss_limit_pct", 1]].map(([label, key, step]) => (
+          <label key={key} className="block" title={key === "risk_per_trade_pct" ? "R sizing: stake = bankroll × risk ÷ SL. Set 0 to turn R sizing OFF — every entry then uses max trade $ (× book / doctor / governor multipliers)." : undefined}>
             <span className="text-[9px] uppercase tracking-[0.15em] text-neutral-600">{label}</span>
             <input
-              type="number" step={step} min="0.1"
+              type="number" step={step} min="0"
               defaultValue={config?.[key]}
               key={`${key}-${config?.[key]}`}
               onBlur={(e) => { const v = parseFloat(e.target.value); if (!Number.isNaN(v) && v !== config?.[key]) setRisk({ [key]: v }); }}

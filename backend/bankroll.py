@@ -116,10 +116,13 @@ class BankrollEngine:
     # ---------- derived sizing ----------
     @staticmethod
     def derive(bankroll: float, cfg) -> dict:
-        """Solana sizing."""
-        risk = max(0.1, float(cfg.risk_per_trade_pct))
-        stake = max(1.0, min(STAKE_CEILING_USD, bankroll * risk / 100.0))
+        """Solana sizing. risk 0 = R sizing off → the operator's max_trade_usd is left alone."""
+        risk = float(cfg.risk_per_trade_pct)
         kill = max(1.0, min(KILL_CEILING_USD, bankroll * float(cfg.daily_loss_limit_pct) / 100.0))
+        if risk <= 0:
+            return {"daily_kill_switch_usd": round(kill, 2)}
+        risk = max(0.1, risk)
+        stake = max(1.0, min(STAKE_CEILING_USD, bankroll * risk / 100.0))
         return {
             "max_trade_usd": round(stake, 2),
             "min_trade_usd": round(max(0.5, stake * 0.25), 2),
@@ -129,13 +132,16 @@ class BankrollEngine:
     @staticmethod
     def derive_rh(bankroll: float, cfg, fee_floor: dict | None = None) -> dict:
         """Robinhood sizing: bankroll × risk, lifted to the fee floor; 0 = bankroll too small to trade viably."""
-        risk = max(0.1, float(cfg.risk_per_trade_pct))
+        risk = float(cfg.risk_per_trade_pct)
+        kill = max(1.0, min(KILL_CEILING_USD, bankroll * float(cfg.daily_loss_limit_pct) / 100.0))
+        if risk <= 0:
+            return {"rh_daily_kill_switch_usd": round(kill, 2)}
+        risk = max(0.1, risk)
         floor = float((fee_floor or {}).get("min_stake_usd") or 0.0)
         stake = bankroll * risk / 100.0
         if floor > 0 and stake < floor:
             stake = floor if floor <= bankroll * RH_FEE_FLOOR_MAX_BANKROLL_SHARE else 0.0
         stake = min(STAKE_CEILING_USD, stake)
-        kill = max(1.0, min(KILL_CEILING_USD, bankroll * float(cfg.daily_loss_limit_pct) / 100.0))
         return {"rh_max_trade_usd": round(stake, 2), "rh_daily_kill_switch_usd": round(kill, 2)}
 
     def size_mult(self, chain: str = "sol") -> float:
@@ -184,7 +190,7 @@ class BankrollEngine:
         }
         if chain == "rh":
             snap["fee_floor"] = dict(self.rh_fee_floor)
-            snap["sitting_out"] = bool(cfg.bankroll_sizing_enabled and bankroll > 0 and derived["rh_max_trade_usd"] <= 0)
+            snap["sitting_out"] = bool(cfg.bankroll_sizing_enabled and bankroll > 0 and derived.get("rh_max_trade_usd", 1.0) <= 0)
         return snap, changed
 
     async def refresh(self) -> dict:

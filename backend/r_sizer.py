@@ -11,8 +11,16 @@ def size_trade(*, bankroll_usd: float, risk_per_trade_pct: float, sl_pct: float,
                book_mult: float, doctor_mult: float, governor_mult: float,
                min_trade_usd: float, max_trade_usd: float) -> dict:
     sl_with_slip = max(0.5, float(sl_pct) + float(exit_slip_pct))
-    risk_nominal = max(0.0, float(bankroll_usd)) * float(risk_per_trade_pct) / 100.0
     mult = float(book_mult) * float(doctor_mult) * float(governor_mult)
+    if float(risk_per_trade_pct) <= 0:
+        # R sizing OFF: fixed stake = operator max × multiplier chain. r_usd stays the real cash at risk (exits / E[R] still work).
+        raw = float(max_trade_usd) * mult
+        if mult <= 0 or raw < min_trade_usd:
+            return {"skip": True, "reason": f"fixed stake ${raw:.2f} < min ${min_trade_usd:.2f} — max ${max_trade_usd:.2f} × mult {mult:.2f}",
+                    "size_usd": 0.0, "r_usd": 0.0, "r_usd_nominal": 0.0, "size_clamped": False, "sl_pct_with_slip": sl_with_slip}
+        return {"skip": False, "reason": "fixed stake (R sizing off)", "size_usd": round(raw, 4), "r_usd": round(raw * sl_with_slip / 100.0, 4),
+                "r_usd_nominal": 0.0, "size_clamped": False, "sl_pct_with_slip": sl_with_slip, "size_mult": mult}
+    risk_nominal = max(0.0, float(bankroll_usd)) * float(risk_per_trade_pct) / 100.0
     raw = risk_nominal / (sl_with_slip / 100.0) * mult if risk_nominal > 0 else 0.0
     if mult <= 0 or raw < min_trade_usd:
         return {"skip": True, "reason": f"size ${raw:.2f} < min ${min_trade_usd:.2f} — bankroll ${bankroll_usd:,.2f} × risk {risk_per_trade_pct:g}% = ${risk_nominal:.2f} R "

@@ -509,7 +509,7 @@ class BotConfig(BaseModel):
     dev_watch_enabled: bool = True
     bankroll_sizing_enabled: bool = False
     paper_bankroll_usd: float = 1000.0     # bankroll used for sizing in paper mode (+ realised paper P/L)
-    risk_per_trade_pct: float = 2.0        # stake = bankroll × this (Doctor may steer 0.5–5)
+    risk_per_trade_pct: float = 2.0        # stake = bankroll × this ÷ SL (R sizing). 0 = R sizing OFF → fixed stake = max_trade_usd × book/doctor/governor mults
     max_exposure_pct: float = 25.0         # position cap = exposure / risk
     daily_loss_limit_pct: float = 10.0     # daily kill switch = bankroll × this
     governor_drawdown_pct: float = 5.0     # 24h loss worse than this % of bankroll → governor
@@ -558,11 +558,12 @@ class BotConfig(BaseModel):
     creator_greylist_enabled: bool = True
     # Creator Verdict — ONE holistic creator gate (greylist + own book + solvency + audit + smart wallets) on every entry path
     creator_verdict_enabled: bool = True
-    creator_block_own_losses: int = 3                 # our own book: this many losses with 0 wins on a creator → BLOCK
+    creator_min_trades_for_rate: int = 6              # our own book: judge a creator only after this many closed trades with them …
+    creator_min_win_rate_pct: float = 40.0            # … then BLOCK when wins/trades falls below this %, FAVOR at/above it
     creator_caution_size_mult: float = 0.5            # CAUTION → half size …
     creator_caution_smart_override_n: int = 3         # … unless ≥ this many smart wallets (learned or manual) bought the launch
     creator_block_manual_smart_override: bool = True  # a smart wallet YOU added may turn a BLOCK into CAUTION (learned ones never)
-    creator_dump_block_pct: float = 50.0              # creator sold ≥ this % of their stake inside the launch window → BLOCK
+    creator_dev_out_pct: float = 70.0                 # dev sold ≥ this % of their stake inside the launch window → FAVOR (already out, no later dump); any early selling is a plus, never a penalty
     creator_greylist_mode: str = "telemetry"   # "telemetry" | "live"
     # Buffer (% below median observed rug) used when the classifier emits a
     # `suggested_exit_pct` for slow_rug / predictable_dump creators. Smaller

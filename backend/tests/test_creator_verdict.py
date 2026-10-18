@@ -76,15 +76,24 @@ def test_manual_smart_wallet_lifts_block_to_caution_learned_does_not():
     assert off["level"] == "block"
 
 
-def test_own_book_three_losses_blocks_one_loss_cautions():
-    cfg = BotConfig(creator_block_own_losses=3)
-    three = _DB(creator_doc={}, trades=[{"pnl_usd": -1}, {"pnl_usd": -2}, {"pnl_usd": -0.5}])
-    one = _DB(creator_doc={}, trades=[{"pnl_usd": -1}])
-    mixed = _DB(creator_doc={}, trades=[{"pnl_usd": -1}, {"pnl_usd": -2}, {"pnl_usd": -3}, {"pnl_usd": 4}])
-    assert _run(three, cfg)["level"] == "block"
-    v1 = _run(one, cfg)
-    assert v1["level"] == "caution" and v1["size_mult"] == 0.5
-    assert _run(mixed, cfg)["level"] == "neutral"            # a win on the creator → not a serial loser
+def test_own_book_win_rate_blocks_after_min_trades_only():
+    cfg = BotConfig(creator_min_trades_for_rate=6, creator_min_win_rate_pct=40.0)
+    L, W = {"pnl_usd": -1}, {"pnl_usd": 2}
+    # five trades, all losses → not judged yet (no block, no caution)
+    five = _run(_DB(creator_doc={}, trades=[L] * 5), cfg)
+    assert five["level"] == "neutral" and five["size_mult"] == 1.0 and any("more to judge" in r for r in five["reasons"])
+    # six trades, 2 wins = 33% < 40% → block
+    bad = _run(_DB(creator_doc={}, trades=[L, L, L, L, W, W]), cfg)
+    assert bad["level"] == "block" and any("33% < 40%" in r for r in bad["reasons"]) and bad["own_win_rate_pct"] == 33.3
+    # six trades, 3 wins = 50% ≥ 40% → favor
+    good = _run(_DB(creator_doc={}, trades=[L, L, L, W, W, W]), cfg)
+    assert good["level"] == "favor" and good["own_win_rate_pct"] == 50.0
+    # knob: raise the bar to 60% → the same 50% creator is blocked
+    assert _run(_DB(creator_doc={}, trades=[L, L, L, W, W, W]), BotConfig(creator_min_win_rate_pct=60.0))["level"] == "block"
+    # knob: judge after 3 → three losses now block
+    assert _run(_DB(creator_doc={}, trades=[L, L, L]), BotConfig(creator_min_trades_for_rate=3))["level"] == "block"
+    # break-even trades (pnl 0) are neither a win nor a loss
+    assert _run(_DB(creator_doc={}, trades=[{"pnl_usd": 0}] * 6), cfg)["level"] == "neutral"
 
 
 def test_caution_lifted_by_three_smart_wallets_any_kind():
@@ -96,13 +105,19 @@ def test_caution_lifted_by_three_smart_wallets_any_kind():
     assert three["level"] == "neutral" and three["size_mult"] == 1.0 and any("caution lifted" in r for r in three["reasons"])
 
 
-def test_creator_dump_in_window_blocks_or_cautions():
+def test_dev_already_out_is_favor_partial_sell_is_never_a_penalty():
     db = _DB(creator_doc={})
-    dumping = {"creator_sold_quote": 3.0, "creator_sold_tokens": 60.0, "creator_start_tokens": 100.0}
-    assert _run(db, BotConfig(creator_dump_block_pct=50.0), dumping)["level"] == "block"
-    selling = {"creator_sold_quote": 0.4, "creator_sold_tokens": 10.0, "creator_start_tokens": 100.0}
-    v = _run(db, BotConfig(), selling)
-    assert v["level"] == "caution" and any("selling" in r for r in v["reasons"])
+    out = {"creator_sold_quote": 3.0, "creator_sold_tokens": 80.0, "creator_start_tokens": 100.0}
+    v = _run(db, BotConfig(creator_dev_out_pct=70.0), out)
+    assert v["level"] == "favor" and any("already out" in r for r in v["reasons"])
+    mid = {"creator_sold_quote": 0.4, "creator_sold_tokens": 10.0, "creator_start_tokens": 100.0}
+    v2 = _run(db, BotConfig(), mid)
+    assert v2["level"] == "neutral" and v2["size_mult"] == 1.0 and any("can't be dumped later" in r for r in v2["reasons"])
+    # a partial sell never downgrades an otherwise-favored creator
+    fav = _run(_DB(creator_doc={"greylist_score": 80.0, "greylist_score_updated_at": time.time()}), BotConfig(), mid)
+    assert fav["level"] == "favor"
+    # dev-out never rescues a blacklisted creator
+    assert _run(_DB(creator_doc={"greylist_blacklisted": True}), BotConfig(), out)["level"] == "block"
 
 
 def test_favor_from_greylist_tier_and_smart_hits():
@@ -117,7 +132,7 @@ def test_favor_from_greylist_tier_and_smart_hits():
 
 def test_config_defaults_and_entry_wiring():
     cfg = BotConfig()
-    assert cfg.creator_verdict_enabled and cfg.creator_block_own_losses == 3 and cfg.creator_caution_smart_override_n == 3
+    assert cfg.creator_verdict_enabled and cfg.creator_min_trades_for_rate == 6 and cfg.creator_min_win_rate_pct == 40.0 and cfg.creator_caution_smart_override_n == 3
     assert cfg.creator_block_manual_smart_override is True and cfg.creator_caution_size_mult == 0.5
     src = open(os.path.join(os.path.dirname(__file__), "..", "bot.py")).read()
     assert '"creator-block"' in src and "_manual_force" in src and "_cvm" in src

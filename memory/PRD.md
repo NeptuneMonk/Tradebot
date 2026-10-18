@@ -2712,11 +2712,22 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
 - Root cause: `greylist_blacklisted` only excluded the greylist-snipe book + size boost; no entry path (scanner, smart-wallet, re-entry, add-ons) ever refused on it;
   `creator_audit_enabled` / `reputation_enabled` (the only hard creator gates) are OFF.
 - `creator_verdict.py` (NEW): `compute(db,cfg,mint,creator,bucket,action,trigger_kind)` → {level block|caution|neutral|favor, size_mult, reasons}. Sources: greylist
-  (blacklisted / BLOCK_PATTERNS untradeable_rug+unpredictable_rug / CAUTION_PATTERNS / out_of_band / tier→favor+size), own book (`creator_block_own_losses`=3 losses & 0 wins
-  → block; 1 loss → caution; wins → favor), creator solvency (`creator_dump_block_pct`=50 → block, any sell → caution), creator audit fail (when enabled), smart wallets
+  (blacklisted / BLOCK_PATTERNS untradeable_rug+unpredictable_rug / CAUTION_PATTERNS / out_of_band / tier→favor+size), own book (SUPERSEDED 2026-10-18 by win-rate math, see below; was `creator_block_own_losses`=3 losses & 0 wins
+  → block; 1 loss → caution; wins → favor), creator solvency (dev sold ≥ `creator_dev_out_pct`=70 in-window → FAVOR "already out"; partial → caution — operator preference), creator audit fail (when enabled), smart wallets
   (favor; ≥`creator_caution_smart_override_n`=3 of any kind lift CAUTION; a MANUAL smart-wallet trigger turns BLOCK→CAUTION when `creator_block_manual_smart_override`;
   learned never). CAUTION → `creator_caution_size_mult`=0.5. 20 s per-creator cache.
 - Wired in `BotState._enter` for every non-manual path → `_refuse(..., "creator-block", …)`; size mult applied after `_plan_entry`; manual buys: `manual_enter(force=)`,
   `POST /scanner/manual-buy/{mint}?force=true`; 409 `{creator_block, verdict}` → toast with "Buy anyway". `bucket["creator_verdict"]` → candidate chip (`creator-verdict-<mint>`).
 - API: `GET /creator-verdict/recent`, `GET /creator-verdict/{mint}`. UI: Doctor › CREATORS tab (`CreatorVerdictPanel.jsx`, knobs + recent list). Tests `test_creator_verdict.py` (7).
 - Verified on real data: AQ7Cvw… (blacklisted creator) → block [blacklisted · unpredictable_rug · out-of-band · our book 2 losses/0 wins].
+
+## 2026-10-18 — Creator Verdict v2 (win-rate) + R sizing OFF switch (user corrections)
+- **Dev sells (user: "I prefer when dev has sold inside the launch window — it means they can't sell later")**: ANY early dev selling is a plus, never a penalty.
+  ≥ `creator_dev_out_pct` (70) → FAVOR "already out"; partial → NEUTRAL with reason "dev selling early… can't be dumped later". The old mid-dump CAUTION is gone.
+- **Own book → win-rate math (replaces `creator_block_own_losses`)**: `creator_min_trades_for_rate`=6, `creator_min_win_rate_pct`=40. Fewer than N closed trades
+  (pnl≠0) → no own-book penalty (reason "x/n wins so far (k more to judge)"). ≥ N: win% < threshold → BLOCK, else FAVOR. `own_win_rate_pct` in verdict payload.
+  Knobs in Doctor › CREATORS (`creator-verdict-creator-min-trades-for-rate`, `creator-verdict-creator-min-win-rate-pct`); server clamps 1–50 / 0–100.
+- **R sizing OFF (user: "R sizing doesn't shut off when I set it to 0 and use TP")**: root cause `PUT /bot/config` clamped `risk_per_trade_pct` to ≥0.1 (and AutopilotCard input min=0.1),
+  so 0 silently became 0.1 and with SL 95 % the stake collapsed to ≈$2.5. Now 0 is honoured: `r_sizer.size_trade` returns a FIXED stake = max_trade_usd × book×doctor×governor
+  (`r_usd` still = real cash at risk, `r_usd_nominal`=0, reason "fixed stake (R sizing off)"); `BankrollEngine.derive/derive_rh` leave max_trade alone when risk=0 (kill switch still derived).
+  Tests `test_r_sizing_off.py` (4) + `test_creator_verdict.py` updated (8). `test_dev_watch` 2 failures are the known feed-OFF environment ones.

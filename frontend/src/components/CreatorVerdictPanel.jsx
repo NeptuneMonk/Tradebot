@@ -21,10 +21,11 @@ export function VerdictChip({ level, reasons, mint }) {
 }
 
 const KNOBS = [
-  ["creator_block_own_losses", "Block after N own losses (0 wins)", "int", 1],
+  ["creator_min_trades_for_rate", "Judge after N own trades", "int", 1],
+  ["creator_min_win_rate_pct", "Min win rate % (else block)", "float", 5],
   ["creator_caution_size_mult", "Caution size ×", "float", 0.1],
   ["creator_caution_smart_override_n", "Smart wallets to lift caution", "int", 1],
-  ["creator_dump_block_pct", "Creator dump block %", "float", 5],
+  ["creator_dev_out_pct", "Dev already out ≥ %", "float", 5],
 ];
 
 export default function CreatorVerdictPanel({ config, onConfigUpdate }) {
@@ -47,11 +48,11 @@ export default function CreatorVerdictPanel({ config, onConfigUpdate }) {
         <button data-testid="creator-verdict-refresh" onClick={load} disabled={busy} className="text-neutral-500 hover:text-neutral-200"><RefreshCw className={`w-3 h-3 ${busy ? "animate-spin" : ""}`} /></button>
       </div>
       <p className="font-mono text-[10px] text-neutral-500 leading-relaxed">
-        Greylist blacklist / rug patterns, our own losses on the creator, the creator dumping in-window and a failed audit all feed ONE verdict.
+        Greylist blacklist / rug patterns, our own win rate on the creator and a failed audit feed ONE verdict. After N closed trades with a creator, a win rate below your threshold is a <span className="text-red-300">block</span>; at or above it, a <span className="text-emerald-300">favor</span>. Any dev selling inside the launch window is a plus (sold tokens can't be dumped later); fully out ≥ N% → favor.
         BLOCK refuses scanner, smart-wallet, re-entry and add-on buys; manual buys show the reasons and need <span className="text-neutral-300">force</span>.
         A smart wallet <span className="text-neutral-300">you added</span> can turn a BLOCK into CAUTION (learned ones never); CAUTION is half size unless ≥ N smart wallets bought.
       </p>
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
         <label className="flex flex-col gap-1">
           <span className="text-[10px] uppercase tracking-[0.12em] text-neutral-500">Gate</span>
           <select data-testid="creator-verdict-enabled" value={config?.creator_verdict_enabled === false ? "off" : "on"} onChange={(e) => set("creator_verdict_enabled", e.target.value === "on")}

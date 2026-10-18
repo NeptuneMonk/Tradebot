@@ -648,10 +648,11 @@ async def update_config(body: dict = Body(...)):
     cfg.land_late_watch_s = max(0, min(int(cfg.land_late_watch_s), 120))
     cfg.fast_fail_add_at_pct = max(0.5, min(float(cfg.fast_fail_add_at_pct), 50.0))
     cfg.exit_fee_budget_pct_of_position = max(float(cfg.exit_fee_max_pct_of_position), min(float(cfg.exit_fee_budget_pct_of_position), 25.0))
-    cfg.creator_block_own_losses = max(1, min(int(cfg.creator_block_own_losses), 20))
+    cfg.creator_min_trades_for_rate = max(1, min(int(cfg.creator_min_trades_for_rate), 50))
+    cfg.creator_min_win_rate_pct = max(0.0, min(float(cfg.creator_min_win_rate_pct), 100.0))
     cfg.creator_caution_size_mult = max(0.1, min(float(cfg.creator_caution_size_mult), 1.0))
     cfg.creator_caution_smart_override_n = max(1, min(int(cfg.creator_caution_smart_override_n), 20))
-    cfg.creator_dump_block_pct = max(5.0, min(float(cfg.creator_dump_block_pct), 100.0))
+    cfg.creator_dev_out_pct = max(5.0, min(float(cfg.creator_dev_out_pct), 100.0))
     cfg.entry_balance_cache_s = max(0, min(int(cfg.entry_balance_cache_s), 60))
     cfg.rh_sell_fallback_slippage_pct = max(1.0, min(float(cfg.rh_sell_fallback_slippage_pct), 50.0))
     cfg.rh_protocol_fee_pct = max(0.0, min(float(cfg.rh_protocol_fee_pct), 5.0))
@@ -715,7 +716,8 @@ async def update_config(body: dict = Body(...)):
     cfg.greylist_snipe_ripcord_grace_seconds = max(0, min(60, cfg.greylist_snipe_ripcord_grace_seconds))
     cfg.creator_greylist_inactive_days = max(1, min(365, int(cfg.creator_greylist_inactive_days)))
     cfg.reentry_min_wait_s = max(0, min(600, int(cfg.reentry_min_wait_s)))
-    cfg.risk_per_trade_pct = max(0.1, min(50.0, float(cfg.risk_per_trade_pct)))   # was capped at 10 — small live test wallets need more
+    # 0 = R sizing OFF (fixed stake = max_trade_usd); otherwise 0.1–50 (was capped at 10 — small live test wallets need more)
+    cfg.risk_per_trade_pct = 0.0 if float(cfg.risk_per_trade_pct) <= 0 else max(0.1, min(50.0, float(cfg.risk_per_trade_pct)))
     cfg.max_exposure_pct = max(1.0, min(100.0, float(cfg.max_exposure_pct)))
     cfg.daily_loss_limit_pct = max(1.0, min(50.0, float(cfg.daily_loss_limit_pct)))
     cfg.governor_drawdown_pct = max(0.5, min(50.0, float(cfg.governor_drawdown_pct)))
@@ -2382,8 +2384,8 @@ async def creator_verdict_recent(limit: int = 50):
         b = bot_state.tracking.get(m) or {}
         out.append({"mint": m, "symbol": b.get("symbol"), **v})
     return {"items": out, "blocked": [x for x in out if x["level"] == "block"],
-            "config": {k: getattr(bot_state.config, k) for k in ("creator_verdict_enabled", "creator_block_own_losses", "creator_caution_size_mult",
-                                                                  "creator_caution_smart_override_n", "creator_block_manual_smart_override", "creator_dump_block_pct")}}
+            "config": {k: getattr(bot_state.config, k) for k in ("creator_verdict_enabled", "creator_min_trades_for_rate", "creator_min_win_rate_pct", "creator_caution_size_mult",
+                                                                  "creator_caution_smart_override_n", "creator_block_manual_smart_override", "creator_dev_out_pct")}}
 
 
 @api.get("/creator-verdict/{mint}")

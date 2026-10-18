@@ -3,7 +3,7 @@
 Fuses the data points the bot already collects into a single decision per candidate:
   • creator greylist   — `greylist_blacklisted`, `greylist_out_of_band`, rug pattern, decayed score
   • our own book       — closed / parked trades on this creator's launches (losses with no wins)
-  • creator solvency   — the creator dumping inside the launch window (tape)
+  • creator solvency   — dev ALREADY OUT inside the launch window = FAVOR (no later dump overhang); mid-dump = CAUTION
   • creator audit      — when the master gate is enabled and the bucket carries a failed audit
   • smart wallets      — top-trader buys on THIS launch (favour; can lift a CAUTION; a manual smart wallet can lift a BLOCK)
 
@@ -74,15 +74,18 @@ async def compute(db, cfg, mint: str, creator: str | None, bucket: dict | None, 
                 _CACHE.pop(k, None)
 
     level, reasons = base["level"], list(base["reasons"])
-    # tape-side (per launch, not cached): the creator dumping inside the window
+    # tape-side (per launch, not cached). Operator preference: any dev selling inside the launch window is a plus —
+    # what is sold cannot be dumped later. Fully out (≥ creator_dev_out_pct) → FAVOR; partial → noted, never a penalty.
     sold_q = float((bucket or {}).get("creator_sold_quote") or 0.0)
     if sold_q > 0:
         pct = _creator_sold_pct(bucket)
-        if pct is not None and pct >= float(_cfg(cfg, "creator_dump_block_pct", 50.0)):
-            level, reasons = "block", reasons + [f"creator sold {pct:.0f}% of their stake inside the launch window"]
+        if pct is not None and pct >= float(_cfg(cfg, "creator_dev_out_pct", 70.0)):
+            reasons.append(f"dev already out: sold {pct:.0f}% of their stake inside the launch window (no dump overhang)")
+            if level == "neutral":
+                level = "favor"
         else:
-            level = _worse(level, "caution")
-            reasons.append(f"creator is selling ({sold_q:.2f} SOL so far)")
+            reasons.append(f"dev selling early: {pct:.0f}% of their stake gone ({sold_q:.2f} SOL) — that part can't be dumped later"
+                           if pct is not None else f"dev selling early ({sold_q:.2f} SOL so far) — that part can't be dumped later")
     audit = (bucket or {}).get("creator_audit") or {}
     if bool(_cfg(cfg, "creator_audit_enabled", False)) and audit.get("verdict") in ("fail", "block"):
         level, reasons = "block", reasons + [f"creator audit failed: {audit.get('reason') or audit.get('failed') or 'see audit'}"]
@@ -94,7 +97,7 @@ async def compute(db, cfg, mint: str, creator: str | None, bucket: dict | None, 
     if level == "favor" and base.get("greylist_size_mult"):
         size_mult = float(base["greylist_size_mult"])
     return {"level": level, "size_mult": round(size_mult, 3), "reasons": reasons, "creator": creator, "pattern": base.get("pattern"),
-            "score": base.get("score"), "own_wins": base.get("own_wins"), "own_losses": base.get("own_losses"),
+            "score": base.get("score"), "own_wins": base.get("own_wins"), "own_losses": base.get("own_losses"), "own_win_rate_pct": base.get("own_win_rate_pct"),
             "smart_total": smart_total, "smart_manual": smart_manual, "ts": time.time()}
 
 
@@ -146,17 +149,20 @@ async def _base_verdict(db, cfg, creator: str) -> dict:
                                 {"_id": 0, "pnl_usd": 1}).sort("exit_time", -1).limit(50).to_list(50)
     wins = sum(1 for r in rows if float(r.get("pnl_usd") or 0) > 0)
     losses = sum(1 for r in rows if float(r.get("pnl_usd") or 0) < 0)
-    block_n = int(_cfg(cfg, "creator_block_own_losses", 3))
-    if losses >= block_n and wins == 0:
-        level, reasons = "block", reasons + [f"our book: {losses} losses, 0 wins on this creator"]
-    elif losses >= 1 and wins == 0:
-        level = _worse(level, "caution")
-        reasons.append(f"our book: {losses} loss{'es' if losses != 1 else ''}, 0 wins on this creator")
-    elif wins >= 2 and wins > losses and level == "neutral":
+    n = wins + losses
+    min_n = int(_cfg(cfg, "creator_min_trades_for_rate", 6))
+    min_rate = float(_cfg(cfg, "creator_min_win_rate_pct", 40.0))
+    win_rate = (wins / n * 100.0) if n > 0 else None
+    if n >= min_n and win_rate < min_rate:
+        level, reasons = "block", reasons + [f"our book: {wins}/{n} wins = {win_rate:.0f}% < {min_rate:g}% on this creator"]
+    elif n >= min_n and level == "neutral":
         level = "favor"
-        reasons.append(f"our book: {wins} wins / {losses} losses on this creator")
+        reasons.append(f"our book: {wins}/{n} wins = {win_rate:.0f}% ≥ {min_rate:g}% on this creator")
+    elif 0 < n < min_n:
+        reasons.append(f"our book: {wins}/{n} wins so far ({min_n - n} more to judge)")
     return {"level": level, "reasons": reasons, "pattern": pattern, "score": round(score, 1) if score is not None else None,
-            "own_wins": wins, "own_losses": losses, "greylist_size_mult": greylist_size_mult}
+            "own_wins": wins, "own_losses": losses, "own_win_rate_pct": round(win_rate, 1) if win_rate is not None else None,
+            "greylist_size_mult": greylist_size_mult}
 
 
 def clear_cache(creator: str | None = None) -> None:
