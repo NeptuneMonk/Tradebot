@@ -648,6 +648,10 @@ async def update_config(body: dict = Body(...)):
     cfg.land_late_watch_s = max(0, min(int(cfg.land_late_watch_s), 120))
     cfg.fast_fail_add_at_pct = max(0.5, min(float(cfg.fast_fail_add_at_pct), 50.0))
     cfg.exit_fee_budget_pct_of_position = max(float(cfg.exit_fee_max_pct_of_position), min(float(cfg.exit_fee_budget_pct_of_position), 25.0))
+    cfg.creator_block_own_losses = max(1, min(int(cfg.creator_block_own_losses), 20))
+    cfg.creator_caution_size_mult = max(0.1, min(float(cfg.creator_caution_size_mult), 1.0))
+    cfg.creator_caution_smart_override_n = max(1, min(int(cfg.creator_caution_smart_override_n), 20))
+    cfg.creator_dump_block_pct = max(5.0, min(float(cfg.creator_dump_block_pct), 100.0))
     cfg.entry_balance_cache_s = max(0, min(int(cfg.entry_balance_cache_s), 60))
     cfg.rh_sell_fallback_slippage_pct = max(1.0, min(float(cfg.rh_sell_fallback_slippage_pct), 50.0))
     cfg.rh_protocol_fee_pct = max(0.0, min(float(cfg.rh_protocol_fee_pct), 5.0))
@@ -2369,6 +2373,32 @@ def _csv_row(t: dict) -> list:
     return out
 
 
+@api.get("/creator-verdict/recent")
+async def creator_verdict_recent(limit: int = 50):
+    """Last verdicts computed on the entry path (newest first) + the blocked ones separately."""
+    items = sorted(((m, v) for m, v in (bot_state._creator_verdicts or {}).items()), key=lambda kv: -float(kv[1].get("ts") or 0))[:limit]
+    out = []
+    for m, v in items:
+        b = bot_state.tracking.get(m) or {}
+        out.append({"mint": m, "symbol": b.get("symbol"), **v})
+    return {"items": out, "blocked": [x for x in out if x["level"] == "block"],
+            "config": {k: getattr(bot_state.config, k) for k in ("creator_verdict_enabled", "creator_block_own_losses", "creator_caution_size_mult",
+                                                                  "creator_caution_smart_override_n", "creator_block_manual_smart_override", "creator_dump_block_pct")}}
+
+
+@api.get("/creator-verdict/{mint}")
+async def creator_verdict_for(mint: str):
+    """Compute the verdict for any mint now (candidate card hover / manual-buy preflight)."""
+    import creator_verdict as _cv
+    b = bot_state.tracking.get(mint) or {}
+    creator = b.get("creator")
+    if not creator:
+        doc = await db.launches.find_one({"mint": mint}, {"_id": 0, "creator": 1}) or {}
+        creator = doc.get("creator") or (await db.trades.find_one({"mint": mint}, {"_id": 0, "creator": 1}) or {}).get("creator")
+    v = await _cv.compute(db, bot_state.config, mint, creator, b, action="manual", use_cache=False)
+    return {"mint": mint, "symbol": b.get("symbol"), **v}
+
+
 @api.get("/trades/export.csv")
 async def trades_export_csv(book: str | None = None, mode: str | None = None, days: int = 0, include_active: bool = False):
     """Full trade history as CSV (closed + parked, newest first). Filters: book, mode (paper|live), days (0 = all)."""
@@ -3227,7 +3257,7 @@ async def creator_audit_run(chain: str, mint: str, force: bool = False):
 
 
 @api.post("/scanner/manual-buy/{mint}")
-async def scanner_manual_buy(mint: str, runner: bool = False):
+async def scanner_manual_buy(mint: str, runner: bool = False, force: bool = False):
     """Operator override: buy a scanner candidate now, bypassing the momentum
     gates (kill switches still apply; a manual hold sits OUTSIDE max positions). RH tokens route to the
     paper engine; SOL tokens follow the normal live/paper mode. `runner=true`
@@ -3237,7 +3267,10 @@ async def scanner_manual_buy(mint: str, runner: bool = False):
     else:
         if (bot_state.tracking.get(mint) or {}).get("pinned"):
             runner = True                          # operator pin = long hold → runner book (trail, no clock, no momentum kill)
-        res = await bot_state.manual_enter(mint, as_runner=runner)
+        res = await bot_state.manual_enter(mint, as_runner=runner, force=force)
+        if not res.get("ok") and str(res.get("reason") or "").startswith("creator-block"):
+            raise HTTPException(status_code=409, detail={"creator_block": True, "verdict": (bot_state._creator_verdicts or {}).get(mint),
+                                                         "reason": res.get("reason")})
     if not res.get("ok"):
         raise HTTPException(status_code=409, detail=res.get("reason") or "entry refused")
     return res

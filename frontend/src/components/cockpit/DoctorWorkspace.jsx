@@ -7,6 +7,7 @@ import LearningBooksPanel from "../LearningBooksPanel";
 import CostTrackerCard from "../CostTrackerCard";
 import CreatorGreylistPanel from "../CreatorGreylistPanel";
 import SmartWalletsPanel from "../SmartWalletsPanel";
+import CreatorVerdictPanel from "../CreatorVerdictPanel";
 import Explain from "./Explain";
 
 const TABS = [
@@ -15,6 +16,7 @@ const TABS = [
   ["forensics", "FORENSICS", "why — technique lab, learning books, autopsies, replay, costs"],
   ["greylist", "GREYLIST", "creator greylist — scored devs, snipe path, pattern-exit knobs"],
   ["smart", "SMART WALLETS", "top-trader buys as a trigger — manual list, tape-learned winners, mode"],
+  ["creators", "CREATORS", "creator verdict — the ONE gate fusing greylist, our book, dumps, audit and smart wallets"],
 ];
 
 function Chip({ active, onClick, children, testid, cls = "border-emerald-700 text-emerald-300" }) {
@@ -85,6 +87,11 @@ function DoctorWorkspace({ config, onConfigUpdate, onApplied, status, auto, onRe
         {tab === "smart" && (
           <div key="smart" className="p-3 animate-in fade-in duration-200" data-testid="doctor-smart-tab">
             <SmartWalletsPanel config={config} onConfigUpdate={onConfigUpdate} />
+          </div>
+        )}
+        {tab === "creators" && (
+          <div key="creators" className="p-3 animate-in fade-in duration-200" data-testid="doctor-creators-tab">
+            <CreatorVerdictPanel config={config} onConfigUpdate={onConfigUpdate} />
           </div>
         )}
         {tab === "forensics" && (

@@ -556,6 +556,13 @@ class BotConfig(BaseModel):
     # Set `creator_greylist_mode=live` ONLY after 24-48h of telemetry shows
     # the predictions actually correlate with profitable snipes.
     creator_greylist_enabled: bool = True
+    # Creator Verdict — ONE holistic creator gate (greylist + own book + solvency + audit + smart wallets) on every entry path
+    creator_verdict_enabled: bool = True
+    creator_block_own_losses: int = 3                 # our own book: this many losses with 0 wins on a creator → BLOCK
+    creator_caution_size_mult: float = 0.5            # CAUTION → half size …
+    creator_caution_smart_override_n: int = 3         # … unless ≥ this many smart wallets (learned or manual) bought the launch
+    creator_block_manual_smart_override: bool = True  # a smart wallet YOU added may turn a BLOCK into CAUTION (learned ones never)
+    creator_dump_block_pct: float = 50.0              # creator sold ≥ this % of their stake inside the launch window → BLOCK
     creator_greylist_mode: str = "telemetry"   # "telemetry" | "live"
     # Buffer (% below median observed rug) used when the classifier emits a
     # `suggested_exit_pct` for slow_rug / predictable_dump creators. Smaller

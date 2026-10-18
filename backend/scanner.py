@@ -297,6 +297,9 @@ class MomentumScanner:
             m["discovered"] = bool(b.get("discovered"))
             m["graduated_feed"] = bool(b.get("graduated_feed"))
             m["smart_hits"] = st.smart_wallets.fresh_hits(b, now) if b.get("smart_hits") else 0
+            _cv = b.get("creator_verdict") or {}
+            m["creator_verdict"] = _cv.get("level")
+            m["creator_verdict_reasons"] = _cv.get("reasons")
             m["protocol"] = b.get("protocol") or "pumpfun"
             m["graduated_at"] = b.get("graduated_at")
             m["usd_market_cap"] = float(b.get("usd_market_cap") or 0.0)

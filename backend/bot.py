@@ -194,6 +194,8 @@ class BotState:
         from smart_wallets import SmartWallets
         from pumpswap_feed import PumpSwapFeed
         self.pumpswap_feed = PumpSwapFeed(self.on_trade, self._resolve_pumpswap_pool)   # AMM tape for graduated positions
+        self._creator_verdicts: dict[str, dict] = {}    # mint → last Creator Verdict (gate result + reasons) for the API / UI
+        self._manual_force: set[str] = set()
         self.smart_wallets = SmartWallets(self)         # top-trader buys as a trigger: manual list + tape-learned early winners
         from alerts import Alerts
         self.alerts = Alerts(self)                       # Telegram phone alerts (dark until TELEGRAM_BOT_TOKEN is set)
@@ -2253,10 +2255,11 @@ class BotState:
                 return False                       # holding: the hard SL below still applies through the normal path
         _venue = slot.get("protocol") or trade_doc.get("protocol") or "pumpfun"
         from account_event_bus import account_event_bus as _bus
+        _psf = getattr(self, "pumpswap_feed", None)
         _feed_age = (time.time() - _bus.last_notification_ts) if _bus.last_notification_ts else None
         dead = exits.search_dead_tape(cfg, book, self.tracking.get(mint), time.time(), entry_ts=slot.get("_entry_ts_mono"), trade=trade_doc,
                                       pct=None if getattr(cfg, "dead_tape_exit_on_red", False) else pct,
-                                      venue=_venue, venue_feed_live=(self.pumpswap_feed.live if _venue == "pumpswap" else _bus.connected),
+                                      venue=_venue, venue_feed_live=((_psf.live if _psf else False) if _venue == "pumpswap" else _bus.connected),
                                       feed_age_s=_feed_age)
         manual = self._is_manual_hold(slot)
         if manual:
@@ -3318,7 +3321,12 @@ class BotState:
             logger.exception(f"greylist_snipe failed for {launch.mint}: {e}")
 
     # ---------- Entry / exit (live + paper) ----------
-    async def manual_enter(self, mint: str, as_runner: bool = False) -> dict:
+    async def manual_enter(self, mint: str, as_runner: bool = False, force: bool = False) -> dict:
+        self._manual_force = getattr(self, "_manual_force", set())
+        if force:
+            self._manual_force.add(mint)
+        else:
+            self._manual_force.discard(mint)
         """Operator override from the scanner card. Bypasses momentum gates;
         honours Helius pause and the daily kill switch; manual holds sit OUTSIDE max positions. Once open
         the position is monitored like any other (SL/TP/trail).
@@ -3430,11 +3438,26 @@ class BotState:
             await self._refuse(launch.mint, self._band_of(launch.mint), "doctor-pause",
                                f"the Doctor paused new entries — {int(pause_until - time.time())}s remaining (lift it in the Doctor tab)")
             return
-        # === Creator-greylist telemetry (Phase 1 — logs only) ===
-        # The actual fetch + override resolution happens in `_enter_impl`
-        # (where size_mult and TP/SL slots live). This stub stays here as a
-        # placeholder so the gate-time codepath is obvious during review.
-        pass
+        # === Creator Verdict — ONE holistic creator gate for every path (scanner / smart-wallet / re-entry / add-ons) ===
+        # Manual buys get the verdict too, but only a BLOCK without `force` refuses them (the API returns the reasons).
+        self._creator_verdicts = getattr(self, "_creator_verdicts", {})
+        if getattr(self.config, "creator_verdict_enabled", True):
+            import creator_verdict as _cv
+            _b = self.tracking.get(launch.mint) or {}
+            _trig = ((_b.get("smart_hits") or {}).get(_b.get("smart_trigger_wallet") or "") or {}).get("kind") if action == "smart_wallet" else None
+            try:
+                v = await _cv.compute(self.db, self.config, launch.mint, launch.creator or _b.get("creator"), _b, action=action, trigger_kind=_trig)
+            except Exception as e:
+                logger.warning(f"creator verdict failed for {launch.mint[:8]}: {e}")
+                v = {"level": "neutral", "size_mult": 1.0, "reasons": [f"verdict unavailable: {e}"]}
+            self._creator_verdicts[launch.mint] = v
+            if _b:
+                _b["creator_verdict"] = v
+            if v["level"] == "block" and not (is_manual and launch.mint in getattr(self, "_manual_force", set())):
+                await self._refuse(launch.mint, self._band_of(launch.mint), "creator-block", "creator verdict BLOCK — " + " · ".join(v["reasons"]))
+                return
+            if v["level"] == "block":
+                logger.warning(f"MANUAL FORCE: creator BLOCK overridden by operator for {launch.mint[:8]} — {' · '.join(v['reasons'])}")
         # Reservation gate — serialized so concurrent scanner attempts can't
         # all race past max_concurrent_positions. Holds the lock only for the
         # gate check + reservation (microseconds), not the tx.
@@ -4120,6 +4143,11 @@ class BotState:
         # cut-the-fat (2026-10-04): creator wallet audit (Helius Enhanced / Solscan) removed from the entry path
         size_mult = plan["size_mult"]
         planned_usd = plan["size_usd"]
+        _cvm = float(((getattr(self, "_creator_verdicts", {}) or {}).get(launch.mint) or {}).get("size_mult") or 1.0)
+        if _cvm != 1.0 and action not in MANUAL_ENTRY_ACTIONS:
+            planned_usd = max(float(self.config.min_trade_usd), min(float(self.config.max_trade_usd), planned_usd * _cvm))
+            size_mult = size_mult * _cvm
+            plan["trade_fields"]["size_usd"] = planned_usd
         # Hardwired fast-fail sizing: buy half now, the other half after the first +5 % (see _fast_fail_add)
         if getattr(self.config, "fast_fail_split_enabled", False) and action != "dev_watch":
             trade_usd = max(float(self.config.min_trade_usd), planned_usd * 0.5)

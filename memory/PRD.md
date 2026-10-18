@@ -2707,3 +2707,16 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   `notification_age_s` / `/bot/status.feed_notification_age_s`); exit reason gets an audit tail `[venue=… feed=… last_buy=… last_inflow=… tape_venue=…]`.
   `bucket["feed_venue"]` stamped in `on_trade`. Docstring fixed (dead_tape_exit_on_red closes red too).
 - Tests `test_pumpswap_dead_tape.py` (8). Preview feed switch (`helius_tracker_enabled`) was briefly flipped ON to verify the AMM subscription, then restored OFF.
+
+## 2026-10-18 — Creator Verdict: ONE holistic creator gate (user: DNTC… entered despite "our blacklist")
+- Root cause: `greylist_blacklisted` only excluded the greylist-snipe book + size boost; no entry path (scanner, smart-wallet, re-entry, add-ons) ever refused on it;
+  `creator_audit_enabled` / `reputation_enabled` (the only hard creator gates) are OFF.
+- `creator_verdict.py` (NEW): `compute(db,cfg,mint,creator,bucket,action,trigger_kind)` → {level block|caution|neutral|favor, size_mult, reasons}. Sources: greylist
+  (blacklisted / BLOCK_PATTERNS untradeable_rug+unpredictable_rug / CAUTION_PATTERNS / out_of_band / tier→favor+size), own book (`creator_block_own_losses`=3 losses & 0 wins
+  → block; 1 loss → caution; wins → favor), creator solvency (`creator_dump_block_pct`=50 → block, any sell → caution), creator audit fail (when enabled), smart wallets
+  (favor; ≥`creator_caution_smart_override_n`=3 of any kind lift CAUTION; a MANUAL smart-wallet trigger turns BLOCK→CAUTION when `creator_block_manual_smart_override`;
+  learned never). CAUTION → `creator_caution_size_mult`=0.5. 20 s per-creator cache.
+- Wired in `BotState._enter` for every non-manual path → `_refuse(..., "creator-block", …)`; size mult applied after `_plan_entry`; manual buys: `manual_enter(force=)`,
+  `POST /scanner/manual-buy/{mint}?force=true`; 409 `{creator_block, verdict}` → toast with "Buy anyway". `bucket["creator_verdict"]` → candidate chip (`creator-verdict-<mint>`).
+- API: `GET /creator-verdict/recent`, `GET /creator-verdict/{mint}`. UI: Doctor › CREATORS tab (`CreatorVerdictPanel.jsx`, knobs + recent list). Tests `test_creator_verdict.py` (7).
+- Verified on real data: AQ7Cvw… (blacklisted creator) → block [blacklisted · unpredictable_rug · out-of-band · our book 2 losses/0 wins].

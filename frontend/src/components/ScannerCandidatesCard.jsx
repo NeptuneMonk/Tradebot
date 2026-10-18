@@ -6,6 +6,7 @@ import { ChainBadge } from "./ChainBadge";
 import { TokenDetailDialog } from "./TokenDetailDialog";
 import { VirtualUl } from "./VirtualRows";
 import { api, explainApiError } from "@/lib/api";
+import { VerdictChip } from "./CreatorVerdictPanel";
 import { fillTone, projectedFillTitle } from "@/lib/fillCost";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
@@ -169,7 +170,21 @@ function ManualBuyButton({ c, isRh }) {
       const r = await api.scannerManualBuy(c.mint);
       toast.success(`Bought ${r.symbol || short(c.mint)} · ${(r.mode || "").toUpperCase()}${r.chain === "rh" ? " · RH" : ""} — SL/TP now managing it`);
     } catch (err) {
-      toast.error(`Buy refused — ${explainApiError(err)}`, { duration: 9000 });
+      const d = err?.response?.data?.detail;
+      if (d && typeof d === "object" && d.creator_block) {
+        const reasons = (d.verdict?.reasons || []).join(" · ");
+        toast.error(`Creator BLOCK — ${reasons || d.reason}`, {
+          duration: 15000,
+          action: { label: "Buy anyway", onClick: async () => {
+            try {
+              const r2 = await api.scannerManualBuy(c.mint, true);
+              toast.success(`Forced buy ${r2.symbol || short(c.mint)} · ${(r2.mode || "").toUpperCase()}`);
+            } catch (e2) { toast.error(`Buy refused — ${explainApiError(e2)}`, { duration: 9000 }); }
+          } },
+        });
+      } else {
+        toast.error(`Buy refused — ${explainApiError(err)}`, { duration: 9000 });
+      }
     } finally {
       setBusy(false);
     }
@@ -266,6 +281,7 @@ function CandidateRow({ c, passing, onOpen }) {
                 grad feed
               </span>
             )}
+            {c.creator_verdict && c.creator_verdict !== "neutral" && <VerdictChip level={c.creator_verdict} reasons={c.creator_verdict_reasons} mint={c.mint} />}
             {c.smart_hits > 0 && (
               <span
                 className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-amber-700 text-amber-300 bg-amber-950/40"
