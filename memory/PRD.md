@@ -2852,3 +2852,8 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   for the New band (`scanner_min_mc_velocity_5m_pct_new`); scanner rows show `curve %` + `MC vel(5m)` for New; `/api/config/warnings` now takes SOL price and warns when the
   New MC floor ≥ today's graduation MC (+ returns `graduation_mc_usd`) and when a late-curve target has the band age gap. Preview config set: band_new 15–60 m, curve fill 65–95,
   MC vel new 3, growth lookback 300 s / min growth new 3, inflow window 300 s, MC floor/ceiling 0. Tests `test_new_band_curve_fill.py` (5).
+- 2026-10-19 **"unverified-pool" false positives** (user: DAC / PUMPKIN / Gachamon / TUF in candidates): the first check compared the pool to the WSOL-quote canonical PDA; pump.fun
+  now graduates many coins into pools quoted in PUMP / USDC / other coins (same migration authority, different quote) → wrongly refused. On-chain audit of 5 live pools + the 4
+  CSV rugs: legit pools all have `creator == PDA("pool-authority", mint)` (any quote); the rugs are wallet-created AND **inverted** (token on the quote side, lp_supply 100).
+  New `pumpswap.unverified_pool_reason(state, mint)` — decoder now exposes `creator`, `index`, `lp_supply`; gate = creator must be the migration PDA and token must be the base.
+  Inverted pools are refused even for manual buys (price math would be upside down). Tests updated (`test_pool_drain_unverified.py`, 8).

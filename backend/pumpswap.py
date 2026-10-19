@@ -140,10 +140,13 @@ def _decode_pool_static(pool: str, raw: bytes) -> Optional[dict]:
         return None
     return {
         "pool": pool,
+        "index": int.from_bytes(raw[9:11], "little"),
+        "creator": str(Pubkey.from_bytes(raw[11:43])),
         "base_mint": str(Pubkey.from_bytes(raw[43:75])),
         "quote_mint": str(Pubkey.from_bytes(raw[75:107])),
         "pool_base_token_account": str(Pubkey.from_bytes(raw[139:171])),
         "pool_quote_token_account": str(Pubkey.from_bytes(raw[171:203])),
+        "lp_supply": int.from_bytes(raw[203:211], "little"),
         "coin_creator": str(Pubkey.from_bytes(raw[211:243])),
         "is_mayhem_mode": bool(raw[243]) if len(raw) > 243 else False,
         "is_cashback": bool(raw[244]) if len(raw) > 244 else False,
@@ -304,6 +307,25 @@ def quote_sell_sol(state: dict, tokens_in: int, slippage_bps: int = 500, fee_bps
 
 # ---- Pool lookup by mint (used when discovery only gives us the mint) ----
 PUMP_PROGRAM_ID = Pubkey.from_string(os.environ["PUMP_PROGRAM_ID"])
+
+
+def pool_authority(mint: Pubkey) -> Pubkey:
+    """Creator of every pool Pump.fun's migration opens: PDA("pool-authority", mint) under the Pump program."""
+    return Pubkey.find_program_address([b"pool-authority", bytes(mint)], PUMP_PROGRAM_ID)[0]
+
+
+def unverified_pool_reason(state: dict, mint_str: str) -> str | None:
+    """None when `state` is a Pump.fun graduation pool for `mint_str` (creator == pool-authority PDA, token on the base
+    side — quote may be WSOL, PUMP, USDC or another coin). Otherwise why it is not: user-made pools (LP can be pulled)
+    and inverted pools (token on the quote side — the price math is upside down; 4 such pools rugged on 2026-10-19)."""
+    if state.get("quote_mint") == mint_str and state.get("base_mint") != mint_str:
+        return "inverted pool (token is the quote side) — not a pump.fun graduation, LP can be pulled"
+    if state.get("base_mint") != mint_str:
+        return f"pool is for another base mint {str(state.get('base_mint') or '')[:8]}…"
+    creator = state.get("creator")
+    if creator and creator != str(pool_authority(Pubkey.from_string(mint_str))):
+        return f"created by wallet {creator[:8]}… not pump.fun's migration — LP can be pulled"
+    return None
 
 
 def derive_canonical_pool(mint: Pubkey) -> Pubkey:

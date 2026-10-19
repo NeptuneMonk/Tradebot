@@ -4046,11 +4046,10 @@ class BotState:
                                         "details": ["no pool found" if not pool else "pool state unavailable"]})
                 return
             bucket["pumpswap_pool"] = pool
-            if (getattr(self.config, "pumpswap_canonical_pool_only", True) and action not in MANUAL_ENTRY_ACTIONS
-                    and launch.mint not in getattr(self, "_manual_force", set())
-                    and pool != str(pumpswap.derive_canonical_pool(Pubkey.from_string(launch.mint)))):
-                await self._refuse(launch.mint, "seasoned", "unverified-pool",
-                                   f"pool {pool[:8]}… is not the pump.fun graduation pool — LP can be pulled (pumpswap_canonical_pool_only)")
+            why = pumpswap.unverified_pool_reason(pumpswap_state, launch.mint)
+            if why and (why.startswith("inverted") or (getattr(self.config, "pumpswap_canonical_pool_only", True) and action not in MANUAL_ENTRY_ACTIONS
+                                                        and launch.mint not in getattr(self, "_manual_force", set()))):
+                await self._refuse(launch.mint, "seasoned", "unverified-pool", f"pool {pool[:8]}… {why} (pumpswap_canonical_pool_only)")
                 return
             state = {
                 "real_sol_reserves": pumpswap_state.get("real_quote_reserves", pumpswap_state["quote_reserves"]),

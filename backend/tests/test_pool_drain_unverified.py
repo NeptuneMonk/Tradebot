@@ -29,6 +29,25 @@ def test_canonical_pool_is_deterministic_pda():
     assert a == b and a != str(pumpswap.derive_canonical_pool(Pubkey.from_string(MINT)))
 
 
+def test_graduation_pool_with_non_sol_quote_is_verified():
+    # DAC Hh52rRAd… (2026-10-19): pump.fun migration pool paired with TTWofwAg… (not WSOL) — must NOT be refused
+    dac = "Hh52rRAdRof5m2neKDXzEaJeVZQZLUm6q169mu1jdFGJ"
+    st = {"creator": str(pumpswap.pool_authority(Pubkey.from_string(dac))), "base_mint": dac, "quote_mint": "TTWofwAg1111111111111111111111111111111111"}
+    assert pumpswap.unverified_pool_reason(st, dac) is None
+    assert str(pumpswap.derive_canonical_pool(Pubkey.from_string(dac))) != "GDPi9zvPmkLCypVgM9mv3cD9hRdo8sKr1KTUAn4rsnTA"   # the old WSOL-only check would have refused it
+
+
+def test_wallet_created_and_inverted_pools_are_unverified():
+    # Sibbear H7HW…moon: wallet creator, token on the QUOTE side (base = something else) → the rug shape from the CSV
+    moon = "H7HWTpq5kQnkHHQkCBg5PCG9tj8aKAkwTSBDUUQFmoon"
+    st = {"creator": "3A6AkVjb3K11111111111111111111111111111111", "base_mint": "So11111111111111111111111111111111111111112", "quote_mint": moon}
+    assert pumpswap.unverified_pool_reason(st, moon).startswith("inverted")
+    st2 = {"creator": "3A6AkVjb3K11111111111111111111111111111111", "base_mint": moon, "quote_mint": "So11111111111111111111111111111111111111112"}
+    assert "created by wallet" in pumpswap.unverified_pool_reason(st2, moon)
+    st3 = {"creator": str(pumpswap.pool_authority(Pubkey.from_string(moon))), "base_mint": moon, "quote_mint": "So11111111111111111111111111111111111111112"}
+    assert pumpswap.unverified_pool_reason(st3, moon) is None
+
+
 def test_default_config_requires_canonical_pool_and_has_drain_floor():
     c = BotConfig()
     assert c.pumpswap_canonical_pool_only is True
