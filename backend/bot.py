@@ -2218,6 +2218,16 @@ class BotState:
         logger.info(f"runner ADD-ON {mint[:8]}…: ${plan['size_usd']:.2f} at {cur_price_sol:.3e} SOL (cost {plan['expected_cost_pct']:.1f}%)")
         return True
 
+    def _max_hold_due(self, slot: dict) -> int | None:
+        """Seconds held when the universal max-hold clock (`max_hold_any_book_s`, from the PERSISTED entry time) has
+        expired for a bot-managed position; None while inside the clock, for manual / LTH holds, or when the clock is 0."""
+        mh = float(getattr(self.config, "max_hold_any_book_s", 0) or 0)
+        if mh <= 0 or self._is_manual_hold(slot):
+            return None
+        t = slot.get("trade") or {}
+        age = time.time() - self._entry_epoch(t) if t.get("entry_time") else time.time() - float(slot.get("_entry_ts_mono") or time.time())
+        return int(age) if age >= mh else None
+
     async def _run_ladder(self, mint: str, slot: dict, cur_price_sol: float, elapsed: float, tag: str = "") -> bool:
         """Evaluate the position's BOOK ladder (exits.py) once. Returns True when the slot was closed."""
         trade_doc = slot["trade"]
@@ -2251,11 +2261,9 @@ class BotState:
             if _sl > 0 and pct <= -(_sl + _extra):
                 await self._exit(mint, reason=f"hard-stop (pnl {pct:+.1f}% ≤ −{_sl + _extra:.0f}%)")
                 return True
-            _age = time.time() - self._entry_epoch(slot.get("trade") or {}) if (slot.get("trade") or {}).get("entry_time") \
-                else time.time() - float(slot.get("_entry_ts_mono") or time.time())
-            _mh = float(getattr(cfg, "max_hold_any_book_s", 0) or 0)
-            if _mh > 0 and _age >= _mh:
-                await self._exit(mint, reason=f"max-hold {int(_age)}s")
+            _due = self._max_hold_due(slot)
+            if _due is not None:
+                await self._exit(mint, reason=f"max-hold {_due}s")
                 return True
         if book == "runner":
             return await self._run_runner(mint, slot, cur_price_sol, sl_fire, ts_fire, elapsed)
@@ -4039,6 +4047,19 @@ class BotState:
         # Resolve band-specific gates: "new" (action=momentum_new) uses tighter
         # thresholds, "seasoned" (action=scanner_momentum) uses base thresholds.
         is_new_band = action == "momentum_new" or (action in MANUAL_ENTRY_ACTIONS + ("smart_wallet",) and protocol == "pumpfun")
+        # Market-cap floor / ceiling is a HARD gate on every automatic path (smart wallet, trending top dog, re-entry, sniper
+        # included — only operator buys skip it). Published 2026-10-18: smart-wallet / top-dog entries ignored the $11k / $25k floors.
+        if action not in MANUAL_ENTRY_ACTIONS and launch.mint not in getattr(self, "_manual_force", set()):
+            _curve = protocol == "pumpfun"                      # MC band follows the venue: curve → NEW floors, pool → SEASONED floors
+            _mc = float(bucket.get("usd_market_cap") or 0.0)
+            _floor = float(self.config.scanner_min_mc_usd_new if _curve else self.config.scanner_min_mc_usd_seasoned) or 0.0
+            _ceil = float(getattr(self.config, "scanner_max_mc_usd_new", 0) or 0) if _curve else float(getattr(self.config, "scanner_max_mc_usd_seasoned", 0) or 0)
+            if _mc > 0 and _floor > 0 and _mc < _floor:
+                await self._refuse(launch.mint, "new" if _curve else "seasoned", "mc-floor", f"${_mc:,.0f} MC < ${_floor:,.0f} floor ({action})")
+                return
+            if _mc > 0 and _ceil > 0 and _mc > _ceil:
+                await self._refuse(launch.mint, "new" if _curve else "seasoned", "mc-max", f"${_mc:,.0f} MC > ${_ceil:,.0f} ceiling ({action})")
+                return
         # Greylist Sniper bypasses MOMENTUM-side gates entirely. The whole
         # point of the greylist is sniping creators on predictable curves,
         # so growth/inflow/buyer/velocity gates would defeat the strategy.
@@ -5092,6 +5113,12 @@ class BotState:
             if not slot or slot.get("monitor_uid") != monitor_uid:
                 return  # slot evicted OR another monitor took over
             slot["last_monitor_tick"] = time.time()
+            # Universal max-hold clock, PRICE-INDEPENDENT: evaluated every tick before any pool / curve read, so a blind
+            # feed or failing RPC can never let a position outlive the clock (Published: hunt rode 1187 s on a 900 s clock).
+            _due = self._max_hold_due(slot)
+            if _due is not None:
+                await self._exit(mint, reason=f"max-hold {_due}s")
+                return
             watch_account = slot.get("watch_account") or watch_account   # may move (pool → vault) after a migration
             # Persist in-flight monitor state every ~10s so the orphan
             # reattach path can restore the trailing-stop peak, partial-tp

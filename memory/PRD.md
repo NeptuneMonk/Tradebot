@@ -2817,3 +2817,11 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   Fix: non-SOL quote → `sol_amount`/`virtual_sol_reserves` = 0 and the raw values go to `quote_amount`/`virtual_quote_reserves`/`real_quote_reserves` for `normalize` (unpriced → no price, no tick).
   `_resolve_pumpswap_pool` now prefers the pool's on-chain static `quote_mint` (`pumpswap.pool_static`) so a missing quote is never mistaken for SOL. Test in `test_pumpswap_dead_tape.py`.
   The on-chain TP confirm stays as the backstop.
+
+## 2026-10-18 — Published findings: max-hold clock + MC floor (user trade history / config export)
+- **Max-hold not firing** (e/acc hunt rode 1187 s on a 900 s clock in Published; 0 `max-hold` exits in both envs): the clock lived inside `_run_ladder`, which is only reached after a
+  successful pool / curve price read — every `continue` on a failed/blind read skipped it. Now `BotState._max_hold_due(slot)` is evaluated at the TOP of every `_monitor_position`
+  tick (price-independent, persisted entry_time, manual/LTH exempt) and `_run_ladder` reuses it. Note: the UI has no clock countdown in either env — only the knob (Execution safety).
+- **MC floor ignored**: `scanner_min_mc_usd_new/seasoned` (+ `scanner_max_mc_usd_*`) were checked only in the scanner prerank; smart-wallet, trending top dog, re-entry and sniper
+  entries bypassed them. Now a hard `mc-floor` / `mc-max` gate in `_enter_impl` for every non-operator action (venue decides the band: curve → NEW floors, pool → SEASONED floors;
+  unknown MC = 0 passes). Trending hunt stamps the DexScreener MC on a freshly seeded top dog. Tests `test_published_findings_1018.py` (3).

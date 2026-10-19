@@ -161,6 +161,8 @@ async def hunt_cluster(state, key: str, now: float) -> dict | None:
             wide["verdict"] = f"could not seed top dog: {b}"
             return wide
     b["trend_leader_ts"] = now
+    if leader["mc_usd"] > 0:
+        b["usd_market_cap"] = max(float(b.get("usd_market_cap") or 0.0), float(leader["mc_usd"]))
     from models import Launch
     launch = Launch(mint=leader["mint"], creator=b.get("creator") or leader.get("creator") or "", bonding_curve="", name=b.get("name"), symbol=b.get("symbol"))
     launch.id = b.get("launch_id") or launch.id
