@@ -28,13 +28,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger("scanner")
 
 
+def _baseline(samples, cutoff: float):
+    """Value as of `cutoff`: whichever sample is nearest to it — the last one at/before or the first one after."""
+    before = None
+    after = None
+    for s in samples:
+        if s[0] <= cutoff:
+            before = s
+        else:
+            after = s
+            break
+    if before is None or after is None:
+        return before if before is not None else after
+    return before if (cutoff - before[0]) <= (after[0] - cutoff) else after
+
+
 def _mc_velocity(samples, now: float, window_s: int = 300) -> float:
     """% change in MC over the last `window_s` seconds based on rolling samples."""
     if not samples or len(samples) < 2:
         return 0.0
-    cutoff = now - window_s
-    # earliest sample inside the window (fallback to oldest available)
-    earliest = next((s for s in samples if s[0] >= cutoff), samples[0])
+    # Baseline = the value `window_s` ago (last sample at/before the cutoff), NOT the first sample inside the window —
+    # with 30–60 s sampling that sample is often the latest one itself and the velocity read a flat 0 % (2026-10-19).
+    earliest = _baseline(samples, now - window_s) or samples[0]
     latest = samples[-1]
     base = earliest[1] or 0.0
     cur = latest[1] or 0.0
@@ -57,9 +72,9 @@ def velocity_pct_strict(samples, now: float, window_s: int) -> float | None:
     oldest_ts = samples[0][0]
     if now - oldest_ts < window_s:
         return None
-    cutoff = now - window_s
-    # find the earliest sample inside the window
-    earliest = next((s for s in samples if s[0] >= cutoff), None)
+    # value as of `window_s` ago (last sample at/before the cutoff) — the first sample INSIDE the window is often the
+    # latest print itself once sampling slows to 1/30 s, which read every rising token as a flat 0 % "dead cat"
+    earliest = _baseline(samples, now - window_s)
     if earliest is None:
         return None
     latest = samples[-1]
@@ -119,7 +134,9 @@ class MomentumScanner:
             return "curve-fill-max", f"{fill:.0f}% of curve > {hi:g}%"
         vmin = float(getattr(cfg, "scanner_min_mc_velocity_5m_pct_new", 0) or 0)
         if vmin != 0:
-            v = _mc_velocity(b.get("mc_samples") or (), now)
+            # on the curve MC ∝ price, so the dense tape `price_samples` (1 Hz → 1/30 s) beat the 60 s API `mc_samples`
+            ps = b.get("price_samples") or ()
+            v = _mc_velocity(ps, now) if len(ps) >= 2 else _mc_velocity(b.get("mc_samples") or (), now)
             m["mc_velocity_5m_pct"] = v
             if v < vmin:
                 return "mc-velocity", f"{v:+.1f}%/5m < {vmin:g}%"
@@ -196,11 +213,10 @@ class MomentumScanner:
         samples = b.get("price_samples") or ()
         baseline_price = None
         if samples:
-            cutoff = now - lookback_s
-            for ts, p in samples:
-                if ts >= cutoff and p > 0:
-                    baseline_price = p
-                    break
+            # price as of `lookback_s` ago (last sample at/before the cutoff); first sample inside the window otherwise
+            bl = _baseline(samples, now - lookback_s)
+            if bl is not None and bl[1] > 0:
+                baseline_price = bl[1]
             # Fallback: if no sample inside the window (e.g. fresh launch),
             # use the OLDEST sample we have — still gives a meaningful
             # "since-we've-been-tracking" number that isn't the launch

@@ -2857,3 +2857,8 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   CSV rugs: legit pools all have `creator == PDA("pool-authority", mint)` (any quote); the rugs are wallet-created AND **inverted** (token on the quote side, lp_supply 100).
   New `pumpswap.unverified_pool_reason(state, mint)` — decoder now exposes `creator`, `index`, `lp_supply`; gate = creator must be the migration PDA and token must be the base.
   Inverted pools are refused even for manual buys (price math would be upside down). Tests updated (`test_pool_drain_unverified.py`, 8).
+- 2026-10-19 **Velocity math audit** (user: "near-grad tokens that rose over 30 min should pass entry velocity / MC gain over 300 s"): `velocity_pct_strict` and `_mc_velocity`
+  took the FIRST sample inside the window as baseline — once tape sampling slows to 1/30 s (after 60 s of age) that sample is often the latest print itself, so a rising token
+  read a flat **0 %** and failed any positive floor (entry-velocity 30 s window especially). Both now use the value as of `window` ago (last sample at/before the cutoff; partial
+  window falls back to the first sample after it); `growth_pct_rolling` baseline fixed the same way. New-band MC velocity now derives from the dense tape `price_samples`
+  (MC ∝ price on the curve) instead of the 60 s API `mc_samples`. Tests `test_velocity_baseline.py` (5).
