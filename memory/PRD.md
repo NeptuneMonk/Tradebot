@@ -2832,3 +2832,8 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   SOL price / depth unknown). Exit reason now reads `… +4.9% gross / +0.2% net after 564s`; skip log shows both. RH paper book: same — net = gross − (2 % curve RT + 2×gas/stake).
   Tests `test_no_momentum_net_floor.py` (3; user case nets +0.21 % → held), `test_graduation_hold.py` RH cases updated. Audit: no other "sell only if green" exit uses gross
   (snipe stale-exit sells when NOT green; TP/trail/ladder are price targets by design).
+- 2026-10-19 **Max-hold knob "not there"** (user screenshot of Exits · per book): the universal `max_hold_any_book_s` clock only lived in Execution safety (47-knob panel below the Save
+  button). Added an **"All books · max hold"** row at the bottom of the per-book exits table (`book-exit-all-max-hold-s`, step 60, amber when ≠ 900) — saves through the normal
+  SAVE CONFIG → PUT `{max_hold_any_book_s}`. Verified in-browser (PUT body + persisted after reload). Execution-safety copy of the knob kept.
+- Deployment readiness scan (user request): compile / env / CORS / URLs all pass; the only flag is the platform policy on Solana/EVM libraries. Prod runtime logs show the app
+  serving (health 200, WS up); the 429s are the public `api.mainnet-beta.solana.com` RPC — set a Helius / private RPC URL in Published env.

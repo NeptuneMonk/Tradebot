@@ -117,6 +117,21 @@ export default function BookExitsEditor({ local, setLocal, onRestored }) {
                 })}
               </tr>
             ))}
+            <tr className="border-t border-neutral-700" data-testid="book-exits-row-all">
+              <td className="py-1 text-neutral-200" title="Absolute max hold for EVERY non-manual position on every book, counted from the persisted entry time (survives restarts). Fires even when the venue price can't be read. 0 = off. Manual / LTH holds ignore it.">
+                All books <span className="text-neutral-600 normal-case">· max hold</span>
+              </td>
+              {FIELDS.map(([k]) => (
+                <td key={k} className="text-right px-1">
+                  {k !== "hold_max_seconds" ? <span className="text-neutral-700">—</span> : (
+                    <input type="number" step={60} min="0" data-testid="book-exit-all-max-hold-s"
+                      value={local.max_hold_any_book_s ?? 900}
+                      onChange={(e) => setLocal({ ...local, max_hold_any_book_s: Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                      className={`w-14 bg-neutral-950 border px-1 py-0.5 text-right ${(local.max_hold_any_book_s ?? 900) !== 900 ? "border-amber-700 text-amber-200" : "border-neutral-800 text-neutral-300"}`} />
+                  )}
+                </td>
+              ))}
+            </tr>
           </tbody>
         </table>
       </div>
