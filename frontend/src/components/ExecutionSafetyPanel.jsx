@@ -35,6 +35,8 @@ const GROUPS = [
     { key: "protocol_fee_pct_pumpfun", label: "Protocol fee % pump.fun", type: "float", step: 0.05, hint: "Applied in max_sol_cost / min_sol_output and in paper fills." },
     { key: "protocol_fee_pct_pumpswap", label: "Protocol fee % PumpSwap", type: "float", step: 0.05 },
     { key: "skip_mayhem_coins", label: "Skip mayhem-mode coins", type: "bool", hint: "Token-2022 + mayhem fee recipient curves are skipped on every buy path." },
+    { key: "pumpswap_canonical_pool_only", label: "PumpSwap: pump.fun pools only", type: "bool", hint: "Only enter PumpSwap pools created by the pump.fun graduation (LP locked). Anyone can open a pool for any mint — pump.fun shows those tokens as 'unverified' — and pull the LP later: 4 such pools drained mid-hold on 2026-10-19 and printed +1576 % 'take-profits' that filled at −100 %. Manual / force buys still allowed." },
+    { key: "pool_drain_exit_pct", label: "Pool drained below % of entry depth", type: "float", step: 5, hint: "PumpSwap: when the pool's SOL depth falls under this % of what it had at entry the LP was pulled — price ticks are no longer take-profits and the position exits as 'pool drained' (rug). 0 = off." },
   ]},
   { title: "Entry latency & sizing", fields: [
     { key: "fast_fail_split_enabled", label: "Half-now / half-later", type: "bool", hint: "Opt-in: buy half at entry, add the rest once price is up Fast-fail add %." },

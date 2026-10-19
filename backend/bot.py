@@ -2931,6 +2931,19 @@ class BotState:
     def _band_of(self, mint: str) -> str:
         return "seasoned" if (self.tracking.get(mint) or {}).get("protocol") == "pumpswap" else "new"
 
+    def _pool_drained(self, slot: dict) -> str | None:
+        """PumpSwap LP pulled: SOL depth under `pool_drain_exit_pct` % of the entry-time depth → exit reason, else None.
+        A drained pool's reserve ratio prints absurd 'gains' (+1576 %…+4.8 M %) that fill at −100 %."""
+        pct = float(getattr(self.config, "pool_drain_exit_pct", 20.0) or 0.0)
+        if pct <= 0 or (slot.get("protocol") or (slot.get("trade") or {}).get("protocol")) != "pumpswap":
+            return None
+        t = slot.get("trade") or {}
+        ref = float(slot.get("entry_depth_sol") or t.get("entry_depth_sol") or (t.get("entry_ctx") or {}).get("curve_liquidity_sol") or 0.0)
+        depth = float(slot.get("_depth_sol") or 0.0)
+        if ref <= 0 or depth >= ref * pct / 100.0:
+            return None
+        return f"pool drained: {depth:.2f} SOL left of {ref:.2f} at entry (−{(1 - depth / ref) * 100:.0f} %, LP pulled — unverified pool rug)"
+
     async def _confirm_tp_on_chain(self, mint: str, slot: dict, tick_px: float, tick_pct: float) -> bool:
         """Fast-path take-profit guard: re-read the curve / pool and only sell when the CHAIN price also clears the
         take-profit level. A rejected tick resets the sanity baseline and the peak to the chain price."""
@@ -2951,6 +2964,14 @@ class BotState:
                 pool = slot.get("pumpswap_pool") or t.get("pumpswap_pool") or (self.tracking.get(mint) or {}).get("pumpswap_pool") or ""
                 st = await pumpswap.fetch_pool_state(pool) if pool else None
                 px = pumpswap.price_sol_per_raw_token(st) if st else None
+                if st:
+                    slot["_depth_sol"] = float(st.get("real_quote_reserves", st.get("quote_reserves")) or 0) / LAMPORTS_PER_SOL
+                    drained = self._pool_drained(slot)
+                    if drained:
+                        # LP pulled: the reserve ratio is noise, not a gain — the monitor's next tick exits as "pool drained"
+                        self.stats["tp_ticks_rejected"] = self.stats.get("tp_ticks_rejected", 0) + 1
+                        logger.warning(f"TP tick REJECTED {t.get('symbol')} {mint[:8]}…: tape +{tick_pct:.1f} % but {drained}")
+                        return False
             else:
                 st = await pumpfun.fetch_bonding_curve_state(mint)
                 if st and not st.get("complete") and st["virtual_token_reserves"] > 0:
@@ -4025,6 +4046,12 @@ class BotState:
                                         "details": ["no pool found" if not pool else "pool state unavailable"]})
                 return
             bucket["pumpswap_pool"] = pool
+            if (getattr(self.config, "pumpswap_canonical_pool_only", True) and action not in MANUAL_ENTRY_ACTIONS
+                    and launch.mint not in getattr(self, "_manual_force", set())
+                    and pool != str(pumpswap.derive_canonical_pool(Pubkey.from_string(launch.mint)))):
+                await self._refuse(launch.mint, "seasoned", "unverified-pool",
+                                   f"pool {pool[:8]}… is not the pump.fun graduation pool — LP can be pulled (pumpswap_canonical_pool_only)")
+                return
             state = {
                 "real_sol_reserves": pumpswap_state.get("real_quote_reserves", pumpswap_state["quote_reserves"]),
                 "complete": False,
@@ -4482,6 +4509,7 @@ class BotState:
         trade_extras = {
             "protocol": protocol,
             "pumpswap_pool": bucket.get("pumpswap_pool", ""),
+            "entry_depth_sol": float(real_sol),            # pool-drain reference (pool_drain_exit_pct)
             # tier (a hot greylist + a standard mint can be open concurrently).
             "greylist_strategy": greylist_ctx.get("strategy"),
             # Snipe pattern context — read by `_check_snipe_pattern_exit()`
@@ -5200,6 +5228,14 @@ class BotState:
                     cur_price_sol = pumpswap.price_sol_per_raw_token(pool_state)
                     slot["_depth_sol"] = float(pool_state.get("real_quote_reserves", pool_state.get("quote_reserves")) or 0) / LAMPORTS_PER_SOL
                     slot.pop("_runner_pool_missing_since", None)
+                    drained = self._pool_drained(slot)
+                    if drained and not slot.get("exit_in_progress"):
+                        slot["exit_in_progress"] = True
+                        try:
+                            await self._exit(mint, reason=drained)
+                        finally:
+                            slot["exit_in_progress"] = False
+                        continue
                 else:
                     state = await self._monitor_curve_state(mint, slot, watch_account)
                     if not state and is_runner:

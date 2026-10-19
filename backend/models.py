@@ -151,6 +151,12 @@ class BotConfig(BaseModel):
     rh_protocol_fee_pct: float = 1.0              # curve fee taken on the quote side, subtracted in min-out
     # EMERGENT_CHANGES #6 — mayhem-mode curves: builders ready (mayhem fee recipient + Token-2022), entry skipped until flipped
     skip_mayhem_coins: bool = True
+    # PumpSwap pool provenance: pump.fun graduations land on the canonical PDA pool with the LP locked. Anyone can open a
+    # PumpSwap pool for any mint ("unverified" on pump.fun) and pull the LP later — 4 such pools drained mid-hold on
+    # 2026-10-19 (Sibbear / Leowin / PIERRE / ZCAT: tape "+1576 %" take-profits that filled at −100 %).
+    pumpswap_canonical_pool_only: bool = True
+    # PumpSwap: SOL depth below this % of the entry-time depth = LP pulled → ticks are NOT take-profits, exit as "pool drained". 0 = off
+    pool_drain_exit_pct: float = 20.0
     # Risk / exit behaviour
     daily_kill_switch_usd: float = 20.00
     priority_fee_microlamports: int = 500_000

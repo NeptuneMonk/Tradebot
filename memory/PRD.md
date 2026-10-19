@@ -2840,3 +2840,9 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
 - 2026-10-19 **Doctor → Creators knobs blanked the others** (user): `CreatorVerdictPanel` / `SmartMagnetsPanel` called `onConfigUpdate({k: v})`, and DoctorWorkspace wires that prop
   straight to `setConfig` → the whole config state became the one-key patch (nothing saved, every other field empty). Both panels now `api.updateConfig(patch)` and pass the
   SAVED full config up (same pattern as Greylist / Smart wallets), with a toast. Verified in-browser: PUT `{"creator_min_win_rate_pct":45}`, other fields intact.
+- 2026-10-19 **"TP +1576 % but PnL −100 %" (CSV: Sibbear / Leowin / PIERRE / ZCAT, all pumpswap, mints not `…pump`)**: on-chain check — these are PumpSwap pools that
+  were NOT created by the pump.fun graduation (pump.fun shows such tokens "unverified"); the LP is withdrawable and was pulled mid-hold (DexScreener liq now $0). A drained pool's
+  reserve ratio prints absurd gains, the chain confirm re-read the same drained pool, the sell got nothing. Fixes: (1) `pumpswap_canonical_pool_only` (default ON) — automatic
+  entries refuse any pool ≠ `derive_canonical_pool(mint)` → skip reason `unverified-pool`; manual/force buys still allowed. (2) `pool_drain_exit_pct` (default 20) — `entry_depth_sol`
+  is stamped at entry (fallback `entry_ctx.curve_liquidity_sol`); when the pool's SOL depth drops under 20 % of it, TP ticks are rejected and the monitor exits with
+  "pool drained … rug" (autopsy class `rug`, not `tp`). Both knobs in Execution safety. Tests `test_pool_drain_unverified.py` (6).
