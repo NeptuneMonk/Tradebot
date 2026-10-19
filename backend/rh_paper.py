@@ -1105,9 +1105,14 @@ class RHPaperTrader:
             stall = no_momentum_stalled(cfg, pos, now, now - pos["opened"], entry, float(pos.get("peak_price") or 0))
             if stall is not None:
                 floor = float(getattr(cfg, "no_momentum_min_profit_pct", 3.0) or 0.0)
-                if pnl_pct < floor:
+                # judge the floor on NET: curve fee both ways + gas both ways as % of the stake
+                stake_usd = float(t.get("entry_usd") or 0)
+                from bankroll import RH_CURVE_FEE_RT_PCT
+                rt_pct = RH_CURVE_FEE_RT_PCT + (2 * self._paper_gas_usd() / stake_usd * 100.0 if stake_usd > 0 else 0.0)
+                net_pct = pnl_pct - rt_pct
+                if net_pct < floor:
                     # below the profit floor (red or barely green) → hold as dust; only a price-based exit (stop / clock) may close it
-                    logger.info(f"rh_paper no-momentum skipped {t.get('symbol')}: {pnl_pct:+.1f}% < {floor:g}% profit floor — holding until a price-based exit fires")
+                    logger.info(f"rh_paper no-momentum skipped {t.get('symbol')}: {pnl_pct:+.1f}% gross / {net_pct:+.1f}% net < {floor:g}% profit floor — holding until a price-based exit fires")
                 else:
                     return "no_momentum"
         w = pos.get("_recovery_watch")

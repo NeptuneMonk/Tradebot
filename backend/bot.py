@@ -5170,16 +5170,18 @@ class BotState:
                 if _stall is not None:
                     _b = self.tracking.get(mint) or {}
                     _px = float(_b.get("last_price_sol") or slot.get("_last_price") or 0.0)
-                    _pnl = (_px / _ep - 1) * 100 if _px > 0 else 0.0
+                    _pnl, _net_pct = self._nm_pnl(slot, _px, _ep)
                     _floor = float(getattr(self.config, "no_momentum_min_profit_pct", 3.0) or 0.0)
-                    if _pnl < _floor:
+                    _judge = _net_pct if _net_pct is not None else _pnl
+                    if _judge < _floor:
                         # Below the profit floor (red or barely green) → hold as dust. Momentum never sells here; only a
                         # price-based exit (stop-loss, clock, rip-cord) may — see PRD 2026-09-21 (f) / 2026-10-03.
-                        logger.info(f"no-momentum skipped {mint[:8]}…: {_pnl:+.1f}% < {_floor:g}% profit floor — holding until a price-based exit fires")
+                        logger.info(f"no-momentum skipped {mint[:8]}…: {_pnl:+.1f}% gross / {_judge:+.1f}% net < {_floor:g}% profit floor — holding until a price-based exit fires")
                     else:
                         slot["exit_in_progress"] = True
                         try:
-                            await self._exit(mint, reason=f"no-momentum (peak +{_stall:.1f}% in {int(self.config.no_momentum_after_s)}s, {_pnl:+.1f}% after {int(elapsed)}s)")
+                            _nets = f" / {_judge:+.1f}% net" if _net_pct is not None else ""
+                            await self._exit(mint, reason=f"no-momentum (peak +{_stall:.1f}% in {int(self.config.no_momentum_after_s)}s, {_pnl:+.1f}% gross{_nets} after {int(elapsed)}s)")
                             return
                         finally:
                             slot["exit_in_progress"] = False
@@ -5673,6 +5675,15 @@ class BotState:
         exit_prio = max(int(cfg.exit_priority_floor_microlamports), int(priority_fee))
         tip_sell = TIP_LAMPORTS_SWQOS if self._sender_mode(False) == "swqos" else TIP_LAMPORTS_DUAL
         return (5_000 + exit_prio * self.cu_limit(protocol, "sell") / 1e6 + tip_sell) / 1e9
+
+    def _nm_pnl(self, slot: dict, px: float, entry_px: float) -> tuple[float, float | None]:
+        """(gross %, net-if-sold % or None) for the no-momentum profit floor. The floor is judged on NET — exit slip,
+        protocol fee, shave, tx fees and the entry fee — because a +4.9 % tape fills −3 % on a $2.50 stake."""
+        gross = (px / entry_px - 1) * 100 if px > 0 and entry_px > 0 else 0.0
+        net = self.net_if_sold(slot.get("trade") or {}, {**slot, "_last_price_sol": px},
+                               float(solana_client._sol_price_cache.get("price") or 0))
+        net_pct = net.get("net_pnl_pct") if net else None
+        return gross, (float(net_pct) if net_pct is not None else None)
 
     def net_if_sold(self, d: dict, slot: dict, sol_usd: float) -> dict | None:
         """What a full market sell of the OPEN part would net right now, after exit slippage (impact on the pool's current

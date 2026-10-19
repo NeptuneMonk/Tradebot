@@ -366,7 +366,10 @@ def test_rh_red_no_momentum_is_held_as_dust():
 def test_rh_green_low_mfe_no_momentum_still_kills():
     st, b, TOKEN, pos, t, entry, now = _rh_red_no_momentum()
     pos["peak_price"] = entry * 1.04
-    b["last_price_quote"] = entry * 1.04                                       # +4% ≥ 3% profit floor, never reached min MFE
+    b["last_price_quote"] = entry * 1.04                                       # +4% gross nets < 3% after the 2% curve fee + gas → held (2026-10-19)
+    assert st.rh_paper._decide_exit(pos, b, now) in (None, "max_hold")
+    st, b, TOKEN, pos, t, entry, now = _rh_red_no_momentum(no_momentum_min_mfe_pct=30.0)
+    pos["peak_price"] = b["last_price_quote"] = entry * 1.20                  # +20% gross (< 30% MFE) clears the NET floor
     assert st.rh_paper._decide_exit(pos, b, now) == "no_momentum"
 
 
@@ -376,7 +379,10 @@ def test_rh_green_below_profit_floor_is_held():
     pos["peak_price"] = entry * 1.02
     b["last_price_quote"] = entry * 1.01                                       # +1% < 3%
     assert st.rh_paper._decide_exit(pos, b, now) in (None, "max_hold") and pos["_nm_checked"] is True
-    st, b, TOKEN, pos, t, entry, now = _rh_red_no_momentum(no_momentum_min_profit_pct=0.0)
+    st, b, TOKEN, pos, t, entry, now = _rh_red_no_momentum(no_momentum_min_profit_pct=0.0, no_momentum_min_mfe_pct=30.0)
     pos["peak_price"] = entry * 1.02
-    b["last_price_quote"] = entry * 1.01                                       # floor 0 → any green stall sells
+    b["last_price_quote"] = entry * 1.01                                       # floor 0 but +1% gross nets red → still held
+    assert st.rh_paper._decide_exit(pos, b, now) in (None, "max_hold")
+    pos["_nm_last_ts"] = 0; pos["_nm_peak_ref"] = entry
+    b["last_price_quote"] = entry * 1.08                                       # +8% gross nets green → floor 0 sells
     assert st.rh_paper._decide_exit(pos, b, now) == "no_momentum"

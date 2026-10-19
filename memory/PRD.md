@@ -2825,3 +2825,10 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
 - **MC floor ignored**: `scanner_min_mc_usd_new/seasoned` (+ `scanner_max_mc_usd_*`) were checked only in the scanner prerank; smart-wallet, trending top dog, re-entry and sniper
   entries bypassed them. Now a hard `mc-floor` / `mc-max` gate in `_enter_impl` for every non-operator action (venue decides the band: curve → NEW floors, pool → SEASONED floors;
   unknown MC = 0 passes). Trending hunt stamps the DexScreener MC on a freshly seeded top dog. Tests `test_published_findings_1018.py` (3).
+
+## 2026-10-19 — "no-momentum exit said +4.9 % but filled −3.6 %" (user screenshot, speed $2.50 → $2.42)
+- Cause: the `no_momentum_min_profit_pct` (3 %) floor was judged on the GROSS tape % (+4.9 %); the sell nets exit slip + 1 % pump fee + shave + tx fees − entry fee ≈ −4.7 pp on a
+  $2.50 stake → red fill. Fix: `BotState._nm_pnl(slot, px, entry)` → (gross, net-if-sold %) via the existing `net_if_sold()`; the floor is compared against NET (gross only when
+  SOL price / depth unknown). Exit reason now reads `… +4.9% gross / +0.2% net after 564s`; skip log shows both. RH paper book: same — net = gross − (2 % curve RT + 2×gas/stake).
+  Tests `test_no_momentum_net_floor.py` (3; user case nets +0.21 % → held), `test_graduation_hold.py` RH cases updated. Audit: no other "sell only if green" exit uses gross
+  (snipe stale-exit sells when NOT green; TP/trail/ladder are price targets by design).
