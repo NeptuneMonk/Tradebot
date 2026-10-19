@@ -878,9 +878,23 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
                      seasonedValue={local.scanner_max_mc_usd_seasoned ?? 0}
                      onSeasonedChange={(v) => setLocal({ ...local, scanner_max_mc_usd_seasoned: parseFloat(v) || 0 })}
                      step="1000" />
-            {/* Seasoned-only: Pump.fun API polled signals */}
-            <GateRow label="Min MC vel (5m %)" seasonedOnly last
-                     hint="Minimum % market-cap velocity over the last 5 minutes (negative = allow tokens still bleeding, e.g. -15 for dip hunting on graduated tokens). Catches Seasoned tokens that are still actively pumping."
+            <GateRow label="Curve fill min (%)" newOnly
+                     hint="NEW band only, SOL-price independent: how far along the bonding curve the token is (real SOL in the curve ÷ 85 SOL). 'Near graduation' = e.g. 65. Graduation MC floats with SOL price (≈411 SOL of MC), a USD floor can silently sit above it — this gate cannot. 0 = off."
+                     newTestid="scanner-curve-fill-min-new-input"
+                     newValue={local.scanner_min_curve_fill_pct_new ?? 0}
+                     onNewChange={(v) => setLocal({ ...local, scanner_min_curve_fill_pct_new: Math.min(100, Math.max(0, parseFloat(v) || 0)) })}
+                     step="5" />
+            <GateRow label="Curve fill max (%)" newOnly
+                     hint="NEW band only: skip curve tokens already past this % of the way to graduation (the last few % is the graduation sweep). 0 = off."
+                     newTestid="scanner-curve-fill-max-new-input"
+                     newValue={local.scanner_max_curve_fill_pct_new ?? 0}
+                     onNewChange={(v) => setLocal({ ...local, scanner_max_curve_fill_pct_new: Math.min(100, Math.max(0, parseFloat(v) || 0)) })}
+                     step="5" />
+            <GateRow label="Min MC vel (5m %)" last
+                     hint="Minimum % market-cap velocity over the last 5 minutes. NEW band: from the rolling MC samples of the curve token (0 = off). SEASONED: negative = allow tokens still bleeding, e.g. -15 for dip hunting on graduated tokens."
+                     newTestid="scanner-mcvel-new-input"
+                     newValue={local.scanner_min_mc_velocity_5m_pct_new ?? 0}
+                     onNewChange={(v) => setLocal({ ...local, scanner_min_mc_velocity_5m_pct_new: parseFloat(v) || 0 })}
                      seasonedTestid="scanner-mcvel-seasoned-input"
                      seasonedValue={local.scanner_min_mc_velocity_5m_pct_seasoned}
                      onSeasonedChange={(v) => setLocal({ ...local, scanner_min_mc_velocity_5m_pct_seasoned: parseFloat(v) || 0 })}

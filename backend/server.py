@@ -1271,8 +1271,9 @@ async def config_warnings_view():
         bank = float(cfg.paper_bankroll_usd)
     sw = bot_state.smart_wallets
     learned = sum(1 for s in sw.learned.values() if sw._promoted(s))
-    return {"warnings": config_warnings(cfg, bankroll_usd=bank, manual_smart_wallets=len(sw.manual), learned_smart_wallets=learned),
-            "bankroll_usd": round(bank, 2)}
+    sol_usd = float(await get_sol_usd_price() or 0.0)
+    return {"warnings": config_warnings(cfg, bankroll_usd=bank, manual_smart_wallets=len(sw.manual), learned_smart_wallets=learned, sol_usd=sol_usd),
+            "bankroll_usd": round(bank, 2), "graduation_mc_usd": round(411.0 * sol_usd)}
 
 
 @api.post("/book_exits/restore_defaults")

@@ -359,6 +359,11 @@ class BotConfig(BaseModel):
     scanner_max_mc_usd_new: float = 0.0               # NEW band MC ceiling; 0 = off
     scanner_max_mc_usd_seasoned: float = 0.0          # SEASONED band MC ceiling (EMERGENT_CHANGES #4); 0 = off
     scanner_min_mc_velocity_5m_pct_seasoned: float = 5.0  # +5% MC change over 5min
+    # NEW band (bonding curve) "near graduation" gates — SOL-price independent. curve_fill_pct = real SOL in the curve / 85 SOL.
+    # pump.fun graduates at ≈411 SOL of market cap, so a USD floor silently goes above graduation when SOL drops. 0 = off.
+    scanner_min_curve_fill_pct_new: float = 0.0
+    scanner_max_curve_fill_pct_new: float = 0.0
+    scanner_min_mc_velocity_5m_pct_new: float = 0.0        # 5-min MC velocity gate for the NEW band (seasoned has its own). 0 = off
     # Discovery: only seed tokens whose last trade is fresher than this (minutes).
     # Set 0 to disable the freshness gate.
     scanner_discovery_max_idle_minutes: int = 5

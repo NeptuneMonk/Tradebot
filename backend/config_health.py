@@ -7,9 +7,10 @@ from book_params import BOOKS, book_exit_view, book_size_mult
 from r_sizer import size_trade
 
 LEARN_MIN_BUY_SOL_HINT = 2.0   # above this a smart wallet's typical early buy rarely counts as a hit
+GRADUATION_MC_SOL = 411.0      # pump.fun curve completes at (30+85) SOL / 279.9 M tokens → ≈ 411 SOL of market cap
 
 
-def config_warnings(cfg, *, bankroll_usd: float = 0.0, manual_smart_wallets: int = 0, learned_smart_wallets: int = 0) -> list[dict]:
+def config_warnings(cfg, *, bankroll_usd: float = 0.0, manual_smart_wallets: int = 0, learned_smart_wallets: int = 0, sol_usd: float = 0.0) -> list[dict]:
     out: list[dict] = []
 
     def warn(key: str, msg: str, fix: str, level: str = "dead"):
@@ -18,6 +19,24 @@ def config_warnings(cfg, *, bankroll_usd: float = 0.0, manual_smart_wallets: int
     max_trade = float(cfg.max_trade_usd)
     min_trade = float(cfg.min_trade_usd)
     risk = float(cfg.risk_per_trade_pct)
+
+    # --- NEW band: a USD market-cap floor above today's graduation cap can never be reached on the curve -----------
+    if sol_usd > 0:
+        grad_mc = GRADUATION_MC_SOL * sol_usd
+        floor = float(getattr(cfg, "scanner_min_mc_usd_new", 0) or 0)
+        if floor >= grad_mc:
+            warn("scanner_min_mc_usd_new", f"New-band Min MC ${floor:,.0f} is above today's graduation cap ≈ ${grad_mc:,.0f} (411 SOL × ${sol_usd:,.0f}) — "
+                 "no bonding-curve token can reach it; it graduates first.",
+                 "Lower scanner_min_mc_usd_new (or use the SOL-price-independent 'Curve fill %' gate instead).")
+        lo = float(getattr(cfg, "scanner_min_curve_fill_pct_new", 0) or 0)
+        hi = float(getattr(cfg, "scanner_max_curve_fill_pct_new", 0) or 0)
+        if lo > 0 and hi > 0 and lo >= hi:
+            warn("scanner_curve_fill_new", f"New-band curve fill min {lo:g}% ≥ max {hi:g}% — the window is empty.", "Set min below max (e.g. 65–95).")
+    if float(getattr(cfg, "band_new_max_age_min", 0) or 0) < float(getattr(cfg, "band_seasoned_min_age_min", 0) or 0) and \
+            float(getattr(cfg, "scanner_min_curve_fill_pct_new", 0) or 0) >= 50:
+        warn("band_new_max_age_min", f"You target late-curve tokens (fill ≥ {float(cfg.scanner_min_curve_fill_pct_new):g}%) but the New band ends at "
+             f"{float(cfg.band_new_max_age_min):g} min — Seasoned is graduated pools only, so older curve tokens are in no band.",
+             "Raise band_new_max_age_min (e.g. 60).", level="warn")
 
     # --- smart wallets -------------------------------------------------------------------------------------------
     if getattr(cfg, "smart_wallet_enabled", False):

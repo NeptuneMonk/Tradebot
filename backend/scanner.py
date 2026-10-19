@@ -108,6 +108,24 @@ class MomentumScanner:
         }
 
     @staticmethod
+    def _new_band_shape_gate(cfg, b: dict, m: dict, now: float) -> tuple[str, str] | None:
+        """NEW-band curve-progress and 5-min MC-velocity gates → (verdict, detail) when blocked, None when clear."""
+        fill = float(b.get("curve_fill_pct") or 0.0)
+        lo = float(getattr(cfg, "scanner_min_curve_fill_pct_new", 0) or 0)
+        hi = float(getattr(cfg, "scanner_max_curve_fill_pct_new", 0) or 0)
+        if lo > 0 and fill < lo:
+            return "curve-fill", f"{fill:.0f}% of curve < {lo:g}%"
+        if hi > 0 and fill > hi:
+            return "curve-fill-max", f"{fill:.0f}% of curve > {hi:g}%"
+        vmin = float(getattr(cfg, "scanner_min_mc_velocity_5m_pct_new", 0) or 0)
+        if vmin != 0:
+            v = _mc_velocity(b.get("mc_samples") or (), now)
+            m["mc_velocity_5m_pct"] = v
+            if v < vmin:
+                return "mc-velocity", f"{v:+.1f}%/5m < {vmin:g}%"
+        return None
+
+    @staticmethod
     def classify_band(b: dict, cfg, now: float) -> str | None:
         """Protocol-aware band classification.
 
@@ -308,6 +326,7 @@ class MomentumScanner:
             if b.get("creator_smart"):
                 m["creator_smart"] = b["creator_smart"]
             m["protocol"] = b.get("protocol") or "pumpfun"
+            m["curve_fill_pct"] = 100.0 if m["protocol"] == "pumpswap" else float(b.get("curve_fill_pct") or 0.0)
             m["graduated_at"] = b.get("graduated_at")
             m["usd_market_cap"] = float(b.get("usd_market_cap") or 0.0)
             # 5-min MC velocity from rolling samples (kept by discovery refresh)
@@ -334,6 +353,7 @@ class MomentumScanner:
                     and m["recent_inflow_sol"] >= g["min_inflow_sol"]
                     and m["new_buyers_recent"] >= g["min_new_buyers"]
                     and m["real_sol_reserves"] >= g["min_liquidity_sol"]
+                    and self._new_band_shape_gate(cfg, b, m, now) is None
                 )
                 # Second impulse only: the first vertical leg is exit liquidity. A new-band scalp needs a
                 # dip from the tracked peak (≥ scanner_second_impulse_dip_pct) that is now recovering with
@@ -507,6 +527,10 @@ class MomentumScanner:
                         if cfg.scanner_max_mc_usd_new > 0 and mc > cfg.scanner_max_mc_usd_new:
                             tally(band, verdict("mc-max", f"${mc:,.0f} > ${cfg.scanner_max_mc_usd_new:,.0f}"))
                             continue
+                        shape = self._new_band_shape_gate(cfg, b, m, now)
+                        if shape:
+                            tally(band, verdict(*shape))
+                            continue
                         if m["recent_inflow_sol"] < g["min_inflow_sol"]:
                             tally(band, verdict("inflow", f"{m['recent_inflow_sol']:.2f} SOL < {g['min_inflow_sol']:g}"))
                             continue
@@ -629,6 +653,10 @@ class MomentumScanner:
                             continue
                         if cfg.scanner_max_mc_usd_new > 0 and mc > cfg.scanner_max_mc_usd_new:
                             verdict("mc-max")
+                            continue
+                        shape = self._new_band_shape_gate(cfg, b, m, now)
+                        if shape:
+                            verdict(*shape)
                             continue
                         if m["recent_inflow_sol"] < g["min_inflow_sol"]:
                             verdict("inflow")

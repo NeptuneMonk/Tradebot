@@ -356,6 +356,17 @@ function CandidateRow({ c, passing, onOpen }) {
           </>
         ) : c.band === "new" ? (
           <>
+            <span className="inline-flex items-center gap-1" data-testid={`candidate-curve-fill-${c.mint}`}>
+              curve <span className={`${(c.curve_fill_pct ?? 0) >= 65 ? "text-amber-300" : "text-neutral-200"}`}>{(c.curve_fill_pct ?? 0).toFixed(0)}%</span>
+              <HelpHint label="curve">How far along the bonding curve: real SOL in the curve ÷ 85 SOL. 100 % = graduation to a PumpSwap pool. SOL-price independent — pair with the Curve fill gates.</HelpHint>
+            </span>
+            <span className="inline-flex items-center gap-1">
+              MC vel(5m){" "}
+              <span className={`${(c.mc_velocity_5m_pct ?? 0) >= 0 ? "text-emerald-300" : "text-red-300"}`}>
+                {(c.mc_velocity_5m_pct ?? 0) >= 0 ? "+" : ""}{(c.mc_velocity_5m_pct ?? 0).toFixed(1)}%
+              </span>
+              <HelpHint label="MC vel(5m)">% change in market cap over the last 5 minutes from the rolling MC samples of this curve token.</HelpHint>
+            </span>
             <span className="inline-flex items-center gap-1">
               inflow(5m) <span className="text-neutral-200">{(c.recent_inflow_sol ?? 0).toFixed(2)}</span> SOL
               <HelpHint label="inflow(5m)">Net SOL flowing into the bonding curve over the configured inflow window. Strong actual demand — not just price wiggle.</HelpHint>

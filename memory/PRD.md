@@ -2846,3 +2846,9 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   entries refuse any pool ≠ `derive_canonical_pool(mint)` → skip reason `unverified-pool`; manual/force buys still allowed. (2) `pool_drain_exit_pct` (default 20) — `entry_depth_sol`
   is stamped at entry (fallback `entry_ctx.curve_liquidity_sol`); when the pool's SOL depth drops under 20 % of it, TP ticks are rejected and the monitor exits with
   "pool drained … rug" (autopsy class `rug`, not `tp`). Both knobs in Execution safety. Tests `test_pool_drain_unverified.py` (6).
+- 2026-10-19 **"Near-graduation curve tokens never qualify"** (user config review): (1) `scanner_min_mc_usd_new=45k` sat ABOVE the graduation cap (pump.fun completes at ≈411 SOL
+  of MC → $42.9k at SOL $104) — no curve token can reach it; (2) New band max age 30 m while Seasoned = graduated pools only → curve tokens 30–60 m were in no band.
+  Built: NEW-band **Curve fill min/max %** gates (`scanner_min/max_curve_fill_pct_new`, SOL-price independent, from `curve_fill_pct` = real SOL / 85) and **Min MC vel (5m %)**
+  for the New band (`scanner_min_mc_velocity_5m_pct_new`); scanner rows show `curve %` + `MC vel(5m)` for New; `/api/config/warnings` now takes SOL price and warns when the
+  New MC floor ≥ today's graduation MC (+ returns `graduation_mc_usd`) and when a late-curve target has the band age gap. Preview config set: band_new 15–60 m, curve fill 65–95,
+  MC vel new 3, growth lookback 300 s / min growth new 3, inflow window 300 s, MC floor/ceiling 0. Tests `test_new_band_curve_fill.py` (5).
