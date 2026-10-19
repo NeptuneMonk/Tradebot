@@ -69,6 +69,10 @@ FEED_FINAL_SKIP_MARKERS = ("late chase", "prior failed launches", "serial creato
 TRACK_DURATION_S = 60.0       # short-window heavy tracking (for fresh-launch classifier)
 SCANNER_TRACK_HOURS = 4       # how long we keep light tracking for the scanner
 PERSIST_INTERVAL_S = 2.0      # how often to flush tracker metrics to DB
+# Preview-only idle standby (set PREVIEW_IDLE_STANDBY=1 in the PREVIEW backend/.env, never in Published): no dashboard
+# attached for IDLE_STANDBY_AFTER_MIN and the bot is off / paper → Helius WSS closed, discovery + tracker idle, RPC → public node.
+_IDLE_STANDBY = (os.environ.get("PREVIEW_IDLE_STANDBY") or "").strip().lower() in ("1", "true", "yes", "on")
+_IDLE_STANDBY_AFTER_MIN = float(os.environ.get("IDLE_STANDBY_AFTER_MIN") or 3)
 MAX_TRACKED_MINTS = 150       # cap memory (cut-the-fat 2026-10-03: was 500 — the tracker dict is the RAM hog on a 512Mi pod)
 TRACKER_DEAD_AFTER_S = 90.0   # a launch with no print (or ≤ 1 buy) for this long is evicted before any live one when the cap bites
 WINDOW_FEED_INTERVAL_S = 5.0  # how often the live launch list is re-diffed against the operator's age windows
@@ -928,13 +932,19 @@ class BotState:
 
     def helius_autopause_state(self) -> tuple[bool, str]:
         """Doctor pause → Helius idle: both Solana books paused by the live-doctor breaker (or inventory halt),
-        and no open Solana position that still needs monitoring. The operator switch always wins (gate ORs them)."""
+        and no open Solana position that still needs monitoring. The operator switch always wins (gate ORs them).
+        Idle standby (PREVIEW_IDLE_STANDBY=1, preview env only): no dashboard attached for IDLE_STANDBY_AFTER_MIN and
+        the bot is off or paper → Helius WSS closed, discovery/tracker idle, remaining RPC reads go to the public node."""
+        sol_open = any((sl.get("trade") or {}).get("chain") != "rh" for sl in self.active_trades.values())
+        if _IDLE_STANDBY and not sol_open and (not self.config.enabled or not bool(getattr(self.config, "live_trading", False))):
+            idle = hub.idle_s()
+            if idle >= _IDLE_STANDBY_AFTER_MIN * 60:
+                return True, f"preview idle standby · no dashboard for {int(idle // 60)} min · no open Solana position"
         ld = self.live_doctor
         if not bool(getattr(self.config, "feed_autopause_on_doctor", False)):
             return False, ""   # operator wants the tape (and the Doctor's learning) to keep flowing while books are paused
         both = ld is not None and ld.book_paused("scalp") and ld.book_paused("hunt")
         halt = self.inventory.active() and bool(self.config.inventory_halt_enabled)
-        sol_open = any((sl.get("trade") or {}).get("chain") != "rh" for sl in self.active_trades.values())
         if sol_open or not (both or halt):
             return False, ""
         return True, ("inventory halt" if halt else "live-doctor paused scalp + hunt") + " · no open Solana position"
@@ -950,7 +960,7 @@ class BotState:
                     await hub.broadcast("helius_autopause", gate_snapshot())
             except Exception as e:
                 logger.debug(f"helius autopause check failed: {e}")
-            await asyncio.sleep(10.0)
+            await asyncio.sleep(2.0 if _IDLE_STANDBY else 10.0)   # standby must lift within ~2 s of the dashboard opening
 
     loop_lag_ms: dict = {"last": 0.0, "max_1m": 0.0, "samples": 0}
     lite: LiteMode = LiteMode()   # class default; __init__ gives each state its own instance

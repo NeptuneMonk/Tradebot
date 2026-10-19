@@ -31,6 +31,7 @@ const GROUPS = [
   { title: "Cost gate & venue fees", fields: [
     { key: "cost_gate_max_round_trip_pct", label: "Max round-trip cost %", type: "float", step: 0.5, hint: "Entry refused when slip + fee + priority + tip + failed-tx allowance (round trip) exceeds this." },
     { key: "cost_gate_cost_mult", label: "Cost mult", type: "float", step: 0.25, hint: "Expected move must beat round-trip cost × this." },
+    { key: "cost_gate_adverse_fill_pct", label: "Adverse fill % / side", type: "float", step: 0.25, hint: "Expected price move between quote and fill on top of our own impact, charged on BOTH sides in the cost gate. At 1.0 the gate's fixed part is ≈ 2 % + protocol fee ×2 + 0.5 % shave + failed-tx allowance ≈ 6.5 % before any pool impact — near-graduation curve tokens sit right at the 8 % ceiling. 0.5 is realistic for a 60–80 SOL curve." },
     { key: "cost_gate_failed_tx_allowance_pct", label: "Failed-tx allowance %", type: "float", step: 0.25, hint: "Budget for reverted txs in the gate; also the per-tx failure probability simulated in paper mode." },
     { key: "protocol_fee_pct_pumpfun", label: "Protocol fee % pump.fun", type: "float", step: 0.05, hint: "Applied in max_sol_cost / min_sol_output and in paper fills." },
     { key: "protocol_fee_pct_pumpswap", label: "Protocol fee % PumpSwap", type: "float", step: 0.05 },

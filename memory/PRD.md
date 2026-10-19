@@ -2862,3 +2862,11 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   read a flat **0 %** and failed any positive floor (entry-velocity 30 s window especially). Both now use the value as of `window` ago (last sample at/before the cutoff; partial
   window falls back to the first sample after it); `growth_pct_rolling` baseline fixed the same way. New-band MC velocity now derives from the dense tape `price_samples`
   (MC ∝ price on the curve) instead of the 60 s API `mc_samples`. Tests `test_velocity_baseline.py` (5).
+- 2026-10-19 **Preview idle standby** (user: "preview always disconnected from Helius when I'm not using it"): `PREVIEW_IDLE_STANDBY=1` + `IDLE_STANDBY_AFTER_MIN=3` in
+  the PREVIEW backend/.env only (never Published). `helius_autopause_state` trips when no dashboard WS client for N min AND (bot off OR not live) AND no open Solana position →
+  existing Helius gate closes the WSS / idles discovery; new: `solana_client._pick_url` skips the paid primary while the gate is paused so the remaining background reads go to
+  the public node (verified live: 0 Helius hits after the flip). Lifts within 2 s of a dashboard connecting (`hub.idle_s()`). Tests `test_preview_idle_standby.py` (6).
+- 2026-10-19 **Cost / flow gate math audit**: (1) `flow.liquidity()` subtracted the 30 SOL virtual offset from PumpSwap pools too (a 40 SOL pool read 10 SOL → flow ratio 4×
+  overstated; pools < 30 SOL read 'unknown') — now prefers `last_real_sol_lamports`, offset only on the curve. (2) Cost gate: 1 %/side adverse-fill was a hard constant;
+  with the user's 1.25 %/side protocol fee + 1.5 % failed-tx + 0.5 % shave the fixed part is ≈ 6.5 %, so any pool impact pushes near-grad entries over the 8 % ceiling.
+  New knob `cost_gate_adverse_fill_pct` (Execution safety, default 1.0 — recommend 0.5 for 60–80 SOL curves) . Tests `test_flow_cost_math.py` (5).

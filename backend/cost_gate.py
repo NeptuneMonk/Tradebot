@@ -14,11 +14,12 @@ TOKEN_SHAVE_PCT = 0.5           # dust left behind on a full sell
 LADDER_SHAVE_PCT = 1.5          # dust across the 3 ladder legs (0.5% each)
 
 
-def expected_slip_pct(size_usd: float, depth_usd: float, tolerance_bps: int) -> float:
+def expected_slip_pct(size_usd: float, depth_usd: float, tolerance_bps: int, adverse_pct: float | None = None) -> float:
     """Expected realised slip for one side: price impact of our order on the pool + adverse fill, never
     above the tolerance we quote with (the tolerance is a survival cap, not the expectation)."""
     impact = (size_usd / depth_usd * 100.0) if depth_usd > 0 else tolerance_bps / 100.0
-    return min(tolerance_bps / 100.0, impact + ADVERSE_FILL_PCT)
+    adverse = ADVERSE_FILL_PCT if adverse_pct is None else max(0.0, float(adverse_pct))
+    return min(tolerance_bps / 100.0, impact + adverse)
 
 
 def _cfgv(cfg, key: str, default: float) -> float:
@@ -42,6 +43,7 @@ def quote(*, size_usd: float, r_usd: float, first_target_r: float | None, protoc
     cost_mult = _cfgv(cfg, "cost_gate_cost_mult", COST_MULT)
     max_rt = _cfgv(cfg, "cost_gate_max_round_trip_pct", MAX_ROUND_TRIP_PCT)
     failed_pct = _cfgv(cfg, "cost_gate_failed_tx_allowance_pct", 0.0)
+    adverse = _cfgv(cfg, "cost_gate_adverse_fill_pct", ADVERSE_FILL_PCT)
     proto_pcts = {"pumpfun": _cfgv(cfg, "protocol_fee_pct_pumpfun", PROTOCOL_FEE_PCT["pumpfun"]),
                   "pumpswap": _cfgv(cfg, "protocol_fee_pct_pumpswap", PROTOCOL_FEE_PCT["pumpswap"]), "rh": 1.0}
     proto = proto_pcts.get(protocol, 1.0) / 100.0
@@ -50,7 +52,7 @@ def quote(*, size_usd: float, r_usd: float, first_target_r: float | None, protoc
         slip_usd = max(0.0, float(measured_round_trip_pct)) / 100.0 * size_usd
         proto_usd = 0.0
     else:
-        slip_usd = expected_slip_pct(size_usd, depth_usd, entry_slip_bps) / 100.0 * size_usd + expected_slip_pct(leg, depth_usd, exit_slip_bps) / 100.0 * leg
+        slip_usd = expected_slip_pct(size_usd, depth_usd, entry_slip_bps, adverse) / 100.0 * size_usd + expected_slip_pct(leg, depth_usd, exit_slip_bps, adverse) / 100.0 * leg
         proto_usd = proto * size_usd + proto * leg
     shave_usd = shave * leg
     failed_usd = size_usd * failed_pct / 100.0

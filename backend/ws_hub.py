@@ -15,6 +15,7 @@ from collections import deque
 from fastapi import WebSocket
 
 logger = logging.getLogger("ws_hub")
+_BOOT_TS = time.time()
 
 # Everything the dashboard reads off a live launch row (RecentLaunchesFeed, SkipTicker, candidate gating).
 LIVE_FIELDS = frozenset((
@@ -58,16 +59,24 @@ class WSHub:
         await ws.accept()
         async with self._lock:
             self.clients.add(ws)
+        self.last_client_ts = time.time()
         logger.info(f"WS connected (n={len(self.clients)})")
 
     async def disconnect(self, ws: WebSocket):
         async with self._lock:
             self.clients.discard(ws)
+        self.last_client_ts = time.time()
         try:
             await ws.close()
         except Exception:
             pass
         logger.info(f"WS disconnected (n={len(self.clients)})")
+
+    def idle_s(self) -> float:
+        """Seconds since a dashboard was last connected (0 while any client is attached)."""
+        if self.clients:
+            return 0.0
+        return time.time() - (getattr(self, "last_client_ts", None) or _BOOT_TS)
 
     @classmethod
     def is_candidate(cls, d: dict) -> bool:

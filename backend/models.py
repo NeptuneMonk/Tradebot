@@ -135,6 +135,7 @@ class BotConfig(BaseModel):
     cost_gate_max_round_trip_pct: float = 8.0
     cost_gate_cost_mult: float = 2.0
     cost_gate_failed_tx_allowance_pct: float = 1.5
+    cost_gate_adverse_fill_pct: float = 1.0        # per side: expected move between quote and fill on top of pure impact
     protocol_fee_pct_pumpfun: float = 1.25
     protocol_fee_pct_pumpswap: float = 1.25
     # EMERGENT_CHANGES #7 — idempotency across fee-ladder rungs

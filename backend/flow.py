@@ -15,10 +15,18 @@ def net_flow(b: dict, now: float, window_s: float, *, sol: bool) -> tuple[float,
 
 
 def liquidity(b: dict, *, sol: bool) -> float | None:
-    """Quote sitting in the curve/pool (SOL: real reserves from the last curve read; RH: net quote paid in)."""
+    """Quote sitting in the curve/pool (SOL: real reserves from the last curve/pool read; RH: net quote paid in).
+    `last_real_sol_lamports` is authoritative for both protocols; the legacy `vsr − 30 SOL` is only valid on the
+    bonding curve (PumpSwap stores the actual pool quote there — subtracting the virtual offset understated a 40 SOL
+    pool as 10 SOL and read pools under 30 SOL as 'unknown', 2026-10-19)."""
     if sol:
+        real = b.get("last_real_sol_lamports")
+        if real is not None and float(real) > 0:
+            return float(real) / LAMPORTS_PER_SOL
         vsr = b.get("last_vsr_lamports")
         if vsr:
+            if (b.get("protocol") or "pumpfun") == "pumpswap":
+                return float(vsr) / LAMPORTS_PER_SOL
             return max(0.0, (float(vsr) - 30 * LAMPORTS_PER_SOL) / LAMPORTS_PER_SOL)
         liq = b.get("real_sol") or b.get("liquidity_sol")
         return float(liq) if liq else None

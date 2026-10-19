@@ -160,13 +160,26 @@ def rpc_provider() -> str:
     return host
 
 
+def _helius_paused() -> bool:
+    try:
+        from helius_gate import is_helius_paused
+        return is_helius_paused()
+    except Exception:
+        return False
+
+
 def _pick_url(now: float) -> tuple[str | None, float]:
-    """First endpoint not in a 429 cooldown (primary first unless quota-dead). Returns (url, seconds until one frees up)."""
+    """First endpoint not in a 429 cooldown (primary first unless quota-dead). Returns (url, seconds until one frees up).
+    While the Helius gate is paused (operator switch / doctor autopause / preview idle standby) the paid primary is
+    skipped entirely — the few background reads left go to the public node, so a paused preview spends no credits."""
     order = []
-    if not (RPC_FALLBACK_URL and now < _primary_dead_until):
-        order.append(RPC_URL)
-    if RPC_FALLBACK_URL and RPC_FALLBACK_URL != RPC_URL:
+    if _helius_paused() and RPC_FALLBACK_URL and RPC_FALLBACK_URL != RPC_URL:
         order.append(RPC_FALLBACK_URL)
+    else:
+        if not (RPC_FALLBACK_URL and now < _primary_dead_until):
+            order.append(RPC_URL)
+        if RPC_FALLBACK_URL and RPC_FALLBACK_URL != RPC_URL:
+            order.append(RPC_FALLBACK_URL)
     free = [u for u in order if _cool_until.get(u, 0.0) <= now]
     if free:
         return free[0], 0.0
