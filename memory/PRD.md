@@ -2837,3 +2837,6 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   SAVE CONFIG → PUT `{max_hold_any_book_s}`. Verified in-browser (PUT body + persisted after reload). Execution-safety copy of the knob kept.
 - Deployment readiness scan (user request): compile / env / CORS / URLs all pass; the only flag is the platform policy on Solana/EVM libraries. Prod runtime logs show the app
   serving (health 200, WS up); the 429s are the public `api.mainnet-beta.solana.com` RPC — set a Helius / private RPC URL in Published env.
+- 2026-10-19 **Doctor → Creators knobs blanked the others** (user): `CreatorVerdictPanel` / `SmartMagnetsPanel` called `onConfigUpdate({k: v})`, and DoctorWorkspace wires that prop
+  straight to `setConfig` → the whole config state became the one-key patch (nothing saved, every other field empty). Both panels now `api.updateConfig(patch)` and pass the
+  SAVED full config up (same pattern as Greylist / Smart wallets), with a toast. Verified in-browser: PUT `{"creator_min_win_rate_pct":45}`, other fields intact.

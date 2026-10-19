@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Magnet, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
+import { toast } from "sonner";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const ago = (ts) => {
@@ -23,7 +24,15 @@ export default function SmartMagnetsPanel({ config, onConfigUpdate }) {
     try { setData(await api.smartMagnets()); } catch { /* keep last */ } finally { setBusy(false); }
   };
   useEffect(() => { load(); const id = setInterval(load, 30000); return () => clearInterval(id); }, []);
-  const set = (k, v) => onConfigUpdate && onConfigUpdate({ [k]: v });
+  const set = async (k, v) => {
+    try {
+      const saved = await api.updateConfig({ [k]: v });
+      onConfigUpdate && onConfigUpdate(saved);
+      toast.success("Smart magnet setting saved");
+    } catch {
+      toast.error("Save failed");
+    }
+  };
   const items = data?.items || [];
   const magnets = items.filter((r) => r.magnet).length;
   return (

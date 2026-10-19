@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ShieldAlert, ShieldCheck, ShieldQuestion, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
+import { toast } from "sonner";
 import SmartMagnetsPanel from "./SmartMagnetsPanel";
 
 const TONE = {
@@ -37,7 +38,15 @@ export default function CreatorVerdictPanel({ config, onConfigUpdate }) {
     try { setData(await api.creatorVerdictRecent()); } catch { /* keep last */ } finally { setBusy(false); }
   };
   useEffect(() => { load(); const id = setInterval(load, 15000); return () => clearInterval(id); }, []);
-  const set = (k, v) => onConfigUpdate && onConfigUpdate({ [k]: v });
+  const set = async (k, v) => {
+    try {
+      const saved = await api.updateConfig({ [k]: v });
+      onConfigUpdate && onConfigUpdate(saved);
+      toast.success("Creator setting saved");
+    } catch {
+      toast.error("Save failed");
+    }
+  };
   const items = data?.items || [];
   const blocked = data?.blocked || [];
   return (
