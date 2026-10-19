@@ -43,9 +43,9 @@ export const SOL_GATE_HINT = {
   "seasoned-no-pool": "seasoned entry needs a live PumpSwap pool",
   "stale-tape": "seasoned tape is stale — no recent trades",
   "buyers-since-grad": "not enough distinct buyers since graduation",
-  "pf-creator-sol": "deployer wallet holds less SOL than the creator-solvency floor",
+  "pf-creator-sol": "(retired gate) deployer wallet SOL floor — no longer applied",
   "creator-dumped": "deployer sold more than the allowed share of their stake in the dump window",
-  "creator-balance-unknown": "deployer balance RPC failed (fail-closed)",
+  "creator-balance-unknown": "(retired gate) deployer balance RPC failed — no longer blocks",
   "classifier skip": "risk classifier declined this launch",
   entry_velocity: "entry velocity cap — too many entries in the last minute",
 };

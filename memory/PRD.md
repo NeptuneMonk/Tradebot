@@ -2870,3 +2870,7 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   overstated; pools < 30 SOL read 'unknown') — now prefers `last_real_sol_lamports`, offset only on the curve. (2) Cost gate: 1 %/side adverse-fill was a hard constant;
   with the user's 1.25 %/side protocol fee + 1.5 % failed-tx + 0.5 % shave the fixed part is ≈ 6.5 %, so any pool impact pushes near-grad entries over the 8 % ceiling.
   New knob `cost_gate_adverse_fill_pct` (Execution safety, default 1.0 — recommend 0.5 for 60–80 SOL curves) . Tests `test_flow_cost_math.py` (5).
+- 2026-10-19 **Creator SOL floor retired** (user: "creator SOL amount isn't an edge"): `pf-creator-sol` and the fail-closed `creator-balance-unknown` are gone from
+  `creator_solvency.gate`; the deployer balance is only the denominator of the first-minute dump proxy. The `creator-dumped` check (sold > creator_sold_pct_max in the
+  first `creator_dump_window_s`) stays. `creator_sol_min` / `creator_sol_gate_new_band` / `creator_balance_fail` kept as inert fields so stored configs load.
+  Feed legend + wiki updated; tests adjusted (`test_creator_solvency.py`). This closes the long-open "creator-SOL floor" question.

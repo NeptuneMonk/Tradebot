@@ -420,15 +420,15 @@ class BotConfig(BaseModel):
     creator_audit_max_deploys_per_hour: int = 1    # launches by this creator in the hour around the deploy (incl. this one)
     creator_audit_require_post_activity: bool = False
     creator_audit_max_rug_tags: int = 1            # failed/rugged launches on record that count as a rug tag
-    creator_sol_min: float = 0.5
+    creator_sol_min: float = 0.0        # retired 2026-10-19: no deployer SOL floor (kept so stored configs still load)
     creator_eth_min: float = 0.0        # retired: RH has no deployer balance floor (kept so stored configs still load)
-    creator_sol_gate_new_band: bool = False
+    creator_sol_gate_new_band: bool = False   # retired with the SOL floor
     # Graduate Ladder — age-less watch of graduated tokens making higher MC highs; paper legs (book="ladder")
     ladder_enabled: bool = True
     ladder_size_mult: float = 0.5
     creator_dump_window_s: float = 60.0
     creator_sold_pct_max: float = 35.0
-    creator_balance_fail: str = "closed"
+    creator_balance_fail: str = "open"   # retired 2026-10-19: an unknown deployer balance never blocks
     snipe_creator_cooldown_minutes: float = 30.0   # after a sniped launch stops out, ignore that creator's relaunches
     # Distribution-vacuum gate: reject tokens where ALL tracked holders appeared
     # within the most-recent holder-velocity window. Classic insider-distribution

@@ -166,7 +166,7 @@ export const SECTIONS = [
         ["scanner_min_mc_usd_seasoned", "$30K", "MC floor for graduated tokens.", "dust-cap pools with no depth"],
         ["scanner_min_mc_velocity_5m_pct_seasoned", "+5%", "MC change over 5 min for seasoned entries.", "enters drifting pools"],
         ["serial_creator_min_launches / requires_graduation", "3 / on", "Creator launched ≥N tokens before; skip unless one graduated.", "more farm tokens from professional ruggers"],
-        ["creator_solvency (creator_sol_min)", "0.5 SOL", "Creator wallet keeps at least this much SOL (skin in the game).", "more throwaway launches"],
+        ["creator_solvency (creator_sold_pct_max)", "35 %", "Creator sold more than this share of their stake in the first minute → skip. (The deployer SOL-balance floor was retired 2026-10-19 — it was never an edge.)", "more first-minute dumps slip through"],
         ["max_concurrent_positions", "3 (max 8)", "Open SOL positions that count (manual holds don't).", "more simultaneous risk, thinner attention per position"],
         ["min_trade_usd / max_trade_usd", "$0.50 / $1.00", "Sizing rails. R sizing picks the stake inside these.", "bigger stakes = bigger slippage on thin curves"],
         ["regime_dead_blocks_search", "on", "When launches/h fall below regime_dead_rate_h (8), pause search entries.", "keeps probing a dead market and pays fees for nothing"],

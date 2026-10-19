@@ -5,8 +5,8 @@ Two cheap, read-only checks on the DEPLOYER — never token holdings, never hold
      create firehose and the RH 2 s poller never pay for it;
   2. how much the creator sold inside the first `creator_dump_window_s` of the launch, accumulated from the trade
      streams we already ingest (Pump on_trade, RH trade logs) — no extra subscribe.
-Reason codes are stable for the Doctor: pf-creator-sol, creator-dumped, creator-balance-unknown (Sol only).
-RH has no deployer wallet-balance floor (rh-creator-eth retired 2026-09-16).
+Reason code (stable for the Doctor): creator-dumped. The deployer wallet-balance floors are retired on both chains
+(rh-creator-eth 2026-09-16, pf-creator-sol / creator-balance-unknown 2026-10-19) — balance is only the dump-proxy denominator.
 """
 from __future__ import annotations
 
@@ -84,10 +84,8 @@ def gate(cfg, chain: str, creator_balance: float | None, b: dict) -> str | None:
         pct, proxy = creator_sold_pct(b, creator_balance)
         b["creator_sold_pct"], b["creator_sold_pct_proxy"] = round(pct, 2), proxy
         return "creator-dumped" if pct > float(getattr(cfg, "creator_sold_pct_max", 25.0)) else None
-    if creator_balance is None:
-        return "creator-balance-unknown" if str(getattr(cfg, "creator_balance_fail", "closed")) == "closed" else None
-    if creator_balance < float(getattr(cfg, "creator_sol_min", 0.5)):
-        return "pf-creator-sol"
+    # SOL floor retired 2026-10-19 (operator: "creator SOL amount isn't an edge") — the deployer balance is only the
+    # denominator of the dump proxy now; an unknown balance is not a block either.
     pct, proxy = creator_sold_pct(b, creator_balance)
     b["creator_sold_pct"], b["creator_sold_pct_proxy"] = round(pct, 2), proxy
     if pct > float(getattr(cfg, "creator_sold_pct_max", 25.0)):

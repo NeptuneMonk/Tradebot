@@ -39,9 +39,10 @@ def test_scope_hunt_seasoned_rh_not_new_band_not_manual():
     assert cs.in_scope(BotConfig(creator_solvency_enabled=False), "greylist_snipe", "pumpfun") is False
 
 
-def test_hunt_low_sol_skips_and_healthy_creator_passes():
+def test_no_sol_floor_any_balance_passes():
     cfg = BotConfig()
-    assert cs.gate(cfg, "sol", 0.1, {}) == "pf-creator-sol"
+    assert cs.gate(cfg, "sol", 0.1, {}) is None                 # SOL floor retired 2026-10-19 — never an edge
+    assert cs.gate(cfg, "sol", 0.0, {}) is None
     assert cs.gate(cfg, "sol", 2.0, {}) is None
     assert cs.gate(cfg, "rh", 0.01, {}) is None                 # RH: no deployer balance floor (retired)
     assert cs.gate(cfg, "rh", 0.0, {}) is None and cs.gate(cfg, "rh", None, {}) is None
@@ -54,8 +55,8 @@ def test_rpc_error_fail_closed_and_not_retried_every_tick():
     assert asyncio.run(cs.balance("CreatorA", f)) is None
     assert asyncio.run(cs.balance("CreatorA", f)) is None
     assert len(f.calls) == 1 and cs.stats["errors"] == 1 and cs.stats["cache_hits"] == 1
-    assert cs.gate(cfg, "sol", None, {}) == "creator-balance-unknown"
-    assert cs.gate(BotConfig(creator_balance_fail="open"), "sol", None, {}) is None
+    assert cs.gate(cfg, "sol", None, {}) is None                 # unknown balance never blocks (floor retired)
+    assert cs.gate(BotConfig(creator_balance_fail="closed"), "sol", None, {}) is None
 
 
 def test_cache_two_entries_same_creator_one_call():
