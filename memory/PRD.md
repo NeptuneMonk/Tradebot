@@ -2880,3 +2880,6 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   (tape flag / `complete` / fill ≥ 99.9 % / vsr ≥ 114.9 SOL) → verdict **curve-complete** (graduation pending) instead of no-buy-events; discovery migrates to pumpswap on the
   tape flag even when the RPC read fails. Legend: `rate-cap` = smart-wallet hard-trigger parked because `smart_wallet_max_per_hour` fires are used up (pick held, not dropped);
   tooltips wired into the smart-picks strip. Tests `test_curve_complete_verdict.py` (3).
+- 2026-10-20 **Pump.fun mints only** (user: exclude any CA not ending in `pump` on new/seasoned momentum): `pump_suffix_only` (default ON, Execution safety). Enforced in
+  `discovery._seed_token` (non-pump mints are never tracked / never candidates) and at the top of `bot._enter` for every non-manual action → refusal `not-pump-mint`.
+  Manual / force buys bypass. Tests `test_pump_suffix_only.py` (3).

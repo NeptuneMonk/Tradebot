@@ -156,6 +156,9 @@ class BotConfig(BaseModel):
     # PumpSwap pool for any mint ("unverified" on pump.fun) and pull the LP later — 4 such pools drained mid-hold on
     # 2026-10-19 (Sibbear / Leowin / PIERRE / ZCAT: tape "+1576 %" take-profits that filled at −100 %).
     pumpswap_canonical_pool_only: bool = True
+    # Only pump.fun-minted coins (mint ends in `pump`) on every automatic Solana path — new / seasoned momentum, snipes, smart
+    # triggers. Non-pump mints are never tracked or scored; manual buys still go through. Operator rule 2026-10-20.
+    pump_suffix_only: bool = True
     # PumpSwap: SOL depth below this % of the entry-time depth = LP pulled → ticks are NOT take-profits, exit as "pool drained". 0 = off
     pool_drain_exit_pct: float = 20.0
     # Risk / exit behaviour

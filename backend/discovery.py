@@ -641,6 +641,8 @@ class PumpfunDiscovery:
     async def _seed_token(self, coin: dict, created_s: float, is_pumpswap: bool = False, pool_state: dict | None = None):
         st = self.state
         mint = coin["mint"]
+        if getattr(st.config, "pump_suffix_only", True) and not mint.endswith("pump") and mint not in getattr(st, "_manual_force", set()):
+            return      # not a pump.fun mint — never tracked, never a candidate (operator rule 2026-10-20)
         if not is_pumpswap and not coin.get("virtual_sol_reserves"):
             # list sources without curve reserves (GeckoTerminal): read the curve once so price / liquidity / creator are real
             try:

@@ -3588,6 +3588,13 @@ class BotState:
         # Smart-stop: refuse new entries while we're winding down
         if self.stopping_gracefully and not is_manual:
             return
+        # Pump.fun-minted coins carry the `pump` vanity suffix. Anything else on the Solana paths (user-opened PumpSwap
+        # pools for foreign mints, "moon"/"bonk"/random suffixes) is excluded up front — operator rule 2026-10-20.
+        if not is_manual and getattr(self.config, "pump_suffix_only", True) and not launch.mint.endswith("pump") \
+                and launch.mint not in getattr(self, "_manual_force", set()):
+            await self._refuse(launch.mint, self._band_of(launch.mint), "not-pump-mint",
+                               f"mint …{launch.mint[-6:]} does not end in 'pump' — not a pump.fun launch (pump_suffix_only)")
+            return
         # Helius kill switch — when the tracker is paused we block new
         # entries. Existing positions continue to be monitored (necessary
         # to detect their exits — see _monitor_position).

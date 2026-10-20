@@ -27,6 +27,7 @@ export const SOL_GATE_HINT = {
   pass: "cleared the momentum pre-rank — queued for the on-chain check and entry",
   age: "outside the New (Pump.fun) / Seasoned (PumpSwap) age window",
   "no-buy-events": "no buys seen on the tape since this token was seeded (New band only). If it is also at the graduation price the curve has completed — see curve-complete",
+  "not-pump-mint": "mint address does not end in 'pump' — not a pump.fun launch (Execution safety → Pump.fun mints only)",
   "rate-cap": "smart-wallet hard trigger parked: smart_wallet_max_per_hour fires already used this hour (Control → Smart wallets); the pick is held, not dropped",
   "mc-floor": "market cap below the band's Min MC floor",
   growth: "rolling growth below the band's Min growth %",
