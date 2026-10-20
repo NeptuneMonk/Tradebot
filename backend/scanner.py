@@ -43,6 +43,19 @@ def _baseline(samples, cutoff: float):
     return before if (cutoff - before[0]) <= (after[0] - cutoff) else after
 
 
+def curve_is_complete(b: dict) -> bool:
+    """Bonding curve filled (graduation pending or done) judged from what we already hold: the tape flag, the on-chain
+    `complete`, a 100 % fill, or virtual SOL reserves at the 115 SOL completion point (API-seeded buckets)."""
+    if (b.get("protocol") or "pumpfun") == "pumpswap":
+        return False
+    if b.get("_tape_complete") or b.get("complete") or b.get("curve_complete"):
+        return True
+    if float(b.get("curve_fill_pct") or 0.0) >= 99.9:
+        return True
+    vsr = float(b.get("last_vsr_lamports") or 0.0)
+    return vsr >= 114_900_000_000      # 30 SOL virtual + 85 SOL real → the curve stops printing here
+
+
 def _mc_velocity(samples, now: float, window_s: int = 300) -> float:
     """% change in MC over the last `window_s` seconds based on rolling samples."""
     if not samples or len(samples) < 2:
@@ -508,6 +521,13 @@ class MomentumScanner:
                     # For NEW band we need mempool buy events as a proxy for activity.
                     # SEASONED band uses Pump.fun-API signals (MC + MC velocity)
                     # and can't observe events via Helius (esp. graduated tokens).
+                    if band == "new" and curve_is_complete(b):
+                        # the curve filled: no more pump.fun prints will ever come, so "no buy events" was the wrong
+                        # verdict (1099 tallies / 10 min in prod, 2026-10-19). Hold as graduation-pending until discovery
+                        # migrates the bucket to pumpswap (or it ages out of the New band).
+                        b["gate_reason"] = "curve-complete"
+                        tally(band, verdict("curve-complete", f"curve {float(b.get('curve_fill_pct') or 100):.0f}% — graduation pending"))
+                        continue
                     if band == "new" and not b.get("buy_events"):
                         tally(band, verdict("no-buy-events"))
                         continue

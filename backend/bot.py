@@ -2061,6 +2061,8 @@ class BotState:
             real_sol = int(_rsr) if _rsr is not None and int(_rsr) > 0 else max(0, vsr - 30_000_000_000)
             bucket["last_real_sol_lamports"] = real_sol
             bucket["curve_fill_pct"] = min(100.0, max(0.0, real_sol / 85_000_000_000 * 100))
+            if real_sol >= 85_000_000_000 and not bucket.get("_tape_complete"):
+                bucket["_tape_complete"] = True      # curve filled on the tape: graduation pending — discovery migrates to pumpswap
             # Adaptive price sampling — sample at 1Hz for the first 60s of
             # tracking (entry-velocity gate needs dense data) then drop to one
             # sample every 30s so the 120-slot deque covers ~1 hour of history

@@ -2874,3 +2874,9 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   `creator_solvency.gate`; the deployer balance is only the denominator of the first-minute dump proxy. The `creator-dumped` check (sold > creator_sold_pct_max in the
   first `creator_dump_window_s`) stays. `creator_sol_min` / `creator_sol_gate_new_band` / `creator_balance_fail` kept as inert fields so stored configs load.
   Feed legend + wiki updated; tests adjusted (`test_creator_solvency.py`). This closes the long-open "creator-SOL floor" question.
+- 2026-10-20 **"no-buy-events 1099 / 10 min" + "what is rate-cap?"** (prod screenshot): the New-band candidates with no buys (MrBeast / ROLEX +1370 % = exactly the graduation
+  price) were COMPLETED curves still tagged `pumpfun` — the 60 s on-chain curve read that flips them to pumpswap failed under prod RPC 429s, so a filled curve (which never
+  prints on the pump.fun tape again) was tallied "no-buy-events" every tick. Fixes: tape sets `_tape_complete` when real SOL ≥ 85 (bot.on_trade); `scanner.curve_is_complete()`
+  (tape flag / `complete` / fill ≥ 99.9 % / vsr ≥ 114.9 SOL) → verdict **curve-complete** (graduation pending) instead of no-buy-events; discovery migrates to pumpswap on the
+  tape flag even when the RPC read fails. Legend: `rate-cap` = smart-wallet hard-trigger parked because `smart_wallet_max_per_hour` fires are used up (pick held, not dropped);
+  tooltips wired into the smart-picks strip. Tests `test_curve_complete_verdict.py` (3).

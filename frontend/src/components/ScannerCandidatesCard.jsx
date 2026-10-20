@@ -2,6 +2,7 @@ import { useState, memo } from "react";
 import { Telescope, TrendingUp, Sparkles, Hourglass, Eye, Zap } from "lucide-react";
 import { toast } from "sonner";
 import HelpHint from "./HelpHint";
+import { SOL_GATE_HINT } from "./RecentLaunchesFeed";
 import { ChainBadge } from "./ChainBadge";
 import { TokenDetailDialog } from "./TokenDetailDialog";
 import { VirtualUl } from "./VirtualRows";
@@ -148,7 +149,8 @@ function SmartParkedStrip({ items, onOpen }) {
                 <span className="font-mono font-semibold text-sm truncate">{c.symbol || "?"}</span>
                 <span className="text-[10px] font-mono text-neutral-500 truncate">{c.name || ""}</span>
                 <span className="text-[10px] font-mono text-neutral-500">{fmtAge(c.age_s)} old · {fmtUsd(c.usd_market_cap)} mc</span>
-                <span className="text-[9px] font-mono px-1.5 py-0.5 border border-neutral-700 text-neutral-400" title="Why the bot did not take it">{p.reason}</span>
+                <span className="text-[9px] font-mono px-1.5 py-0.5 border border-neutral-700 text-neutral-400"
+                  title={SOL_GATE_HINT[p.reason] || `Why the bot did not take it: ${p.reason}`}>{p.reason}</span>
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <span className="text-[10px] font-mono text-amber-400" data-testid={`smart-parked-left-${c.mint}`}>{left(p.left_s)} left</span>

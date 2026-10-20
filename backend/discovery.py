@@ -278,8 +278,11 @@ class PumpfunDiscovery:
             is_graduated = (
                 bool(c.get("complete"))
                 if c
-                else bucket.get("protocol") == "pumpswap"
+                else (bucket.get("protocol") == "pumpswap" or bool(bucket.get("_tape_complete")))
             )
+            # the tape saw the curve fill (85 SOL real) even if the RPC read above failed under rate limits
+            if not is_graduated and bucket.get("protocol") != "pumpswap" and bucket.get("_tape_complete"):
+                is_graduated = True
             # Resolve current price per protocol
             cur_price = 0.0
             # Helius kill-switch — pool state fetch hits PumpSwap via

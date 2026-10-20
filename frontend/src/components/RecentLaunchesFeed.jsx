@@ -26,7 +26,9 @@ const CHAIN_FILTER_KEY = "ui.launches.chain";
 export const SOL_GATE_HINT = {
   pass: "cleared the momentum pre-rank — queued for the on-chain check and entry",
   age: "outside the New (Pump.fun) / Seasoned (PumpSwap) age window",
-  "no-buy-events": "no buys seen on the tape yet — nothing to score",
+  "no-buy-events": "no buys seen on the tape since this token was seeded (New band only). If it is also at the graduation price the curve has completed — see curve-complete",
+  "rate-cap": "smart-wallet hard trigger parked: smart_wallet_max_per_hour fires already used this hour (Control → Smart wallets); the pick is held, not dropped",
+  "mc-floor": "market cap below the band's Min MC floor",
   growth: "rolling growth below the band's Min growth %",
   liquidity: "curve / pool SOL below Min liquidity",
   mc: "market cap below the Seasoned Min MC",
