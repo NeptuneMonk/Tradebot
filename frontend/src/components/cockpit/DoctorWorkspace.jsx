@@ -6,6 +6,7 @@ import DoctorLivePanels from "../DoctorLivePanels";
 import LearningBooksPanel from "../LearningBooksPanel";
 import CostTrackerCard from "../CostTrackerCard";
 import CreatorGreylistPanel from "../CreatorGreylistPanel";
+import GateReplayPanel from "../GateReplayPanel";
 import SmartWalletsPanel from "../SmartWalletsPanel";
 import CreatorVerdictPanel from "../CreatorVerdictPanel";
 import Explain from "./Explain";
@@ -17,6 +18,7 @@ const TABS = [
   ["greylist", "GREYLIST", "creator greylist — scored devs, snipe path, pattern-exit knobs"],
   ["smart", "SMART WALLETS", "top-trader buys as a trigger — manual list, tape-learned winners, mode"],
   ["creators", "CREATORS", "creator verdict — the ONE gate fusing greylist, our book, dumps, audit and smart wallets"],
+  ["replay", "REPLAY", "paste a mint — every gate's live reading and pass/fail, and why we entered or exited"],
 ];
 
 function Chip({ active, onClick, children, testid, cls = "border-emerald-700 text-emerald-300" }) {
@@ -92,6 +94,12 @@ function DoctorWorkspace({ config, onConfigUpdate, onApplied, status, auto, onRe
         {tab === "creators" && (
           <div key="creators" className="p-3 animate-in fade-in duration-200" data-testid="doctor-creators-tab">
             <CreatorVerdictPanel config={config} onConfigUpdate={onConfigUpdate} />
+          </div>
+        )}
+        {tab === "replay" && (
+          <div key="replay" className="space-y-3 tile-in" data-testid="doctor-replay">
+            <Explain short="Tune without guessing: paste any mint and see each gate's live reading against its threshold, which ones block it right now, and the history of our own entries / exits on it." testid="doctor-explain-replay" />
+            <GateReplayPanel />
           </div>
         )}
         {tab === "forensics" && (

@@ -2883,3 +2883,9 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
 - 2026-10-20 **Pump.fun mints only** (user: exclude any CA not ending in `pump` on new/seasoned momentum): `pump_suffix_only` (default ON, Execution safety). Enforced in
   `discovery._seed_token` (non-pump mints are never tracked / never candidates) and at the top of `bot._enter` for every non-manual action → refusal `not-pump-mint`.
   Manual / force buys bypass. Tests `test_pump_suffix_only.py` (3).
+- 2026-10-20 **Gate Replay** (user request): `GET /api/replay/{mint}` (`backend/gate_replay.py`) — rebuilds the scanner bucket (live tracking, else the persisted
+  `tick_paths` doc + a fresh chain read), runs `MomentumScanner.score` with the real thresholds and lists every gate as {reading, threshold, pass}: pump suffix, band/age,
+  curve-complete / mayhem or pool-verified, MC floor/ceiling, curve fill, MC velocity, buy events, rolling growth, inflow, new buyers, buyers total, liquidity, last print,
+  flow ratio, entry velocity, socials, cost-gate round trip (with breakdown), creator verdict; plus `would_enter`/`blockers`, the scanner verdict ledger, last refusal and
+  our trades on the mint (entry action, exit reason, PnL). UI: Doctor → **REPLAY** tab (`GateReplayPanel.jsx`, testids replay-mint-input / replay-run-btn / replay-row-*).
+  Tests `test_gate_replay.py` (2). Known limit: cost-gate fee USD uses a flat $0.07 round trip estimate.

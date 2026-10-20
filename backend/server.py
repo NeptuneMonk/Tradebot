@@ -4122,6 +4122,16 @@ async def pod_relay_middleware(request: Request, call_next):
     return response
 
 
+@api.get("/replay/{mint}")
+async def gate_replay_endpoint(mint: str):
+    """Gate Replay: every gate's live reading vs threshold with pass/fail for one mint, plus why it entered / exited."""
+    import gate_replay
+    mint = mint.strip()
+    if len(mint) < 32 or len(mint) > 48:
+        raise HTTPException(status_code=400, detail="that does not look like a Solana mint address")
+    return await gate_replay.replay(bot_state, db, mint)
+
+
 app.include_router(api)
 
 
@@ -4153,3 +4163,4 @@ else:
         allow_headers=["*"],
         expose_headers=POD_HEADERS,
     )
+
