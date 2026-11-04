@@ -3,6 +3,7 @@ import { ShieldAlert, ShieldCheck, ShieldQuestion, RefreshCw } from "lucide-reac
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 import SmartMagnetsPanel from "./SmartMagnetsPanel";
+import CopyAddr from "./CopyAddr";
 
 const TONE = {
   block: "border-red-800 text-red-300 bg-red-950/40",
@@ -88,7 +89,7 @@ export default function CreatorVerdictPanel({ config, onConfigUpdate }) {
           <div key={v.mint} className="flex items-start gap-2 px-2 py-1.5 border-b border-neutral-900 last:border-0" data-testid={`creator-verdict-row-${v.mint}`}>
             <VerdictChip level={v.level} reasons={v.reasons} mint={`row-${v.mint}`} />
             <div className="min-w-0 flex-1">
-              <div className="font-mono text-[11px] text-neutral-200 truncate">{v.symbol || v.mint.slice(0, 8)} <span className="text-neutral-600">{v.mint.slice(0, 6)}…</span>
+              <div className="font-mono text-[11px] text-neutral-200 truncate">{v.symbol || v.mint.slice(0, 8)} <CopyAddr value={v.mint} label="Mint" className="text-neutral-600" />{v.creator && <> · creator <CopyAddr value={v.creator} label="Creator" className="text-neutral-500" /></>}
                 {v.size_mult !== 1 && <span className="ml-2 text-amber-300">size ×{v.size_mult}</span>}
                 {v.smart_total > 0 && <span className="ml-2 text-fuchsia-300">smart {v.smart_total}{v.smart_manual ? ` (${v.smart_manual} manual)` : ""}</span>}
               </div>

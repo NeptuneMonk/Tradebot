@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Search, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { api, explainApiError } from "@/lib/api";
+import CopyAddr from "./CopyAddr";
 
 const fmtTs = (iso) => (iso ? new Date(iso).toLocaleTimeString() : "—");
 const fmtEpoch = (s) => (s ? new Date(s * 1000).toLocaleTimeString() : "—");
@@ -96,7 +97,7 @@ export default function GateReplayPanel({ initialMint = "" }) {
       {data && (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono" data-testid="replay-summary">
-            <span className="text-neutral-100">{data.symbol || "?"}</span>
+            <span className="text-neutral-100">{data.symbol || "?"}</span> <CopyAddr value={data.mint} label="Mint" className="text-neutral-500" />
             <span className="text-neutral-500">{data.protocol} · {data.band ? `${data.band} band` : "no band"} · age {data.age_min} min · MC ${Number(data.mc_usd || 0).toLocaleString()}</span>
             <span className={`px-1.5 py-0.5 border ${data.would_enter ? "border-emerald-700 text-emerald-300" : "border-red-800 text-red-300"}`} data-testid="replay-would-enter">
               {data.would_enter ? "WOULD ENTER NOW" : `BLOCKED: ${data.blockers.join(", ")}`}

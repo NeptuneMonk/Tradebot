@@ -8,6 +8,7 @@ import { ChainBadge } from "./ChainBadge";
 import { api, explainApiError } from "@/lib/api";
 import TokenChart from "./TokenChart";
 import { flushVerdict } from "@/lib/flushVerdict";
+import CopyAddr from "./CopyAddr";
 
 const fmtUsd = (n) => {
   const v = Number(n);
@@ -62,6 +63,8 @@ export function TokenDetailDialog({ token, onClose }) {
             {token?.symbol || live?.symbol || "?"}
             {chain !== "rh" && <RepBadge mint={mint} creator={token?.creator || live?.creator} />}
             <span className="text-neutral-500 text-xs font-normal truncate">{token?.name || live?.name}</span>
+            <span className="text-[10px] font-normal text-neutral-500 flex items-center gap-2">CA <CopyAddr value={mint} label="Mint" className="text-neutral-300" testid="token-detail-copy-mint" />
+              {(token?.creator || live?.creator) && <>creator <CopyAddr value={token?.creator || live?.creator} label="Creator" className="text-neutral-300" testid="token-detail-copy-creator" /></>}</span>
             <span className="ml-auto flex items-center gap-2">
               {links.map(([l, h]) => (
                 <a key={l} href={h} target="_blank" rel="noreferrer" className="text-[10px] font-mono uppercase tracking-[0.15em] text-cyan-300 hover:underline inline-flex items-center gap-1">{l}<ExternalLink className="w-3 h-3" /></a>

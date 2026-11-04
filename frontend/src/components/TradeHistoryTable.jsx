@@ -9,10 +9,10 @@ import { openWiki, wikiTargetForExit } from "@/lib/wikiNav";
 import { BookOpen } from "lucide-react";
 import { api } from "@/lib/api";
 import { flushVerdict } from "@/lib/flushVerdict";
+import CopyAddr from "./CopyAddr";
 
 const BOOKS = ["all", "scalp", "hunt", "runner", "rh_pons"];
 
-const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const fmtTime = (iso) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—");
 
 // Map raw exit_reason strings → short label + colour + extra detail.
@@ -256,7 +256,7 @@ function TradeHistoryTable({ history: liveHistory }) {
                       </span>
                     )}
                     <span className="mr-1.5 align-middle inline-flex"><ChainBadge chain={t.chain} mint={t.mint} /></span>
-                    {t.symbol || "?"} <span className="text-neutral-600 text-[10px]">{short(t.mint)}</span>
+                    {t.symbol || "?"} <CopyAddr value={t.mint} label="Mint" className="text-neutral-600 text-[10px]" />
                     {(t.reentry_trigger || t.reentry) && (
                       <span
                         data-testid={`reentry-badge-${t.id}`}

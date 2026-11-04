@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { Magnet, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
+import CopyAddr from "./CopyAddr";
 
-const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const ago = (ts) => {
   if (!ts) return "—";
   const m = Math.max(0, Math.round((Date.now() / 1000 - ts) / 60));
@@ -75,13 +75,14 @@ export default function SmartMagnetsPanel({ config, onConfigUpdate }) {
                   <td className="px-2 py-1 text-neutral-200">
                     {r.magnet && <span className="mr-1 px-1 border border-violet-700 text-violet-300 text-[9px] uppercase">magnet</span>}
                     {r.blacklisted && <span className="mr-1 px-1 border border-red-800 text-red-300 text-[9px] uppercase">blacklisted</span>}
-                    <span title={r.creator}>{short(r.creator)}</span>{r.pattern && <span className="ml-1 text-neutral-500">{r.pattern}</span>}
+                    <CopyAddr value={r.creator} label="Creator" />{r.pattern && <span className="ml-1 text-neutral-500">{r.pattern}</span>}
                   </td>
                   <td className="text-right px-1 text-neutral-200">{r.smart_launches}/{r.launches}</td>
                   <td className={`text-right px-1 ${r.rate_pct >= 50 ? "text-emerald-300" : "text-neutral-400"}`}>{r.rate_pct}%</td>
                   <td className="text-right px-1 text-amber-300">{r.hits}{r.manual_hits ? <span className="text-neutral-500"> ({r.manual_hits}m)</span> : null}</td>
                   <td className="text-right px-1 text-neutral-400">{r.graduated} / {r.failed}</td>
-                  <td className="px-2 text-neutral-400 truncate max-w-[220px]">{(r.recurring_wallets || []).map((w) => `${short(w.wallet)}×${w.hits}`).join(" ") || "—"}</td>
+                  <td className="px-2 text-neutral-400 truncate max-w-[220px]">{(r.recurring_wallets || []).length === 0 ? "—" : (r.recurring_wallets || []).map((w) => (
+                    <span key={w.wallet} className="mr-1"><CopyAddr value={w.wallet} label="Smart wallet" />×{w.hits}</span>))}</td>
                   <td className="text-right px-2 text-neutral-500">{ago(r.last_smart_at)}</td>
                 </tr>
               ))}

@@ -5,8 +5,8 @@ import { TokenDetailDialog } from "./TokenDetailDialog";
 import { VirtualUl } from "./VirtualRows";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
+import CopyAddr from "./CopyAddr";
 
-const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const fmtUsd = (n) => {
   const v = Number(n) || 0;
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
@@ -162,9 +162,9 @@ function RecentLaunchesFeed({ launches: allLaunches, feedLive = { sol: false, rh
                     )}
                   </div>
                   <div className="text-[10px] font-mono text-neutral-500 mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                    <span>{isRh ? "token" : "mint"} <span className="text-neutral-300">{short(l.mint)}</span></span>
+                    <span>{isRh ? "token" : "mint"} <CopyAddr value={l.mint} label="Mint" className="text-neutral-300" /></span>
                     <span>·</span>
-                    <span>creator <span className="text-neutral-300">{short(l.creator)}</span></span>
+                    <span>creator <CopyAddr value={l.creator} label="Creator" className="text-neutral-300" /></span>
                     <CreatorBadge l={l} />
                   </div>
                   <div className="mt-1.5 flex items-center gap-2 text-[10px] font-mono flex-wrap">

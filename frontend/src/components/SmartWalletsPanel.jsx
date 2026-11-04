@@ -2,8 +2,8 @@ import { memo, useCallback, useEffect, useState } from "react";
 import { Crosshair, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import CopyAddr from "./CopyAddr";
 
-const short = (w) => (w ? `${w.slice(0, 4)}…${w.slice(-4)}` : "—");
 const ago = (ts) => {
   if (!ts) return "—";
   const s = Math.max(0, Date.now() / 1000 - ts);
@@ -122,7 +122,7 @@ function ManualList({ snap, onChange }) {
       <ul className="mt-2 space-y-1">
         {(snap?.manual || []).map((m) => (
           <li key={m.wallet} className="flex items-center gap-2 text-[11px] font-mono" data-testid={`smart-wallet-manual-${m.wallet}`}>
-            <span className="text-neutral-200" title={m.wallet}>{short(m.wallet)}</span>
+            <CopyAddr value={m.wallet} label="Smart wallet" className="text-neutral-200" />
             {m.label && <span className="text-neutral-500">{m.label}</span>}
             <button type="button" onClick={() => remove(m.wallet)} data-testid={`smart-wallet-remove-${m.wallet}`}
               className="ml-auto text-neutral-600 hover:text-rose-400"><Trash2 className="w-3 h-3" /></button>
@@ -166,7 +166,7 @@ function LearnedList({ snap, onChange }) {
           <tbody>
             {rows.map((r) => (
               <tr key={r.wallet} data-testid={`smart-wallet-learned-${r.wallet}`} className={r.promoted ? "text-emerald-300" : "text-neutral-400"}>
-                <td title={r.wallet}>{short(r.wallet)}{r.promoted && <span className="ml-1 text-[9px] border border-emerald-800 px-1">TRIGGER</span>}</td>
+                <td><CopyAddr value={r.wallet} label="Smart wallet" />{r.promoted && <span className="ml-1 text-[9px] border border-emerald-800 px-1">TRIGGER</span>}</td>
                 <td className="text-right">{r.wins}</td><td className="text-right">{r.misses}</td>
                 <td className="text-right">{Math.round(r.win_rate * 100)}%</td>
                 <td className="text-right">+{Math.round(r.best_gain_pct || 0)}%</td>
@@ -194,8 +194,8 @@ function Recent({ snap }) {
           {rows.slice(0, 12).map((e, i) => (
             <li key={`${e.mint}-${e.ts}-${i}`} className="flex gap-2">
               <span className="text-neutral-600 w-8">{ago(e.ts)}</span>
-              <span className="text-neutral-200">{e.symbol || e.mint?.slice(0, 8)}</span>
-              <span className="text-neutral-500">{short(e.wallet)} · {e.kind} · {e.sol} SOL</span>
+              <span className="text-neutral-200"><CopyAddr value={e.mint} label="Mint">{e.symbol || e.mint?.slice(0, 8)}</CopyAddr></span>
+              <span className="text-neutral-500"><CopyAddr value={e.wallet} label="Smart wallet" /> · {e.kind} · {e.sol} SOL</span>
               <span className={`ml-auto ${e.result === "opened" ? "text-emerald-300" : "text-amber-400"}`}>{e.result}</span>
             </li>
           ))}

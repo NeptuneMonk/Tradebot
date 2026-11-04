@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useMemo, memo } from "react";
 import { Ghost, RefreshCw, ChevronDown, ChevronRight, Zap, FlaskConical, Shield, Play, Ban, TrendingDown, Zap as Bolt, Sparkles, BarChart3 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import CopyAddr from "./CopyAddr";
 
 // Color/icon tier mapping. The actual gating thresholds (45 / 70) live in
 // `backend/creator_greylist.py::recommended_strategy()`. Keep these in sync
@@ -75,7 +76,6 @@ const MODE_CHIP = {
   telemetry: "border-cyan-700 text-cyan-200 bg-cyan-950/40",
 };
 
-const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const fmtUsd = (n) => {
   const v = Number(n || 0);
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
@@ -274,7 +274,7 @@ function CreatorDetail({ creator }) {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-neutral-200 font-semibold">{f.symbol || "?"}</span>
-                    <span className="text-neutral-600 text-[10px]">{short(f.mint)}</span>
+                    <CopyAddr value={f.mint} label="Mint" className="text-neutral-600 text-[10px]" />
                   </div>
                   <div className="text-neutral-500 text-[10px]">
                     {f.fail_class || "—"} · {fmtTime(f.outcome_at)}
@@ -301,7 +301,7 @@ function CreatorDetail({ creator }) {
           <ul className="space-y-1 max-h-32 overflow-y-auto mb-3">
             {recentTrades.slice(0, 8).map((t, i) => (
               <li key={t.id || `${t.mint}-${t.exit_time || t.entry_time || i}`} className="flex items-center justify-between border border-neutral-800 px-2 py-1">
-                <span className="text-neutral-300">{t.symbol || short(t.mint)}</span>
+                <span className="text-neutral-300"><CopyAddr value={t.mint} label="Mint">{t.symbol || shortAddr(t.mint)}</CopyAddr></span>
                 <span
                   className={
                     Number(t.pnl_pct || 0) >= 0 ? "text-emerald-400" : "text-rose-400"
@@ -325,7 +325,7 @@ function CreatorDetail({ creator }) {
           <ul className="space-y-0.5 max-h-20 overflow-y-auto">
             {linked.slice(0, 6).map((w) => (
               <li key={w.wallet || w} className="text-neutral-400 text-[10px]">
-                {short(w.wallet || w)}
+                <CopyAddr value={w.wallet || w} label="Wallet" />
               </li>
             ))}
           </ul>
@@ -416,7 +416,7 @@ function GreylistRow({ row, expanded, onToggle }) {
             {row.effective_score.toFixed(0)}
           </span>
           <span className="text-[10px] font-mono text-neutral-500 truncate">
-            {short(row.creator)}
+            <CopyAddr value={row.creator} label="Creator" />
           </span>
         </div>
         <div className="flex items-center gap-4 text-[10px] font-mono shrink-0">
@@ -966,7 +966,7 @@ function CreatorGreylistPanel({ config, onConfigUpdate }) {
                           {pm.label}
                         </span>
                         <span className="text-[10px] font-mono text-neutral-400 truncate">
-                          {short(b.creator)}
+                          <CopyAddr value={b.creator} label="Creator" />
                         </span>
                         <span className="text-[10px] font-mono text-neutral-600 truncate hidden md:inline">
                           {(b.evidence || []).slice(0, 1).join(" · ")}

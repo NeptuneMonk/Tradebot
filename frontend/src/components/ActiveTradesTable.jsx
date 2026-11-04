@@ -3,8 +3,8 @@ import { Activity, X } from "lucide-react";
 import { ChainBadge } from "./ChainBadge";
 import { TradeTicket } from "./TradeTicket";
 import { fillTone, paidFillTitle } from "@/lib/fillCost";
+import CopyAddr from "./CopyAddr";
 
-const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 
 function ActiveTradesTable({ trades, onExit }) {
   return (
@@ -64,7 +64,7 @@ function ActiveTradesTable({ trades, onExit }) {
                     <span data-testid={`smart-badge-${t.mint}`}
                       title={`Smart-wallet trigger — ${t.smart_wallet_kind === "learned" ? "tape-learned top trader" : "manual list"} ${t.smart_wallet} bought inside the window`}
                       className="mr-1.5 px-1 py-0 border border-amber-600 text-amber-300 bg-amber-950/40 text-[9px] font-mono align-middle">
-                      SMART · {t.smart_wallet_kind || "wallet"} · {t.smart_wallet.slice(0, 4)}…{t.smart_wallet.slice(-4)}
+                      SMART · {t.smart_wallet_kind || "wallet"} · <CopyAddr value={t.smart_wallet} label="Smart wallet" />
                     </span>
                   )}
                   <span className="mr-1.5 align-middle inline-flex"><ChainBadge chain={t.chain} mint={t.mint} /></span>
@@ -73,7 +73,7 @@ function ActiveTradesTable({ trades, onExit }) {
                     <span data-testid={`active-fill-${t.mint}`} title={paidFillTitle(t)}
                       className={`ml-1.5 px-1 py-0 border text-[9px] font-mono align-middle ${fillTone(Number(t.fill_cost_pct))}`}>paid +{Number(t.fill_cost_pct).toFixed(1)}%</span>
                   )}
-                  <span className="text-neutral-600 ml-2 text-[10px]">{short(t.mint)}</span>
+                  <CopyAddr value={t.mint} label="Mint" className="text-neutral-600 ml-2 text-[10px]" />
                 </td>
                 <td className="text-right font-mono">
                   <span className={`px-1.5 py-0.5 border text-[10px] uppercase ${t.mode === "live" ? "border-red-700 text-red-300" : "border-blue-700 text-blue-300"}`}>

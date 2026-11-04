@@ -2889,3 +2889,7 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   flow ratio, entry velocity, socials, cost-gate round trip (with breakdown), creator verdict; plus `would_enter`/`blockers`, the scanner verdict ledger, last refusal and
   our trades on the mint (entry action, exit reason, PnL). UI: Doctor → **REPLAY** tab (`GateReplayPanel.jsx`, testids replay-mint-input / replay-run-btn / replay-row-*).
   Tests `test_gate_replay.py` (2). Known limit: cost-gate fee USD uses a flat $0.07 round trip estimate.
+- 2026-10-20 **Copyable addresses** (user: creator wallets, smart wallets, any CA copy on click / long-press): `components/CopyAddr.jsx` (click, Enter, or 450 ms touch
+  long-press → `copyToClipboard` + toast; stops propagation so row clicks don't fire; `data-testid="copy-<first6>"`). Wired into Scanner candidates (mint, smart-pick wallet),
+  Launches feed (mint, creator), Active trades (mint, smart wallet), Trade history (mint), Smart wallets (manual list, learned table, triggers, mints), Smart magnets (creator,
+  recurring wallets), Greylist (creator, wallets, mints), Creator verdicts (mint, creator), Token detail header (CA + creator), Gate Replay (mint). Local `short()` helpers removed.

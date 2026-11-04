@@ -10,6 +10,7 @@ import { api, explainApiError } from "@/lib/api";
 import { VerdictChip } from "./CreatorVerdictPanel";
 import TrendingNamesStrip from "./TrendingNamesStrip";
 import { fillTone, projectedFillTitle } from "@/lib/fillCost";
+import CopyAddr from "./CopyAddr";
 
 const short = (s) => (s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "—");
 const fmtAge = (s) => {
@@ -144,7 +145,7 @@ function SmartParkedStrip({ items, onOpen }) {
               <div className="min-w-0 flex items-center gap-2 flex-wrap">
                 <span className="text-[9px] font-mono uppercase tracking-[0.15em] px-1.5 py-0.5 border border-amber-600 text-amber-300 bg-amber-950/40"
                   title={`${p.kind === "learned" ? "Tape-learned top trader" : "Manual list"} ${p.wallet} bought ${p.sol} SOL`}>
-                  SMART · {p.label || (p.kind === "learned" ? "learned" : `${p.wallet.slice(0, 4)}…${p.wallet.slice(-4)}`)}
+                  SMART · {p.label || (p.kind === "learned" ? "learned" : <CopyAddr value={p.wallet} label="Smart wallet" />)}
                 </span>
                 <span className="font-mono font-semibold text-sm truncate">{c.symbol || "?"}</span>
                 <span className="text-[10px] font-mono text-neutral-500 truncate">{c.name || ""}</span>
@@ -328,7 +329,7 @@ function CandidateRow({ c, passing, onOpen }) {
             )}
           </div>
           <div className="text-[10px] font-mono text-neutral-500 mt-0.5">
-            {isRh ? "token" : "mint"} <span className="text-neutral-300">{short(c.mint)}</span>
+            {isRh ? "token" : "mint"} <CopyAddr value={c.mint} label="Mint" className="text-neutral-300" />
           </div>
         </div>
         <div className="flex items-center gap-2">
