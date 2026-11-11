@@ -9,6 +9,7 @@ Bot orchestrator:
 import asyncio
 import logging
 import os
+import uuid
 import time
 from collections import deque
 from tick_store import EVENT_KEEP
@@ -486,7 +487,8 @@ class BotState:
         self.pnl_reconciler.start()
         self._sync_venue_fees()
         if not getattr(self, "_bh_refresher", None):
-            self._bh_refresher = asyncio.create_task(landing.blockhash_refresher(self._rpc_busy))   # #10: 2 s busy / 10 s idle
+            if bool(getattr(self.config, "live_trading", False)) or bool(getattr(self.config, "rh_live_trading", False)):
+                self._bh_refresher = asyncio.create_task(landing.blockhash_refresher(self._rpc_busy))   # #10: 2 s busy / 10 s idle (live only — paper/signal never send)
         await self._sync_wallet_key()
         # Periodically reconcile in-memory active_trades against DB so any
         # mints leaked by an unhandled exit exception get re-attached to a
@@ -2054,6 +2056,7 @@ class BotState:
                 bucket["first_seen_price_sol"] = cur_price
             bucket["last_price_sol"] = cur_price
             bucket["last_vsr_lamports"] = vsr  # legacy: virtual SOL reserves
+            bucket["last_vtr"] = vtr
             # Real liquidity: the TradeEvent carries real_sol_reserves (SOL coins) / real_quote_reserves (PUMP-, USDC-,
             # stock-paired coins, converted to SOL-equivalents by normalize()). The legacy `vsr − 30 SOL` estimate only
             # holds for SOL pairs — a PUMP-paired curve has a different virtual offset and read as "0 liquidity".
@@ -2374,6 +2377,45 @@ class BotState:
             return True
         finally:
             slot["exit_in_progress"] = False
+
+    async def _emit_signal(self, launch, action: str, protocol: str, state: dict | None, bucket: dict, plan: dict,
+                           is_new_band: bool, price_sol: float, sol_price: float) -> None:
+        """Signal mode: record + broadcast + Telegram a 'would enter' for a token that cleared every gate.
+        One signal per mint per `signal_cooldown_s` (default 15 min) so a token that keeps passing is not re-sent each tick."""
+        now = time.time()
+        cool = float(getattr(self.config, "signal_cooldown_s", 900) or 900)
+        last = float(bucket.get("_signal_ts") or 0.0)
+        if now - last < cool:
+            return
+        bucket["_signal_ts"] = now
+        real_sol = float((state or {}).get("real_sol_reserves") or (state or {}).get("real_quote_reserves") or 0) / LAMPORTS_PER_SOL
+        mc = price_sol * 1e9 * sol_price if price_sol and sol_price else float(bucket.get("usd_market_cap") or 0)
+        age_s = now - float(bucket.get("start") or now)
+        m = (bucket.get("_scanner_metrics") or {})
+        sig = {"id": str(uuid.uuid4()), "ts": now, "mint": launch.mint, "symbol": launch.symbol, "name": getattr(launch, "name", None),
+               "band": "new" if is_new_band else "seasoned", "action": action, "protocol": protocol, "price_sol": price_sol,
+               "mc_usd": round(mc), "curve_fill_pct": round(float(bucket.get("curve_fill_pct") or (100.0 if protocol == "pumpswap" else 0)), 1),
+               "depth_sol": round(real_sol, 2), "age_min": round(age_s / 60, 1), "buyers": len(bucket.get("buyers") or ()),
+               "growth_pct": m.get("growth_pct_rolling"), "inflow_sol": m.get("recent_inflow_sol"),
+               "would_size_usd": round(float(plan.get("size_usd") or 0), 2), "cost_pct": (plan.get("trade_fields") or {}).get("expected_cost_pct"),
+               "creator": bucket.get("creator"), "smart": bool(bucket.get("smart_wallet") or bucket.get("_smart_hit"))}
+        self.stats["signals"] = self.stats.get("signals", 0) + 1
+        try:
+            await self.db.signals.insert_one({**sig, "_id": sig["id"]})
+        except Exception as e:
+            logger.debug(f"signal persist failed: {e}")
+        await hub.broadcast("signal", sig)
+        logger.info(f"SIGNAL {launch.symbol} {launch.mint[:8]}… {sig['band']} via {action} · MC ${mc:,.0f} · fill {sig['curve_fill_pct']}% · {real_sol:.1f} SOL")
+        try:
+            import html as _html
+            from alerts import token_link
+            txt = (f"📡 <b>{_html.escape(str(launch.symbol or '?'))}</b> would enter · {sig['band']} · {_html.escape(action)}\n"
+                   f"MC ${mc:,.0f} · curve {sig['curve_fill_pct']}% · {real_sol:.1f} SOL · age {sig['age_min']} min · {sig['buyers']} buyers\n"
+                   f"growth {float(sig['growth_pct'] or 0):+.0f}% · inflow {float(sig['inflow_sol'] or 0):.2f} SOL · size ${sig['would_size_usd']}\n"
+                   f"<code>{launch.mint}</code>\n{token_link(launch.mint, 'sol')}")
+            await self.alerts.send("signal", txt)
+        except Exception as e:
+            logger.debug(f"signal telegram failed: {e}")
 
     async def _plan_entry(self, mint: str, book: str, protocol: str, entry_slip: int, priority_fee: int, sol_price: float, *,
                           depth_sol: float = 0.0, book_mult_override: float | None = None, use_doctor: bool = True,
@@ -4375,6 +4417,11 @@ class BotState:
             return
 
         entry_price_sol = sol_in_lamports / tokens_out / LAMPORTS_PER_SOL
+        if getattr(self.config, "signal_only_mode", False) and action not in MANUAL_ENTRY_ACTIONS:
+            # SIGNAL MODE: every gate passed — publish "would enter" (UI strip + Telegram) and stop. No fill, no position.
+            await self._emit_signal(launch, action, protocol, pumpswap_state if protocol == "pumpswap" else state, bucket, plan,
+                                    is_new_band, entry_price_sol, sol_price)
+            return
         mode = "live" if self.config.live_trading else "paper"
         _fill_state = pumpswap_state if protocol == "pumpswap" else state
         if mode == "paper":

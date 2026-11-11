@@ -9,6 +9,7 @@ import { VirtualUl } from "./VirtualRows";
 import { api, explainApiError } from "@/lib/api";
 import { VerdictChip } from "./CreatorVerdictPanel";
 import TrendingNamesStrip from "./TrendingNamesStrip";
+import SignalsStrip from "./SignalsStrip";
 import { fillTone, projectedFillTitle } from "@/lib/fillCost";
 import CopyAddr from "./CopyAddr";
 
@@ -91,6 +92,7 @@ function ScannerCandidatesCard({ candidates, config }) {
         </span>
       </div>
 
+      <SignalsStrip onOpen={(t) => setDetail(t)} />
       <TrendingNamesStrip onOpen={(t) => setDetail(t)} />
       <SmartParkedStrip items={candidates.filter((c) => c.smart_parked)} onOpen={(t) => setDetail(t)} />
 

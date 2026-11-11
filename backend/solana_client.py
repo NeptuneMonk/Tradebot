@@ -138,14 +138,29 @@ def rpc_snapshot() -> dict:
             "max_inflight": RPC_MAX_INFLIGHT, "max_rps": RPC_MAX_RPS}
 
 
-async def _pace():
+PUBLIC_MAX_RPS = float(os.environ.get("SOLANA_PUBLIC_RPC_MAX_RPS") or 4)   # api.mainnet-beta allows ~100 req / 10 s per IP; stay well under
+_pace_next_public = 0.0
+
+
+def _is_public(url: str) -> bool:
+    return "api.mainnet-beta.solana.com" in (url or "")
+
+
+async def _pace(url: str = ""):
     """Client-side request pacing so bulk readers (discovery batches) cannot trip the provider's per-second
-    limit and 429 the position monitors. Evenly spaces calls at 1/RPC_MAX_RPS."""
-    global _pace_next
-    if RPC_MAX_RPS <= 0:
-        return
+    limit and 429 the position monitors. Evenly spaces calls at 1/RPC_MAX_RPS; the public node gets its own,
+    stricter lane (PUBLIC_MAX_RPS) so a paused-Helius / fallback period does not turn into a 429 storm."""
+    global _pace_next, _pace_next_public
     loop = asyncio.get_event_loop()
     now = loop.time()
+    if _is_public(url) and PUBLIC_MAX_RPS > 0:
+        slot = max(now, _pace_next_public)
+        _pace_next_public = slot + 1.0 / PUBLIC_MAX_RPS
+        if slot > now:
+            await asyncio.sleep(slot - now)
+        return
+    if RPC_MAX_RPS <= 0:
+        return
     slot = max(now, _pace_next)
     _pace_next = slot + 1.0 / RPC_MAX_RPS
     if slot > now:
@@ -214,7 +229,7 @@ async def rpc_call(method: str, params: list, timeout: float = 10.0,
                 await asyncio.sleep(wait_s or 0.1)
                 continue
             try:
-                await _pace()
+                await _pace(url)
                 r = await _client().post(url, json=payload, timeout=timeout)
                 if r.status_code == 429 or 500 <= r.status_code < 600:
                     last_exc = httpx.HTTPStatusError(f"rpc {r.status_code}", request=r.request, response=r)

@@ -1044,6 +1044,7 @@ async def bot_status():
         rh_feed_paused_reason=bot_state.rh_discovery.doctor_paused() if getattr(bot_state, "rh_discovery", None) else None,
         rh_paper_enabled=bot_state.config.rh_paper_enabled,
         rh_live_trading=bot_state.config.rh_live_trading,
+        signal_only_mode=bool(getattr(bot_state.config, "signal_only_mode", False)),
         scanner_enabled=bot_state.config.scanner_enabled,
         daily_pnl_usd=pnl,
         daily_pnl_live_usd=pnl_live,
@@ -4130,6 +4131,15 @@ async def gate_replay_endpoint(mint: str):
     if len(mint) < 32 or len(mint) > 48:
         raise HTTPException(status_code=400, detail="that does not look like a Solana mint address")
     return await gate_replay.replay(bot_state, db, mint)
+
+
+@api.get("/signals")
+async def signals_recent(limit: int = 50):
+    """Signal mode feed: tokens that cleared every gate ("would enter"), newest first."""
+    limit = max(1, min(200, limit))
+    rows = await db.signals.find({}, {"_id": 0}).sort("ts", -1).limit(limit).to_list(limit)
+    return {"signals": rows, "signal_only_mode": bool(getattr(bot_state.config, "signal_only_mode", False)),
+            "total_session": int(bot_state.stats.get("signals", 0))}
 
 
 app.include_router(api)

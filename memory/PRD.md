@@ -2893,3 +2893,10 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   long-press → `copyToClipboard` + toast; stops propagation so row clicks don't fire; `data-testid="copy-<first6>"`). Wired into Scanner candidates (mint, smart-pick wallet),
   Launches feed (mint, creator), Active trades (mint, smart wallet), Trade history (mint), Smart wallets (manual list, learned table, triggers, mints), Smart magnets (creator,
   recurring wallets), Greylist (creator, wallets, mints), Creator verdicts (mint, creator), Token detail header (CA + creator), Gate Replay (mint). Local `short()` helpers removed.
+- 2026-11-11 **Signal mode** (user: shut off trades, publish what would pass, send to Telegram; cut Helius; avoid public-RPC 429s): `signal_only_mode` (+ `signal_cooldown_s`
+  900) — Control → MODE now Signal | Paper | Live (also SIGNAL switch in Advanced; banner "SIGNAL MODE — publishing passes, not buying"). In `bot._enter`, after sizing and every
+  gate, `_emit_signal` records to `db.signals`, broadcasts WS `signal` (toast) and Telegrams "📡 X would enter · band · action · MC · curve % · SOL · age · buyers · growth ·
+  inflow · size · CA · link" (alert kind `signal`, no dedupe gap; one per mint per cooldown). `GET /api/signals` + `SignalsStrip` inside the LIVE Candidates card (copy mint,
+  pump.fun link, opens token dialog). Manual buys still execute. RPC trims: blockhash refresher only when live; discovery skips the per-token RPC curve read when the tape
+  printed within 120 s (`TAPE_FRESH_S`, uses tape vsr/vtr/real SOL); `solana_client._pace(url)` gives api.mainnet-beta its own lane at `SOLANA_PUBLIC_RPC_MAX_RPS` (default 4/s).
+  Preview config left in signal mode. Tests `test_signal_mode.py` (4).

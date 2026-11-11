@@ -69,7 +69,7 @@ TG_API = "https://api.telegram.org/bot{token}/{method}"
 HTTP_TIMEOUT = 10.0
 POLL_S = 30.0
 FEED_DOWN_S = 120.0
-DEDUPE_S = {"trade": 0.0, "kill": 60.0, "sweep": 0.0, "breaker": 300.0, "feed": 600.0, "test": 0.0, "hold": 0.0}
+DEDUPE_S = {"signal": 0.0, "trade": 0.0, "kill": 60.0, "sweep": 0.0, "breaker": 300.0, "feed": 600.0, "test": 0.0, "hold": 0.0}
 
 
 class Alerts:

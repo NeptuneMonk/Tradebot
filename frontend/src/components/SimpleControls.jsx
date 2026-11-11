@@ -223,9 +223,10 @@ function SimpleControls({ config, status, wallet, pl, onPatch, onStart, onStop }
   // the server floors max_trade_usd at min_trade_usd — bring the floor down with the ceiling so the cap really applies
   const capPatch = (n) => ({ max_trade_usd: n, rh_max_trade_usd: n, ...(Number(config.min_trade_usd) > n ? { min_trade_usd: n } : {}) });
   const pickMode = (m) => {
-    if (m === "paper") return patch({ live_trading: false }, "Paper mode");
+    if (m === "signal") return patch({ live_trading: false, signal_only_mode: true }, "SIGNAL mode — gates run, nothing is bought; passes go to the Signals strip + Telegram");
+    if (m === "paper") return patch({ live_trading: false, signal_only_mode: false }, "Paper mode");
     if (arm !== "live") { setArm("live"); toast.message("Click LIVE again to arm real-money trading"); return; }
-    setArm(null); patch({ live_trading: true }, "LIVE armed — real SOL at risk");
+    setArm(null); patch({ live_trading: true, signal_only_mode: false }, "LIVE armed — real SOL at risk");
   };
   const applyPreset = () => {
     if (arm !== "preset") { setArm("preset"); toast.message("Click again to apply Safe paper (settings only — wallets and open positions untouched)"); return; }
@@ -260,7 +261,7 @@ function SimpleControls({ config, status, wallet, pl, onPatch, onStart, onStop }
       <div className="flex flex-wrap items-end gap-6">
         <div className="flex flex-col gap-1">
           <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">Mode</span>
-          <Seg options={[["paper", "Paper"], ["live", arm === "live" ? "Arm live?" : "Live"]]} value={config.live_trading ? "live" : "paper"} onPick={pickMode} testid="simple-mode" danger="live" />
+          <Seg options={[["signal", "Signal"], ["paper", "Paper"], ["live", arm === "live" ? "Arm live?" : "Live"]]} value={config.live_trading ? "live" : (config.signal_only_mode ? "signal" : "paper")} onPick={pickMode} testid="simple-mode" danger="live" />
         </div>
         <Money label="Max trade" value={config.max_trade_usd} onCommit={(n) => patch(capPatch(n), (saved) => `Max trade $${saved.max_trade_usd ?? n}`)} testid="simple-max-trade"
           hint="Per-trade cap in USD (Solana and Robinhood). R-sizing still decides the actual size underneath — this is the ceiling." />

@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import { ChainBadge } from "../ChainBadge";
 import { RepBadge } from "../RepBadge";
 import { TokenDetailDialog } from "../TokenDetailDialog";
+import SignalsStrip from "../SignalsStrip";
 import { api, explainApiError } from "@/lib/api";
 import { fillTone, projectedFillTitle } from "@/lib/fillCost";
 import { toast } from "sonner";
@@ -149,6 +150,7 @@ function CompactCandidates({ candidates, limit = 10, scannerEnabled = true, onEn
             className="px-1.5 py-0.5 border border-amber-600 text-amber-100 hover:bg-amber-800/50 transition-colors duration-100 uppercase tracking-[0.15em]">turn on</button>
         </div>
       )}
+      <SignalsStrip onOpen={setDetail} />
       <div className="flex-1 overflow-auto max-h-[280px]">
         {shown.length === 0 ? <div className="py-8 text-center text-[10px] uppercase tracking-[0.2em] text-neutral-600">scanner is warming up</div> : (
           <table className="w-full text-xs">

@@ -38,6 +38,7 @@ logger = logging.getLogger("discovery")
 
 PUMPFUN_API = "https://frontend-api-v3.pump.fun"
 HOLDERS_REFRESH_S = 120      # Helius DAS getTokenAccounts per graduated token (≤ 3 pages of 1000)
+TAPE_FRESH_S = 120            # a curve bucket printed on the tape this recently → skip its RPC curve read
 DISCOVERY_INTERVAL_S = 60     # backstop only: the Helius tape (stream_floor.py) seeds live; this catches pre-start tokens
 REFRESH_INTERVAL_S = 60      # how often to re-poll MC for already-tracked discovered tokens
 COLD_POOL_REFRESH_S = 300    # graduated pools far below the seasoned MC gate: reserves re-read every 5 min, not every cycle
@@ -258,7 +259,14 @@ class PumpfunDiscovery:
             # Pump.fun's per-mint endpoint is gone (404 / Cloudflare). Graduated buckets live off the batched pool
             # read below; near-graduation CURVE buckets read the curve on-chain for the authoritative `complete`.
             c: dict = {}
-            if bucket.get("protocol") != "pumpswap" and helius_ok_global:
+            tape_fresh = now - float(bucket.get("last_trade_ts") or 0) < TAPE_FRESH_S and bucket.get("last_vsr_lamports")
+            if bucket.get("protocol") != "pumpswap" and tape_fresh:
+                # the tape already carries vsr / real SOL on every print — no RPC read needed (RPC budget, 2026-10-20)
+                vsr, vtr = float(bucket.get("last_vsr_lamports") or 0), float(bucket.get("last_vtr") or 0)
+                c = {"complete": bool(bucket.get("_tape_complete")), "virtual_sol_reserves": vsr, "virtual_token_reserves": vtr or None,
+                     "real_sol_reserves": bucket.get("last_real_sol_lamports"),
+                     "usd_market_cap": (vsr / vtr * 1e6 * sol_usd) if vtr and sol_usd > 0 else float(bucket.get("usd_market_cap") or 0.0)}
+            elif bucket.get("protocol") != "pumpswap" and helius_ok_global:
                 try:
                     cs = await pumpfun.fetch_bonding_curve_state(mint)
                     if cs:

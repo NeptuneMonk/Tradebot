@@ -158,6 +158,7 @@ export const api = {
   restoreBookExits: () => client.post("/book_exits/restore_defaults").then(r => r.data),
   configWarnings: () => client.get("/config/warnings").then(r => r.data),
   gateReplay: (mint) => client.get(`/replay/${encodeURIComponent(mint)}`).then(r => r.data),
+  signals: (limit = 50) => client.get(`/signals?limit=${limit}`).then(r => r.data),
   scorecard: () => client.get("/scorecard").then(r => r.data),
   scorecardCell: (cell, disabled) => client.post("/scorecard/cell", { cell, disabled }).then(r => r.data),
   inventory: () => client.get("/inventory").then(r => r.data),

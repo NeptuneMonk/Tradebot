@@ -13,7 +13,7 @@ export default function StatusBanner({ status, onResetKill }) {
     bg = "bg-emerald-950 border-emerald-800";
     txt = "text-emerald-400";
     icon = <CheckCircle2 className="w-4 h-4" />;
-    label = status.live_trading ? "BOT RUNNING · LIVE TRADING" : "BOT RUNNING · PAPER MODE";
+    label = status.live_trading ? "BOT RUNNING · LIVE TRADING" : status.signal_only_mode ? "BOT RUNNING · SIGNAL MODE — publishing passes, not buying" : "BOT RUNNING · PAPER MODE";
   } else {
     bg = "bg-amber-950 border-amber-800";
     txt = "text-amber-400";

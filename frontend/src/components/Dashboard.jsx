@@ -345,6 +345,9 @@ export default function Dashboard() {
       case "window_feed":
         setWindowFeed(data);
         break;
+      case "signal":
+        toast.message(`📡 ${data.symbol || data.mint?.slice(0, 8)} would enter · ${data.band} · MC $${Number(data.mc_usd || 0).toLocaleString()}`, { duration: 8000 });
+        break;
       case "dev_watch_fired":
         toast.message(`CRAZY dev · ${data.symbol || data.mint?.slice(0, 8)} bought $${Number(data.stake_usd || 0).toFixed(2)} — long-term hold, exit by hand`, { duration: 12000 });
         break;

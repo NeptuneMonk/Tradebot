@@ -19,6 +19,10 @@ class BotConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = False
     live_trading: bool = False
+    # SIGNAL MODE: run every gate, but instead of buying publish a "would enter" signal (LIVE strip + Telegram). No fills,
+    # no positions, no monitors — the bot becomes a launch scanner. One signal per mint per signal_cooldown_s.
+    signal_only_mode: bool = False
+    signal_cooldown_s: int = 900
     # Operator book switches (Phase 2 simple controls, 2026-10-04). Off = no new entries / promotions into that book;
     # open positions keep running their exits. RH uses `rh_paper_enabled` / `rh_live_trading`.
     book_scalp_enabled: bool = True
@@ -912,6 +916,7 @@ FEED_KEYS = {"helius_tracker_enabled", "rh_feed_enabled", "rh_paper_enabled", "r
 class BotStatus(BaseModel):
     enabled: bool                       # master run — entries allowed
     live_trading: bool
+    signal_only_mode: bool = False
     kill_switch_tripped: bool
     kill_switch_reason: Optional[str] = None
     pnl_stop: Optional[dict] = None       # {armed, limit_usd, pnl_usd, realized_usd, open_usd, since_ts, mode}

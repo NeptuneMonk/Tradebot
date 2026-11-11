@@ -66,7 +66,7 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
   // Only the keys the user actually changed go over the wire. Sending the whole form snapshot re-wrote
   // stale values (a feed toggle flipped by another click / the Doctor) — that's why feeds "switched themselves off".
   // Operator switches only ever travel through their own toggle (flipKey) — never inside a form save.
-  const SWITCH_KEYS = new Set(["enabled", "helius_tracker_enabled", "rh_feed_enabled", "rh_paper_enabled", "rh_live_trading", "live_trading", "scanner_enabled", "scanner_seasoned_entries_enabled", "trail_ratchet_enabled", "ladder_enabled"]);
+  const SWITCH_KEYS = new Set(["enabled", "signal_only_mode", "helius_tracker_enabled", "rh_feed_enabled", "rh_paper_enabled", "rh_live_trading", "live_trading", "scanner_enabled", "scanner_seasoned_entries_enabled", "trail_ratchet_enabled", "ladder_enabled"]);
   const diff = (a, b) => Object.fromEntries(Object.entries(a || {}).filter(([k, v]) => !SWITCH_KEYS.has(k) && JSON.stringify(v) !== JSON.stringify((b || {})[k])));
   const save = async () => {
     try {
@@ -107,6 +107,18 @@ function BotControlCard({ status, config, onUpdate, onStart, onStop, onConfigLoa
           Bot Control
         </div>
         <div className="flex items-center gap-2 text-[10px] font-mono uppercase">
+          <span className={local.signal_only_mode ? "text-sky-300" : "text-neutral-500"}>SIGNAL</span>
+          <Switch
+            data-testid="signal-mode-switch"
+            checked={!!local.signal_only_mode}
+            onCheckedChange={(v) => flipKey("signal_only_mode", v,
+              () => toast[v ? "message" : "success"](v ? "SIGNAL MODE ON — gates run, nothing is bought; passes go to the Signals strip + Telegram" : "Signal mode OFF — entries resume"),
+              (e) => e?.response?.data?.detail)}
+          />
+          <HelpHint label="SIGNAL toggle" side="left">
+            <span className="block"><span className="text-sky-300 font-semibold">SIGNAL</span> = every gate still runs, but a token that clears them is <b>published</b> (Signals strip on LIVE + Telegram) instead of bought. No fills, no positions, no monitors — a launch scanner. Manual buys still work.</span>
+          </HelpHint>
+          <span className="text-neutral-800">|</span>
           <span className={local.live_trading ? "text-red-400" : "text-neutral-500"}>LIVE</span>
           <Switch
             data-testid="live-trading-switch"
