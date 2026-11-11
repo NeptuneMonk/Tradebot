@@ -1,0 +1,37 @@
+{
+  "summary": "Iter43: tested Signal-Only Mode on backend and frontend. Ruff (F821, F811, E9) is clean on bot.py, server.py and models.py. Note: ruff no longer accepts the E999 rule, so E9 was used instead. tests/test_signal_mode.py passes 4/4. New API and unit test /app/test_reports/test_signal_mode_api.py passes 9/9. It covers: config fields, the toggle persisting to /bot/config, /bot/status and /signals, a partial PUT not overwriting other fields, the /signals shape and limit clamp, 401/403 without auth, a static check that manual and dev_watch entries skip the signal path in _enter_impl and that _attempt_reentry_impl has no signal code, and cooldown=0 falling back to 900. Live signals ARE firing in preview (momentum_new) and the signals-strip shows them. One bug found: mc_usd is always $0 in the DB, the UI strip and the Telegram text (wrong unit, see RCA). Full suite: 1023 passed, 17 failed, 73 skipped. None of the 17 failures come from the signal changes. 7 of them also fail at the pre-signal commit 06b3d62 (dev_watch x2, inventory_halt, profitability_refactor x3, runner_book). The others come from tests polluting each other's state: preview_idle_standby passes when run alone, and ops_fixes also fails at the old commit when run together with the others. Frontend: the StatusBanner shows 'BOT RUNNING · SIGNAL MODE — PUBLISHING PASSES, NOT BUYING'. [data-testid=signals-strip] renders the rows. Control → Advanced → [data-testid=signal-mode-switch] toggles true→false→true, checked via GET /api/bot/config, and a 'Signal mode OFF' toast appears. The SimpleControls Seg simple-mode-paper / simple-mode-signal also toggles correctly. No paper trades opened during the brief OFF window.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "Bot._emit_signal (bot.py ~2392) → db.signals / WS 'signal' / Telegram", "issue": "mc_usd is always 0. price_sol is entry_price_sol = sol_in_lamports / tokens_out / 1e9, which is SOL per RAW token unit (pump.fun tokens have 6 decimals). The code computes mc = price_sol * 1e9 * sol_price, which gives about $0.007, so round() makes it 0. The correct formula is price_sol * 1e15 * sol_price (1e9 supply × 1e6 decimals). Live DB rows prove it: shalom price_sol 4.94e-14 gives mc_usd 0 (correct is about 49 SOL, roughly $7k). Every Telegram signal says 'MC $0'. The unit test hides the bug because it passes price_sol=2.5e-7, which is a per-whole-token price.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "Bot._emit_signal cooldown", "issue": "The cooldown is stored on the scanner bucket (bucket['_signal_ts']), not per mint. If a bucket is evicted and re-tracked inside signal_cooldown_s, the same mint is signalled again. Also, `or 900` makes signal_cooldown_s=0 mean 900, so the cooldown can never be turned off. PUT /bot/config does not clamp signal_cooldown_s, so negative or huge values are accepted."},
+      {"endpoint": "db.signals", "issue": "No index or TTL on signals. GET /api/signals sorts by ts, so it needs an index on ts. The collection grows without limit."},
+      {"endpoint": "alerts.send('signal')", "issue": "DEDUPE_S['signal']=0.0 and there is no burst limit. Several signals in a few seconds (seen live: 3 within 15 s) could hit Telegram's per-chat 429 limit."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "SignalsStrip", "issue": "Every row shows 'MC $0'. This is a backend unit bug, see the critical issue.", "selector": "[data-testid=signals-strip]", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/test_reports/test_signal_mode_api.py", "/app/backend/tests/test_signal_mode.py", "/app/test_reports/pytest/signal_mode_api.xml", "/app/test_reports/pytest/full_suite_iter43.xml"],
+  "action_items": [
+    "Fix the MC calculation in _emit_signal: mc = price_sol * 1e15 * sol_price (or reuse bucket['usd_market_cap'] / the tape vsr/vtr*1e6*sol_usd formula). Change test_signal_mode.py to use a raw-unit price_sol (for example 2.5e-16), so the test catches this bug.",
+    "Optional: key the signal cooldown by mint (a dict on BotState) instead of the bucket; clamp signal_cooldown_s in PUT /bot/config; add a db.signals index on ts with an optional TTL; add a small Telegram burst limiter for 'signal'.",
+    "Pre-existing test drift, not from signal mode: tests that use stub hubs lack idle_s; profitability_refactor and runner_book tests use mints without the 'pump' suffix, so they now get 'not-pump-mint' skips; dev_watch tests do not monkeypatch reputation.configured."
+  ],
+  "critical_code_review_comments": [
+    "The interception in _enter_impl is placed correctly: after every gate, the plan and the quote, and before the paper/live fill. The `action not in MANUAL_ENTRY_ACTIONS` guard is in place. _attempt_reentry_impl has no signal code. However, in signal mode re-entries are not intercepted. That is harmless only because no positions exist to re-enter.",
+    "bot.py is far over 700 lines (about 4.5k+). The signal code adds more to an already huge file. Consider a signals.py module."
+  ],
+  "updated_files": ["/app/test_reports/test_signal_mode_api.py (new; under test_reports to avoid uvicorn reload)"],
+  "success_rate": {"backend": "95% (signal feature: 13/13 tests pass, but there is one data-correctness bug, mc_usd=0; full suite has 17 failures that are not regressions)", "frontend": "100% of the requested smoke checks"},
+  "seed_data_creation": "None. Used the existing token from /app/memory/.tok. The test temporarily changed signal_cooldown_s (600) and signal_only_mode, and set both back to the values found (true / 900).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Final state: enabled=true (re-started via POST /api/bot/start after the backend reloaded around 03:47 during the full pytest run), signal_only_mode=true, signal_cooldown_s=900, live_trading=false. The signal switch is under Control → [data-testid=section-advanced-toggle] → [data-testid=signal-mode-switch]. The Seg testids are simple-mode-signal / simple-mode-paper / simple-mode-live (never click live). urllib from the browser tool gets 403; use page.request with a Bearer header. pytest-timeout is not installed, so do not pass --timeout. Run the full suite with `cd /app/backend && python -m pytest tests -q` (about 2.5 min); 17 failures are known and pre-existing.",
+  "rca of the issue": "MC $0: _enter_impl computes entry_price_sol = sol_in_lamports / tokens_out / LAMPORTS_PER_SOL. tokens_out is in raw units (6 decimals), so the result is SOL per raw unit (about 5e-14). _emit_signal multiplies by 1e9 (supply in whole tokens) instead of 1e15 (supply in raw units). Reproduce: mongosh pump_bot_db: db.signals.find({}, {price_sol:1, mc_usd:1}); every mc_usd is 0. Fix: multiply by 1e15, or fall back to the bucket's MC."
+}

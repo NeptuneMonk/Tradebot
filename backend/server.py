@@ -246,7 +246,7 @@ async def ensure_indexes():
     except Exception as e:
         logger.error(f"uniq_active_mint index not created (duplicate active rows present? sweep first): {e}")
     for coll, key, ttl in (("entry_locks", "ts", 120), ("pod_commands", "created_at", None), ("ws_events", "seq", None), ("pods", "seen_at", None),
-                           ("launches", "in_band", None), ("launches", "entered", None)):
+                           ("launches", "in_band", None), ("launches", "entered", None), ("signals", "ts", None)):
         try:
             if ttl:
                 await db[coll].create_index([(key, 1)], expireAfterSeconds=ttl)

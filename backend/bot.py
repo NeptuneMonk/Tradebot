@@ -2383,13 +2383,15 @@ class BotState:
         """Signal mode: record + broadcast + Telegram a 'would enter' for a token that cleared every gate.
         One signal per mint per `signal_cooldown_s` (default 15 min) so a token that keeps passing is not re-sent each tick."""
         now = time.time()
-        cool = float(getattr(self.config, "signal_cooldown_s", 900) or 900)
+        _cs = getattr(self.config, "signal_cooldown_s", 900)
+        cool = max(0.0, float(900 if _cs is None else _cs))   # 0 = re-signal every pass
         last = float(bucket.get("_signal_ts") or 0.0)
         if now - last < cool:
             return
         bucket["_signal_ts"] = now
         real_sol = float((state or {}).get("real_sol_reserves") or (state or {}).get("real_quote_reserves") or 0) / LAMPORTS_PER_SOL
-        mc = price_sol * 1e9 * sol_price if price_sol and sol_price else float(bucket.get("usd_market_cap") or 0)
+        # price_sol is SOL per RAW unit (6-dec tokens, 1e9 supply) → ×1e15; prefer the scanner's live MC when it has one
+        mc = float(bucket.get("usd_market_cap") or 0) or (price_sol * 1e15 * sol_price if price_sol and sol_price else 0.0)
         age_s = now - float(bucket.get("start") or now)
         m = (bucket.get("_scanner_metrics") or {})
         sig = {"id": str(uuid.uuid4()), "ts": now, "mint": launch.mint, "symbol": launch.symbol, "name": getattr(launch, "name", None),

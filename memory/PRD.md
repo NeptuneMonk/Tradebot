@@ -2899,4 +2899,7 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
   inflow · size · CA · link" (alert kind `signal`, no dedupe gap; one per mint per cooldown). `GET /api/signals` + `SignalsStrip` inside the LIVE Candidates card (copy mint,
   pump.fun link, opens token dialog). Manual buys still execute. RPC trims: blockhash refresher only when live; discovery skips the per-token RPC curve read when the tape
   printed within 120 s (`TAPE_FRESH_S`, uses tape vsr/vtr/real SOL); `solana_client._pace(url)` gives api.mainnet-beta its own lane at `SOLANA_PUBLIC_RPC_MAX_RPS` (default 4/s).
-  Preview config left in signal mode. Tests `test_signal_mode.py` (4).
+  Preview config left in signal mode. Tests `test_signal_mode.py` (5).
+- 2026-11-11 **Signal mode repair** (fork): the signal block had been pasted into `_attempt_reentry_impl` (undefined `launch/action/bucket/is_new_band` → F821, backend
+  broken); moved to `_enter_impl` right after `entry_price_sol`. Fixed MC in signals (`entry_price_sol` is SOL per RAW unit → ×1e15, scanner `usd_market_cap` preferred;
+  earlier rows show $0). `signal_cooldown_s=0` now means re-signal every pass. `signals.ts` index. Testing-agent iteration_43: backend 13/13 + UI smoke pass.

@@ -62,9 +62,10 @@ def test_signal_is_recorded_broadcast_and_sent(monkeypatch):
               "_scanner_metrics": {"growth_pct_rolling": 12.5, "recent_inflow_sol": 1.4}}
     plan = {"size_usd": 10.0, "trade_fields": {"expected_cost_pct": 6.2}}
     state = {"real_sol_reserves": 60 * 10**9}
-    asyncio.run(st._emit_signal(_L(), "scanner_momentum", "pumpfun", state, bucket, plan, True, 2.5e-7, 100.0))
+    # 5e-14 SOL per RAW unit (6-dec token, 1e9 supply) @ $100 SOL → $5,000 MC
+    asyncio.run(st._emit_signal(_L(), "scanner_momentum", "pumpfun", state, bucket, plan, True, 5e-14, 100.0))
     assert len(st.db.rows) == 1 and st.db.rows[0]["mint"] == _L.mint and st.db.rows[0]["band"] == "new"
-    assert st.db.rows[0]["mc_usd"] == 25000 and st.db.rows[0]["depth_sol"] == 60.0 and st.db.rows[0]["buyers"] == 3
+    assert st.db.rows[0]["mc_usd"] == 5000 and st.db.rows[0]["depth_sol"] == 60.0 and st.db.rows[0]["buyers"] == 3
     assert sent and sent[0][0] == "signal"
     assert st.alerts.sent and st.alerts.sent[0][0] == "signal" and "would enter" in st.alerts.sent[0][1] and _L.mint in st.alerts.sent[0][1]
     assert st.stats["signals"] == 1
@@ -82,6 +83,17 @@ def test_signal_cooldown_per_mint(monkeypatch):
     bucket["_signal_ts"] = time.time() - 1000       # cooldown elapsed → fires again
     asyncio.run(st._emit_signal(_L(), "scanner_momentum", "pumpfun", {}, bucket, {"size_usd": 5}, True, 1e-7, 100.0))
     assert len(st.db.rows) == 2
+
+
+def test_signal_cooldown_zero_fires_every_pass(monkeypatch):
+    async def fake_broadcast(ev, data):
+        return None
+    monkeypatch.setattr(botmod.hub, "broadcast", fake_broadcast)
+    st = _state(signal_cooldown_s=0)
+    bucket = {"start": time.time() - 600, "buyers": set(), "usd_market_cap": 12345.0}
+    for _ in range(3):
+        asyncio.run(st._emit_signal(_L(), "scanner_momentum", "pumpfun", {}, bucket, {"size_usd": 5}, True, 1e-7, 100.0))
+    assert len(st.db.rows) == 3 and st.db.rows[0]["mc_usd"] == 12345   # scanner MC wins over the price-derived one
 
 
 def test_signal_alert_kind_has_no_dedupe_gap():
