@@ -412,6 +412,18 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [wsConnected]);
 
+  // Ticker idle sign: the tape only carries entry-gate refusals, so while nothing reaches those gates say what the
+  // scanner is actually doing instead of a bare "waiting for flow".
+  const scanIdleLabel = useMemo(() => {
+    const rows = scanner || [];
+    if (!rows.length) return "WAITING FOR FLOW - 0 TRACKED";
+    const passing = rows.filter((x) => !x.gate_reason && !x.blocked).length;
+    const counts = {};
+    rows.forEach((x) => { const r = (x.gate_reason || x.blocked || "pending").split(":")[0]; counts[r] = (counts[r] || 0) + 1; });
+    const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([r, k]) => `${r} ${k}`).join(" - ");
+    return `SCANNING ${rows.length} - ${passing ? `${passing} PASSING` : "NONE PASSING"} - ${top}`;
+  }, [scanner]);
+
   // Bot Control only cares about 4 status fields — hand it a slice so the 3 s status tick doesn't re-render
   // the 1100-line card (and its inputs) every time. Callbacks are stable for the same reason.
   const controlStatus = useMemo(() => status && ({
@@ -720,7 +732,7 @@ export default function Dashboard() {
           // Preview-only. Real funds at risk. Never deploy this outside Emergent preview.
         </footer>
       </main>
-      <SkipTicker items={skipFeed.items} count10m={skipFeed.count10m} live={wsConnected && !!status?.enabled} />
+      <SkipTicker items={skipFeed.items} count10m={skipFeed.count10m} live={wsConnected && !!status?.enabled} idleLabel={scanIdleLabel} />
     </div>
     </TooltipProvider>
   );

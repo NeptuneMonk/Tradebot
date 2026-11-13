@@ -26,7 +26,7 @@ function Sign({ it, onOpen, register }) {
 }
 
 /** One-way conveyor: every skip enters from the right once, crosses, leaves on the left and never comes back. */
-function SkipTicker({ items, count10m, live }) {
+function SkipTicker({ items, count10m, live, idleLabel }) {
   const [detail, setDetail] = useState(null);
   const [active, setActive] = useState([]);           // signs currently on the tape (render order = spawn order)
   const seen = useRef(new Set());
@@ -91,7 +91,7 @@ function SkipTicker({ items, count10m, live }) {
         <span className="text-[9px] font-mono text-neutral-500 uppercase tracking-[0.15em]">skips / 10m</span>
       </div>
       <div ref={trackRef} className="flex-1 relative overflow-hidden led-tape" data-testid="skip-ticker-track">
-        {idle && <div className="absolute inset-0 flex items-center px-4 led led-idle" data-testid="skip-ticker-idle">{live ? "WAITING FOR FLOW" : "BOT STOPPED"}</div>}
+        {idle && <div className="absolute inset-0 flex items-center px-4 led led-idle truncate" data-testid="skip-ticker-idle" title="the tape shows entry-gate refusals; this sign summarises the scanner while nothing reaches those gates">{live ? led(idleLabel || "WAITING FOR FLOW") : "BOT STOPPED"}</div>}
         {active.map((it) => <Sign key={it.key} it={it} onOpen={setDetail} register={register} />)}
       </div>
       <TokenDetailDialog token={detail} onClose={() => setDetail(null)} />
