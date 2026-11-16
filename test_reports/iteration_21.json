@@ -18,7 +18,7 @@
     "/app/backend/tests/test_refactor_api.py (new — API-level integration tests)"
   ],
   "success_rate": {"backend": "100%", "frontend": "100%"},
-  "test_credentials": "Bearer token from /app/memory/.tok (email nbobby79@gmail.com, single-user whitelist)",
+  "test_credentials": "Bearer token from /app/memory/.tok (email <owner-email>, single-user whitelist)",
   "seed_data_creation": "None — used existing paper trades and live config; all mutations (scalp target_r, hunt exits, max_concurrent_positions, scorecard cell disable) were reverted after each test.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

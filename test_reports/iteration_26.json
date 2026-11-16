@@ -19,7 +19,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "n/a (skipped)", "frontend": "100% of listed acceptance criteria pass"},
-  "test_credentials": "cookie session_token from /app/memory/.tok (test_session_1789699215762) still valid",
+  "test_credentials": "cookie session_token from /app/memory/.tok (<session-token>) still valid",
   "seed_data_creation": "none",
   "retest_needed": false,
   "should_main_agent_self_test": true,

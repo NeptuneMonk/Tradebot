@@ -53,6 +53,12 @@ function WalletCard({ wallet }) {
       </div>
 
       <div className="space-y-1">
+        {wallet?.ephemeral && (
+          <div className="border border-sky-900/60 bg-sky-950/20 text-sky-200 text-[11px] font-mono px-2 py-1.5 leading-snug" data-testid="wallet-keyless-note">
+            <span className="uppercase tracking-[0.15em] text-sky-400 mr-1">key-less</span>
+            no private key is stored on this server — this address is a throwaway that changes on restart. Paper and Signal modes work as normal; set <code>SOLANA_PRIVATE_KEY</code> in the service environment to trade live.
+          </div>
+        )}
         {wallet && wallet.integrity_ok === false && (
           <div className="border border-rose-700 bg-rose-950/50 text-rose-200 text-[11px] font-mono px-2 py-1.5 leading-snug" data-testid="wallet-integrity-alert">
             <span className="uppercase tracking-[0.15em] text-rose-400 mr-1">wallet compromised · {wallet.integrity_kind}</span>
@@ -68,7 +74,7 @@ function WalletCard({ wallet }) {
       </div>
 
       <div className="border-t border-neutral-800 pt-3">
-        <div className="text-[10px] uppercase tracking-[0.2em] text-neutral-500 mb-1">Deposit address</div>
+        <div className={`text-[10px] uppercase tracking-[0.2em] mb-1 ${wallet?.ephemeral ? "text-amber-400" : "text-neutral-500"}`} data-testid="wallet-address-label">{wallet?.ephemeral ? "Throwaway address — do not deposit" : "Deposit address"}</div>
         <div className="flex items-center gap-2">
           <code
             className="text-[11px] font-mono text-neutral-300 break-all flex-1 select-all cursor-text"

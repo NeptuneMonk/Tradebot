@@ -38,6 +38,15 @@ class User(BaseModel):
     email: str
     name: str
     picture: Optional[str] = ""
+    auth_disabled: bool = False
+
+
+# AUTH_DISABLED=true → open mode: no Google login, every request runs as this local operator (for shared / local runs).
+LOCAL_USER = User(user_id="local", email="", name="operator (auth disabled)", picture="", auth_disabled=True)
+
+
+def auth_disabled() -> bool:
+    return os.environ.get("AUTH_DISABLED", "").strip().lower() in ("1", "true", "yes")
 
 
 class SessionResponse(BaseModel):
@@ -165,6 +174,8 @@ async def get_current_user(
     """Validate session via cookie first, then Bearer header.
     Sliding expiry: each successful call extends `expires_at` by SESSION_TTL,
     capped at SESSION_MAX_LIFETIME from session creation."""
+    if auth_disabled():
+        return LOCAL_USER
     nonce = request.headers.get("x-pod-exec")
     if nonce:
         user_id = consume_exec_nonce(nonce)
@@ -205,6 +216,8 @@ async def get_current_user(
 
 async def validate_token_str(token: str) -> Optional[User]:
     """Used by WebSocket handler (cookie/bearer not via Depends)."""
+    if auth_disabled():
+        return LOCAL_USER
     if not token:
         return None
     db = get_db()

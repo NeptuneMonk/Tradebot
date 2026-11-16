@@ -13,7 +13,7 @@
   ],
   "updated_files": ["/app/backend/tests/test_tracker_scope_window_feed.py"],
   "success_rate": {"backend": "100%", "frontend": "100%"},
-  "test_credentials": "Session token seeded via conftest._seed_session_token (pytest_session_1791352450369, user nbobby79@gmail.com, 1h TTL). Cookie session_token on micro-stake-trader.preview.emergentagent.com; or Authorization: Bearer header.",
+  "test_credentials": "Session token seeded via conftest._seed_session_token (<session-token>, user <owner-email>, 1h TTL). Cookie session_token on micro-stake-trader.preview.emergentagent.com; or Authorization: Bearer header.",
   "seed_data_creation": "None (real preview feed used).",
   "retest_needed": false,
   "main_agent_can_self_test": true,

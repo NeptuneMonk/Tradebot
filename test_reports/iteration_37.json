@@ -23,7 +23,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "100%", "frontend": "95%"},
-  "test_credentials": "Bearer token from /app/memory/.tok (test_session_1791495727379); ALLOWED_EMAIL=nbobby79@gmail.com. Still valid at test time.",
+  "test_credentials": "Bearer token from /app/memory/.tok (<session-token>); ALLOWED_EMAIL=<owner-email>. Still valid at test time.",
   "seed_data_creation": "Inserted trades._id='TESTFLUSH-1791495877048' (cohort-unwind flush, hold_broke_floor=true, mint TESTFLUSHMINT1111...) to exercise the FLUSH·FLOOR badge and TokenDetailDialog record-flush line; DELETED after the UI assertions. Also PUT config toggles (cohort share 0.6→0.7→0.6; dip-addon 0→0.5→0) were fully restored to defaults — final config: scope=all, cohort_enabled=true, share=0.6, window=45, dip_enabled=false, dip_mult=1.0, reentry_enabled=true, wait=5, chase=50.",
   "retest_needed": false,
   "should_main_agent_self_test": true,

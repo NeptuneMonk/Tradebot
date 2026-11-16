@@ -308,6 +308,10 @@ async def root():
 async def wallet_info():
     import wallet_integrity
     pubkey = wallet.get_pubkey_str()
+    if wallet.is_ephemeral():
+        # key-less run: a fresh in-memory key has nothing on chain — skip the RPC reads
+        return WalletInfo(public_key=pubkey, sol_balance=0.0, usd_balance=0.0, sol_price_usd=await get_sol_usd_price(),
+                          key_source="ephemeral", ephemeral=True)
     sol = await get_sol_balance(pubkey)
     price = await get_sol_usd_price()
     integ = await wallet_integrity.check(pubkey)
@@ -317,6 +321,7 @@ async def wallet_info():
         usd_balance=sol * price,
         sol_price_usd=price,
         integrity_ok=bool(integ["ok"]), integrity_kind=integ.get("kind"), integrity_reason=integ.get("reason"),
+        key_source=wallet.key_source(),
     )
 
 
@@ -382,12 +387,12 @@ async def wallet_rotate(req: _RotateReq):
                 swept.update(lamports=amount, signature=sig)
         except Exception as e:
             swept["error"] = str(e)
-    logger.critical(f"WALLET ROTATED: {old_pk} → {get_pubkey_str()} (retired key file {retired.name}); swept {swept['lamports']} lamports")
+    logger.critical(f"WALLET ROTATED: {old_pk} → {get_pubkey_str()} (retired key file {retired.name if retired else 'none — ephemeral key'}); swept {swept['lamports']} lamports")
     try:
         await hub.broadcast("wallet", (await wallet_info()).model_dump())
     except Exception:
         pass
-    return {"ok": True, "old_public_key": old_pk, "new_public_key": get_pubkey_str(), "retired_key_file": str(retired), "swept": swept,
+    return {"ok": True, "old_public_key": old_pk, "new_public_key": get_pubkey_str(), "retired_key_file": str(retired) if retired else None, "swept": swept,
             "next": "fund the new address; token accounts left on the retired key can be recovered with that key file; "
                     "set SOLANA_PRIVATE_KEY in the Published service env so redeploys keep the same wallet"}
 
@@ -3109,6 +3114,7 @@ async def rh_wallet_info():
     from rh_discovery import get_eth_usd_price
     cfg = bot_state.config
     out = {"address": rh_wallet.address(), "chain_id": rh_wallet.EXPECTED_CHAIN_ID, "rpc_ok": True,
+           "key_source": rh_wallet.key_source(), "ephemeral": rh_wallet.is_ephemeral(),
            "eth": None, "usd": None, "eth_usd": None, "rh_live_trading": bool(cfg.rh_live_trading),
            "live_kill_tripped": bool(bot_state.rh_paper.live_kill_tripped),
            "last_live_error": bot_state.rh_paper.last_live_error or None,
@@ -3116,7 +3122,7 @@ async def rh_wallet_info():
            "explorer": f"https://robinhoodchain.blockscout.com/address/{rh_wallet.address()}",
            "fund_hint": "Send ETH on Robinhood Chain (Arbitrum Orbit, chain id 4663) to this address — bridge ETH from Ethereum/Arbitrum with the canonical Arbitrum bridge (see docs.robinhood.com/chain/connecting)."}
     try:
-        wei = await rh_wallet.balance_wei()
+        wei = 0 if out["ephemeral"] else await rh_wallet.balance_wei()     # key-less: nothing on chain, skip the RPC read
         px = await get_eth_usd_price()
         out.update({"eth": wei / 1e18, "eth_usd": px, "usd": wei / 1e18 * px})
     except Exception as e:
@@ -3128,7 +3134,7 @@ async def rh_wallet_info():
     out["stake_usd"] = cfg.rh_max_trade_usd
     out["fee_floor"] = bot_state.bankroll.rh_fee_floor or None
     out["erc20_live"] = bool(getattr(cfg, "rh_live_erc20_quotes", False))
-    out["quote_balances"] = await _rh_quote_balances()
+    out["quote_balances"] = [] if out["ephemeral"] else await _rh_quote_balances()
     return out
 
 

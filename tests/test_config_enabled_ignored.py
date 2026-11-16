@@ -4,7 +4,7 @@ import time
 import requests
 
 BASE = "https://micro-stake-trader.preview.emergentagent.com"
-TOKEN = "test_session_1788909052723"
+TOKEN = "<session-token>"
 H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 
 

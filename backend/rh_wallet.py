@@ -45,6 +45,11 @@ def _password() -> str:
 CREATED_THIS_BOOT = False  # a fresh container (publish) generates a NEW unfunded wallet — readiness surfaces it
 
 
+def persist_allowed() -> bool:
+    """Keystore files are opt-in (WALLET_PERSIST_KEYFILE=true). Default: no private key is ever written to disk."""
+    return os.environ.get("WALLET_PERSIST_KEYFILE", "").strip().lower() in ("1", "true", "yes")
+
+
 def _load_or_create() -> Account:
     global CREATED_THIS_BOOT
     env_key = os.environ.get("RH_WALLET_PRIVATE_KEY", "").strip()
@@ -53,15 +58,15 @@ def _load_or_create() -> Account:
     if WALLET_PATH.exists():
         keyfile = json.loads(WALLET_PATH.read_text())
         return Account.from_key(Account.decrypt(keyfile, _password()))
-    acct = Account.create()
-    _persist(acct)
+    acct = Account.create()                  # key-less mode: in-memory throwaway, never written to disk
     CREATED_THIS_BOOT = True
-    logger.error(f"RH wallet CREATED on this boot: {acct.address} — no key file was present in this container; live RH sells/buys "
-                 f"will sign with this unfunded address until you import the funded key (RH wallet card → import private key)")
+    logger.info(f"RH wallet is ephemeral this boot ({acct.address}) — no key stored; set RH_WALLET_PRIVATE_KEY in the service env to trade live")
     return acct
 
 
 def _persist(acct) -> None:
+    if not persist_allowed():
+        return
     WALLET_PATH.write_text(json.dumps(Account.encrypt(acct.key, _password(), kdf="scrypt")))
     os.chmod(WALLET_PATH, 0o600)
 
@@ -76,15 +81,26 @@ def address() -> str:
     return _ACCT.address
 
 
+def key_source() -> str:
+    if os.environ.get("RH_WALLET_PRIVATE_KEY", "").strip():
+        return "env:RH_WALLET_PRIVATE_KEY"
+    if WALLET_PATH.exists():
+        return f"file:{WALLET_PATH}"
+    return "ephemeral"
+
+
+def is_ephemeral() -> bool:
+    return key_source() == "ephemeral"
+
+
 def import_private_key(hex_key: str) -> str:
-    global CREATED_THIS_BOOT
-    CREATED_THIS_BOOT = False
-    """Replace the hot wallet with an imported key (preview/operator action)."""
-    global _ACCT
+    """Replace the hot wallet with an imported key (operator action). On disk only when WALLET_PERSIST_KEYFILE=true."""
+    global CREATED_THIS_BOOT, _ACCT
     acct = Account.from_key(hex_key.strip())
     _persist(acct)
     _ACCT = acct
-    logger.warning(f"RH wallet imported: {acct.address}")
+    CREATED_THIS_BOOT = False
+    logger.warning(f"RH wallet imported: {acct.address} ({'persisted' if persist_allowed() else 'in memory until restart'})")
     return acct.address
 
 

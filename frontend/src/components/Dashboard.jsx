@@ -530,13 +530,16 @@ export default function Dashboard() {
             <span className={`w-2 h-2 rounded-full ${wsConnected ? (wsRole === "follower" ? "bg-amber-400" : "bg-emerald-400") + " animate-pulse" : "bg-neutral-600"}`}></span>
             <span className="text-neutral-400" data-testid="ws-status-label">{wsConnected ? (wsRole === "follower" ? "WS MIRROR" : "WS LIVE") : "WS OFFLINE"}</span>
           </span>
-          {me && (
+          {me && !me.auth_disabled && (
             <span className="hidden md:flex items-center gap-2 text-neutral-500" data-testid="auth-user">
               {me.picture ? (
                 <img src={me.picture} alt="" className="w-5 h-5 rounded-full" />
               ) : null}
               <span className="text-neutral-400">{me.email}</span>
             </span>
+          )}
+          {me?.auth_disabled && (
+            <span className="hidden md:inline text-neutral-500" data-testid="auth-open-mode" title="AUTH_DISABLED=true — no login required on this server">OPEN ACCESS</span>
           )}
           {status && (
             <button
@@ -577,6 +580,7 @@ export default function Dashboard() {
             <span className="text-neutral-700">/</span>
             <button type="button" onClick={() => setAllMinimized(false)} data-testid="expand-all-btn" className="hover:text-neutral-200 transition-colors duration-100" title="Expand every window">expand all</button>
           </span>
+          {!me?.auth_disabled && (
           <button
             type="button"
             onClick={handleLogout}
@@ -586,6 +590,7 @@ export default function Dashboard() {
             <LogOut className="w-3.5 h-3.5" />
             <span>logout</span>
           </button>
+          )}
         </div>
       </header>
 

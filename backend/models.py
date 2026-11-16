@@ -906,6 +906,8 @@ class WalletInfo(BaseModel):
     integrity_ok: bool = True           # plain system account with no data (see wallet_integrity.py)
     integrity_kind: str | None = None   # system | nonce-account | data-carrying | foreign-owner | unfunded
     integrity_reason: str | None = None
+    key_source: str | None = None       # env:SOLANA_PRIVATE_KEY | file:<path> | ephemeral (key-less run, nothing stored)
+    ephemeral: bool = False
 
 
 # Desired-state feed keys: owned by the operator's toggles ONLY. Start/stop, config import, doctor and brain sync

@@ -213,10 +213,14 @@ uvicorn server:app --host 0.0.0.0 --port 8001 --reload
 | `MONGO_URL`, `DB_NAME` | MongoDB connection and database |
 | `CORS_ORIGINS` | comma-separated allowed origins |
 | `HELIUS_RPC_URL`, `HELIUS_WSS_URL` | Helius endpoints (include your API key) |
-| `WALLET_SECRET_PATH` | path to the Solana keypair JSON used for live fills |
+| `WALLET_SECRET_PATH` | optional legacy path to a Solana keypair JSON. Leave empty: by default the bot runs **key-less** (a throwaway in-memory key, nothing written to disk) |
+| `SOLANA_PRIVATE_KEY` / `WALLET_SECRET_B58` | the live Solana signing key — env only, never a file in the repo. Required only to arm live trading |
+| `RH_WALLET_PRIVATE_KEY` | the live Robinhood Chain signing key — env only. Required only for live RH fills |
+| `WALLET_PERSIST_KEYFILE` | `true` lets the wallet **import** buttons write an encrypted key file to disk; default `false` keeps imports in memory until restart |
 | `PUMP_PROGRAM_ID`, `PUMP_GLOBAL`, `PUMP_FEE_RECIPIENT`, `PUMP_EVENT_AUTHORITY` | Pump.fun program accounts |
 | `RH_RPC_URL` | Robinhood Chain JSON-RPC |
-| `ALLOWED_EMAIL` | the one Google account allowed to log in |
+| `AUTH_DISABLED` | `true` = open access, no login (default for local / shared runs). Set to `false` and fill `ALLOWED_EMAIL` to require Google sign-in |
+| `ALLOWED_EMAIL` | the one Google account allowed to log in (only when `AUTH_DISABLED` is not `true`) |
 
 ### Frontend
 

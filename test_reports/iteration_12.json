@@ -11,7 +11,7 @@
   ],
   "updated_files": ["/app/backend/tests/test_strategy_doctor_v2.py"],
   "success_rate": {"backend": "100%", "frontend": "n/a"},
-  "test_credentials": "Bearer token from /tmp/tok (test_session_1788746448834) worked for all /api calls.",
+  "test_credentials": "Bearer token from /tmp/tok (<session-token>) worked for all /api calls.",
   "seed_data_creation": "One paper-mode manual buy triggered on Solana mint H3H5h6K37A1uq2qjSu8NTiAeMVMRjjvA7HWJEX8rL7Cw for endpoint verification (paper mode, no live impact).",
   "retest_needed": false,
   "main_agent_can_self_test": true,

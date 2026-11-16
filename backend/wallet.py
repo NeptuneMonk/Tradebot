@@ -55,6 +55,11 @@ def live_key_check() -> tuple[bool, str]:
                    f"the current key comes from {WALLET_PATH} (paper mode only)")
 
 
+def persist_allowed() -> bool:
+    """Key files are opt-in (WALLET_PERSIST_KEYFILE=true). Default: no private key is ever written to disk."""
+    return os.environ.get("WALLET_PERSIST_KEYFILE", "").strip().lower() in ("1", "true", "yes")
+
+
 def _load_or_create_keypair() -> Keypair:
     # Published/containers: keep the key out of git and out of the ephemeral filesystem — the env key wins.
     if env_secret():
@@ -64,17 +69,15 @@ def _load_or_create_keypair() -> Keypair:
             data = json.load(f)
         secret = base58.b58decode(data["secret_key_b58"])
         return Keypair.from_bytes(secret)
-    kp = Keypair()
-    payload = {
-        "public_key": str(kp.pubkey()),
-        "secret_key_b58": base58.b58encode(bytes(kp)).decode("utf-8"),
-    }
-    WALLET_PATH.write_text(json.dumps(payload, indent=2))
-    os.chmod(WALLET_PATH, 0o600)
-    return kp
+    # Key-less mode: a throwaway in-memory keypair for paper / signal runs. Nothing is stored anywhere.
+    return Keypair()
 
 
 _KEYPAIR: Keypair = _load_or_create_keypair()
+
+
+def is_ephemeral() -> bool:
+    return not key_from_env() and not WALLET_PATH.exists()
 
 
 def get_keypair() -> Keypair:
@@ -98,18 +101,21 @@ def key_source() -> str:
     for k in ENV_KEY_VARS:
         if os.environ.get(k, "").strip():
             return f"env:{k}"
-    return f"file:{WALLET_PATH}"
+    if WALLET_PATH.exists():
+        return f"file:{WALLET_PATH}"
+    return "ephemeral"
 
 
-def rotate_keypair() -> tuple[Keypair, Keypair, Path]:
+def rotate_keypair() -> tuple[Keypair, Keypair, Path | None]:
     """Retire the current key file (kept as wallet.json.retired-<ts>, 0600) and hot-swap a fresh keypair.
     Refused when the key comes from the environment — rotate the secret there instead."""
     global _KEYPAIR
     if key_from_env():
         raise RuntimeError(f"wallet key comes from {key_source()} — rotate the secret in the service env, not here")
     old = _KEYPAIR
-    retired = WALLET_PATH.with_name(f"{WALLET_PATH.name}.retired-{int(time.time())}")
+    retired = None
     if WALLET_PATH.exists():
+        retired = WALLET_PATH.with_name(f"{WALLET_PATH.name}.retired-{int(time.time())}")
         WALLET_PATH.rename(retired)
         os.chmod(retired, 0o600)
     _KEYPAIR = _load_or_create_keypair()
@@ -136,11 +142,12 @@ def parse_secret(text: str) -> Keypair:
 
 
 def set_keypair(kp: Keypair, *, persist: bool = True) -> tuple[Keypair, Path | None]:
-    """Hot-swap the active key (import / cross-pod sync). The previous key file is retired, never deleted."""
+    """Hot-swap the active key (import / cross-pod sync). Written to disk only when WALLET_PERSIST_KEYFILE=true;
+    otherwise the import lives in memory until the next restart. The previous key file is retired, never deleted."""
     global _KEYPAIR
     old = _KEYPAIR
     retired = None
-    if persist and not key_from_env():
+    if persist and not key_from_env() and persist_allowed():
         if WALLET_PATH.exists() and str(old.pubkey()) != str(kp.pubkey()):
             retired = WALLET_PATH.with_name(f"{WALLET_PATH.name}.retired-{int(time.time())}")
             WALLET_PATH.rename(retired)

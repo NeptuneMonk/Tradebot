@@ -32,7 +32,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "100% on the book-switch spec (PUT book_hunt_enabled false/true round-trip; existing pytest test_book_switches.py 2/2 pass)", "frontend": "88% (7/8 simple-controls flows pass; simple-max-trade is the one failing path, driven by backend clamp)"},
-  "test_credentials": "Reused seeded token from /app/memory/.tok (user_49e7ea1b703c, email nbobby79@gmail.com).",
+  "test_credentials": "Reused seeded token from /app/memory/.tok (<user-id>, email <owner-email>).",
   "seed_data_creation": "None. All PUTs restored. Pre/post snapshot: enabled=true, live_trading=false, rh_live_trading=false, max_trade_usd=50, rh_max_trade_usd=25, daily_kill_switch_usd=261, all book_*_enabled=true, rh_paper_enabled=true, speed_mode=normal, max_concurrent_positions=4, autopilot_enabled=false, min_trade_usd=50.",
   "retest_needed": true,
   "main_agent_can_self_test": true,

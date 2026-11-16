@@ -20,7 +20,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "100%", "frontend": "100%"},
-  "test_credentials": "Session token from /app/memory/.tmp_tok (test_session_1788834360) used as cookie session_token and Bearer token; still valid.",
+  "test_credentials": "Session token from /app/memory/.tmp_tok (<session-token>) used as cookie session_token and Bearer token; still valid.",
   "seed_data_creation": "None; used existing session token.",
   "retest_needed": false,
   "should_main_agent_self_test": false,

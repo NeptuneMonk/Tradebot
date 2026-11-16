@@ -21,7 +21,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "100%", "frontend": "not tested (per request)"},
-  "test_credentials": "Seeded mongo session token test_session_1788826564905 (1h) for nbobby79@gmail.com; pytest conftest seeds its own token.",
+  "test_credentials": "Seeded mongo session token <session-token> (1h) for <owner-email>; pytest conftest seeds its own token.",
   "seed_data_creation": "One test user + user_sessions row inserted in pump_bot_db for /api/rh/status smoke.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

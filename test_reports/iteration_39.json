@@ -24,7 +24,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "100% (7/7 items + 49/49 pytest)", "frontend": "100% (10/10 testids + save flow)"},
-  "test_credentials": "session_token from /app/memory/.tok (test_session_1791990910855); ALLOWED_EMAIL nbobby79@gmail.com. Current wallet pubkey FXCMFSvRPkWkxnMLUQTDe2iFHRivUaaYWVJowLXHrcWe, 0.1831 SOL. Export endpoint secrets were obtained but NOT logged.",
+  "test_credentials": "session_token from /app/memory/.tok (<session-token>); ALLOWED_EMAIL <owner-email>. Current wallet pubkey FXCMFSvRPkWkxnMLUQTDe2iFHRivUaaYWVJowLXHrcWe, 0.1831 SOL. Export endpoint secrets were obtained but NOT logged.",
   "seed_data_creation": "none. No destructive calls made: POST /api/wallet/rent/reclaim was invoked exactly once (returned {ok:false, reason:'nothing to reclaim', accounts:0}). POST /api/wallet/import was called with 'notakey' (rejected 400) and once with the wallet's own b58 key (returned {ok:true, unchanged:true, public_key:FXCMF…HrcWe}). All PUT /api/bot/config mutations (clamp probe + UI cap 20→10→20) were restored. Bot remains STOPPED in paper mode.",
   "retest_needed": false,
   "should_main_agent_self_test": true,

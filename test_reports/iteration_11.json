@@ -31,7 +31,7 @@
     "/app/backend/tests/test_autopilot_api.py"
   ],
   "success_rate": {"backend": "100% (28/28)", "frontend": "100%"},
-  "test_credentials": "Authorization: Bearer test_session_1788718227979 (email nbobby79@gmail.com per /app/memory/test_credentials.md); cookie session_token=test_session_1788718227979 on micro-stake-trader.preview.emergentagent.com works for /dashboard.",
+  "test_credentials": "Authorization: Bearer <session-token> (email <owner-email> per /app/memory/test_credentials.md); cookie session_token=<session-token> on micro-stake-trader.preview.emergentagent.com works for /dashboard.",
   "seed_data_creation": "None. No trades opened. No bot start. live_trading remained false throughout.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

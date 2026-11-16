@@ -26,7 +26,7 @@
     "/app/backend/tests/test_iter10_features.py"
   ],
   "success_rate": {"backend": "100% (9/9 executable; 1 skipped due to no live SOL candidate)", "frontend": "100%"},
-  "test_credentials": "Authorization: Bearer test_session_1788718227979 (email nbobby79@gmail.com per /app/memory/test_credentials.md)",
+  "test_credentials": "Authorization: Bearer <session-token> (email <owner-email> per /app/memory/test_credentials.md)",
   "seed_data_creation": "One RH paper position opened during UI test (TRENCHERS mint 0x425a6c38... quote ETH) via manual-buy; classifier_action=rh_pons_manual. Backend will manage exit via SL/TP as designed; no manual cleanup performed to avoid altering trade lifecycle.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

@@ -17,7 +17,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "100% (8/8)", "frontend": "100% (9/9)"},
-  "test_credentials": "session_token from /app/memory/.tok (test_session_1791495727379); ALLOWED_EMAIL nbobby79@gmail.com",
+  "test_credentials": "session_token from /app/memory/.tok (<session-token>); ALLOWED_EMAIL <owner-email>",
   "seed_data_creation": "none; bot left running in paper mode with 20 open positions as instructed",
   "retest_needed": false,
   "main_agent_can_self_test": true,

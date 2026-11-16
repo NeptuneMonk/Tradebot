@@ -1,12 +1,21 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Activity, ShieldCheck, AlertTriangle } from "lucide-react";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
+import { api } from "@/lib/api";
 
 // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
 export default function Login() {
   const location = useLocation();
+  const navigate = useNavigate();
   const denied = new URLSearchParams(location.search).get("denied") === "1";
   const [redirecting, setRedirecting] = useState(false);
+
+  // Open-access server (AUTH_DISABLED) or an already-valid session: no login screen needed.
+  useEffect(() => {
+    let alive = true;
+    api.authMe().then(() => alive && navigate("/dashboard", { replace: true })).catch(() => {});
+    return () => { alive = false; };
+  }, [navigate]);
 
   const handleSignIn = () => {
     setRedirecting(true);

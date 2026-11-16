@@ -18,12 +18,26 @@ from rh_discovery import T_BUY, T_SELL
 from models import BotConfig
 
 
-def test_keystore_created_encrypted_and_reloadable():
+def test_keyless_default_writes_nothing():
     addr = rh_wallet.address()
     assert addr.startswith("0x") and len(addr) == 42
-    raw = open(rh_wallet.WALLET_PATH).read()
-    assert "crypto" in raw and rh_wallet._ACCT.key.hex() not in raw
-    assert rh_wallet._load_or_create().address == addr
+    assert rh_wallet.is_ephemeral() and rh_wallet.key_source() == "ephemeral"
+    assert not rh_wallet.WALLET_PATH.exists() and not rh_wallet.PASS_PATH.exists()
+
+
+def test_keystore_persisted_only_when_opted_in(monkeypatch, tmp_path):
+    from eth_account import Account
+    monkeypatch.setattr(rh_wallet, "WALLET_PATH", tmp_path / "rh_wallet.json")
+    monkeypatch.setattr(rh_wallet, "PASS_PATH", tmp_path / "rh_wallet.pass")
+    a = Account.create()
+    monkeypatch.delenv("WALLET_PERSIST_KEYFILE", raising=False)
+    rh_wallet._persist(a)
+    assert not rh_wallet.WALLET_PATH.exists()
+    monkeypatch.setenv("WALLET_PERSIST_KEYFILE", "true")
+    rh_wallet._persist(a)
+    raw = rh_wallet.WALLET_PATH.read_text()
+    assert "crypto" in raw and a.key.hex() not in raw
+    assert rh_wallet._load_or_create().address == a.address
     assert oct(os.stat(rh_wallet.WALLET_PATH).st_mode)[-3:] == "600"
 
 

@@ -40,7 +40,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "100% (6/6 endpoint checks + 2 clamp checks pass)", "frontend": "100% (all 5 UI checks pass; save→GET round-trip verified)"},
-  "test_credentials": "session_token=ui_smoke_1788761220047 (Bearer + cookie), ALLOWED_EMAIL=nbobby79@gmail.com",
+  "test_credentials": "session_token=<session-token> (Bearer + cookie), ALLOWED_EMAIL=<owner-email>",
   "seed_data_creation": "None. Read-only checks + one round-trip PUT that was restored to original value (rh_max_trade_usd 5→6→5). No backend files touched, no destructive endpoints invoked.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

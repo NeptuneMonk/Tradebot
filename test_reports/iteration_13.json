@@ -15,7 +15,7 @@
     ]
   },
   "verified_expectations": {
-    "header": "AUTOPILOT lime badge visible (label reads 'AUTOPILOT'), WS LIVE, LISTENER LIVE, user email nbobby79@gmail.com, RUNNING pill, PAPER MODE subline — all present.",
+    "header": "AUTOPILOT lime badge visible (label reads 'AUTOPILOT'), WS LIVE, LISTENER LIVE, user email <owner-email>, RUNNING pill, PAPER MODE subline — all present.",
     "autopilot_card": "data-testid=autopilot-card renders: bankroll $986.27 (paper), TODAY'S P/L -$13.73, STAKE/CAP/KILL $19.73/20/$99, RISK/EXPOSURE/DAILY-LOSS inputs, book multipliers momentum/greylist_snipe/reentry/rh_pons all ×1.00, last-change + next-review lines, Profit Sweep panel with OFF switch.",
     "strategy_doctor": "data-testid=strategy-doctor renders after expanding section-doctor toggle. Banner explicitly states 'Win-rate (v1) rules are retired; only $-expectancy proposals appear here.' Only expectancy-based book cards (MOMENTUM, GREYLIST SNIPE, RE-ENTRY, RH·PONS PAPER) are shown; no legacy suggestion cards, no legacy auto-apply toggle. 'win rate · payoff' text on the page is a per-book stats column label (alongside expectancy/fill), not a v1 rule. Applied History audit trail contains historical WR references (e.g. 'WR 80%') from pre-cleanup entries — these are historical audit rows analogous to the allowed 'Legacy Sniper' bucket in P/L By Source and are not active legacy rule cards.",
     "bot_control": "data-testid=bot-control-card renders TP/SL/TRAILING STOP inputs, RUG SELL, SPEED MODE, MAX HOLD, STALE EXIT, per-band gates, RH PAPER GATES. No '-60% SL floor' or 'old time exit' wording present. Tooltips render (16 HelpHint svgs inside Strategy Doctor alone); hover triggered no console errors.",
@@ -47,7 +47,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "100% (7/7 endpoints 200, 0 tracebacks; 2 minor spec deviations, 0 functional failures)", "frontend": "100% (all requested cards + wording checks pass)"},
-  "test_credentials": "Used /tmp/tok=ui_smoke_1788761220047 (Bearer for curl and session_token cookie for browser); ALLOWED_EMAIL=nbobby79@gmail.com.",
+  "test_credentials": "Used /tmp/tok=<session-token> (Bearer for curl and session_token cookie for browser); ALLOWED_EMAIL=<owner-email>.",
   "seed_data_creation": "None. Session token pre-seeded by user at /tmp/tok — reused as-is. No writes to Mongo, no destructive endpoints called.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

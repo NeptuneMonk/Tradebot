@@ -11,7 +11,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "100%", "frontend": "100%"},
-  "test_credentials": "session_token=test_session_1788909052723 (Bearer + cookie)",
+  "test_credentials": "session_token=<session-token> (Bearer + cookie)",
   "seed_data_creation": "None; used existing preview DB",
   "retest_needed": false,
   "main_agent_can_self_test": true,

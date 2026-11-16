@@ -16,7 +16,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "100% (status schema, state transitions, presence heartbeat, manual-buy, exit, pytest regression)", "frontend": "100% (dev-watch-badge testid, data-state, label 'CRAZY WATCH', tooltip counters, header layout)"},
-  "test_credentials": "Reused seeded session token from /app/memory/.tok (user_49e7ea1b703c, nbobby79@gmail.com). TTL fine for this session.",
+  "test_credentials": "Reused seeded session token from /app/memory/.tok (<user-id>, <owner-email>). TTL fine for this session.",
   "seed_data_creation": "Transient: opened 1 paper position via /api/scanner/manual-buy on mint NiZ7...Spump and closed it via /api/trades/{id}/exit within ~5s. Autopilot toggled on then off (final=off, matching initial). No lingering state. operator_presence doc remains (owned by whatever dashboard WS is connected).",
   "retest_needed": false,
   "should_main_agent_self_test": false,

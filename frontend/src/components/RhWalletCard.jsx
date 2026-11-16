@@ -82,8 +82,14 @@ function RhWalletCard({ config }) {
 
       {open && w && (
         <div className="mt-3 space-y-3 text-[11px] font-mono">
+          {w.ephemeral && (
+            <div className="border border-sky-900/60 bg-sky-950/20 text-sky-200 px-2 py-1.5 leading-snug" data-testid="rh-wallet-keyless-note">
+              <span className="uppercase tracking-[0.15em] text-sky-400 mr-1">key-less</span>
+              no private key is stored on this server — this address is a throwaway that changes on restart. Set <code>RH_WALLET_PRIVATE_KEY</code> in the service environment to trade live.
+            </div>
+          )}
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-neutral-500 uppercase tracking-[0.15em] text-[9px]">deposit address</span>
+            <span className={`uppercase tracking-[0.15em] text-[9px] ${w.ephemeral ? "text-amber-400" : "text-neutral-500"}`} data-testid="rh-wallet-address-label">{w.ephemeral ? "throwaway address — do not deposit" : "deposit address"}</span>
             <code className="px-2 py-1 bg-neutral-950 border border-neutral-800 text-neutral-200 break-all" data-testid="rh-wallet-address">{w.address}</code>
             <button type="button" onClick={copy} className="p-1 border border-neutral-800 hover:bg-neutral-800" title="Copy" data-testid="rh-wallet-copy"><Copy className="w-3 h-3" /></button>
             <a href={w.explorer} target="_blank" rel="noreferrer" className="p-1 border border-neutral-800 hover:bg-neutral-800" title="Explorer" data-testid="rh-wallet-explorer"><ExternalLink className="w-3 h-3" /></a>

@@ -23,7 +23,7 @@
   ],
   "updated_files": ["/app/backend/tests/test_iteration23_review.py"],
   "success_rate": {"backend": "100% (49/49: 7 iter23 + test_runner_book + test_profitability_refactor)", "frontend": "100% (all runner-related testids and values verified)"},
-  "test_credentials": "Emergent Google OAuth (single-user whitelist). Seeded session cookie from /app/memory/.tok (test_session_1789010714536, email nbobby79@gmail.com).",
+  "test_credentials": "Emergent Google OAuth (single-user whitelist). Seeded session cookie from /app/memory/.tok (<session-token>, email <owner-email>).",
   "seed_data_creation": "None. Existing 2 closed runner paper rows (Dango, Sim) were already present in /api/trades/history and matched all expected fields (promoted_from='scalp', promotion_banked_usd, runner_pnl_usd, partial_legs=1).",
   "retest_needed": false,
   "main_agent_can_self_test": true,

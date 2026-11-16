@@ -47,7 +47,7 @@
   ],
   "updated_files": [],
   "success_rate": {"backend": "90% (7/8 behavioural checks pass; only helius-call-silence fails)", "frontend": "100% (all nav, LIVE, CONTROL, trade-history asserts pass)"},
-  "test_credentials": "Reused seeded session token from /app/memory/.tok (user_49e7ea1b703c, email nbobby79@gmail.com).",
+  "test_credentials": "Reused seeded session token from /app/memory/.tok (<user-id>, email <owner-email>).",
   "seed_data_creation": "None. Only toggled helius_tracker_enabled true->false for the test window and started/stopped the bot in PAPER mode; final state matches initial operator state (enabled=false, helius_tracker_enabled=false, rh_feed_enabled=false, live_trading=false).",
   "retest_needed": true,
   "main_agent_can_self_test": true,

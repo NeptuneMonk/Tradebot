@@ -25,7 +25,7 @@
     "/app/backend/tests/test_iter8_surgical_fixes.py (new — 11 tests)"
   ],
   "success_rate": {"backend": "100% (11/11 new + 151/151 regression = 162/162)", "frontend": "N/A (skipped per request)"},
-  "test_credentials": "Seeded then cleaned mongo session tester_iter8_tok/user tester_iter8 with email nbobby79@gmail.com — cleaned up after run.",
+  "test_credentials": "Seeded then cleaned mongo session tester_iter8_tok/user tester_iter8 with email <owner-email> — cleaned up after run.",
   "seed_data_creation": "Temporary session doc in user_sessions collection; deleted post-test.",
   "retest_needed": false,
   "should_main_agent_self_test": false,

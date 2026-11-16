@@ -37,7 +37,7 @@
     "backend_api_endpoints": "100% (4/4 endpoints working, 1 minor key-name discrepancy)",
     "frontend": "100% (panel mount + 3 rows + expansion + filter + sweep + mode toggle all working)"
   },
-  "test_credentials": "session_token=test_session_1779729296615 (Bearer or Cookie). Email allow-listed: nbobby79@gmail.com.",
+  "test_credentials": "session_token=<session-token> (Bearer or Cookie). Email allow-listed: <owner-email>.",
   "seed_data_creation": "No new seed data created by testing agent. Used the 3 pre-seeded creators (AggroCreator9999999999Greylist, TestCreator1234567890Greylist, HybridCreatorXXXXXXXXXGreylist). NOT cleaned up — user/main-agent can run the cleanup snippet from the request: `mongosh pump_bot_db --eval 'db.creators.deleteMany({_id: /Greylist$/}); db.launches.deleteMany({creator: /Greylist$/})'`. After test run, BotConfig.creator_greylist_mode was flipped live→telemetry→live→telemetry and FINAL state confirmed = 'telemetry' so the user's bot does not retain live overrides.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

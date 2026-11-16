@@ -20,7 +20,26 @@ def test_live_key_check_refuses_file_key(monkeypatch):
         monkeypatch.delenv(k, raising=False)
     ok, why = wallet.live_key_check()
     assert ok is False and "SOLANA_PRIVATE_KEY" in why
-    assert wallet.key_source().startswith("file:")
+    # key-less default: no key file on disk → ephemeral in-memory key, nothing persisted
+    assert wallet.key_source() == "ephemeral" and wallet.is_ephemeral()
+    assert not wallet.WALLET_PATH.exists()
+
+
+def test_set_keypair_does_not_write_a_file_by_default(monkeypatch, tmp_path):
+    for k in wallet.ENV_KEY_VARS:
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("WALLET_PERSIST_KEYFILE", raising=False)
+    monkeypatch.setattr(wallet, "WALLET_PATH", tmp_path / "paper_wallet.json")
+    orig = wallet.get_keypair()
+    try:
+        kp = Keypair()
+        wallet.set_keypair(kp)
+        assert wallet.get_pubkey_str() == str(kp.pubkey()) and not (tmp_path / "paper_wallet.json").exists()
+        monkeypatch.setenv("WALLET_PERSIST_KEYFILE", "true")
+        wallet.set_keypair(Keypair())
+        assert (tmp_path / "paper_wallet.json").exists()
+    finally:
+        wallet._KEYPAIR = orig
 
 
 def test_live_key_check_accepts_env_key(monkeypatch):
