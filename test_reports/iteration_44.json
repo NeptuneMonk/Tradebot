@@ -1,0 +1,28 @@
+{
+  "summary": "Tested open-access mode (AUTH_DISABLED) and key-less wallets on the backend and the UI. Backend: 13/13 new regression tests pass with no auth (/api/auth/me returns user_id=local and auth_disabled=true; bot/status, bot/config, signals and scanner/candidates return 200; both wallets report ephemeral with 0 balances; the WebSocket connects without a token and sends a message; no key files exist on disk, before or after the wallet GETs; git grep and git ls-files are clean). The 5 listed backend pytest files pass 26/26. Frontend, fresh context with no cookies: /login redirects to /dashboard, the OPEN ACCESS badge shows, there is no logout button, WS LIVE shows, and the StatusBanner reads 'BOT RUNNING · SIGNAL MODE — PUBLISHING PASSES, NOT BUYING'. On the Control tab under Advanced, both KEY-LESS notes show and both address labels read 'THROWAWAY ADDRESS — DO NOT DEPOSIT'. The skip-ticker-idle element appeared within ~20 s as 'SCANNING 3 - NONE PASSING - GROWTH 3'. Live trading was not toggled and the bot stayed RUNNING.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Header", "issues": ["The OPEN ACCESS badge is low-contrast gray text with no border. Because auth is off, a more prominent amber treatment would help."]},
+      {"screen": "Control > Advanced > Wallet cards", "issues": ["In key-less mode, ROTATE KEY, IMPORT KEY, Send and Show QR on WalletCard, and SEND and IMPORT PRIVATE KEY on RhWalletCard, are still active. Consider disabling them or adding a hint, because the throwaway wallet has 0 balance."]}
+    ]
+  },
+  "test_report_links": ["/app/test_reports/test_open_access_keyless.py", "/app/test_reports/pytest/pytest_iter44.xml"],
+  "action_items": [
+    "Optional: with AUTH_DISABLED=true, anyone who has the public preview or deploy URL can start or stop the bot, switch the mode to LIVE, and call POST /api/wallet/import or the RH key import. Consider a guard: block live-mode and key-import endpoints while auth_disabled, or bind them to localhost.",
+    "Optional: make the OPEN ACCESS badge more prominent and disable wallet send/rotate/import buttons when the wallet is ephemeral."
+  ],
+  "critical_code_review_comments": [
+    "auth.py: auth_disabled() short-circuits get_current_user and validate_token_str correctly. Open mode is a security trade-off: every mutating endpoint, including live-trading toggles and key import, is public.",
+    "rh_wallet.py: _password() writes rh_wallet.pass if it is called. Today it is only reached through _persist (gated) or when a keyfile exists, so it is not a current leak, but it would be safer to gate it with persist_allowed() too.",
+    "No key export endpoint was found in server.py (good)."
+  ],
+  "updated_files": ["/app/test_reports/test_open_access_keyless.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run with: cd /app/test_reports && python -m pytest test_open_access_keyless.py -q -p no:cacheprovider -c /dev/null (kept outside backend/ to avoid a uvicorn reload). The bot was left enabled in SIGNAL mode. The ephemeral addresses change on every restart, by design."
+}

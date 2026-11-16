@@ -2903,3 +2903,13 @@ Plus 72 dust token accounts held **0.109 SOL of rent** in the wallet.
 - 2026-11-11 **Signal mode repair** (fork): the signal block had been pasted into `_attempt_reentry_impl` (undefined `launch/action/bucket/is_new_band` → F821, backend
   broken); moved to `_enter_impl` right after `entry_price_sol`. Fixed MC in signals (`entry_price_sol` is SOL per RAW unit → ×1e15, scanner `usd_market_cap` preferred;
   earlier rows show $0). `signal_cooldown_s=0` now means re-signal every pass. `signals.ts` index. Testing-agent iteration_43: backend 13/13 + UI smoke pass.
+- 2026-11-13 **Ticker idle sign** (user: "says waiting for flow but coins are launching"): the tape only carries entry-gate refusals; the idle sign now reads the scanner
+  (`SCANNING n · NONE PASSING · <top 3 gate reasons>` / `WAITING FOR FLOW · 0 TRACKED`) via `idleLabel` from Dashboard (`scanIdleLabel`). Not a bug: New band 8–145 min,
+  tokens enter the tracker at ~6 min, most launches are dead by then. Jupiter `toptraded/1h` 429s are the backstop list only (stream_floor seeds live).
+- 2026-11-16 **Key-less wallets + open access** (user: remove wallet/private keys, share the repo, remove login). `wallet.py` / `rh_wallet.py`: env key → legacy key file →
+  otherwise an in-memory throwaway key per boot; nothing is written to disk unless `WALLET_PERSIST_KEYFILE=true` (imports stay in memory). `GET /api/wallet` and
+  `GET /api/rh/wallet` return `key_source` + `ephemeral` and skip RPC balance reads when ephemeral; wallet cards show a KEY-LESS note and "throwaway address — do not deposit".
+  All key files shredded (backend/wallet.json + 3 retired, rh_wallet.json/.pass, /data/paper_wallet.json, memory/.tok, memory/.env.bak-*). Auth: `AUTH_DISABLED=true`
+  (set in preview .env, default in .env.example) → `get_current_user` / `validate_token_str` return `LOCAL_USER` (`auth_disabled: true`); `/login` auto-redirects; header shows
+  OPEN ACCESS, logout hidden. Repo hygiene: owner email / session tokens scrubbed from tracked test_reports; README env table updated. Git HISTORY still holds the retired
+  Gbp9… wallet.json (0.001 SOL dust) — user accepted sharing with full history. Tests: `test_auth_open_mode.py` (3), wallet tests updated (26 pass). Testing-agent iteration_44 all pass.
