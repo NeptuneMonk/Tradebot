@@ -1,0 +1,11 @@
+"""Tailbot — paper-only Solana copy trader.
+
+This build never signs and never sends transactions. See ``live.py``.
+"""
+from __future__ import annotations
+
+from .redact import install_redaction
+
+__version__ = "0.1.0"
+
+install_redaction()

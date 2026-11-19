@@ -28,7 +28,7 @@ regex = '''\b\d{8,10}:[A-Za-z0-9_-]{35}\b'''
 tags = ["telegram"]
 
 [allowlist]
-description = "lockfiles, build output, and the preview session token files that are git-ignored anyway"
+description = "lockfiles, build output, known program ids, and the public Wirelys tx signature used as a paper-bot fixture (not a key)"
 paths = [
   '''yarn\.lock''',
   '''package-lock\.json''',
@@ -45,4 +45,6 @@ regexes = [
   '''ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL''',
   '''ComputeBudget111111111111111111111111111111''',
   '''11111111111111111111111111111111''',
+  # Public transaction id (87 base58 chars). Same length as a secret key; it is on-chain, not a key.
+  '''3amaPLE27t9yjRscLq6BNY8EPBYfpUqC9U2yExTsPMgZ3J7j66K5QTu5pj3tarpzNRURKHvsrERZy9n5n274mv9o''',
 ]

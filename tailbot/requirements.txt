@@ -1,0 +1,4 @@
+httpx>=0.27
+websockets>=12
+solders>=0.21
+pytest>=8
