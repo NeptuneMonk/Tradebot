@@ -84,8 +84,11 @@ def test_backfill_copies_a_fresh_buy_and_skips_a_stale_one(tmp_path):
 
     asyncio.run(go())
     assert engine.db.open_positions(), box.msgs
-    assert any("stale" in text for text, _m in box.msgs)
     assert any(text.startswith("COPY") for text, _m in box.msgs)
+    stale_alerts = [text for text, _m in box.msgs if "stale" in text]
+    assert stale_alerts == [
+        f"SKIP {LEADER[:4]}… backfill: 1 stale tx (older than {engine.cfg.chase_window_s:.0f}s) not copied — feed was down / restart"
+    ]
     assert ("tx", stale) not in rpc.calls
     assert ("tx", fresh) in rpc.calls
     assert rpc.calls[0] == ("sigs", LEADER, 25, None)

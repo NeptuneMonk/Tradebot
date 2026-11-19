@@ -97,7 +97,7 @@ def _tx_rows(keys, pre_sol, post_sol, pre_tok, post_tok):
             "preTokenBalances": pre_tok, "postTokenBalances": post_tok,
             "logMessages": [],
         },
-        "transaction": {"message": {"accountKeys": [{"pubkey": k, "signer": i == 0} for i, k in enumerate(keys)]}},
+        "transaction": {"message": {"accountKeys": [{"pubkey": k, "signer": i == 0 or k == LEADER} for i, k in enumerate(keys)]}},
     }
 
 
@@ -138,3 +138,19 @@ def test_plain_sol_transfer_does_not_need_a_fetch():
 
 def test_failed_tx_is_ignored():
     assert needs_fetch(["Program " + WSOL], LEADER, {"InstructionError": [0, "Custom"]}) is False
+
+
+def test_unsigned_airdrop_or_drip_is_not_a_leader_buy():
+    # A third party created the leader's token account and dripped tokens. The leader never signed.
+    sender = "3qscUPxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    keys = [sender, LEADER, "ataX"]
+    post = _tok(2, MINT, LEADER, 1_000_000_000_000)
+    tx = _tx_rows(keys, [10**9, 10**9, 0], [10**9 - 5000, 10**9, 0], [], [post])
+    tx["transaction"]["message"]["accountKeys"][1]["signer"] = False
+    assert decode_activity(LEADER, "drop", [], tx) == []
+
+
+def test_signers_from_plain_json_header():
+    from tailbot.decode import tx_signers
+    tx = {"transaction": {"message": {"accountKeys": ["A", "B", "C"], "header": {"numRequiredSignatures": 2}}}}
+    assert tx_signers(tx) == {"A", "B"}

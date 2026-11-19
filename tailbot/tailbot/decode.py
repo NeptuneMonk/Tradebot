@@ -152,6 +152,16 @@ def account_keys(tx: dict) -> list[str]:
     return keys
 
 
+def tx_signers(tx: dict) -> set[str]:
+    """Signers of the transaction (jsonParsed ``signer`` flags; json: first numRequiredSignatures keys)."""
+    msg = ((tx.get("transaction") or {}).get("message") or {})
+    raw = msg.get("accountKeys") or []
+    if raw and not isinstance(raw[0], str):
+        return {k.get("pubkey") for k in raw if k.get("signer")}
+    n = int(((msg.get("header") or {}).get("numRequiredSignatures")) or 0)
+    return set(raw[:n])
+
+
 def _token_map(rows: list | None, leader: str) -> dict[str, dict]:
     acc: dict[str, dict] = {}
     for row in rows or []:
@@ -203,6 +213,10 @@ def _pick_payment(deltas: dict[str, dict], sol_delta: int, *, spent: bool) -> tu
 def fills_from_meta(tx: dict, leader: str, signature: str, events: list[dict] | None = None) -> list[Fill]:
     meta = tx.get("meta") or {}
     if meta.get("err") is not None:
+        return []
+    # Only the leader's own trades: they must sign (a relayer may pay the fee, but the leader still signs).
+    # Unsigned balance changes are airdrops / third-party transfers or pump.fun drips, not leader buys.
+    if leader not in tx_signers(tx):
         return []
     keys = account_keys(tx)
     fee_payer = keys[0] if keys else None

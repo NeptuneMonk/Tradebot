@@ -13,6 +13,7 @@ from .decode import Fill, decode_activity, fills_from_logs, needs_fetch, payment
 from .exits import decide_exit, pnl_pct
 from .market import price_sol_per_ui
 from .momentum import buy_flow_slow
+from .pump_logs import STABLES, WSOL, decode_bonding_curve, token_account_amount
 from .quotes import curve_round_trip_impact_pct, exit_allowed
 from .risk import BuyView, daily_loss_hit, evaluate_buy, is_flip, leader_auto_off, proportional_fraction
 from .rpc import CreditsBlocked
@@ -203,7 +204,7 @@ class Engine:
             seen = self.db.seen_among(leader, sigs)
             planned = plan_backfill(rows, now=self.now(), window_s=window, seen=seen, limit=limit)
             holds = any(pos["leader"] == leader for pos in self.db.open_positions())
-            fetched = stale = 0
+            fetched = stale = quiet = 0
             for item in planned:
                 action = item["action"]
                 sig = item["signature"]
@@ -216,6 +217,7 @@ class Engine:
                     self.db.mark_seen(sig, leader, self.now())
                     await self._skip_sig(leader, sig, "stale")
                     stale += 1
+                    quiet += 1
                     continue
                 age = item.get("age")
                 remaining = window if age is None else window - float(age)
@@ -229,6 +231,10 @@ class Engine:
                 self.db.set_cursor(leader, newest)
             if fetched or stale:
                 log.info("backfill %s… %d fetched, %d stale", leader[:4], fetched, stale)
+            if quiet:
+                await self.alert(
+                    f"SKIP {leader[:4]}… backfill: {quiet} stale tx (older than {window:.0f}s) not copied — feed was down / restart"
+                )
 
     async def _process_signature(self, leader: str, sig: str, block_time, chase_left: float) -> None:
         if self.db.seen(sig, leader):
@@ -244,6 +250,9 @@ class Engine:
 
     async def _skip_sig(self, leader: str, sig: str, reason: str) -> None:
         self.db.add_decision(self.now(), sig, leader, "", "skip", reason)
+        if reason == "stale":
+            log.info("SKIP %s… %s… stale (backfill, not alerted)", leader[:4], sig[:8])
+            return
         await self.alert(f"SKIP {leader[:4]}… {sig[:8]}… {reason}")
 
     async def _fetch_tx(self, sig: str):
@@ -411,6 +420,9 @@ class Engine:
     async def _skip(self, fill, reason: str) -> None:
         async with self.lock:
             text = self._record_skip(fill, reason)
+        if reason == "stale":
+            log.info("%s (backfill, not alerted)", text)
+            return
         await self.alert(text)
 
     async def _leader_price(self, fill: Fill) -> float | None:
