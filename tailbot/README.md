@@ -103,6 +103,10 @@ Only `TELEGRAM_CHAT_ID` is answered. Other chats are ignored.
 
 Alerts: every copy, every skip with the reason, every exit (`leader sold`, `stop`, `trail`, `momentum`, `manual`), each batched sweep, and a daily summary. A feed that stays down more than 60 seconds pauses new buys and sends one alert.
 
+An **Active trades** message stays at the bottom of the chat. It lists each open coin (symbol when we have one, short mint, leader, entry time in America/Chicago, entry SOL, current value, PnL, time held, and whether stop / trail / momentum is armed) plus pot, deployed percent, and today's realized PnL. Any other outgoing message deletes that board and posts it again after a short debounce. Price changes edit it in place about every 45 seconds. The message id is stored in SQLite so a restart deletes the previous copy.
+
+Messages the bot sends are deleted after `purge_after_minutes` (default 60). The live board and an unanswered 24h Exit/Hold prompt are kept. Telegram will not delete anything older than 48 hours; those rows are dropped locally and other delete errors are ignored. Calls are spaced about a second apart.
+
 ## Risk defaults
 
 | Rule | Default |

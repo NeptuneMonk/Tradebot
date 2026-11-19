@@ -5,9 +5,12 @@ The HTTP call shape (Bot API sendMessage / getUpdates, no SDK) follows
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import httpx
+
+from .board import TradeBoard
 
 log = logging.getLogger("tailbot.telegram")
 
@@ -43,42 +46,85 @@ def route_update(update: dict, allowed_chat: str) -> tuple[str, str] | None:
 
 
 class Telegram:
-    def __init__(self, token: str, chat_id: str, control):
+    def __init__(self, token: str, chat_id: str, control, poster=None):
         self.token = (token or "").strip()
         self.chat_id = str(chat_id or "").strip()
         self.control = control
         self.offset = 0
         self.outbox: list[str] = []
+        self._poster = poster
+        self.board: TradeBoard | None = None
+        if hasattr(control, "active_trades_text") and hasattr(control, "db"):
+            self.board = TradeBoard(
+                control.db, self, control.active_trades_text,
+                control.now, control.sleep, control.cfg,
+            )
 
     @property
     def enabled(self) -> bool:
         return bool(self.token and self.chat_id)
 
-    async def send(self, text: str, markup: dict | None = None) -> None:
+    async def send(self, text: str, markup: dict | None = None, kind: str = "alert", position_id: int | None = None):
         self.outbox.append(text)
         log.info("alert: %s", text.replace("\n", " | "))
         if not self.enabled:
-            return
+            return None
+        if self.board:
+            await self.board.gate()
+        result = await self._post("sendMessage", self._payload(text, markup))
+        mid = int((result or {}).get("message_id") or 0)
+        if mid and self.board:
+            self.control.db.record_tg(mid, self.board.now(), kind, position_id)
+            if kind != "board":
+                self.board.schedule_bump()
+        return mid or None
+
+    async def send_message(self, text: str, markup: dict | None = None) -> int:
+        result = await self._post("sendMessage", self._payload(text, markup))
+        return int((result or {}).get("message_id") or 0)
+
+    async def edit_message(self, message_id: int, text: str, markup: dict | None = None) -> None:
+        payload = self._payload(text, markup)
+        payload["message_id"] = int(message_id)
+        await self._post("editMessageText", payload)
+
+    async def delete_message(self, message_id: int) -> None:
+        await self._post("deleteMessage", {"chat_id": self.chat_id, "message_id": int(message_id)})
+
+    def _payload(self, text: str, markup: dict | None) -> dict:
         payload = {"chat_id": self.chat_id, "text": text, "disable_web_page_preview": True}
         if markup:
             payload["reply_markup"] = markup
-        await self._post("sendMessage", payload)
+        return payload
 
     async def run(self) -> None:
         if not self.enabled:
             log.warning("telegram disabled (set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)")
             return
+        if self.board:
+            try:
+                await self.board.start()
+            except Exception:
+                log.exception("active trades board failed to start")
+            asyncio.create_task(self._board_loop())
         while True:
             try:
                 updates = await self._post("getUpdates", {"offset": self.offset, "timeout": 25})
             except Exception as exc:
                 log.warning("telegram getUpdates: %s", exc)
-                import asyncio
                 await asyncio.sleep(5)
                 continue
             for update in updates or []:
                 self.offset = int(update["update_id"]) + 1
                 await self.handle_update(update)
+
+    async def _board_loop(self) -> None:
+        while True:
+            try:
+                await self.board.tick()
+            except Exception:
+                log.exception("board tick failed")
+            await asyncio.sleep(5)
 
     async def handle_update(self, update: dict) -> None:
         routed = route_update(update, self.chat_id)
@@ -99,6 +145,8 @@ class Telegram:
             await self.send(reply)
 
     async def _post(self, method: str, payload: dict):
+        if self._poster is not None:
+            return await self._poster(method, payload)
         url = f"https://api.telegram.org/bot{self.token}/{method}"
         async with httpx.AsyncClient(timeout=35.0) as client:
             resp = await client.post(url, json=payload)

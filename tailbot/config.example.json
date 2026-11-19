@@ -41,6 +41,8 @@
   "pumpswap_fee_bps": 30,
   "hold_prompt_s": 86400,
   "feed_down_s": 60,
+  "purge_after_minutes": 60,
+  "board_edit_s": 45,
   "helius_soft_ceiling": 8000,
   "helius_hard_ceiling": 25000,
   "sellall_pin": "change-me",

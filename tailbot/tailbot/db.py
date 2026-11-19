@@ -48,6 +48,12 @@ CREATE TABLE IF NOT EXISTS mints (
 CREATE TABLE IF NOT EXISTS credits (
   day TEXT PRIMARY KEY, rpc REAL, ws_bytes INTEGER
 );
+CREATE TABLE IF NOT EXISTS tg_messages (
+  message_id INTEGER PRIMARY KEY,
+  sent_at REAL NOT NULL,
+  kind TEXT NOT NULL,
+  position_id INTEGER
+);
 """
 
 _POS_COLS = {
@@ -231,5 +237,29 @@ class DB:
             "INSERT INTO credits(day, rpc, ws_bytes) VALUES(?,?,?) "
             "ON CONFLICT(day) DO UPDATE SET rpc=excluded.rpc, ws_bytes=excluded.ws_bytes",
             (day, rpc, int(ws_bytes)),
+        )
+        self.conn.commit()
+
+    def record_tg(self, message_id: int, sent_at: float, kind: str, position_id: int | None = None) -> None:
+        self.conn.execute(
+            "INSERT INTO tg_messages(message_id, sent_at, kind, position_id) VALUES(?,?,?,?) "
+            "ON CONFLICT(message_id) DO UPDATE SET sent_at=excluded.sent_at, kind=excluded.kind, position_id=excluded.position_id",
+            (int(message_id), float(sent_at), kind, position_id),
+        )
+        self.conn.commit()
+
+    def forget_tg(self, message_id: int) -> None:
+        self.conn.execute("DELETE FROM tg_messages WHERE message_id=?", (int(message_id),))
+        self.conn.commit()
+
+    def tg_messages(self) -> list[dict]:
+        rows = self.conn.execute("SELECT message_id, sent_at, kind, position_id FROM tg_messages ORDER BY sent_at").fetchall()
+        return [dict(row) for row in rows]
+
+    def release_prompts(self, position_id: int) -> None:
+        """An answered Exit/Hold prompt can age out with the other alerts."""
+        self.conn.execute(
+            "UPDATE tg_messages SET kind='alert' WHERE position_id=? AND kind='prompt'",
+            (int(position_id),),
         )
         self.conn.commit()

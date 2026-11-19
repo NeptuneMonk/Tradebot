@@ -7,6 +7,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from .backfill import plan_backfill
+from .board import format_active_trades
 from .chase import run_chase
 from .config import set_param
 from .decode import Fill, decode_activity, fills_from_logs, needs_fetch, payment_sol
@@ -54,10 +55,28 @@ class Engine:
     def stop(self) -> None:
         self._stop = True
 
-    async def alert(self, text: str, markup: dict | None = None) -> None:
+    async def alert(self, text: str, markup: dict | None = None, *, kind: str = "alert", position_id: int | None = None) -> None:
         log.info("%s", text.replace("\n", " | "))
-        if self.alerter is not None:
-            await self.alerter.send(text, markup)
+        if self.alerter is None:
+            return
+        send = self.alerter.send
+        if kind != "alert" or position_id is not None:
+            try:
+                await send(text, markup, kind=kind, position_id=position_id)
+                return
+            except TypeError:
+                pass
+        await send(text, markup)
+
+    def active_trades_text(self) -> str:
+        return format_active_trades(
+            self.db.open_positions(),
+            pot=self.paper.pot(),
+            deployed=self.paper.deployed(),
+            realized=self.paper.realized(),
+            now=self.now(),
+            cfg=self.cfg,
+        )
 
     def _day(self) -> str:
         return datetime.fromtimestamp(self.now(), CHI).date().isoformat()
@@ -564,6 +583,8 @@ class Engine:
                         {"text": "Exit", "callback_data": f"x:{pos['id']}"},
                         {"text": "Hold", "callback_data": f"h:{pos['id']}"},
                     ]]},
+                    kind="prompt",
+                    position_id=pos["id"],
                 )
             elif decision.kind == "exit":
                 await self._exit_position(pos, 1.0, decision.reason)
@@ -701,6 +722,7 @@ class Engine:
         except (IndexError, ValueError):
             return "ignored"
         pos = self.db.position(pid)
+        self.db.release_prompts(pid)
         if data.startswith("x:"):
             if not pos or pos["status"] != "open":
                 return "already closed"

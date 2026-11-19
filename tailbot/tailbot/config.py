@@ -42,6 +42,8 @@ SETTABLE: dict[str, tuple] = {
     "paper_tx_fee_sol": (float, 0.0, 0.1),
     "hold_prompt_s": (float, 60.0, 864000.0),
     "feed_down_s": (float, 5.0, 3600.0),
+    "purge_after_minutes": (float, 1.0, 2880.0),
+    "board_edit_s": (float, 15.0, 300.0),
 }
 
 
@@ -89,6 +91,11 @@ class Config:
     pumpswap_fee_bps: int = 30
     hold_prompt_s: float = 86_400.0
     feed_down_s: float = 60.0
+    purge_after_minutes: float = 60.0
+    board_edit_s: float = 45.0
+    board_debounce_s: float = 2.0
+    tg_min_interval_s: float = 1.1
+    purge_every_s: float = 180.0
     helius_soft_ceiling: float = 8_000.0
     helius_hard_ceiling: float = 25_000.0
     sellall_pin: str = "change-me"

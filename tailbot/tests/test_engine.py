@@ -30,7 +30,7 @@ class Box:
     def __init__(self):
         self.msgs = []
 
-    async def send(self, text, markup=None):
+    async def send(self, text, markup=None, **kwargs):
         self.msgs.append((text, markup))
 
 
