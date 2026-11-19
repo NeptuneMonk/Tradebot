@@ -6,8 +6,8 @@ Live execution is a flag that is off. Turning it on does not start trading: the 
 
 ## What it does
 
-- One websocket on Helius standard methods only: `logsSubscribe` with `mentions` for each leader, plus `accountSubscribe` on the curve or quote vault of a coin we hold. `transactionSubscribe` is not used (it is not on the free plan).
-- Pump.fun `TradeEvent` logs are decoded locally. A parsed `getTransaction` is fetched only when the logs do not fully describe the leader's fill (Jupiter routes, PumpSwap events that carry no mint).
+- One websocket on Helius standard methods only: `logsSubscribe` with `mentions: [wallet]` for each leader, plus `accountSubscribe` on the curve or quote vault of a coin we hold. `transactionSubscribe` is not used (it is not on the free plan). Every reconnect replays `getSignaturesForAddress` since the last cursor (at most `backfill_limit`, default 25). Buys older than the chase window are skipped as stale; sells of an open position still close it.
+- Pump.fun `TradeEvent` logs are decoded locally. A parsed `getTransaction` is fetched only when the logs do not fully describe the leader's fill, or when a reconnect backfill finds a signature still inside the chase window.
 - Buy size is the leader's token-balance delta and the quote they actually spent (SOL, USDC, USDT, or another token). A relayer fee payer and a rising SOL balance are ignored. The checked-in fixture is Wirelys `AvGiSdrkwtGYhrrFXZPtdhNhV4pASUR67TmRjfaKGdMP` paying 650.23 USDC for 13.1M of `2tKjPFvzeWqBmmxjtGBb3zfb8zfFVePjpBhHbE2epump` in `3amaPLE27t9yjRscLq6BNY8EPBYfpUqC9U2yExTsPMgZ3J7j66K5QTu5pj3tarpzNRURKHvsrERZy9n5n274mv9o` while their SOL balance went up by about 0.0015.
 - Our size is a percent of the paper pot (default 10%, hard cap 20%), not a copy of the leader's dollar size.
 - If our quote is more than 15% above the leader's fill, tailbot re-quotes every 5 seconds for up to 15 seconds and skips if it never comes back.
@@ -132,7 +132,7 @@ Paper buys book a Jupiter quote when one exists, otherwise constant-product math
 
 Free plan is 1,000,000 credits per month, about **33,000 per day**. Published rates used here (see `tailbot/credits.py`, same byte rate as `backend/helius_budget.py`):
 
-- Standard RPC, including `getTransaction` and `getAccountInfo`: **1 credit**
+- Standard RPC, including `getTransaction`, `getSignaturesForAddress`, and `getAccountInfo`: **1 credit**. A reconnect asks for signatures once per leader (capped at 25) and only fetches a transaction when it is still inside the chase window.
 - Standard websocket (`logsSubscribe`, `accountSubscribe`): **2 credits per 0.1 MB**
 - `transactionSubscribe`, enhanced transactions, and the Pump program firehose are not used
 

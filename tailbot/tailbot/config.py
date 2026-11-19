@@ -65,6 +65,7 @@ class Config:
     chase_premium_pct: float = 15.0
     chase_recheck_s: float = 5.0
     chase_window_s: float = 15.0
+    backfill_limit: int = 25
     stop_loss_pct: float = 35.0
     trail_pct: float = 25.0
     trail_arm_pct: float = 50.0

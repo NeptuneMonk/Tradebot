@@ -17,16 +17,27 @@ import websockets
 
 log = logging.getLogger("tailbot.ws")
 
+# How long we wait for every logsSubscribe / accountSubscribe ack before treating
+# the silent ones as a failure and subscribing again.
+ACK_TIMEOUT_S = 8.0
+
 
 def ws_url(api_key: str) -> str:
     return f"wss://mainnet.helius-rpc.com/?api-key={api_key}"
 
 
+def logs_subscribe_params(wallet: str) -> list:
+    """Helius requires ``mentions`` to be a list. A bare string is rejected with
+    'Invalid params … expected a sequence'."""
+    return [{"mentions": [wallet]}, {"commitment": "confirmed"}]
+
+
 class HeliusWS:
-    def __init__(self, api_key: str, on_logs, on_account, meter):
+    def __init__(self, api_key: str, on_logs, on_account, meter, on_connect=None):
         self.api_key = api_key
         self.on_logs = on_logs
         self.on_account = on_account
+        self.on_connect = on_connect
         self.meter = meter
         self.leaders: list[str] = []
         self.accounts: set[str] = set()
@@ -37,6 +48,11 @@ class HeliusWS:
         self._subs: dict[int, tuple[str, str]] = {}
         self._pending: dict[int, tuple[str, str]] = {}
         self._next = 1
+        self._awaiting_acks = False
+        self._ack_deadline = 0.0
+        self._ack_ok_logs = 0
+        self._ack_ok_accounts = 0
+        self._ack_errors = 0
 
     def set_leaders(self, leaders: list[str]) -> None:
         self.leaders = list(leaders)[:3]
@@ -85,7 +101,10 @@ class HeliusWS:
             self._subs.clear()
             self._pending.clear()
             await self._subscribe_all(ws)
+            self._resub = False
             log.info("helius websocket up (%d leaders, %d accounts)", len(self.leaders), len(self.accounts))
+            if self.on_connect is not None:
+                asyncio.create_task(self._safe(self.on_connect()))
             while not self._stop:
                 if self._resub:
                     self._resub = False
@@ -94,6 +113,7 @@ class HeliusWS:
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=5)
                 except asyncio.TimeoutError:
+                    self.check_ack_timeout(time.time())
                     continue
                 size = len(raw) if isinstance(raw, (bytes, str)) else 0
                 self.meter.add_ws(size)
@@ -110,14 +130,25 @@ class HeliusWS:
         await ws.send(json.dumps({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params}))
 
     async def _subscribe_all(self, ws) -> None:
+        self._pending.clear()
+        self._ack_ok_logs = 0
+        self._ack_ok_accounts = 0
+        self._ack_errors = 0
+        sent = 0
         for leader in self.leaders:
-            await self._send(ws, "logsSubscribe", [{"mentions": leader}, {"commitment": "confirmed"}], ("logs", leader))
+            await self._send(ws, "logsSubscribe", logs_subscribe_params(leader), ("logs", leader))
+            sent += 1
         for account in sorted(self.accounts):
             await self._send(
                 ws, "accountSubscribe",
                 [account, {"commitment": "confirmed", "encoding": "base64"}],
                 ("account", account),
             )
+            sent += 1
+        self._awaiting_acks = True
+        self._ack_deadline = time.time() + ACK_TIMEOUT_S
+        if sent == 0:
+            self._finish_acks_if_ready()
 
     async def _unsubscribe_all(self, ws) -> None:
         for sub_id, (kind, _key) in list(self._subs.items()):
@@ -129,13 +160,31 @@ class HeliusWS:
                 return
         self._subs.clear()
 
+    def check_ack_timeout(self, now: float) -> bool:
+        """Missing subscribe acks are a failure: log them and subscribe again."""
+        if not self._awaiting_acks or now < self._ack_deadline or not self._pending:
+            return False
+        log.warning("subscribe acks missing (%d pending); resubscribing", len(self._pending))
+        self._awaiting_acks = False
+        self._pending.clear()
+        self._resub = True
+        return True
+
+    def _finish_acks_if_ready(self) -> None:
+        if not self._awaiting_acks or self._pending:
+            return
+        self._awaiting_acks = False
+        if self._ack_errors:
+            log.warning("subscribe failed (%d errors); resubscribing", self._ack_errors)
+            self._resub = True
+            return
+        log.info("subscriptions confirmed: %d logs, %d accounts", self._ack_ok_logs, self._ack_ok_accounts)
+
     async def _on_message(self, msg: dict) -> None:
-        if "id" in msg and "result" in msg and not isinstance(msg.get("result"), dict):
-            tag = self._pending.pop(msg["id"], None)
-            if tag is not None and isinstance(msg.get("result"), int):
-                self._subs[msg["result"]] = tag
-            if msg.get("error"):
-                log.warning("helius subscribe error: %s", msg["error"].get("message") or msg["error"])
+        # JSON-RPC errors have ``error`` and no ``result``. Dropping those replies
+        # hid the mentions-must-be-a-list rejection.
+        if "id" in msg and "method" not in msg and ("result" in msg or "error" in msg):
+            self._on_rpc_response(msg)
             return
         params = msg.get("params") or {}
         tag = self._subs.get(params.get("subscription"))
@@ -153,6 +202,26 @@ class HeliusWS:
                 except Exception:
                     return
                 asyncio.create_task(self._safe(self.on_account(tag[1], raw)))
+
+    def _on_rpc_response(self, msg: dict) -> None:
+        tag = self._pending.pop(msg["id"], None)
+        err = msg.get("error")
+        if err:
+            message = err.get("message") if isinstance(err, dict) else str(err)
+            log.warning("helius subscribe error: %s", message or err)
+            if tag is not None:
+                self._ack_errors += 1
+                self._finish_acks_if_ready()
+            return
+        result = msg.get("result")
+        if tag is not None and isinstance(result, int):
+            self._subs[result] = tag
+            if tag[0] == "logs":
+                self._ack_ok_logs += 1
+            elif tag[0] == "account":
+                self._ack_ok_accounts += 1
+        if tag is not None:
+            self._finish_acks_if_ready()
 
     async def _safe(self, coro) -> None:
         try:

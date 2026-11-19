@@ -40,6 +40,15 @@ class RpcClient:
             return body.get("result")
         return None
 
+    async def get_signatures(self, address: str, limit: int = 25, until: str | None = None) -> list[dict]:
+        """One credit. ``until`` is the last signature we already processed; the node returns only newer ones, newest first."""
+        opts: dict = {"limit": int(limit), "commitment": "confirmed"}
+        if until:
+            opts["until"] = until
+        body = await self.call("getSignaturesForAddress", [address, opts], kind="decode")
+        result = body.get("result")
+        return result if isinstance(result, list) else []
+
     async def get_account(self, pubkey: str, kind: str = "entry"):
         body = await self.call(
             "getAccountInfo",

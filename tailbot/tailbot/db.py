@@ -95,6 +95,22 @@ class DB:
         )
         self.conn.commit()
 
+    def seen_among(self, leader: str, sigs: list[str]) -> set[str]:
+        if not sigs:
+            return set()
+        marks = ",".join("?" for _ in sigs)
+        rows = self.conn.execute(
+            f"SELECT sig FROM seen WHERE leader=? AND sig IN ({marks})",
+            [leader, *sigs],
+        ).fetchall()
+        return {row["sig"] for row in rows}
+
+    def cursor(self, leader: str) -> str | None:
+        return self.kv_get(f"cursor:{leader}")
+
+    def set_cursor(self, leader: str, signature: str) -> None:
+        self.kv_set(f"cursor:{leader}", signature)
+
     def add_leader_trade(self, fill, ts: float) -> None:
         self.conn.execute(
             """INSERT INTO leader_trades

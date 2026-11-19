@@ -33,7 +33,7 @@ async def _serve(cfg, db, api_key: str) -> None:
     engine = Engine(
         cfg, db, paper, LiveQuotes(cfg), meter, rpc=rpc, sol_usd_fn=get_sol_usd,
     )
-    ws = HeliusWS(api_key, engine.on_logs, engine.on_account, meter)
+    ws = HeliusWS(api_key, engine.on_logs, engine.on_account, meter, on_connect=engine.backfill_leaders)
     ws.set_leaders(list(cfg.leaders))
     engine.ws = ws
     telegram = Telegram(os.environ.get("TELEGRAM_BOT_TOKEN", ""), os.environ.get("TELEGRAM_CHAT_ID", ""), engine)

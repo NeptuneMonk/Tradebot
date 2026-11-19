@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from .backfill import plan_backfill
 from .chase import run_chase
 from .config import set_param
 from .decode import Fill, decode_activity, fills_from_logs, needs_fetch, payment_sol
@@ -177,6 +178,74 @@ class Engine:
             fill.ts = self.now()
             await self.on_leader_fill(fill)
 
+    async def backfill_leaders(self) -> None:
+        """Replay signatures missed while the socket was down. One getSignaturesForAddress per leader."""
+        rpc = self.rpc
+        if rpc is None or not hasattr(rpc, "get_signatures"):
+            return
+        limit = max(1, int(getattr(self.cfg, "backfill_limit", 25) or 25))
+        window = float(self.cfg.chase_window_s)
+        for leader in list(self.cfg.leaders):
+            try:
+                until = self.db.cursor(leader)
+                rows = await rpc.get_signatures(leader, limit=limit, until=until)
+            except CreditsBlocked:
+                await self.alert("SKIP helius credit ceiling — backfill stopped")
+                return
+            except Exception:
+                log.exception("backfill failed for %s", leader[:4])
+                continue
+            if not rows:
+                continue
+            if len(rows) >= limit:
+                log.info("backfill %s… hit the %d signature cap", leader[:4], limit)
+            sigs = [str(row.get("signature") or "") for row in rows]
+            seen = self.db.seen_among(leader, sigs)
+            planned = plan_backfill(rows, now=self.now(), window_s=window, seen=seen, limit=limit)
+            holds = any(pos["leader"] == leader for pos in self.db.open_positions())
+            fetched = stale = 0
+            for item in planned:
+                action = item["action"]
+                sig = item["signature"]
+                if not sig or action == "dup":
+                    continue
+                if action == "failed":
+                    self.db.mark_seen(sig, leader, self.now())
+                    continue
+                if action == "stale" and not holds:
+                    self.db.mark_seen(sig, leader, self.now())
+                    await self._skip_sig(leader, sig, "stale")
+                    stale += 1
+                    continue
+                age = item.get("age")
+                remaining = window if age is None else window - float(age)
+                await self._process_signature(leader, sig, item.get("block_time"), remaining)
+                if action == "stale":
+                    stale += 1
+                else:
+                    fetched += 1
+            newest = str(rows[0].get("signature") or "")
+            if newest:
+                self.db.set_cursor(leader, newest)
+            if fetched or stale:
+                log.info("backfill %s… %d fetched, %d stale", leader[:4], fetched, stale)
+
+    async def _process_signature(self, leader: str, sig: str, block_time, chase_left: float) -> None:
+        if self.db.seen(sig, leader):
+            return
+        self.db.mark_seen(sig, leader, self.now())
+        tx = await self._fetch_tx(sig)
+        if not tx:
+            return
+        for fill in decode_activity(leader, sig, None, tx):
+            fill.ts = float(block_time) if block_time else self.now()
+            fill.extra["max_chase_s"] = max(0.0, float(chase_left))
+            await self.on_leader_fill(fill)
+
+    async def _skip_sig(self, leader: str, sig: str, reason: str) -> None:
+        self.db.add_decision(self.now(), sig, leader, "", "skip", reason)
+        await self.alert(f"SKIP {leader[:4]}… {sig[:8]}… {reason}")
+
     async def _fetch_tx(self, sig: str):
         if self.rpc is None:
             return None
@@ -201,6 +270,10 @@ class Engine:
             if pos:
                 fraction = proportional_fraction(fill.token_raw, fill.pre_token_raw)
                 await self._exit_position(pos, fraction, "leader sold")
+            return
+        chase_left = fill.extra.get("max_chase_s")
+        if chase_left is not None and float(chase_left) <= 0:
+            await self._skip(fill, "stale")
             return
         if not self._leader_on(fill.leader):
             await self._skip(fill, "leader off")
@@ -235,7 +308,7 @@ class Engine:
             quote_fn=quote_fn,
             premium_pct=float(self.cfg.chase_premium_pct),
             recheck_s=float(self.cfg.chase_recheck_s),
-            window_s=float(self.cfg.chase_window_s),
+            window_s=float(fill.extra.get("max_chase_s", self.cfg.chase_window_s)),
             sleep=self.sleep,
             now=self.now,
         )
