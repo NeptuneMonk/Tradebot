@@ -23,6 +23,15 @@ def short_id(value: str) -> str:
     return f"{text[:4]}…{text[-4:]}"
 
 
+def purge_id_span(start: int, end: int, keep: set[int] | None = None) -> list[int]:
+    """Inclusive message ids from the replied-to message through the latest, minus ids we keep."""
+    lo, hi = int(start), int(end)
+    if lo > hi:
+        lo, hi = hi, lo
+    saved = keep or set()
+    return [i for i in range(lo, hi + 1) if i not in saved]
+
+
 def format_held(seconds: float) -> str:
     seconds = max(0, int(seconds))
     days, rem = divmod(seconds, 86400)
@@ -120,6 +129,31 @@ class TradeBoard:
 
     def schedule_bump(self) -> None:
         self._bump_after = self.now() + self._debounce()
+
+    def kept_message_ids(self) -> set[int]:
+        """Unanswered 24h prompts stay. The live board is reposted, not preserved in place."""
+        keep = set()
+        for row in self.db.tg_messages():
+            if row["kind"] == "prompt" and self._prompt_open(row.get("position_id")):
+                keep.add(int(row["message_id"]))
+        return keep
+
+    async def purge_reply(self, reply_to: int, command_id: int = 0) -> None:
+        """Delete every id from the replied-to message through the latest, then repost the board."""
+        recorded = [int(row["message_id"]) for row in self.db.tg_messages()]
+        end = max([int(reply_to), int(command_id or 0), *recorded] or [int(reply_to)])
+        keep = self.kept_message_ids()
+        for mid in purge_id_span(int(reply_to), end, keep):
+            await self._delete_quiet(mid)
+            self.db.forget_tg(mid)
+        if self._board_id and self._board_id not in keep:
+            await self._delete_quiet(self._board_id)
+            self.db.forget_tg(self._board_id)
+        self._board_id = None
+        self._text = ""
+        self.db.kv_set("tg_board_id", "")
+        self._bump_after = None
+        await self._send_board()
 
     async def gate(self) -> None:
         """About one Telegram call per second in this chat."""

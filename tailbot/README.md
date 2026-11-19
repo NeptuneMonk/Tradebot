@@ -100,6 +100,7 @@ Only `TELEGRAM_CHAT_ID` is answered. Other chats are ignored.
 | `/leader on\|off <wallet>` | `on` also resets that leader's loss window |
 | `/override daily` | Ignore today's daily-loss pause until Chicago midnight |
 | `/set <key> <value>` | Risk knobs (percents, seconds, SOL). Not `execution_mode` |
+| `/purge` | Reply to a message. Deletes from that message through the latest, including the command. The Active trades board is posted again; unanswered 24h prompts stay. Other chats are ignored |
 
 Alerts: every copy, every skip with the reason, every exit (`leader sold`, `stop`, `trail`, `momentum`, `manual`), each batched sweep, and a daily summary. A feed that stays down more than 60 seconds pauses new buys and sends one alert.
 

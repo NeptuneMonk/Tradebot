@@ -45,6 +45,13 @@ def route_update(update: dict, allowed_chat: str) -> tuple[str, str] | None:
     return ("command", text)
 
 
+def command_context(update: dict) -> dict:
+    """The command's own message id and, for a reply, the message it points at."""
+    msg = update.get("message") or update.get("edited_message") or {}
+    reply = msg.get("reply_to_message") or {}
+    return {"message_id": msg.get("message_id"), "reply_to": reply.get("message_id")}
+
+
 class Telegram:
     def __init__(self, token: str, chat_id: str, control, poster=None):
         self.token = (token or "").strip()
@@ -131,6 +138,14 @@ class Telegram:
         if routed is None:
             return
         kind, data = routed
+        if kind == "command" and parse_command(data) and parse_command(data)[0] == "/purge":
+            ctx = command_context(update)
+            if not ctx["reply_to"]:
+                await self.send("reply to a message with /purge")
+                return
+            if self.board:
+                await self.board.purge_reply(int(ctx["reply_to"]), int(ctx["message_id"] or 0))
+            return
         if kind == "command":
             reply = await self.control.on_command(data)
         else:

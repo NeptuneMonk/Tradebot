@@ -678,7 +678,7 @@ class Engine:
     async def on_command(self, text: str) -> str:
         parsed = parse_command(text)
         if not parsed:
-            return "commands: /status /positions /pause /resume /sellall <PIN> /leaders /leader on|off <wallet> /override daily /set <key> <value>"
+            return "commands: /status /positions /pause /resume /sellall <PIN> /leaders /leader on|off <wallet> /override daily /set <key> <value> /purge"
         cmd, args = parsed
         if cmd == "/status":
             return self._status_text()
