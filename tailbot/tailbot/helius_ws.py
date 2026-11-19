@@ -1,6 +1,6 @@
 """One Helius standard websocket.
 
-logsSubscribe with ``mentions`` for each leader (at most 3) and accountSubscribe
+logsSubscribe with ``mentions`` for each leader (count capped by config max_leaders) and accountSubscribe
 for the curve or quote vault of an open position. transactionSubscribe is not
 used — it is not on the free plan. Reconnects with backoff. ``feed_is_down`` is
 true after ``feed_down_s`` without a live socket, which pauses new buys.
@@ -55,7 +55,7 @@ class HeliusWS:
         self._ack_errors = 0
 
     def set_leaders(self, leaders: list[str]) -> None:
-        self.leaders = list(leaders)[:3]
+        self.leaders = list(leaders)  # cap enforced by config.max_leaders
         self._resub = True
 
     def set_accounts(self, accounts: set[str]) -> None:

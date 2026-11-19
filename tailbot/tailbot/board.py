@@ -88,7 +88,9 @@ def format_active_trades(positions: list[dict], *, pot: float, deployed: float, 
         pnl_sol = value - cost
         pnl_pct = (pnl_sol / cost * 100.0) if cost else 0.0
         lines.append("")
-        lines.append(f"{name} · {short_id(pos.get('leader') or '')}")
+        leader = str(pos.get("leader") or "")
+        lname = str((getattr(cfg, "leader_names", None) or {}).get(leader) or "").strip()
+        lines.append(f"{name} · {lname + ' ' if lname else ''}{short_id(leader)}")
         lines.append(f"in {when} · held {held}")
         lines.append(f"entry {cost:.4f} · now {value:.4f} · {pnl_pct:+.1f}% ({pnl_sol:+.4f} SOL)")
         lines.append("armed: " + " ".join(armed_labels(pos, cfg)))

@@ -53,6 +53,7 @@ class Config:
     live_enabled: bool = False
     leaders: list[str] = field(default_factory=list)
     max_leaders: int = 3
+    leader_names: dict = field(default_factory=dict)  # wallet -> display name for alerts/board
     paper_pot_sol: float = 1.0
     pot_pct_per_buy: float = 10.0
     hard_cap_pct: float = 20.0
@@ -104,6 +105,12 @@ class Config:
     native_sol_dust_lamports: int = 20_000_000
 
 
+def leader_label(wallet: str, cfg) -> str:
+    """'Name (AbCd…)' when leader_names has the wallet, else 'AbCd…'."""
+    name = str((getattr(cfg, "leader_names", None) or {}).get(wallet) or "").strip()
+    return f"{name} ({wallet[:4]}…)" if name else f"{wallet[:4]}…"
+
+
 def load_config(path: str | None) -> Config:
     raw: dict = {}
     if path and os.path.exists(path):
@@ -117,6 +124,7 @@ def load_config(path: str | None) -> Config:
     cfg.leaders = [str(item).strip() for item in (cfg.leaders or []) if str(item).strip()]
     if len(cfg.leaders) > int(cfg.max_leaders):
         raise SystemExit(f"config has {len(cfg.leaders)} leaders; the maximum is {cfg.max_leaders}")
+    cfg.leader_names = {str(k).strip(): str(v).strip() for k, v in dict(cfg.leader_names or {}).items()}
     cfg.execution_mode = str(cfg.execution_mode or "paper").lower()
     cfg.live_enabled = bool(cfg.live_enabled)
     return cfg

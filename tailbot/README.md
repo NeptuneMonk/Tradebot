@@ -1,6 +1,6 @@
 # tailbot
 
-Paper-only Solana copy-trader. It watches up to three leader wallets, copies their buys, and sells the same fraction of our position when they sell. Fills, stops, and the profit sweep are simulated against live quotes and stored in SQLite. This process never loads a private key, never signs, and never sends a transaction.
+Paper-only Solana copy-trader. It watches the leader wallets in config (capped by `max_leaders`, default 3), copies their buys, and sells the same fraction of our position when they sell. Fills, stops, and the profit sweep are simulated against live quotes and stored in SQLite. This process never loads a private key, never signs, and never sends a transaction.
 
 Live execution is a flag that is off. Turning it on does not start trading: the process exits, and the send path raises before it would touch a key file. A signer is not implemented in this build.
 
@@ -27,7 +27,7 @@ pip install -r requirements.txt
 cp config.example.json config.json
 ```
 
-Edit `config.json`: put your leader wallets in `leaders` (at most 3) and change `sellall_pin`. Keep `execution_mode` at `"paper"` and `live_enabled` at `false`.
+Edit `config.json`: put your leader wallets in `leaders` (at most `max_leaders`, default 3) and change `sellall_pin`. Optional `leader_names` maps a wallet to a short name used in alerts, the board, and `/leaders`. Keep `execution_mode` at `"paper"` and `live_enabled` at `false`.
 
 Secrets stay in the environment, not in the config file and not in git:
 

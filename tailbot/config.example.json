@@ -4,6 +4,10 @@
   "leaders": [
     "AvGiSdrkwtGYhrrFXZPtdhNhV4pASUR67TmRjfaKGdMP"
   ],
+  "max_leaders": 3,
+  "leader_names": {
+    "AvGiSdrkwtGYhrrFXZPtdhNhV4pASUR67TmRjfaKGdMP": "Wirelys"
+  },
   "paper_pot_sol": 1.0,
   "pot_pct_per_buy": 10,
   "hard_cap_pct": 20,

@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from .backfill import plan_backfill
 from .board import format_active_trades
 from .chase import run_chase
-from .config import set_param
+from .config import leader_label, set_param
 from .decode import Fill, decode_activity, fills_from_logs, needs_fetch, payment_sol
 from .exits import decide_exit, pnl_pct
 from .market import price_sol_per_ui
@@ -252,7 +252,7 @@ class Engine:
                 log.info("backfill %s… %d fetched, %d stale", leader[:4], fetched, stale)
             if quiet:
                 await self.alert(
-                    f"SKIP {leader[:4]}… backfill: {quiet} stale tx (older than {window:.0f}s) not copied — feed was down / restart"
+                    f"SKIP {leader_label(leader, self.cfg)} backfill: {quiet} stale tx (older than {window:.0f}s) not copied — feed was down / restart"
                 )
 
     async def _process_signature(self, leader: str, sig: str, block_time, chase_left: float) -> None:
@@ -272,7 +272,7 @@ class Engine:
         if reason == "stale":
             log.info("SKIP %s… %s… stale (backfill, not alerted)", leader[:4], sig[:8])
             return
-        await self.alert(f"SKIP {leader[:4]}… {sig[:8]}… {reason}")
+        await self.alert(f"SKIP {leader_label(leader, self.cfg)} {sig[:8]}… {reason}")
 
     async def _fetch_tx(self, sig: str):
         if self.rpc is None:
@@ -394,7 +394,7 @@ class Engine:
             premium = result.premium_pct or 0.0
             paid = f"{fill.payment_ui:.4g} {fill.payment_mint or '?'}"
             await self.alert(
-                f"COPY buy {fill.leader[:4]}… {fill.mint[:6]}… {sol_in:.4f} SOL "
+                f"COPY buy {leader_label(fill.leader, self.cfg)} {fill.mint[:6]}… {sol_in:.4f} SOL "
                 f"@ {quote.price_sol_per_ui:.8g} ({premium:+.1f}% vs leader) via {quote.source}\n"
                 f"leader paid {paid} · impact {quote.impact_pct:.2f}% · fee {quote.fee_pct:.2f}% · slip {quote.slip_pct:.2f}%"
             )
@@ -434,7 +434,7 @@ class Engine:
 
     def _record_skip(self, fill, reason: str) -> str:
         self.db.add_decision(self.now(), fill.signature, fill.leader, fill.mint, "skip", reason)
-        return f"SKIP {fill.leader[:4]}… {fill.mint[:6]}… {reason}"
+        return f"SKIP {leader_label(fill.leader, self.cfg)} {fill.mint[:6]}… {reason}"
 
     async def _skip(self, fill, reason: str) -> None:
         async with self.lock:
@@ -540,7 +540,7 @@ class Engine:
                 self.db.kv_set(f"off:{fresh['leader']}", off)
         pct = pnl_pct(price, float(fresh["entry_price"])) if price else 0
         await self.alert(
-            f"EXIT {reason} {fresh['mint'][:6]}… {fraction:.0%} pnl {result.pnl_sol:+.4f} SOL ({pct:+.1f}%) via {meta.get('source')}"
+            f"EXIT {reason} {leader_label(str(fresh['leader'] or ''), self.cfg)} {fresh['mint'][:6]}… {fraction:.0%} pnl {result.pnl_sol:+.4f} SOL ({pct:+.1f}%) via {meta.get('source')}"
         )
         if off:
             await self.alert(f"LEADER OFF {fresh['leader'][:4]}… {off}")
@@ -776,7 +776,8 @@ class Engine:
         for wallet in self.cfg.leaders:
             reason = (self.db.kv_get(f"off:{wallet}") or "").strip()
             state = "off " + reason if reason else "on"
-            lines.append(f"{state} {wallet}")
+            name = (self.cfg.leader_names or {}).get(wallet)
+            lines.append(f"{state} {name + ' ' if name else ''}{wallet}")
         return "\n".join(lines)
 
     def _cmd_leader(self, args: list[str]) -> str:
@@ -788,6 +789,6 @@ class Engine:
         if args[0] == "on":
             self.db.kv_set(f"off:{wallet}", "")
             self.db.kv_set(f"reset:{wallet}", str(self.now()))
-            return f"{wallet[:4]}… on (loss window reset)"
+            return f"{leader_label(wallet, self.cfg)} on (loss window reset)"
         self.db.kv_set(f"off:{wallet}", "manual")
-        return f"{wallet[:4]}… off"
+        return f"{leader_label(wallet, self.cfg)} off"
