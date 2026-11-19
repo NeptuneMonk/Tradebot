@@ -111,8 +111,9 @@ Alerts: every copy, every skip with the reason, every exit (`leader sold`, `stop
 | Deployed | 60% of pot |
 | Per leader | 20% of pot and 2 open mints |
 | Skip leader buy | under 0.1 SOL (USDC/USDT converted at the SOL price; other tokens via a Jupiter quote) |
-| Min market cap | $8,000 |
-| Min PumpSwap liquidity | $10,000 |
+| Min market cap | off (`min_mcap_usd` 0). Set it above 0 to require a floor |
+| Min PumpSwap liquidity | off (`min_pumpswap_liq_usd` 0). Set it above 0 to require a floor |
+| Exit route | a sell quote for our size must exist (curve, PumpSwap pool, or Jupiter for a paired coin) and the round trip must cost at most `max_round_trip_impact_pct` (default 25%). Otherwise skip `no exit route` |
 | Flip | leader sold this mint in the last 30s |
 | Token | any freeze authority, or a Token-2022 transfer-fee extension |
 | Reserve / min buy | 0.05 SOL / 0.05 SOL |

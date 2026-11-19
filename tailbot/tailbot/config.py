@@ -17,6 +17,7 @@ SETTABLE: dict[str, tuple] = {
     "min_leader_buy_sol": (float, 0.0, 100.0),
     "min_mcap_usd": (float, 0.0, 1e9),
     "min_pumpswap_liq_usd": (float, 0.0, 1e9),
+    "max_round_trip_impact_pct": (float, 0.0, 100.0),
     "flip_window_s": (float, 0.0, 3600.0),
     "sol_reserve": (float, 0.0, 10.0),
     "min_our_buy_sol": (float, 0.0, 10.0),
@@ -57,8 +58,9 @@ class Config:
     per_leader_pct: float = 20.0
     per_leader_max_positions: int = 2
     min_leader_buy_sol: float = 0.1
-    min_mcap_usd: float = 8_000.0
-    min_pumpswap_liq_usd: float = 10_000.0
+    min_mcap_usd: float = 0.0
+    min_pumpswap_liq_usd: float = 0.0
+    max_round_trip_impact_pct: float = 25.0
     flip_window_s: float = 30.0
     sol_reserve: float = 0.05
     min_our_buy_sol: float = 0.05

@@ -51,14 +51,23 @@ def test_deployed_leader_reserve_and_min_buy():
     assert not tiny.ok and tiny.reason == "min buy"
 
 
-def test_leader_size_mcap_liquidity_freeze_flip_pauses():
+def test_leader_size_freeze_flip_pauses_and_optional_floors():
     assert evaluate_buy(view(leader_buy_sol=0.05), cfg()).reason == "leader buy below min"
     assert evaluate_buy(view(leader_buy_sol=None), cfg()).reason == "leader size unpriced"
-    assert evaluate_buy(view(mcap_usd=7_000), cfg()).reason == "mcap below min"
-    assert evaluate_buy(view(mcap_usd=None), cfg()).reason == "mcap unknown"
-    assert evaluate_buy(view(protocol="pumpswap", liquidity_usd=9_000), cfg()).reason == "pumpswap liquidity below min"
-    assert evaluate_buy(view(protocol="pumpswap", liquidity_usd=None), cfg()).reason == "pumpswap liquidity unknown"
-    assert evaluate_buy(view(protocol="pumpswap", liquidity_usd=15_000), cfg()).ok
+    # Floors default off: a new curve with no mcap and an empty PumpSwap quote still pass.
+    assert cfg().min_mcap_usd == 0
+    assert cfg().min_pumpswap_liq_usd == 0
+    assert evaluate_buy(view(mcap_usd=None), cfg()).ok
+    assert evaluate_buy(view(mcap_usd=100), cfg()).ok
+    assert evaluate_buy(view(protocol="pumpswap", liquidity_usd=None), cfg()).ok
+    assert evaluate_buy(view(protocol="pumpswap", liquidity_usd=0), cfg()).ok
+    assert evaluate_buy(view(protocol="unknown", mcap_usd=None, liquidity_usd=None), cfg()).ok
+    # Turn a floor on and it applies again.
+    assert evaluate_buy(view(mcap_usd=7_000), cfg(min_mcap_usd=8_000)).reason == "mcap below min"
+    assert evaluate_buy(view(mcap_usd=None), cfg(min_mcap_usd=8_000)).reason == "mcap unknown"
+    assert evaluate_buy(view(protocol="pumpswap", liquidity_usd=9_000), cfg(min_pumpswap_liq_usd=10_000)).reason == "pumpswap liquidity below min"
+    assert evaluate_buy(view(protocol="pumpswap", liquidity_usd=None), cfg(min_pumpswap_liq_usd=10_000)).reason == "pumpswap liquidity unknown"
+    assert evaluate_buy(view(protocol="pumpswap", liquidity_usd=15_000), cfg(min_pumpswap_liq_usd=10_000)).ok
     assert evaluate_buy(view(freeze=True), cfg()).reason == "freeze authority"
     assert evaluate_buy(view(transfer_fee=True), cfg()).reason == "transfer fee"
     assert evaluate_buy(view(flipped=True), cfg()).reason == "leader flipped within 30s"
@@ -66,7 +75,6 @@ def test_leader_size_mcap_liquidity_freeze_flip_pauses():
     assert evaluate_buy(view(paused_daily=True), cfg()).reason == "daily loss pause"
     assert evaluate_buy(view(paused_manual=True), cfg()).reason == "paused"
     assert evaluate_buy(view(leader_enabled=False), cfg()).reason == "leader off"
-    assert evaluate_buy(view(protocol="unknown"), cfg()).reason == "market unknown"
 
 
 def test_flip_fraction_and_breakers():

@@ -13,7 +13,7 @@ from .decode import Fill, decode_activity, fills_from_logs, needs_fetch, payment
 from .exits import decide_exit, pnl_pct
 from .market import price_sol_per_ui
 from .momentum import buy_flow_slow
-from .pump_logs import STABLES, WSOL, decode_bonding_curve, token_account_amount
+from .quotes import curve_round_trip_impact_pct, exit_allowed
 from .risk import BuyView, daily_loss_hit, evaluate_buy, is_flip, leader_auto_off, proportional_fraction
 from .rpc import CreditsBlocked
 from .safety import MintSafety, parse_mint
@@ -297,6 +297,11 @@ class Engine:
         if skip_msg:
             await self.alert(skip_msg)
             return
+        reserves = getattr(market, "reserves", None) if market else None
+        if reserves and reserves[0] and reserves[1] and not await self._has_exit(fill.mint, sol_in, None, market):
+            self._chasing.discard((fill.leader, fill.mint))
+            await self._skip(fill, "no exit route")
+            return
         key = (fill.leader, fill.mint)
         quoted_for = sol_in
 
@@ -314,9 +319,14 @@ class Engine:
         )
         opened = None
         quote = result.quote
+        exit_blocked = False
+        if result.ok and quote is not None and quoted_for:
+            exit_blocked = not await self._has_exit(fill.mint, quoted_for, quote, market)
         async with self.lock:
             self._chasing.discard(key)
-            if not result.ok or quote is None or not leader_px:
+            if exit_blocked:
+                skip_msg = self._record_skip(fill, "no exit route")
+            elif not result.ok or quote is None or not leader_px:
                 skip_msg = self._record_skip(fill, result.reason or "no quote")
             else:
                 decision = evaluate_buy(self._view(fill, leader_px, market, safety), self.cfg)
@@ -330,10 +340,14 @@ class Engine:
                         opened = self._open(fill, decision.sol_in, quote, market)
         if quote is None and not skip_msg and result.ok:
             quote = await self.quotes.buy(fill.mint, sol_in, market)
-            async with self.lock:
-                if quote is None or quote.price_sol_per_ui <= 0:
+            if quote is not None and not await self._has_exit(fill.mint, sol_in, quote, market):
+                async with self.lock:
+                    skip_msg = self._record_skip(fill, "no exit route")
+            elif quote is None or quote.price_sol_per_ui <= 0:
+                async with self.lock:
                     skip_msg = self._record_skip(fill, "no quote")
-                else:
+            else:
+                async with self.lock:
                     premium = (quote.price_sol_per_ui / leader_px - 1.0) * 100.0
                     if premium > float(self.cfg.chase_premium_pct):
                         skip_msg = self._record_skip(fill, f"quote {premium:.1f}% above leader fill (max {self.cfg.chase_premium_pct:g}%)")
@@ -357,6 +371,28 @@ class Engine:
                 f"leader paid {paid} · impact {quote.impact_pct:.2f}% · fee {quote.fee_pct:.2f}% · slip {quote.slip_pct:.2f}%"
             )
             self._sync_accounts()
+
+    async def _has_exit(self, mint: str, sol_in: float, buy_quote, market) -> bool:
+        """True when our size can be sold and the round trip stays under the cap."""
+        limit = float(getattr(self.cfg, "max_round_trip_impact_pct", 25) or 0)
+        reserves = getattr(market, "reserves", None) if market else None
+        if reserves and reserves[0] and reserves[1]:
+            fee = self.cfg.pumpswap_fee_bps if getattr(market, "protocol", None) == "pumpswap" else self.cfg.pumpfun_fee_bps
+            impact = curve_round_trip_impact_pct(
+                int(reserves[0]), int(reserves[1]), int(round(sol_in * 1e9)),
+                int(fee), int(self.cfg.paper_extra_slip_bps),
+            )
+            if impact is None:
+                return False
+            return limit <= 0 or impact <= limit
+        if buy_quote is None or int(getattr(buy_quote, "tokens_raw", 0) or 0) <= 0:
+            return False
+        try:
+            sell = await self.quotes.sell(mint, int(buy_quote.tokens_raw), market, getattr(buy_quote, "decimals", 6))
+        except Exception:
+            sell = None
+        sol_out = sell.sol_out if sell is not None and sell.sol_out > 0 else None
+        return exit_allowed(sol_in, sol_out, limit)
 
     def _open(self, fill, sol_in, quote, market):
         return self.paper.open_long(

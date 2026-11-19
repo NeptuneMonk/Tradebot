@@ -55,7 +55,8 @@ class Quotes:
 
 
 async def market(mint, pool=None):
-    return MarketInfo("pumpfun", 50_000.0, None, None, decimals=6, curve="Curve111")
+    # Deep virtual curve so the exit-route check is independent of the test sell price.
+    return MarketInfo("pumpfun", None, None, (30_000_000_000, 1_000_000_000_000_000), decimals=6, curve="Curve111")
 
 
 async def safety(mint):

@@ -1,9 +1,10 @@
 """Buy gates. Pure: the engine loads state and this returns allow/skip plus a size.
 
-Defaults match the brief: 10% of pot, hard cap 20%, 60% deployed, 20% and 2
-opens per leader, skip leader buys under 0.1 SOL, mcap ~$8k, PumpSwap
-liquidity ~$10k, flips inside 30s, freeze authority, transfer-fee mints,
-0.05 SOL reserve, minimum own buy ~0.05 SOL.
+Defaults: 10% of pot, hard cap 20%, 60% deployed, 20% and 2 opens per leader,
+skip leader buys under 0.1 SOL, flips inside 30s, freeze authority,
+transfer-fee mints, 0.05 SOL reserve, minimum own buy ~0.05 SOL.
+Market cap and PumpSwap liquidity floors default off (0). A separate exit-route
+check, not this function, requires a sell quote.
 """
 from __future__ import annotations
 
@@ -61,16 +62,19 @@ def evaluate_buy(view: BuyView, cfg) -> BuyDecision:
         return BuyDecision(False, "leader size unpriced")
     if view.leader_buy_sol < float(cfg.min_leader_buy_sol):
         return BuyDecision(False, "leader buy below min")
-    if view.protocol in ("", "unknown"):
-        return BuyDecision(False, "market unknown")
-    if view.mcap_usd is None:
-        return BuyDecision(False, "mcap unknown")
-    if view.mcap_usd < float(cfg.min_mcap_usd):
-        return BuyDecision(False, "mcap below min")
-    if view.protocol == "pumpswap":
+    # 0 / None disables the floor. A missing mcap or an empty PumpSwap pool is normal
+    # for a new curve and for coins quoted in something other than SOL.
+    min_mcap = float(getattr(cfg, "min_mcap_usd", 0) or 0)
+    if min_mcap > 0:
+        if view.mcap_usd is None:
+            return BuyDecision(False, "mcap unknown")
+        if view.mcap_usd < min_mcap:
+            return BuyDecision(False, "mcap below min")
+    min_liq = float(getattr(cfg, "min_pumpswap_liq_usd", 0) or 0)
+    if min_liq > 0 and view.protocol == "pumpswap":
         if view.liquidity_usd is None:
             return BuyDecision(False, "pumpswap liquidity unknown")
-        if view.liquidity_usd < float(cfg.min_pumpswap_liq_usd):
+        if view.liquidity_usd < min_liq:
             return BuyDecision(False, "pumpswap liquidity below min")
     if not view.already_open_this_mint and view.leader_open_positions >= int(cfg.per_leader_max_positions):
         return BuyDecision(False, "per-leader position cap")

@@ -63,6 +63,76 @@ def constant_product_buy(
     }
 
 
+def round_trip_sol_out(
+    quote_reserves: int,
+    base_reserves: int,
+    sol_in_lamports: int,
+    fee_bps: int,
+    extra_slip_bps: int,
+) -> int | None:
+    """Lamports we'd get selling the tokens a buy of ``sol_in`` just received.
+
+    The sell is priced on the reserves after that buy, so a pool that cannot
+    absorb our size returns None or a large loss. Zero reserves are not a route.
+    """
+    if quote_reserves <= 0 or base_reserves <= 0 or sol_in_lamports <= 0:
+        return None
+    tokens_pool = base_reserves - (quote_reserves * base_reserves) // (quote_reserves + sol_in_lamports)
+    if tokens_pool <= 0:
+        return None
+    haircut = int(fee_bps) + int(extra_slip_bps)
+    tokens_ours = tokens_pool * (10_000 - haircut) // 10_000
+    if tokens_ours <= 0:
+        return None
+    new_base = base_reserves - tokens_pool
+    if new_base <= 0:
+        return None
+    return constant_product_sell(quote_reserves + sol_in_lamports, new_base, tokens_ours, fee_bps, extra_slip_bps)
+
+
+def round_trip_impact_pct(sol_in: float, sol_out: float | None) -> float | None:
+    """Percent of the buy not recovered by an immediate sell. None when there is no route."""
+    if sol_in <= 0 or sol_out is None or sol_out <= 0:
+        return None
+    return (sol_in - sol_out) / sol_in * 100.0
+
+
+def curve_round_trip_impact_pct(
+    quote_reserves: int,
+    base_reserves: int,
+    sol_in_lamports: int,
+    fee_bps: int,
+    extra_slip_bps: int,
+) -> float | None:
+    """Buy premium over spot plus the discount of selling those tokens back at the same spot.
+
+    A constant-product round trip of the exact pool output is almost only fees, so that
+    number never notices a thin pool. Comparing both legs with the pre-trade price does.
+    """
+    buy = constant_product_buy(quote_reserves, base_reserves, sol_in_lamports, fee_bps, extra_slip_bps)
+    if not buy or not buy["spot_price_sol_per_raw"] or buy["tokens_out"] <= 0:
+        return None
+    tokens = buy["tokens_out"]
+    spot = buy["spot_price_sol_per_raw"]
+    buy_px = sol_in_lamports / tokens / 1e9
+    sell_lamports = constant_product_sell(quote_reserves, base_reserves, tokens, fee_bps, extra_slip_bps)
+    if not sell_lamports:
+        return None
+    sell_px = sell_lamports / tokens / 1e9
+    return (buy_px / spot - 1.0 + 1.0 - sell_px / spot) * 100.0
+
+
+def exit_allowed(sol_in: float, sol_out: float | None, max_impact_pct: float | None) -> bool:
+    """A sell quote must exist, and its round-trip loss must sit under the cap (0 disables the cap)."""
+    impact = round_trip_impact_pct(sol_in, sol_out)
+    if impact is None:
+        return False
+    limit = float(max_impact_pct or 0)
+    if limit > 0 and impact > limit:
+        return False
+    return True
+
+
 def constant_product_sell(
     quote_reserves: int,
     base_reserves: int,
